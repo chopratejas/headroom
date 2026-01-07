@@ -6,6 +6,13 @@ from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
+from .cache import (
+    BaseCacheOptimizer,
+    CacheOptimizerRegistry,
+    CacheConfig,
+    OptimizationContext,
+    SemanticCacheLayer,
+)
 from .config import (
     HeadroomConfig,
     HeadroomMode,
@@ -256,6 +263,9 @@ class HeadroomClient:
         store_url: str = "sqlite:///headroom.db",
         default_mode: str = "audit",
         model_context_limits: dict[str, int] | None = None,
+        cache_optimizer: BaseCacheOptimizer | None = None,
+        enable_cache_optimizer: bool = True,
+        enable_semantic_cache: bool = False,
     ):
         """
         Initialize HeadroomClient.
@@ -266,6 +276,10 @@ class HeadroomClient:
             store_url: Storage URL (sqlite:// or jsonl://).
             default_mode: Default mode ("audit" | "optimize").
             model_context_limits: Override context limits for models.
+            cache_optimizer: Optional custom cache optimizer. If None and
+                enable_cache_optimizer=True, auto-detects from provider.
+            enable_cache_optimizer: Enable provider-specific cache optimization.
+            enable_semantic_cache: Enable query-level semantic caching.
         """
         self._original = original_client
         self._provider = provider
@@ -276,6 +290,8 @@ class HeadroomClient:
         self._config = HeadroomConfig()
         self._config.store_url = store_url
         self._config.default_mode = self._default_mode
+        self._config.cache_optimizer.enabled = enable_cache_optimizer
+        self._config.cache_optimizer.enable_semantic_cache = enable_semantic_cache
 
         if model_context_limits:
             self._config.model_context_limits.update(model_context_limits)
@@ -285,6 +301,34 @@ class HeadroomClient:
 
         # Initialize transform pipeline
         self._pipeline = TransformPipeline(self._config, provider=self._provider)
+
+        # Initialize cache optimizer
+        self._cache_optimizer: BaseCacheOptimizer | None = None
+        self._semantic_cache_layer: SemanticCacheLayer | None = None
+
+        if enable_cache_optimizer:
+            if cache_optimizer is not None:
+                self._cache_optimizer = cache_optimizer
+            else:
+                # Auto-detect from provider
+                provider_name = self._provider.name.lower()
+                if CacheOptimizerRegistry.is_registered(provider_name):
+                    cache_config = CacheConfig(
+                        min_cacheable_tokens=self._config.cache_optimizer.min_cacheable_tokens,
+                    )
+                    self._cache_optimizer = CacheOptimizerRegistry.get(
+                        provider_name,
+                        config=cache_config,
+                    )
+
+            # Wrap with semantic cache if enabled
+            if enable_semantic_cache and self._cache_optimizer is not None:
+                self._semantic_cache_layer = SemanticCacheLayer(
+                    self._cache_optimizer,
+                    similarity_threshold=self._config.cache_optimizer.semantic_cache_similarity,
+                    max_entries=self._config.cache_optimizer.semantic_cache_max_entries,
+                    ttl_seconds=self._config.cache_optimizer.semantic_cache_ttl_seconds,
+                )
 
         # Public API - OpenAI style
         self.chat = type("Chat", (), {"completions": ChatCompletions(self)})()
@@ -339,6 +383,16 @@ class HeadroomClient:
         # Compute stable prefix hash
         stable_prefix_hash = compute_prefix_hash(messages)
 
+        # Cache optimizer metrics (populated later if optimizer is used)
+        cache_optimizer_used = None
+        cache_optimizer_strategy = None
+        cacheable_tokens = 0
+        breakpoints_inserted = 0
+        estimated_cache_hit = False
+        estimated_savings_percent = 0.0
+        semantic_cache_hit = False
+        cached_response = None
+
         # Apply transforms if in optimize mode
         if mode == HeadroomMode.OPTIMIZE:
             output_buffer = headroom_output_buffer_tokens or self._config.rolling_window.output_buffer_tokens
@@ -355,6 +409,54 @@ class HeadroomClient:
             optimized_messages = result.messages
             tokens_after = result.tokens_after
             transforms_applied = result.transforms_applied
+
+            # Apply provider-specific cache optimization
+            if self._cache_optimizer is not None or self._semantic_cache_layer is not None:
+                cache_context = OptimizationContext(
+                    provider=self._provider.name.lower(),
+                    model=model,
+                    query=self._extract_query(optimized_messages),
+                )
+
+                # Check semantic cache first (if enabled)
+                if self._semantic_cache_layer is not None:
+                    cache_result = self._semantic_cache_layer.process(
+                        optimized_messages, cache_context
+                    )
+                    semantic_cache_hit = cache_result.semantic_cache_hit
+                    if semantic_cache_hit:
+                        cached_response = cache_result.cached_response
+
+                    # Update metrics from cache result
+                    cache_optimizer_used = cache_result.metrics.optimizer_name or self._cache_optimizer.name
+                    cache_optimizer_strategy = cache_result.metrics.strategy
+                    cacheable_tokens = cache_result.metrics.cacheable_tokens
+                    breakpoints_inserted = cache_result.metrics.breakpoints_inserted
+                    estimated_cache_hit = cache_result.metrics.estimated_cache_hit
+                    estimated_savings_percent = cache_result.metrics.estimated_savings_percent
+
+                    # Apply optimized messages (with cache_control blocks for Anthropic)
+                    if cache_result.messages:
+                        optimized_messages = cache_result.messages
+
+                elif self._cache_optimizer is not None:
+                    # Direct cache optimizer (no semantic layer)
+                    cache_result = self._cache_optimizer.optimize(
+                        optimized_messages, cache_context
+                    )
+                    cache_optimizer_used = self._cache_optimizer.name
+                    cache_optimizer_strategy = self._cache_optimizer.strategy.value
+                    cacheable_tokens = cache_result.metrics.cacheable_tokens
+                    breakpoints_inserted = cache_result.metrics.breakpoints_inserted
+                    estimated_cache_hit = cache_result.metrics.estimated_cache_hit
+                    estimated_savings_percent = cache_result.metrics.estimated_savings_percent
+
+                    if cache_result.messages:
+                        optimized_messages = cache_result.messages
+
+                transforms_applied.extend(
+                    f"cache_optimizer:{t}" for t in (cache_result.transforms_applied or [])
+                )
 
             # Recalculate prefix hash after optimization
             stable_prefix_hash = compute_prefix_hash(optimized_messages)
@@ -379,7 +481,20 @@ class HeadroomClient:
             cache_alignment_score=cache_alignment_score,
             transforms_applied=transforms_applied,
             messages_hash=compute_messages_hash(messages),
+            # Cache optimizer metrics
+            cache_optimizer_used=cache_optimizer_used,
+            cache_optimizer_strategy=cache_optimizer_strategy,
+            cacheable_tokens=cacheable_tokens,
+            breakpoints_inserted=breakpoints_inserted,
+            estimated_cache_hit=estimated_cache_hit,
+            estimated_savings_percent=estimated_savings_percent,
+            semantic_cache_hit=semantic_cache_hit,
         )
+
+        # Return cached response if semantic cache hit
+        if semantic_cache_hit and cached_response is not None:
+            self._storage.save(metrics)
+            return cached_response
 
         # Call underlying client based on API style
         try:
@@ -493,6 +608,65 @@ class HeadroomClient:
             # Save metrics when stream completes
             # Note: output tokens unknown for streams
             self._storage.save(metrics)
+
+    def _extract_query(self, messages: list[dict[str, Any]]) -> str:
+        """Extract query from messages for semantic caching.
+
+        Returns the last user message content as the query.
+        """
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content
+                elif isinstance(content, list):
+                    # Content block format
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            return block.get("text", "")
+                    return ""
+        return ""
+
+    def _store_response_in_semantic_cache(
+        self,
+        messages: list[dict[str, Any]],
+        response: Any,
+        model: str,
+    ) -> None:
+        """Store response in semantic cache for future hits."""
+        if self._semantic_cache_layer is not None:
+            cache_context = OptimizationContext(
+                provider=self._provider.name.lower(),
+                model=model,
+                query=self._extract_query(messages),
+            )
+            # Extract response content for caching
+            response_data = self._extract_response_content(response)
+            if response_data:
+                self._semantic_cache_layer.store_response(
+                    messages, response_data, cache_context
+                )
+
+    def _extract_response_content(self, response: Any) -> dict[str, Any] | None:
+        """Extract cacheable content from API response."""
+        try:
+            # OpenAI format
+            if hasattr(response, "choices") and response.choices:
+                choice = response.choices[0]
+                if hasattr(choice, "message"):
+                    return {
+                        "role": "assistant",
+                        "content": choice.message.content,
+                    }
+            # Anthropic format
+            elif hasattr(response, "content"):
+                return {
+                    "role": "assistant",
+                    "content": response.content,
+                }
+        except Exception:
+            pass
+        return None
 
     def _simulate(
         self,

@@ -38,10 +38,25 @@ Example usage:
     print(f"Would save {plan.tokens_saved} tokens")
 """
 
+from .cache import (
+    AnthropicCacheOptimizer,
+    BaseCacheOptimizer,
+    CacheConfig,
+    CacheMetrics,
+    CacheOptimizerRegistry,
+    CacheResult,
+    CacheStrategy,
+    GoogleCacheOptimizer,
+    OpenAICacheOptimizer,
+    OptimizationContext,
+    SemanticCache,
+    SemanticCacheLayer,
+)
 from .client import HeadroomClient
 from .config import (
     Block,
     CacheAlignerConfig,
+    CacheOptimizerConfig,
     CachePrefixMetrics,
     DiffArtifact,
     HeadroomConfig,
@@ -92,6 +107,7 @@ __all__ = [
     "ToolCrusherConfig",
     "SmartCrusherConfig",
     "CacheAlignerConfig",
+    "CacheOptimizerConfig",
     "RollingWindowConfig",
     "RelevanceScorerConfig",
     # Data models
@@ -109,6 +125,19 @@ __all__ = [
     "CacheAligner",
     "RollingWindow",
     "TransformPipeline",
+    # Cache optimizers
+    "BaseCacheOptimizer",
+    "CacheConfig",
+    "CacheMetrics",
+    "CacheResult",
+    "CacheStrategy",
+    "OptimizationContext",
+    "CacheOptimizerRegistry",
+    "AnthropicCacheOptimizer",
+    "OpenAICacheOptimizer",
+    "GoogleCacheOptimizer",
+    "SemanticCache",
+    "SemanticCacheLayer",
     # Relevance scoring
     "RelevanceScore",
     "RelevanceScorer",

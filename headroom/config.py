@@ -194,6 +194,31 @@ class SmartCrusherConfig:
 
 
 @dataclass
+class CacheOptimizerConfig:
+    """Configuration for provider-specific cache optimization.
+
+    The CacheOptimizer system provides provider-specific caching strategies:
+    - Anthropic: Explicit cache_control breakpoints for prompt caching
+    - OpenAI: Prefix stabilization for automatic prefix caching
+    - Google: CachedContent API lifecycle management
+
+    This is COMPLEMENTARY to the CacheAligner transform - CacheAligner does
+    basic prefix stabilization (date extraction, whitespace normalization),
+    while CacheOptimizer applies provider-specific optimizations.
+
+    Enable this for maximum cache hit rates when you know your provider.
+    """
+
+    enabled: bool = True  # Enable provider-specific cache optimization
+    auto_detect_provider: bool = True  # Auto-detect from HeadroomClient provider
+    min_cacheable_tokens: int = 1024  # Minimum tokens for caching (provider may override)
+    enable_semantic_cache: bool = False  # Enable query-level semantic caching
+    semantic_cache_similarity: float = 0.95  # Similarity threshold for semantic cache
+    semantic_cache_max_entries: int = 1000  # Max semantic cache entries
+    semantic_cache_ttl_seconds: int = 300  # Semantic cache TTL
+
+
+@dataclass
 class HeadroomConfig:
     """Main configuration for HeadroomClient."""
 
@@ -206,6 +231,7 @@ class HeadroomConfig:
     smart_crusher: SmartCrusherConfig = field(default_factory=SmartCrusherConfig)
     cache_aligner: CacheAlignerConfig = field(default_factory=CacheAlignerConfig)
     rolling_window: RollingWindowConfig = field(default_factory=RollingWindowConfig)
+    cache_optimizer: CacheOptimizerConfig = field(default_factory=CacheOptimizerConfig)
 
     # Debugging - opt-in diff artifact generation
     generate_diff_artifact: bool = False  # Enable to get detailed transform diffs
@@ -370,10 +396,19 @@ class RequestMetrics:
     # Waste signals
     waste_signals: dict[str, int] = field(default_factory=dict)
 
-    # Cache metrics
+    # Cache metrics (basic)
     stable_prefix_hash: str = ""
     cache_alignment_score: float = 0.0
     cached_tokens: int | None = None  # From API response if available
+
+    # Cache optimizer metrics (provider-specific)
+    cache_optimizer_used: str | None = None  # e.g., "anthropic-cache-optimizer"
+    cache_optimizer_strategy: str | None = None  # e.g., "explicit_breakpoints"
+    cacheable_tokens: int = 0  # Tokens eligible for caching
+    breakpoints_inserted: int = 0  # Cache breakpoints added (Anthropic)
+    estimated_cache_hit: bool = False  # Whether prefix matches previous
+    estimated_savings_percent: float = 0.0  # Estimated savings if cached
+    semantic_cache_hit: bool = False  # Whether semantic cache was hit
 
     # Transform details
     transforms_applied: list[str] = field(default_factory=list)
