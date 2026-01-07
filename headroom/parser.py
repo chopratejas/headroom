@@ -1,0 +1,293 @@
+"""Message parsing utilities for Headroom SDK."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Any, TYPE_CHECKING
+
+from .config import Block, WasteSignals
+
+if TYPE_CHECKING:
+    from .tokenizer import Tokenizer
+
+
+# Patterns for detecting waste signals
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+HTML_COMMENT_PATTERN = re.compile(r"<!--[\s\S]*?-->")
+BASE64_PATTERN = re.compile(r"[A-Za-z0-9+/]{50,}={0,2}")
+WHITESPACE_PATTERN = re.compile(r"[ \t]{4,}|\n{3,}")
+JSON_BLOCK_PATTERN = re.compile(r"\{[\s\S]{500,}\}")
+
+# Patterns for RAG detection (best effort)
+RAG_MARKERS = [
+    r"\[Document\s*\d+\]",
+    r"\[Source:\s*",
+    r"<context>",
+    r"<document>",
+    r"Retrieved from:",
+    r"From the knowledge base:",
+]
+RAG_PATTERN = re.compile("|".join(RAG_MARKERS), re.IGNORECASE)
+
+
+def compute_hash(text: str) -> str:
+    """Compute SHA256 hash of text, truncated to 16 chars."""
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def detect_waste_signals(text: str, tokenizer: Tokenizer) -> WasteSignals:
+    """
+    Detect waste signals in text.
+
+    Args:
+        text: The text to analyze.
+        tokenizer: Tokenizer for counting tokens.
+
+    Returns:
+        WasteSignals with detected waste.
+    """
+    signals = WasteSignals()
+
+    if not text:
+        return signals
+
+    # HTML tags and comments
+    html_matches = HTML_TAG_PATTERN.findall(text) + HTML_COMMENT_PATTERN.findall(text)
+    if html_matches:
+        html_text = "".join(html_matches)
+        signals.html_noise_tokens = tokenizer.count_text(html_text)
+
+    # Base64 blobs
+    base64_matches = BASE64_PATTERN.findall(text)
+    if base64_matches:
+        base64_text = "".join(base64_matches)
+        signals.base64_tokens = tokenizer.count_text(base64_text)
+
+    # Excessive whitespace
+    ws_matches = WHITESPACE_PATTERN.findall(text)
+    if ws_matches:
+        # Count tokens that could be saved by normalizing
+        ws_text = "".join(ws_matches)
+        signals.whitespace_tokens = max(0, tokenizer.count_text(ws_text) - len(ws_matches))
+
+    # Large JSON blocks
+    json_matches = JSON_BLOCK_PATTERN.findall(text)
+    if json_matches:
+        for match in json_matches:
+            tokens = tokenizer.count_text(match)
+            if tokens > 500:
+                signals.json_bloat_tokens += tokens
+
+    return signals
+
+
+def is_rag_content(text: str) -> bool:
+    """Check if text appears to be RAG-injected content."""
+    return RAG_PATTERN.search(text) is not None
+
+
+def parse_message_to_blocks(
+    message: dict[str, Any],
+    index: int,
+    tokenizer: Tokenizer,
+) -> list[Block]:
+    """
+    Parse a single message into Block objects.
+
+    Args:
+        message: The message dict to parse.
+        index: Position in the message list.
+        tokenizer: Tokenizer for token counting.
+
+    Returns:
+        List of Block objects (usually 1, but tool_calls may produce multiple).
+    """
+    blocks: list[Block] = []
+    role = message.get("role", "unknown")
+
+    # Handle content
+    content = message.get("content")
+    if content:
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            # Multi-modal - extract text parts
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            text = "\n".join(text_parts)
+        else:
+            text = str(content)
+
+        # Determine block kind
+        if role == "system":
+            kind = "system"
+        elif role == "user":
+            # Check if this looks like RAG content
+            kind = "rag" if is_rag_content(text) else "user"
+        elif role == "assistant":
+            kind = "assistant"
+        elif role == "tool":
+            kind = "tool_result"
+        else:
+            kind = "unknown"
+
+        # Build flags
+        flags: dict[str, Any] = {}
+        if role == "tool":
+            flags["tool_call_id"] = message.get("tool_call_id")
+
+        # Detect waste
+        waste = detect_waste_signals(text, tokenizer)
+        if waste.total() > 0:
+            flags["waste_signals"] = waste.to_dict()
+
+        blocks.append(
+            Block(
+                kind=kind,  # type: ignore[arg-type]
+                text=text,
+                tokens_est=tokenizer.count_text(text) + 4,  # Add message overhead
+                content_hash=compute_hash(text),
+                source_index=index,
+                flags=flags,
+            )
+        )
+
+    # Handle tool calls (assistant messages with tool_calls)
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            tc_text = f"{func.get('name', 'unknown')}({func.get('arguments', '')})"
+
+            blocks.append(
+                Block(
+                    kind="tool_call",
+                    text=tc_text,
+                    tokens_est=tokenizer.count_text(tc_text) + 10,
+                    content_hash=compute_hash(tc_text),
+                    source_index=index,
+                    flags={
+                        "tool_call_id": tc.get("id"),
+                        "function_name": func.get("name"),
+                    },
+                )
+            )
+
+    # If no content or tool_calls, create a minimal block
+    if not blocks:
+        blocks.append(
+            Block(
+                kind="unknown",
+                text="",
+                tokens_est=4,
+                content_hash=compute_hash(""),
+                source_index=index,
+                flags={},
+            )
+        )
+
+    return blocks
+
+
+def parse_messages(
+    messages: list[dict[str, Any]],
+    tokenizer: Tokenizer,
+) -> tuple[list[Block], dict[str, int], WasteSignals]:
+    """
+    Parse all messages into blocks with analysis.
+
+    Args:
+        messages: List of message dicts.
+        tokenizer: Tokenizer instance for token counting.
+
+    Returns:
+        Tuple of (blocks, block_breakdown, total_waste_signals)
+    """
+    all_blocks: list[Block] = []
+    total_waste = WasteSignals()
+
+    for i, msg in enumerate(messages):
+        blocks = parse_message_to_blocks(msg, i, tokenizer)
+        all_blocks.extend(blocks)
+
+        # Accumulate waste signals
+        for block in blocks:
+            if "waste_signals" in block.flags:
+                ws = block.flags["waste_signals"]
+                total_waste.json_bloat_tokens += ws.get("json_bloat", 0)
+                total_waste.html_noise_tokens += ws.get("html_noise", 0)
+                total_waste.base64_tokens += ws.get("base64", 0)
+                total_waste.whitespace_tokens += ws.get("whitespace", 0)
+                total_waste.dynamic_date_tokens += ws.get("dynamic_date", 0)
+                total_waste.repetition_tokens += ws.get("repetition", 0)
+
+    # Compute block breakdown
+    breakdown: dict[str, int] = {}
+    for block in all_blocks:
+        kind = block.kind
+        breakdown[kind] = breakdown.get(kind, 0) + block.tokens_est
+
+    return all_blocks, breakdown, total_waste
+
+
+def find_tool_units(messages: list[dict[str, Any]]) -> list[tuple[int, list[int]]]:
+    """
+    Find tool call units (assistant with tool_calls + corresponding tool responses).
+
+    A tool unit is atomic - if the assistant message is dropped, all its
+    tool responses must also be dropped.
+
+    Args:
+        messages: List of message dicts.
+
+    Returns:
+        List of (assistant_index, [tool_response_indices]) tuples.
+    """
+    units: list[tuple[int, list[int]]] = []
+
+    # Build map of tool_call_id -> message index for tool responses
+    tool_response_map: dict[str, int] = {}
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id")
+            if tc_id:
+                tool_response_map[tc_id] = i
+
+    # Find assistant messages with tool_calls
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            tool_calls = msg["tool_calls"]
+            response_indices: list[int] = []
+
+            for tc in tool_calls:
+                tc_id = tc.get("id")
+                if tc_id and tc_id in tool_response_map:
+                    response_indices.append(tool_response_map[tc_id])
+
+            if response_indices:
+                units.append((i, sorted(response_indices)))
+
+    return units
+
+
+def get_message_content_text(message: dict[str, Any]) -> str:
+    """Extract text content from a message."""
+    content = message.get("content")
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(part.get("text", ""))
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return str(content)
