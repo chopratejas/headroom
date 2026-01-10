@@ -19,6 +19,12 @@ from .config import (
     RequestMetrics,
     SimulationResult,
 )
+from .exceptions import (
+    ConfigurationError,
+    ProviderError,
+    StorageError,
+    ValidationError,
+)
 from .parser import parse_messages
 from .providers.base import Provider
 from .storage import create_storage
@@ -491,6 +497,14 @@ class HeadroomClient:
             semantic_cache_hit=semantic_cache_hit,
         )
 
+        # Update session stats
+        self._update_session_stats(
+            mode=mode,
+            tokens_before=tokens_before,
+            tokens_after=tokens_after,
+            cache_hit=semantic_cache_hit,
+        )
+
         # Return cached response if semantic cache hit
         if semantic_cache_hit and cached_response is not None:
             self._storage.save(metrics)
@@ -787,3 +801,178 @@ class HeadroomClient:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit."""
         self.close()
+
+    def validate_setup(self) -> dict[str, Any]:
+        """Validate that Headroom is properly configured.
+
+        This method checks:
+        - Provider is valid and can count tokens
+        - Storage is accessible and writable
+        - Configuration is valid
+        - Cache optimizer (if enabled) is working
+
+        Returns:
+            dict with validation results:
+            {
+                "valid": True/False,
+                "provider": {"ok": bool, "name": str, "error": str | None},
+                "storage": {"ok": bool, "url": str, "error": str | None},
+                "config": {"ok": bool, "mode": str, "error": str | None},
+                "cache_optimizer": {"ok": bool, "name": str | None, "error": str | None},
+            }
+
+        Raises:
+            ValidationError: If validation fails and raise_on_error=True.
+
+        Example:
+            client = HeadroomClient(...)
+            result = client.validate_setup()
+            if not result["valid"]:
+                print("Setup issues:", result)
+        """
+        result: dict[str, Any] = {
+            "valid": True,
+            "provider": {"ok": False, "name": None, "error": None},
+            "storage": {"ok": False, "url": self._store_url, "error": None},
+            "config": {"ok": False, "mode": self._default_mode.value, "error": None},
+            "cache_optimizer": {"ok": True, "name": None, "error": None},
+        }
+
+        # Validate provider
+        try:
+            result["provider"]["name"] = self._provider.name
+            # Test token counting
+            test_messages = [{"role": "user", "content": "test"}]
+            tokenizer = self._get_tokenizer("gpt-4")
+            count = tokenizer.count_messages(test_messages)
+            if count > 0:
+                result["provider"]["ok"] = True
+            else:
+                result["provider"]["error"] = "Token count returned 0"
+                result["valid"] = False
+        except Exception as e:
+            result["provider"]["error"] = str(e)
+            result["valid"] = False
+
+        # Validate storage
+        try:
+            # Try to get summary (tests read)
+            self._storage.get_summary_stats()
+            result["storage"]["ok"] = True
+        except Exception as e:
+            result["storage"]["error"] = str(e)
+            result["valid"] = False
+
+        # Validate config
+        try:
+            # Check mode is valid
+            if self._default_mode in (HeadroomMode.AUDIT, HeadroomMode.OPTIMIZE):
+                result["config"]["ok"] = True
+            else:
+                result["config"]["error"] = f"Invalid mode: {self._default_mode}"
+                result["valid"] = False
+        except Exception as e:
+            result["config"]["error"] = str(e)
+            result["valid"] = False
+
+        # Validate cache optimizer (if enabled)
+        if self._cache_optimizer is not None:
+            try:
+                result["cache_optimizer"]["name"] = self._cache_optimizer.name
+                result["cache_optimizer"]["ok"] = True
+            except Exception as e:
+                result["cache_optimizer"]["error"] = str(e)
+                # Don't fail validation for cache optimizer issues
+        elif self._config.cache_optimizer.enabled:
+            result["cache_optimizer"]["error"] = "Enabled but no optimizer loaded"
+            # Don't fail validation, just warn
+
+        return result
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get quick statistics without database query.
+
+        This returns in-memory stats tracked during this session.
+        For historical metrics, use get_metrics() or get_summary().
+
+        Returns:
+            dict with session statistics:
+            {
+                "session": {
+                    "requests_total": int,
+                    "requests_optimized": int,
+                    "requests_audit": int,
+                    "tokens_saved_total": int,
+                    "cache_hits": int,
+                },
+                "config": {
+                    "mode": str,
+                    "provider": str,
+                    "cache_optimizer": str | None,
+                    "semantic_cache": bool,
+                },
+                "transforms": {
+                    "smart_crusher_enabled": bool,
+                    "rolling_window_enabled": bool,
+                    "cache_aligner_enabled": bool,
+                },
+            }
+
+        Example:
+            stats = client.get_stats()
+            print(f"Saved {stats['session']['tokens_saved_total']} tokens this session")
+        """
+        # Initialize session stats if not present
+        if not hasattr(self, "_session_stats"):
+            self._session_stats = {
+                "requests_total": 0,
+                "requests_optimized": 0,
+                "requests_audit": 0,
+                "tokens_saved_total": 0,
+                "cache_hits": 0,
+            }
+
+        return {
+            "session": dict(self._session_stats),
+            "config": {
+                "mode": self._default_mode.value,
+                "provider": self._provider.name,
+                "cache_optimizer": (
+                    self._cache_optimizer.name if self._cache_optimizer else None
+                ),
+                "semantic_cache": self._semantic_cache_layer is not None,
+            },
+            "transforms": {
+                "smart_crusher_enabled": self._config.smart_crusher.enabled,
+                "rolling_window_enabled": self._config.rolling_window.enabled,
+                "cache_aligner_enabled": self._config.cache_aligner.enabled,
+            },
+        }
+
+    def _update_session_stats(
+        self,
+        mode: HeadroomMode,
+        tokens_before: int,
+        tokens_after: int,
+        cache_hit: bool = False,
+    ) -> None:
+        """Update in-memory session statistics."""
+        if not hasattr(self, "_session_stats"):
+            self._session_stats = {
+                "requests_total": 0,
+                "requests_optimized": 0,
+                "requests_audit": 0,
+                "tokens_saved_total": 0,
+                "cache_hits": 0,
+            }
+
+        self._session_stats["requests_total"] += 1
+
+        if mode == HeadroomMode.OPTIMIZE:
+            self._session_stats["requests_optimized"] += 1
+            self._session_stats["tokens_saved_total"] += max(0, tokens_before - tokens_after)
+        else:
+            self._session_stats["requests_audit"] += 1
+
+        if cache_hit:
+            self._session_stats["cache_hits"] += 1

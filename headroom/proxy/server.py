@@ -51,7 +51,11 @@ except ImportError:
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from headroom.config import CacheAlignerConfig, RollingWindowConfig, SmartCrusherConfig
+from headroom.cache.compression_feedback import get_compression_feedback
+from headroom.cache.compression_store import get_compression_store
+from headroom.telemetry import get_telemetry_collector
+from headroom.ccr import CCRToolInjector, CCR_TOOL_NAME, parse_tool_call
+from headroom.config import CacheAlignerConfig, CCRConfig, RollingWindowConfig, SmartCrusherConfig
 from headroom.providers import AnthropicProvider, OpenAIProvider
 from headroom.tokenizers import get_tokenizer
 from headroom.transforms import CacheAligner, RollingWindow, SmartCrusher, TransformPipeline
@@ -131,6 +135,10 @@ class ProxyConfig:
     min_tokens_to_crush: int = 500
     max_items_after_crush: int = 50
     keep_last_turns: int = 4
+
+    # CCR Tool Injection
+    ccr_inject_tool: bool = True  # Inject headroom_retrieve tool when compression occurs
+    ccr_inject_system_instructions: bool = False  # Add instructions to system message
 
     # Caching
     cache_enabled: bool = True
@@ -659,6 +667,18 @@ class HeadroomProxy:
         # Request counter for IDs
         self._request_counter = 0
 
+        # CCR tool injectors (one per provider)
+        self.anthropic_tool_injector = CCRToolInjector(
+            provider="anthropic",
+            inject_tool=config.ccr_inject_tool,
+            inject_system_instructions=config.ccr_inject_system_instructions,
+        )
+        self.openai_tool_injector = CCRToolInjector(
+            provider="openai",
+            inject_tool=config.ccr_inject_tool,
+            inject_system_instructions=config.ccr_inject_system_instructions,
+        )
+
     async def startup(self):
         """Initialize async resources."""
         self.http_client = httpx.AsyncClient(
@@ -871,8 +891,31 @@ class HeadroomProxy:
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
 
+        # CCR Tool Injection: Inject retrieval tool if compression occurred
+        tools = body.get("tools")
+        if self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions:
+            # Create fresh injector to avoid state leakage between requests
+            injector = CCRToolInjector(
+                provider="anthropic",
+                inject_tool=self.config.ccr_inject_tool,
+                inject_system_instructions=self.config.ccr_inject_system_instructions,
+            )
+            optimized_messages, tools, was_injected = injector.process_request(optimized_messages, tools)
+
+            if injector.has_compressed_content:
+                if was_injected:
+                    logger.debug(
+                        f"[{request_id}] CCR: Injected retrieval tool for hashes: {injector.detected_hashes}"
+                    )
+                else:
+                    logger.debug(
+                        f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
+                    )
+
         # Update body
         body["messages"] = optimized_messages
+        if tools is not None:
+            body["tools"] = tools
 
         # Forward request
         url = f"{self.ANTHROPIC_API_URL}/v1/messages"
@@ -1111,7 +1154,29 @@ class HeadroomProxy:
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
 
+        # CCR Tool Injection: Inject retrieval tool if compression occurred
+        tools = body.get("tools")
+        if self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions:
+            injector = CCRToolInjector(
+                provider="openai",
+                inject_tool=self.config.ccr_inject_tool,
+                inject_system_instructions=self.config.ccr_inject_system_instructions,
+            )
+            optimized_messages, tools, was_injected = injector.process_request(optimized_messages, tools)
+
+            if injector.has_compressed_content:
+                if was_injected:
+                    logger.debug(
+                        f"[{request_id}] CCR: Injected retrieval tool for hashes: {injector.detected_hashes}"
+                    )
+                else:
+                    logger.debug(
+                        f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
+                    )
+
         body["messages"] = optimized_messages
+        if tools is not None:
+            body["tools"] = tools
         url = f"{self.OPENAI_API_URL}/v1/chat/completions"
 
         try:
@@ -1284,6 +1349,374 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             return {"status": "cleared"}
         return {"status": "cache disabled"}
 
+    # CCR (Compress-Cache-Retrieve) endpoints
+    @app.post("/v1/retrieve")
+    async def ccr_retrieve(request: Request):
+        """Retrieve original content from CCR compression cache.
+
+        This is the "Retrieve" part of CCR (Compress-Cache-Retrieve).
+        When SmartCrusher compresses tool outputs, the original data is cached.
+        LLMs can call this endpoint to get more data if needed.
+
+        Request body:
+            hash (str): Hash key from compression marker (required)
+            query (str): Optional search query to filter results
+
+        Response:
+            Full retrieval: {"hash": "...", "original_content": "...", ...}
+            Search: {"hash": "...", "query": "...", "results": [...], "count": N}
+        """
+        data = await request.json()
+        hash_key = data.get("hash")
+        query = data.get("query")
+
+        if not hash_key:
+            raise HTTPException(status_code=400, detail="hash required")
+
+        store = get_compression_store()
+
+        if query:
+            # Search within cached content
+            results = store.search(hash_key, query)
+            return {
+                "hash": hash_key,
+                "query": query,
+                "results": results,
+                "count": len(results),
+            }
+        else:
+            # Return full original content
+            entry = store.retrieve(hash_key)
+            if entry:
+                return {
+                    "hash": hash_key,
+                    "original_content": entry.original_content,
+                    "original_tokens": entry.original_tokens,
+                    "original_item_count": entry.original_item_count,
+                    "compressed_item_count": entry.compressed_item_count,
+                    "tool_name": entry.tool_name,
+                    "retrieval_count": entry.retrieval_count,
+                }
+            raise HTTPException(
+                status_code=404,
+                detail="Entry not found or expired (TTL: 5 minutes)"
+            )
+
+    @app.get("/v1/retrieve/stats")
+    async def ccr_stats():
+        """Get CCR compression store statistics."""
+        store = get_compression_store()
+        stats = store.get_stats()
+        events = store.get_retrieval_events(limit=20)
+        return {
+            "store": stats,
+            "recent_retrievals": [
+                {
+                    "hash": e.hash,
+                    "query": e.query,
+                    "items_retrieved": e.items_retrieved,
+                    "total_items": e.total_items,
+                    "tool_name": e.tool_name,
+                    "retrieval_type": e.retrieval_type,
+                }
+                for e in events
+            ],
+        }
+
+    @app.get("/v1/feedback")
+    async def ccr_feedback():
+        """Get CCR feedback loop statistics and learned patterns.
+
+        This endpoint exposes the feedback loop's learned patterns for monitoring
+        and debugging. It shows:
+        - Per-tool retrieval rates (high = compress less aggressively)
+        - Common search queries per tool
+        - Queried fields (suggest what to preserve)
+
+        Use this to understand how well compression is working and whether
+        the feedback loop is adjusting appropriately.
+        """
+        feedback = get_compression_feedback()
+        stats = feedback.get_stats()
+        return {
+            "feedback": stats,
+            "hints_example": {
+                tool_name: {
+                    "hints": {
+                        "max_items": hints.max_items if (hints := feedback.get_compression_hints(tool_name)) else 15,
+                        "suggested_items": hints.suggested_items if hints else None,
+                        "skip_compression": hints.skip_compression if hints else False,
+                        "preserve_fields": hints.preserve_fields if hints else [],
+                        "reason": hints.reason if hints else "",
+                    }
+                }
+                for tool_name in list(stats.get("tool_patterns", {}).keys())[:5]
+            },
+        }
+
+    @app.get("/v1/feedback/{tool_name}")
+    async def ccr_feedback_for_tool(tool_name: str):
+        """Get compression hints for a specific tool.
+
+        Returns feedback-based hints that would be used for compressing
+        this tool's output.
+        """
+        feedback = get_compression_feedback()
+        hints = feedback.get_compression_hints(tool_name)
+        patterns = feedback.get_all_patterns().get(tool_name)
+
+        return {
+            "tool_name": tool_name,
+            "hints": {
+                "max_items": hints.max_items,
+                "min_items": hints.min_items,
+                "suggested_items": hints.suggested_items,
+                "aggressiveness": hints.aggressiveness,
+                "skip_compression": hints.skip_compression,
+                "preserve_fields": hints.preserve_fields,
+                "reason": hints.reason,
+            },
+            "pattern": {
+                "total_compressions": patterns.total_compressions if patterns else 0,
+                "total_retrievals": patterns.total_retrievals if patterns else 0,
+                "retrieval_rate": patterns.retrieval_rate if patterns else 0.0,
+                "full_retrieval_rate": patterns.full_retrieval_rate if patterns else 0.0,
+                "search_rate": patterns.search_rate if patterns else 0.0,
+                "common_queries": list(patterns.common_queries.keys())[:10] if patterns else [],
+                "queried_fields": list(patterns.queried_fields.keys())[:10] if patterns else [],
+            } if patterns else None,
+        }
+
+    # Telemetry endpoints (Data Flywheel)
+    @app.get("/v1/telemetry")
+    async def telemetry_stats():
+        """Get telemetry statistics for the data flywheel.
+
+        This endpoint exposes privacy-preserving telemetry data that powers
+        the data flywheel - learning optimal compression strategies across
+        tool types based on usage patterns.
+
+        What's collected (anonymized):
+        - Tool output structure patterns (field types, not values)
+        - Compression decisions and ratios
+        - Retrieval patterns (rate, type, not content)
+        - Strategy effectiveness
+
+        What's NOT collected:
+        - Actual data values
+        - User identifiers
+        - Queries or search terms
+        - File paths or tool names (hashed by default)
+        """
+        telemetry = get_telemetry_collector()
+        return telemetry.get_stats()
+
+    @app.get("/v1/telemetry/export")
+    async def telemetry_export():
+        """Export full telemetry data for aggregation.
+
+        This endpoint exports all telemetry data in a format suitable for
+        cross-user aggregation. The data is privacy-preserving - no actual
+        values are included, only structural patterns and statistics.
+
+        Use this for:
+        - Building a central learning service
+        - Sharing learned patterns across instances
+        - Analysis and debugging
+        """
+        telemetry = get_telemetry_collector()
+        return telemetry.export_stats()
+
+    @app.post("/v1/telemetry/import")
+    async def telemetry_import(request: Request):
+        """Import telemetry data from another source.
+
+        This allows merging telemetry from multiple sources for cross-user
+        learning. The imported data is merged with existing statistics.
+
+        Request body: Telemetry export data from /v1/telemetry/export
+        """
+        telemetry = get_telemetry_collector()
+        data = await request.json()
+        telemetry.import_stats(data)
+        return {"status": "imported", "current_stats": telemetry.get_stats()}
+
+    @app.get("/v1/telemetry/tools")
+    async def telemetry_tools():
+        """Get telemetry statistics for all tracked tool signatures.
+
+        Returns statistics per tool signature (anonymized), including:
+        - Compression ratios and strategy usage
+        - Retrieval rates (high = compression too aggressive)
+        - Learned recommendations
+        """
+        telemetry = get_telemetry_collector()
+        all_stats = telemetry.get_all_tool_stats()
+        return {
+            "tool_count": len(all_stats),
+            "tools": {
+                sig_hash: stats.to_dict()
+                for sig_hash, stats in all_stats.items()
+            },
+        }
+
+    @app.get("/v1/telemetry/tools/{signature_hash}")
+    async def telemetry_tool_detail(signature_hash: str):
+        """Get detailed telemetry for a specific tool signature.
+
+        Includes learned recommendations if enough data has been collected.
+        """
+        telemetry = get_telemetry_collector()
+        stats = telemetry.get_tool_stats(signature_hash)
+        recommendations = telemetry.get_recommendations(signature_hash)
+
+        if stats is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No telemetry found for signature: {signature_hash}"
+            )
+
+        return {
+            "signature_hash": signature_hash,
+            "stats": stats.to_dict(),
+            "recommendations": recommendations,
+        }
+
+    @app.get("/v1/retrieve/{hash_key}")
+    async def ccr_retrieve_get(hash_key: str, query: str | None = None):
+        """GET version of CCR retrieve for easier testing."""
+        store = get_compression_store()
+
+        if query:
+            results = store.search(hash_key, query)
+            return {
+                "hash": hash_key,
+                "query": query,
+                "results": results,
+                "count": len(results),
+            }
+        else:
+            entry = store.retrieve(hash_key)
+            if entry:
+                return {
+                    "hash": hash_key,
+                    "original_content": entry.original_content,
+                    "original_tokens": entry.original_tokens,
+                    "original_item_count": entry.original_item_count,
+                    "compressed_item_count": entry.compressed_item_count,
+                    "tool_name": entry.tool_name,
+                    "retrieval_count": entry.retrieval_count,
+                }
+            raise HTTPException(
+                status_code=404,
+                detail="Entry not found or expired"
+            )
+
+    # CCR Tool Call Handler - for agent frameworks to call when LLM uses headroom_retrieve
+    @app.post("/v1/retrieve/tool_call")
+    async def ccr_handle_tool_call(request: Request):
+        """Handle a CCR tool call from an LLM response.
+
+        This endpoint accepts tool call formats from various providers and returns
+        a properly formatted tool result. Agent frameworks can use this to handle
+        CCR tool calls without implementing the retrieval logic themselves.
+
+        Request body (Anthropic format):
+            {
+                "tool_call": {
+                    "id": "toolu_123",
+                    "name": "headroom_retrieve",
+                    "input": {"hash": "abc123", "query": "optional search"}
+                },
+                "provider": "anthropic"
+            }
+
+        Request body (OpenAI format):
+            {
+                "tool_call": {
+                    "id": "call_123",
+                    "function": {
+                        "name": "headroom_retrieve",
+                        "arguments": "{\"hash\": \"abc123\"}"
+                    }
+                },
+                "provider": "openai"
+            }
+
+        Response:
+            {
+                "tool_result": {...},  # Formatted for the provider
+                "success": true,
+                "data": {...}  # Raw retrieval data
+            }
+        """
+        data = await request.json()
+        tool_call = data.get("tool_call", {})
+        provider = data.get("provider", "anthropic")
+
+        # Parse the tool call
+        hash_key, query = parse_tool_call(tool_call, provider)
+
+        if hash_key is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid tool call or not a {CCR_TOOL_NAME} call"
+            )
+
+        # Perform retrieval
+        store = get_compression_store()
+
+        if query:
+            results = store.search(hash_key, query)
+            retrieval_data = {
+                "hash": hash_key,
+                "query": query,
+                "results": results,
+                "count": len(results),
+            }
+        else:
+            entry = store.retrieve(hash_key)
+            if entry:
+                retrieval_data = {
+                    "hash": hash_key,
+                    "original_content": entry.original_content,
+                    "original_item_count": entry.original_item_count,
+                    "compressed_item_count": entry.compressed_item_count,
+                }
+            else:
+                retrieval_data = {
+                    "error": "Entry not found or expired (TTL: 5 minutes)",
+                    "hash": hash_key,
+                }
+
+        # Format tool result for provider
+        tool_call_id = tool_call.get("id", "")
+        result_content = json.dumps(retrieval_data, indent=2)
+
+        if provider == "anthropic":
+            tool_result = {
+                "type": "tool_result",
+                "tool_use_id": tool_call_id,
+                "content": result_content,
+            }
+        elif provider == "openai":
+            tool_result = {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result_content,
+            }
+        else:
+            tool_result = {
+                "tool_call_id": tool_call_id,
+                "content": result_content,
+            }
+
+        return {
+            "tool_result": tool_result,
+            "success": "error" not in retrieval_data,
+            "data": retrieval_data,
+        }
+
     # Anthropic endpoints
     @app.post("/v1/messages")
     async def anthropic_messages(request: Request):
@@ -1338,10 +1771,18 @@ def run_server(config: ProxyConfig | None = None):
 ║    Cursor:        Set base URL in settings                           ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  ENDPOINTS:                                                          ║
-║    /health         Health check                                      ║
-║    /stats          Detailed statistics                               ║
-║    /metrics        Prometheus metrics                                ║
-║    /cache/clear    Clear response cache                              ║
+║    /health                  Health check                             ║
+║    /stats                   Detailed statistics                      ║
+║    /metrics                 Prometheus metrics                       ║
+║    /cache/clear             Clear response cache                     ║
+║    /v1/retrieve             CCR: Retrieve compressed content         ║
+║    /v1/retrieve/stats       CCR: Compression store stats             ║
+║    /v1/retrieve/tool_call   CCR: Handle LLM tool calls               ║
+║    /v1/feedback             CCR: Feedback loop stats & patterns      ║
+║    /v1/feedback/{tool}      CCR: Compression hints for a tool        ║
+║    /v1/telemetry            Data flywheel: Telemetry stats           ║
+║    /v1/telemetry/export     Data flywheel: Export for aggregation    ║
+║    /v1/telemetry/tools      Data flywheel: Per-tool stats            ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """)
 

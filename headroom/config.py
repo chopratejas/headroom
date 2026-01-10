@@ -189,6 +189,13 @@ class SmartCrusherConfig:
     factor_out_constants: bool = False  # Disabled - preserves original schema
     include_summaries: bool = False  # Disabled - no generated text
 
+    # Feedback loop integration (TOIN - Tool Output Intelligence Network)
+    use_feedback_hints: bool = True  # Use learned patterns to adjust compression
+
+    # LOW FIX #21: Make TOIN confidence threshold configurable
+    # Minimum confidence required to apply TOIN recommendations
+    toin_confidence_threshold: float = 0.5
+
     # Relevance scoring configuration
     relevance: RelevanceScorerConfig = field(default_factory=RelevanceScorerConfig)
 
@@ -219,6 +226,50 @@ class CacheOptimizerConfig:
 
 
 @dataclass
+class CCRConfig:
+    """Configuration for Compress-Cache-Retrieve architecture.
+
+    CCR makes compression REVERSIBLE: when SmartCrusher compresses tool outputs,
+    the original data is cached. If the LLM needs more data, it can retrieve it.
+
+    Key insight from research: REVERSIBLE compression beats irreversible compression.
+    - Phil Schmid: "Prefer raw > Compaction > Summarization"
+    - Factory.ai: "Cutting context too aggressively can backfire"
+
+    How CCR works:
+    1. COMPRESS: SmartCrusher compresses array from 1000 to 20 items
+    2. CACHE: Original 1000 items stored in CompressionStore
+    3. INJECT: Marker added to tell LLM how to retrieve more
+    4. RETRIEVE: If LLM needs more, it calls headroom_retrieve(hash, query)
+
+    Benefits:
+    - Zero-risk compression: worst case = LLM retrieves what it needs
+    - Feedback loop: track what gets retrieved to improve compression
+    - Network effect: retrieval patterns improve compression for all users
+
+    GOTCHAS:
+    - Cache has TTL (default 5 min) - retrieval fails after expiration
+    - Memory usage: ~1KB per cached entry
+    - Only works with array compression (not string truncation)
+    """
+
+    enabled: bool = True  # Enable CCR (cache + retrieval markers)
+    store_max_entries: int = 1000  # Max entries in compression store
+    store_ttl_seconds: int = 300  # Cache TTL (5 minutes)
+    inject_retrieval_marker: bool = True  # Add retrieval hint to compressed output
+    feedback_enabled: bool = True  # Track retrieval events for learning
+    min_items_to_cache: int = 20  # Only cache if original had >= N items
+
+    # Tool injection (Phase 3)
+    inject_tool: bool = True  # Inject headroom_retrieve tool into tools array
+    inject_system_instructions: bool = False  # Add retrieval instructions to system message
+
+    # Retrieval marker format
+    # Inserted at end of compressed content to tell LLM how to get more
+    marker_template: str = "\n[{original_count} items compressed to {compressed_count}. Retrieve more: hash={hash}]"
+
+
+@dataclass
 class HeadroomConfig:
     """Main configuration for HeadroomClient."""
 
@@ -232,6 +283,7 @@ class HeadroomConfig:
     cache_aligner: CacheAlignerConfig = field(default_factory=CacheAlignerConfig)
     rolling_window: RollingWindowConfig = field(default_factory=RollingWindowConfig)
     cache_optimizer: CacheOptimizerConfig = field(default_factory=CacheOptimizerConfig)
+    ccr: CCRConfig = field(default_factory=CCRConfig)  # Compress-Cache-Retrieve
 
     # Debugging - opt-in diff artifact generation
     generate_diff_artifact: bool = False  # Enable to get detailed transform diffs

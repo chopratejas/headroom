@@ -451,6 +451,15 @@ class TestRequestMetrics:
             "stable_prefix_hash",
             "cache_alignment_score",
             "cached_tokens",
+            # Cache optimizer metrics (provider-specific)
+            "cache_optimizer_used",
+            "cache_optimizer_strategy",
+            "cacheable_tokens",
+            "breakpoints_inserted",
+            "estimated_cache_hit",
+            "estimated_savings_percent",
+            "semantic_cache_hit",
+            # Transform details
             "transforms_applied",
             "tool_units_dropped",
             "turns_dropped",
