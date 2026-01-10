@@ -641,7 +641,7 @@ class HeadroomProxy:
         transforms = [
             CacheAligner(CacheAlignerConfig(enabled=True)),
             SmartCrusher(
-                SmartCrusherConfig(
+                SmartCrusherConfig(  # type: ignore[arg-type]
                     enabled=True,
                     min_tokens_to_crush=config.min_tokens_to_crush,
                     max_items_after_crush=config.max_items_after_crush,
@@ -799,9 +799,9 @@ class HeadroomProxy:
             try:
                 if stream:
                     # For streaming, we return early - retry happens at higher level
-                    return await self.http_client.post(url, json=body, headers=headers)
+                    return await self.http_client.post(url, json=body, headers=headers)  # type: ignore[union-attr]
                 else:
-                    response = await self.http_client.post(url, json=body, headers=headers)
+                    response = await self.http_client.post(url, json=body, headers=headers)  # type: ignore[union-attr]
 
                     # Don't retry client errors (4xx)
                     if 400 <= response.status_code < 500:
@@ -835,7 +835,7 @@ class HeadroomProxy:
                 )
                 await asyncio.sleep(delay_with_jitter / 1000)
 
-        raise last_error
+        raise last_error  # type: ignore[misc]
 
     async def handle_anthropic_messages(
         self,
@@ -1322,7 +1322,7 @@ class HeadroomProxy:
 
         body = await request.body()
 
-        response = await self.http_client.request(
+        response = await self.http_client.request(  # type: ignore[union-attr]
             method=request.method,
             url=url,
             headers=headers,

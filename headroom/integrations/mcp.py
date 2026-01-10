@@ -251,7 +251,7 @@ class HeadroomMCPCompressor:
             min_tokens_to_crush=profile.min_tokens_to_compress,
             max_items_after_crush=profile.max_items,
         )
-        crusher = SmartCrusher(config=smart_config)
+        crusher = SmartCrusher(config=smart_config)  # type: ignore[arg-type]
 
         # Build messages for SmartCrusher (it expects conversation format)
         messages = [
@@ -272,13 +272,14 @@ class HeadroomMCPCompressor:
 
         # Create tokenizer wrapper
         class TokenizerWrapper:
-            def __init__(self, count_fn):
+            def __init__(self, count_fn: Any) -> None:
                 self._count = count_fn
 
             def count_text(self, text: str) -> int:
-                return self._count(text)
+                result = self._count(text)
+                return int(result) if result is not None else 0
 
-            def count_messages(self, messages: list[dict]) -> int:
+            def count_messages(self, messages: list[dict[str, Any]]) -> int:
                 total = 0
                 for msg in messages:
                     if msg.get("content"):
@@ -288,7 +289,7 @@ class HeadroomMCPCompressor:
         tokenizer = TokenizerWrapper(self._count_tokens)
 
         # Apply SmartCrusher
-        result = crusher.apply(messages, tokenizer=tokenizer)
+        result = crusher.apply(messages, tokenizer=tokenizer)  # type: ignore[arg-type]
         compressed_content = result.messages[-1]["content"]
 
         # Remove any Headroom markers for clean output
@@ -465,7 +466,7 @@ class HeadroomMCPClientWrapper:
 
         # Extract user query from context if available
         user_query = ""
-        if context and self._query_extractor:
+        if context and self._query_extractor is not None:
             user_query = self._query_extractor(context)
 
         # Compress

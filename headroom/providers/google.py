@@ -343,7 +343,7 @@ class GoogleProvider(Provider):
             return None
 
         input_cost = (input_tokens / 1_000_000) * input_price
-        output_cost = (output_tokens / 1_000_000) * output_price
+        output_cost = (output_tokens / 1_000_000) * (output_price or 0)
 
         return input_cost + output_cost
 

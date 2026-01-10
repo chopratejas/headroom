@@ -195,7 +195,8 @@ class HeadroomChatModel(BaseChatModel):
                 config=self.headroom_config,
                 provider=self._provider,
             )
-        return self._pipeline
+        pipeline: TransformPipeline = self._pipeline
+        return pipeline
 
     @property
     def total_tokens_saved(self) -> int:
@@ -297,10 +298,13 @@ class HeadroomChatModel(BaseChatModel):
         # Get model context limit from provider
         model_limit = self._provider.get_context_limit(model) if self._provider else 128000
 
+        # Ensure model is a string
+        model_str = str(model) if model else "gpt-4o"
+
         # Apply Headroom transforms via pipeline
         result = self.pipeline.apply(
             messages=openai_messages,
-            model=model,
+            model=model_str,
             model_limit=model_limit,
         )
 
@@ -317,7 +321,7 @@ class HeadroomChatModel(BaseChatModel):
                 else 0
             ),
             transforms_applied=result.transforms_applied,
-            model=model,
+            model=model_str,
         )
 
         # Track metrics

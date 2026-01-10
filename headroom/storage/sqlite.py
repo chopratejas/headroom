@@ -198,7 +198,8 @@ class SQLiteStorage(Storage):
             params.append(mode)
 
         cursor.execute(query, params)
-        return cursor.fetchone()[0]
+        result = cursor.fetchone()[0]
+        return int(result) if result is not None else 0
 
     def iter_all(self) -> Iterator[RequestMetrics]:
         """Iterate over all stored metrics."""

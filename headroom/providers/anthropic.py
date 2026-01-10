@@ -140,7 +140,7 @@ class AnthropicTokenCounter(TokenCounter):
                 model=self.model,
                 messages=messages,
             )
-            return response.input_tokens
+            return int(response.input_tokens)
         except Exception:
             # Fall back to estimation on API error
             return self._count_message_estimated(message)
@@ -230,7 +230,7 @@ class AnthropicTokenCounter(TokenCounter):
                 kwargs["system"] = system_content
 
             response = self._client.messages.count_tokens(**kwargs)
-            return response.input_tokens
+            return int(response.input_tokens)
 
         except Exception as e:
             # Fall back to estimation on API error

@@ -279,7 +279,7 @@ class SemanticCache:
         if norm_a == 0 or norm_b == 0:
             return 0.0
 
-        return dot_product / (norm_a * norm_b)
+        return float(dot_product / (norm_a * norm_b))
 
     def _touch(self, key: str) -> None:
         """Update access time and move to end of LRU."""
@@ -436,7 +436,8 @@ class SemanticCacheLayer:
                 elif isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "text":
-                            return block.get("text", "")
+                            text_val = block.get("text", "")
+                            return str(text_val) if text_val else ""
         return ""
 
     def _compute_messages_hash(self, messages: list[dict[str, Any]]) -> str:

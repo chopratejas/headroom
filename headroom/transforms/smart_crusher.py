@@ -427,13 +427,12 @@ def _detect_score_field_statistically(stats: FieldStats, items: list[dict]) -> t
 
     # Check if data appears sorted by this field (descending = relevance sorted)
     # Filter out NaN/Inf which break comparisons
-    values_in_order = [
-        item.get(stats.name)
-        for item in items
-        if stats.name in item
-        and isinstance(item.get(stats.name), (int, float))
-        and math.isfinite(item.get(stats.name))
-    ]
+    values_in_order: list[float] = []
+    for item in items:
+        if stats.name in item:
+            val = item.get(stats.name)
+            if isinstance(val, (int, float)) and math.isfinite(val):
+                values_in_order.append(float(val))
     if len(values_in_order) >= 5:
         # Check for descending sort
         descending_count = sum(
@@ -732,7 +731,7 @@ class SmartAnalyzer:
 
         # Analyze each field
         field_stats = {}
-        all_keys = set()
+        all_keys: set[str] = set()
         for item in items:
             if isinstance(item, dict):
                 all_keys.update(item.keys())
@@ -893,7 +892,8 @@ class SmartAnalyzer:
 
         numeric_fields = [k for k, v in field_stats.items() if v.field_type == "numeric"]
         has_numeric_with_variance = any(
-            field_stats[k].variance and field_stats[k].variance > 0 for k in numeric_fields
+            (field_stats[k].variance is not None and (field_stats[k].variance or 0) > 0)
+            for k in numeric_fields
         )
 
         if has_timestamp and has_numeric_with_variance:
@@ -944,7 +944,8 @@ class SmartAnalyzer:
                     iso_count = sum(
                         1
                         for v in sample_values
-                        if iso_datetime_pattern.match(v) or iso_date_pattern.match(v)
+                        if v is not None
+                        and (iso_datetime_pattern.match(v) or iso_date_pattern.match(v))
                     )
                     if iso_count / len(sample_values) > 0.5:
                         return True
@@ -1802,16 +1803,16 @@ class SmartCrusher(Transform):
 
         elif isinstance(value, dict):
             # Process values recursively
-            processed = {}
+            processed_dict: dict[str, Any] = {}
             for k, v in value.items():
                 p_val, p_info, p_markers = self._process_value(
                     v, depth + 1, query_context, tool_name
                 )
-                processed[k] = p_val
+                processed_dict[k] = p_val
                 if p_info:
                     info_parts.append(p_info)
                 ccr_markers.extend(p_markers)
-            return processed, ",".join(info_parts), ccr_markers
+            return processed_dict, ",".join(info_parts), ccr_markers
 
         else:
             return value, "", []

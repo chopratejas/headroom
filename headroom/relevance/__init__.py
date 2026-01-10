@@ -47,6 +47,8 @@ Example usage:
     # scores[0].score > scores[1].score
 """
 
+from typing import Any
+
 from .base import RelevanceScore, RelevanceScorer
 from .bm25 import BM25Scorer
 from .embedding import EmbeddingScorer, embedding_available
@@ -69,7 +71,7 @@ __all__ = [
 
 def create_scorer(
     tier: str = "hybrid",
-    **kwargs,
+    **kwargs: Any,
 ) -> RelevanceScorer:
     """Factory function to create a relevance scorer.
 

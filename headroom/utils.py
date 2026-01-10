@@ -198,7 +198,8 @@ def estimate_cost(
     """
     if provider is None:
         return None
-    return provider.estimate_cost(input_tokens, output_tokens, model, cached_tokens)
+    result = provider.estimate_cost(input_tokens, output_tokens, model, cached_tokens)
+    return float(result) if result is not None else None
 
 
 def format_cost(cost: float) -> str:
@@ -210,4 +211,5 @@ def format_cost(cost: float) -> str:
 
 def deep_copy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Create a deep copy of messages list."""
-    return json.loads(json.dumps(messages))
+    result: list[dict[str, Any]] = json.loads(json.dumps(messages))
+    return result

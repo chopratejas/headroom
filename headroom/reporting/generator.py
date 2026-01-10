@@ -337,8 +337,8 @@ def generate_report(
             tpm_multiplier = 1.0
 
         # Estimate cost savings (using gpt-4o pricing)
-        cost_before = estimate_cost(stats["total_tokens_before"], 0, "gpt-4o")
-        cost_after = estimate_cost(stats["total_tokens_after"], 0, "gpt-4o")
+        cost_before = estimate_cost(stats["total_tokens_before"], 0, "gpt-4o") or 0.0
+        cost_after = estimate_cost(stats["total_tokens_after"], 0, "gpt-4o") or 0.0
         estimated_savings = format_cost(cost_before - cost_after)
 
         stats["tpm_multiplier"] = tpm_multiplier
