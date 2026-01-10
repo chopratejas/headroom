@@ -51,7 +51,7 @@ Feature requests are welcome! Please:
 
 ```bash
 # Clone the repository
-git clone https://github.com/headroom-sdk/headroom.git
+git clone https://github.com/chopratejas/headroom.git
 cd headroom
 
 # Create a virtual environment
@@ -193,11 +193,6 @@ Headroom's core principle is **safety**. When in doubt:
 - Core functionality has minimal dependencies
 - Optional features use extras (e.g., `pip install headroom[relevance]`)
 
-## Getting Help
-
-- **Questions**: Open a [Discussion](https://github.com/headroom-sdk/headroom/discussions)
-- **Bugs**: Open an [Issue](https://github.com/headroom-sdk/headroom/issues)
-- **Security**: Email security@headroom.dev (do not open public issues)
 
 ## Recognition
 
