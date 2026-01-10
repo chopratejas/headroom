@@ -562,7 +562,7 @@ class AnonymizedToolStats:
         # Filter to only dataclass fields, excluding signature and retrieval_stats
         # which we've already handled
         excluded_keys = {"signature", "retrieval_stats"}
-        filtered_data = {}
+        filtered_data: dict[str, Any] = {}
         for k, v in data.items():
             if k not in cls.__dataclass_fields__ or k in excluded_keys:
                 continue
@@ -570,12 +570,12 @@ class AnonymizedToolStats:
             if isinstance(v, dict):
                 filtered_data[k] = dict(v)
             elif isinstance(v, list):
-                filtered_data[k] = list(v)
+                filtered_data[k] = list(v)  # type: ignore[assignment]
             else:
                 filtered_data[k] = v
 
         return cls(
             signature=signature,
             retrieval_stats=retrieval_stats,
-            **filtered_data,
+            **filtered_data,  # type: ignore[arg-type]
         )

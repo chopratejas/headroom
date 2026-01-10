@@ -136,6 +136,32 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
 
+# Per-module overrides for modules with dynamic typing patterns
+[[tool.mypy.overrides]]
+module = [
+    "headroom.proxy.server",
+    "headroom.integrations.langchain",
+    "headroom.integrations.mcp",
+    "headroom.ccr.mcp_server",
+    "headroom.relevance.embedding",
+    "headroom.reporting.generator",
+]
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = [
+    "headroom.tokenizers.*",
+    "headroom.providers.litellm",
+    "headroom.providers.google",
+]
+disallow_untyped_defs = false
+warn_return_any = false
+
+# Ignore third-party stubs with syntax errors
+[[tool.mypy.overrides]]
+module = ["mlx.*"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

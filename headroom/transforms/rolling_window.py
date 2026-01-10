@@ -8,6 +8,7 @@ from typing import Any
 from ..config import RollingWindowConfig, TransformResult
 from ..parser import find_tool_units
 from ..tokenizer import Tokenizer
+from ..tokenizers import EstimatingTokenCounter
 from ..utils import create_dropped_context_marker, deep_copy_messages
 from .base import Transform
 
@@ -59,7 +60,7 @@ class RollingWindow(Transform):
         current_tokens = tokenizer.count_messages(messages)
         available = model_limit - output_buffer
 
-        return current_tokens > available
+        return bool(current_tokens > available)
 
     def apply(
         self,
@@ -337,7 +338,7 @@ def apply_rolling_window(
     cfg.keep_last_turns = keep_last_turns
 
     window = RollingWindow(cfg)
-    tokenizer = Tokenizer()
+    tokenizer = Tokenizer(EstimatingTokenCounter())  # type: ignore[arg-type]
 
     result = window.apply(
         messages,

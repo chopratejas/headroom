@@ -519,7 +519,7 @@ class TelemetryCollector:
 
         dist = FieldDistribution(
             field_name_hash=field_hash,
-            field_type=field_type,
+            field_type=field_type,  # type: ignore[arg-type]
         )
 
         # Type-specific analysis

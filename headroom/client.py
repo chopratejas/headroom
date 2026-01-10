@@ -437,10 +437,10 @@ class HeadroomClient:
                         cached_response = cache_result.cached_response
 
                     # Update metrics from cache result
-                    cache_optimizer_used = (
-                        cache_result.metrics.optimizer_name or self._cache_optimizer.name
-                    )
-                    cache_optimizer_strategy = cache_result.metrics.strategy
+                    cache_optimizer_used = getattr(
+                        cache_result.metrics, "optimizer_name", None
+                    ) or (self._cache_optimizer.name if self._cache_optimizer else "")
+                    cache_optimizer_strategy = getattr(cache_result.metrics, "strategy", "")
                     cacheable_tokens = cache_result.metrics.cacheable_tokens
                     breakpoints_inserted = cache_result.metrics.breakpoints_inserted
                     estimated_cache_hit = cache_result.metrics.estimated_cache_hit
@@ -639,7 +639,8 @@ class HeadroomClient:
                     # Content block format
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "text":
-                            return block.get("text", "")
+                            text_val = block.get("text", "")
+                            return str(text_val) if text_val else ""
                     return ""
         return ""
 

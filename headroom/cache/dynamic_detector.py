@@ -624,7 +624,7 @@ class NERDetector:
         if existing_spans:
             existing_ranges = {(s.start, s.end) for s in existing_spans}
 
-        doc = self._nlp(content)
+        doc = self._nlp(content)  # type: ignore[misc]
         spans: list[DynamicSpan] = []
 
         for ent in doc.ents:
@@ -757,13 +757,13 @@ class SemanticDetector:
             return [], None
 
         sentence_texts = [s[0] for s in sentences]
-        sentence_embeddings = self._model.encode(
+        sentence_embeddings = self._model.encode(  # type: ignore[union-attr]
             sentence_texts,
             convert_to_numpy=True,
         )
 
         # Compute similarities
-        similarities = np.dot(sentence_embeddings, self._exemplar_embeddings.T)
+        similarities = np.dot(sentence_embeddings, self._exemplar_embeddings.T)  # type: ignore[union-attr]
 
         for i, (text, start, end) in enumerate(sentences):
             # Get max similarity to any exemplar

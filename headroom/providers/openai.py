@@ -285,7 +285,7 @@ class OpenAIProvider(Provider):
         regular_input = input_tokens - cached_tokens
         cached_cost = (cached_tokens / 1_000_000) * input_price * 0.5
         regular_cost = (regular_input / 1_000_000) * input_price
-        output_cost = (output_tokens / 1_000_000) * output_price
+        output_cost = (output_tokens / 1_000_000) * (output_price or 0)
 
         return cached_cost + regular_cost + output_cost
 

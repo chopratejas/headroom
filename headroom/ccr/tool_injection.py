@@ -200,7 +200,7 @@ class CCRToolInjector:
         )
     )
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Reset detected hashes
         self._detected_hashes = []
 

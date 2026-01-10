@@ -201,7 +201,8 @@ class CCRMCPServer:
             }
 
         response.raise_for_status()
-        return response.json()
+        result: dict[str, Any] = response.json()
+        return result
 
     async def _retrieve_direct(
         self,

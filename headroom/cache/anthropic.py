@@ -246,7 +246,7 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
                         )
                         sections.append(
                             ContentSection(
-                                content=block,
+                                content=block,  # type: ignore[arg-type]
                                 section_type=section_type,
                                 message_index=idx,
                                 content_index=block_idx,

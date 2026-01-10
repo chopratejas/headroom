@@ -611,12 +611,12 @@ class ToolIntelligenceNetwork:
 
                 # HIGH: Limit field_retrieval_frequency dict to prevent unbounded growth
                 if len(pattern.field_retrieval_frequency) > 100:
-                    sorted_fields = sorted(
+                    sorted_freq_items = sorted(
                         pattern.field_retrieval_frequency.items(),
                         key=lambda x: x[1],
                         reverse=True,
                     )[:100]
-                    pattern.field_retrieval_frequency = dict(sorted_fields)
+                    pattern.field_retrieval_frequency = dict(sorted_freq_items)
 
             # Track query patterns (anonymized)
             if query and self._config.anonymize_queries:

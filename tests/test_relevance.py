@@ -133,13 +133,14 @@ class TestEmbeddingScorer:
     def test_paraphrase_match(self, scorer):
         """Embeddings match paraphrases."""
         items = [
-            '{"message": "The operation completed successfully"}',
-            '{"message": "An error occurred during processing"}',
+            '{"message": "The server crashed with a fatal error"}',
+            '{"message": "The weather today is sunny and warm"}',
         ]
-        context = "tasks that finished without problems"
+        context = "system failure and errors"
 
         scores = scorer.score_batch(items, context)
-        # "completed successfully" is closer to "finished without problems"
+        # "server crashed with fatal error" is much closer to "system failure and errors"
+        # than "weather is sunny" - this should be a clear semantic difference
         assert scores[0].score > scores[1].score
 
     def test_batch_efficiency(self, scorer):

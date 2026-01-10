@@ -8,6 +8,7 @@ from typing import Any
 
 from ..config import CacheAlignerConfig, CachePrefixMetrics, TransformResult
 from ..tokenizer import Tokenizer
+from ..tokenizers import EstimatingTokenCounter
 from ..utils import compute_short_hash, deep_copy_messages
 from .base import Transform
 
@@ -342,7 +343,7 @@ def align_for_cache(
     """
     cfg = config or CacheAlignerConfig()
     aligner = CacheAligner(cfg)
-    tokenizer = Tokenizer()
+    tokenizer = Tokenizer(EstimatingTokenCounter())  # type: ignore[arg-type]
 
     result = aligner.apply(messages, tokenizer)
 

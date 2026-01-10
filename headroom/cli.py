@@ -181,7 +181,8 @@ Documentation: https://github.com/headroom-sdk/headroom
         parser.print_help()
         return 0
 
-    return args.func(args)
+    result = args.func(args)
+    return int(result) if result is not None else 0
 
 
 if __name__ == "__main__":

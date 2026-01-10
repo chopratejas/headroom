@@ -82,6 +82,7 @@ class HybridScorer(RelevanceScorer):
         self.bm25 = bm25_scorer or BM25Scorer()
 
         # Embedding scorer with graceful fallback
+        self.embedding: EmbeddingScorer | None = None
         if embedding_scorer is not None:
             self.embedding = embedding_scorer
             self._embedding_available = True
@@ -89,7 +90,6 @@ class HybridScorer(RelevanceScorer):
             self.embedding = EmbeddingScorer()
             self._embedding_available = True
         else:
-            self.embedding = None
             self._embedding_available = False
 
     @classmethod
