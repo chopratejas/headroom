@@ -4,11 +4,27 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-
-from jinja2 import Template
+from typing import TYPE_CHECKING, Any
 
 from ..storage import create_storage
+
+if TYPE_CHECKING:
+    from jinja2 import Template
+
+
+def _get_jinja2_template(template_str: str):
+    """Lazily import jinja2 and create template."""
+    try:
+        from jinja2 import Template
+
+        return Template(template_str)
+    except ImportError:
+        raise ImportError(
+            "jinja2 is required for report generation. "
+            "Install with: pip install headroom[reports]"
+        )
+
+
 from ..utils import estimate_cost, format_cost
 
 # HTML template embedded as string
@@ -350,7 +366,7 @@ def generate_report(
             period = "All time"
 
         # Render template
-        template = Template(REPORT_TEMPLATE)
+        template = _get_jinja2_template(REPORT_TEMPLATE)
         html = template.render(
             generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             period=period,

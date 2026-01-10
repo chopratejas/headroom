@@ -22,9 +22,26 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 from .base import RelevanceScore, RelevanceScorer
+
+# numpy is an optional dependency - import lazily
+_numpy = None
+
+
+def _get_numpy():
+    """Lazily import numpy."""
+    global _numpy
+    if _numpy is None:
+        try:
+            import numpy as np
+
+            _numpy = np
+        except ImportError:
+            raise ImportError(
+                "numpy is required for EmbeddingScorer. "
+                "Install with: pip install headroom[relevance]"
+            )
+    return _numpy
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -32,16 +49,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+def _cosine_similarity(a, b) -> float:
     """Compute cosine similarity between two vectors.
 
     Args:
-        a: First vector.
-        b: Second vector.
+        a: First vector (numpy array).
+        b: Second vector (numpy array).
 
     Returns:
         Cosine similarity in range [-1, 1], clamped to [0, 1].
     """
+    np = _get_numpy()
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
 
@@ -144,7 +162,7 @@ class EmbeddingScorer(RelevanceScorer):
 
         return self._model
 
-    def _encode(self, texts: list[str]) -> np.ndarray:
+    def _encode(self, texts: list[str]):
         """Encode texts to embeddings.
 
         Args:

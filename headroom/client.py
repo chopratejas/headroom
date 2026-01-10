@@ -266,7 +266,7 @@ class HeadroomClient:
         self,
         original_client: Any,
         provider: Provider,
-        store_url: str = "sqlite:///headroom.db",
+        store_url: str | None = None,
         default_mode: str = "audit",
         model_context_limits: dict[str, int] | None = None,
         cache_optimizer: BaseCacheOptimizer | None = None,
@@ -279,7 +279,7 @@ class HeadroomClient:
         Args:
             original_client: The underlying LLM client (OpenAI-compatible).
             provider: Provider instance for model-specific behavior.
-            store_url: Storage URL (sqlite:// or jsonl://).
+            store_url: Storage URL (sqlite:// or jsonl://). Defaults to temp dir.
             default_mode: Default mode ("audit" | "optimize").
             model_context_limits: Override context limits for models.
             cache_optimizer: Optional custom cache optimizer. If None and
@@ -289,6 +289,15 @@ class HeadroomClient:
         """
         self._original = original_client
         self._provider = provider
+
+        # Set default store_url to temp directory for better DevEx
+        if store_url is None:
+            import os
+            import tempfile
+
+            db_path = os.path.join(tempfile.gettempdir(), "headroom.db")
+            store_url = f"sqlite:///{db_path}"
+
         self._store_url = store_url
         self._default_mode = HeadroomMode(default_mode)
 

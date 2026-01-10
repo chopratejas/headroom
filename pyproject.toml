@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "headroom"
+name = "headroom-ai"
 version = "0.2.0"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
@@ -76,7 +76,7 @@ dev = [
 ]
 # All optional dependencies
 all = [
-    "headroom[relevance,proxy,reports]",
+    "headroom-ai[relevance,proxy,reports]",
 ]
 
 [project.scripts]

@@ -1,41 +1,71 @@
 """
-Headroom - A safe, deterministic Context Budget Controller for LLM APIs.
+Headroom - The Context Optimization Layer for LLM Applications.
+
+Cut your LLM costs by 50-90% without losing accuracy.
 
 Headroom wraps LLM clients to provide:
-- Context waste detection and reporting
-- Tool output compression
-- Cache-aligned prefix optimization
-- Rolling window token management
-- Full streaming support
+- Smart compression of tool outputs (keeps errors, anomalies, relevant items)
+- Cache-aligned prefix optimization for better provider cache hits
+- Rolling window token management for long conversations
+- Full streaming support with zero accuracy loss
 
-Example usage:
+Quick Start:
 
     from headroom import HeadroomClient, OpenAIProvider
     from openai import OpenAI
 
-    base = OpenAI(api_key="...")
-    provider = OpenAIProvider()
-
+    # Wrap your existing client
     client = HeadroomClient(
-        original_client=base,
-        provider=provider,
-        store_url="sqlite:///headroom.db",
-        default_mode="audit",
+        original_client=OpenAI(),
+        provider=OpenAIProvider(),
+        default_mode="optimize",
     )
 
-    # Use like normal OpenAI client
-    resp = client.chat.completions.create(
+    # Use exactly like the original client
+    response = client.chat.completions.create(
         model="gpt-4o",
-        messages=[...],
-        headroom_mode="optimize",  # Enable optimization
+        messages=[
+            {"role": "user", "content": "Hello!"},
+        ],
     )
 
-    # Simulate without API call
+    # Check savings
+    stats = client.get_stats()
+    print(f"Tokens saved: {stats['session']['tokens_saved_total']}")
+
+Verify It's Working:
+
+    # Validate configuration
+    result = client.validate_setup()
+    if not result["valid"]:
+        print("Issues:", result)
+
+    # Enable logging to see what's happening
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    # INFO:headroom.transforms.pipeline:Pipeline complete: 45000 -> 4500 tokens
+
+Simulate Before Sending:
+
     plan = client.chat.completions.simulate(
         model="gpt-4o",
-        messages=[...],
+        messages=large_messages,
     )
     print(f"Would save {plan.tokens_saved} tokens")
+    print(f"Transforms: {plan.transforms}")
+
+Error Handling:
+
+    from headroom import HeadroomError, ConfigurationError, ProviderError
+
+    try:
+        response = client.chat.completions.create(...)
+    except ConfigurationError as e:
+        print(f"Config issue: {e.details}")
+    except HeadroomError as e:
+        print(f"Headroom error: {e}")
+
+For more examples, see https://github.com/headroom-sdk/headroom/tree/main/examples
 """
 
 from .cache import (

@@ -4,8 +4,13 @@ Basic usage example for Headroom SDK.
 
 This example shows how to wrap an OpenAI client with Headroom
 and use both audit and optimize modes.
+
+Run:
+    export OPENAI_API_KEY='sk-...'
+    python examples/basic_usage.py
 """
 
+import logging
 import os
 import tempfile
 
@@ -13,6 +18,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from headroom import HeadroomClient, OpenAIProvider
+
+# Enable logging to see what Headroom is doing
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)s: %(message)s",
+)
 
 # Load API key from .env.local
 load_dotenv(".env.local")
@@ -153,7 +164,7 @@ def example_get_metrics():
     print("METRICS EXAMPLE")
     print("=" * 50)
 
-    # Get summary statistics
+    # Get summary statistics from database
     summary = client.get_summary()
     print(f"Total requests: {summary['total_requests']}")
     print(f"Total tokens saved: {summary['total_tokens_saved']}")
@@ -161,12 +172,65 @@ def example_get_metrics():
     print()
 
 
+def example_validate_setup():
+    """Example of validating Headroom setup."""
+    print("=" * 50)
+    print("VALIDATE SETUP EXAMPLE")
+    print("=" * 50)
+
+    # Validate that everything is configured correctly
+    result = client.validate_setup()
+
+    if result["valid"]:
+        print("Setup is valid!")
+        print(f"  Provider: {result['provider']['name']}")
+        print(f"  Storage: {result['storage']['url']}")
+        print(f"  Mode: {result['config']['mode']}")
+    else:
+        print("Setup issues detected:")
+        for key, val in result.items():
+            if key != "valid" and not val.get("ok"):
+                print(f"  {key}: {val.get('error')}")
+    print()
+
+
+def example_get_stats():
+    """Example of getting quick session stats."""
+    print("=" * 50)
+    print("SESSION STATS EXAMPLE")
+    print("=" * 50)
+
+    # Get quick stats without database query
+    stats = client.get_stats()
+
+    print("Session stats:")
+    print(f"  Requests total: {stats['session']['requests_total']}")
+    print(f"  Requests optimized: {stats['session']['requests_optimized']}")
+    print(f"  Tokens saved: {stats['session']['tokens_saved_total']}")
+
+    print("\nConfiguration:")
+    print(f"  Mode: {stats['config']['mode']}")
+    print(f"  Provider: {stats['config']['provider']}")
+
+    print("\nTransforms enabled:")
+    print(f"  SmartCrusher: {stats['transforms']['smart_crusher_enabled']}")
+    print(f"  RollingWindow: {stats['transforms']['rolling_window_enabled']}")
+    print(f"  CacheAligner: {stats['transforms']['cache_aligner_enabled']}")
+    print()
+
+
 if __name__ == "__main__":
+    # First, validate the setup
+    example_validate_setup()
+
     # Run all examples
     example_audit_mode()
     example_optimize_mode()
     example_simulate_mode()
     example_get_metrics()
+
+    # Show session stats
+    example_get_stats()
 
     # Clean up
     client.close()

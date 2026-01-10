@@ -1779,7 +1779,7 @@ def run_server(config: ProxyConfig | None = None):
 ║    /v1/retrieve/stats       CCR: Compression store stats             ║
 ║    /v1/retrieve/tool_call   CCR: Handle LLM tool calls               ║
 ║    /v1/feedback             CCR: Feedback loop stats & patterns      ║
-║    /v1/feedback/{tool}      CCR: Compression hints for a tool        ║
+║    /v1/feedback/{{tool}}    CCR: Compression hints for a tool        ║
 ║    /v1/telemetry            Data flywheel: Telemetry stats           ║
 ║    /v1/telemetry/export     Data flywheel: Export for aggregation    ║
 ║    /v1/telemetry/tools      Data flywheel: Per-tool stats            ║
