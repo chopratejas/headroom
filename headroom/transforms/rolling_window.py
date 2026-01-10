@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..config import RollingWindowConfig, TransformResult
 from ..parser import find_tool_units
@@ -149,6 +152,13 @@ class RollingWindow(Transform):
 
         # Insert marker if we dropped anything
         if dropped_count > 0:
+            logger.info(
+                "RollingWindow: dropped %d units (%d tool units) to fit budget: %d -> %d tokens",
+                dropped_count,
+                tool_units_dropped,
+                tokens_before,
+                current_tokens,
+            )
             marker = create_dropped_context_marker("token_cap", dropped_count)
             markers_inserted.append(marker)
 

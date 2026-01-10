@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 
 from ..config import (
     CacheAlignerConfig,
@@ -139,6 +142,13 @@ class TransformPipeline:
         # Start with original tokens
         tokens_before = tokenizer.count_messages(messages)
 
+        logger.debug(
+            "Pipeline starting: %d messages, %d tokens, model=%s",
+            len(messages),
+            tokens_before,
+            model,
+        )
+
         # Track all transforms applied
         all_transforms: list[str] = []
         all_markers: list[str] = []
@@ -172,6 +182,18 @@ class TransformPipeline:
             all_markers.extend(result.markers_inserted)
             all_warnings.extend(result.warnings)
 
+            # Log transform results
+            if result.transforms_applied:
+                logger.info(
+                    "Transform %s: %d -> %d tokens (saved %d)",
+                    transform.name,
+                    tokens_before_transform,
+                    tokens_after_transform,
+                    tokens_before_transform - tokens_after_transform,
+                )
+            else:
+                logger.debug("Transform %s: no changes", transform.name)
+
             # Record diff if enabled
             if generate_diff:
                 transform_diffs.append(TransformDiff(
@@ -184,6 +206,19 @@ class TransformPipeline:
 
         # Final token count
         tokens_after = tokenizer.count_messages(current_messages)
+
+        # Log pipeline summary
+        total_saved = tokens_before - tokens_after
+        if total_saved > 0:
+            logger.info(
+                "Pipeline complete: %d -> %d tokens (saved %d, %.1f%% reduction)",
+                tokens_before,
+                tokens_after,
+                total_saved,
+                (total_saved / tokens_before * 100) if tokens_before > 0 else 0,
+            )
+        else:
+            logger.debug("Pipeline complete: no token savings")
 
         # Build diff artifact if enabled
         diff_artifact = None

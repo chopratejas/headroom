@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..config import CacheAlignerConfig, CachePrefixMetrics, TransformResult
 from ..tokenizer import Tokenizer
@@ -140,6 +143,20 @@ class CacheAligner(Transform):
             # Strategy: add as a context note after system messages
             self._reinsert_dates(result_messages, extracted_dates)
             transforms_applied.append("cache_align")
+            logger.debug(
+                "CacheAligner: extracted %d date patterns for cache alignment",
+                len(extracted_dates),
+            )
+
+        # Log cache hit/miss
+        if prefix_changed:
+            logger.debug(
+                "CacheAligner: prefix changed (likely cache miss), hash: %s -> %s",
+                previous_hash,
+                stable_hash,
+            )
+        else:
+            logger.debug("CacheAligner: prefix stable, hash: %s", stable_hash)
 
         tokens_after = tokenizer.count_messages(result_messages)
 

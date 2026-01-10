@@ -381,6 +381,278 @@ def compress(items, analysis):
 
 ---
 
+## CCR Architecture: Compress-Cache-Retrieve
+
+### The Key Insight
+
+> "Prefer raw > Compaction > Summarization only when compaction no longer yields enough space. Compaction (Reversible) strips out information that is redundant because it exists in the environment—if the agent needs to read the data later, it can use a tool to retrieve it." — Phil Schmid, Context Engineering
+
+**The problem with traditional compression:** If we guess wrong about what's important, we've permanently lost data. The LLM might need something we threw away.
+
+**CCR's solution:** Make compression **reversible**. When SmartCrusher compresses, the original data is cached. If the LLM needs more, it can retrieve instantly.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  TOOL OUTPUT (1000 items)                                         │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  HEADROOM CCR LAYER                                               │
+│                                                                   │
+│  1. COMPRESS: Keep 20 items (errors, anomalies, relevant)        │
+│  2. CACHE: Store full 1000 items in fast local cache             │
+│  3. INJECT: Add retrieval capability to LLM context              │
+│                                                                   │
+│  "20 items shown. Use /v1/retrieve?hash=xxx for more."           │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  LLM PROCESSING                                                   │
+│                                                                   │
+│  Option A: LLM solves task with 20 items → Done                  │
+│  Option B: LLM needs more → retrieves via API                    │
+│            → We fetch from cache → Return instantly              │
+└────────────────────────┬─────────────────────────────────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  FEEDBACK LOOP                                                    │
+│                                                                   │
+│  Track: What did the LLM retrieve? What queries?                 │
+│  Learn: "For this tool, keep items matching common queries"      │
+│  Improve: Next compression uses learned patterns                 │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### CCR Phase 1: Compression Store
+
+**Location:** `headroom/cache/compression_store.py`
+
+When SmartCrusher compresses, the original content is stored for on-demand retrieval:
+
+```python
+@dataclass
+class CompressionEntry:
+    hash: str                    # 16-char SHA256 for retrieval
+    original_content: str        # Full JSON before compression
+    compressed_content: str      # Compressed JSON
+    original_item_count: int
+    compressed_item_count: int
+    tool_name: str | None        # For feedback tracking
+    created_at: float
+    ttl: int = 300               # 5 minute default
+```
+
+**Features:**
+- Thread-safe in-memory storage
+- TTL-based expiration (default 5 minutes)
+- LRU-style eviction when capacity reached
+- Built-in BM25 search within cached content
+
+**Usage:**
+```python
+store = get_compression_store()
+
+# Store compressed content
+hash_key = store.store(
+    original=original_json,
+    compressed=compressed_json,
+    original_item_count=1000,
+    compressed_item_count=20,
+    tool_name="search_api",
+)
+
+# Retrieve later
+entry = store.retrieve(hash_key)
+
+# Or search within cached content
+results = store.search(hash_key, "user query")
+```
+
+---
+
+### CCR Phase 2: Retrieval API
+
+**Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/retrieve` | POST | Retrieve original content by hash |
+| `/v1/retrieve?query=X` | POST | Search within cached content |
+
+**Retrieval Request:**
+```json
+{
+    "hash": "abc123def456...",
+    "query": "find errors"     // Optional: search within
+}
+```
+
+**Response (full retrieval):**
+```json
+{
+    "hash": "abc123def456...",
+    "original_content": "[{...}, {...}, ...]",
+    "original_item_count": 1000,
+    "tool_name": "search_api"
+}
+```
+
+**Response (search):**
+```json
+{
+    "hash": "abc123def456...",
+    "query": "find errors",
+    "results": [{...}, {...}, ...],
+    "count": 15
+}
+```
+
+---
+
+### CCR Phase 3: Tool Injection
+
+When compression happens, Headroom injects retrieval instructions into the LLM context.
+
+**Method A: System Message Injection**
+```
+## Compressed Context Available
+The following tool outputs have been compressed. If you need more detail,
+call the retrieve_compressed tool with the hash.
+
+Available: hash=abc123 (1000→20 items from search_api)
+```
+
+**Method B: MCP Tool Registration (Hybrid)**
+When running as MCP server, Headroom exposes retrieval as a tool:
+
+```json
+{
+    "name": "headroom_retrieve",
+    "description": "Retrieve more items from compressed tool output",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "hash": {"type": "string"},
+            "query": {"type": "string"}
+        }
+    }
+}
+```
+
+**Marker Injection:**
+Compressed content includes retrieval markers:
+```json
+{
+    "__headroom_compressed": true,
+    "__headroom_hash": "abc123def456",
+    "__headroom_stats": {
+        "original_items": 1000,
+        "kept_items": 20,
+        "errors_preserved": 5
+    },
+    "data": [...]
+}
+```
+
+---
+
+### CCR Phase 4: Feedback Loop
+
+**Location:** `headroom/cache/compression_feedback.py`
+
+The feedback system learns from retrieval patterns to improve future compression.
+
+**Tracked Patterns per Tool:**
+```python
+@dataclass
+class ToolPattern:
+    tool_name: str
+    total_compressions: int      # Times we compressed this tool
+    total_retrievals: int        # Times LLM asked for more
+    full_retrievals: int         # Retrieved everything
+    search_retrievals: int       # Used search query
+    common_queries: dict[str, int]   # Query frequency
+    queried_fields: dict[str, int]   # Fields mentioned in queries
+```
+
+**Key Metrics:**
+- **Retrieval Rate**: `total_retrievals / total_compressions`
+  - High (>50%) → Compressing too aggressively
+  - Low (<20%) → Compression is effective
+- **Full Retrieval Rate**: `full_retrievals / total_retrievals`
+  - High (>80%) → Data is unique, consider skipping compression
+
+**Compression Hints:**
+```python
+@dataclass
+class CompressionHints:
+    max_items: int = 15          # Target item count
+    suggested_items: int | None  # Calculated optimal
+    skip_compression: bool       # Don't compress at all
+    preserve_fields: list[str]   # Always keep these fields
+    aggressiveness: float        # 0.0 = aggressive, 1.0 = conservative
+    reason: str                  # Explanation
+```
+
+**Feedback-Driven Adjustment:**
+```python
+# In SmartCrusher._crush_array()
+if self.config.use_feedback_hints and tool_name:
+    feedback = get_compression_feedback()
+    hints = feedback.get_compression_hints(tool_name)
+
+    if hints.skip_compression:
+        return items, f"skip:feedback({hints.reason})", None
+
+    if hints.suggested_items is not None:
+        self.config.max_items_after_crush = hints.suggested_items
+```
+
+**Feedback Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/feedback` | GET | Get all learned patterns |
+| `/v1/feedback/{tool_name}` | GET | Get hints for specific tool |
+
+**Example Response:**
+```json
+{
+    "total_compressions": 150,
+    "total_retrievals": 23,
+    "global_retrieval_rate": 0.15,
+    "tools_tracked": 5,
+    "tool_patterns": {
+        "search_api": {
+            "compressions": 50,
+            "retrievals": 5,
+            "retrieval_rate": 0.10,
+            "full_rate": 0.20,
+            "search_rate": 0.80,
+            "common_queries": ["status:error", "level:critical"],
+            "queried_fields": ["status", "level", "message"]
+        }
+    }
+}
+```
+
+---
+
+### Why CCR is a Moat
+
+1. **Reversible**: No permanent information loss. Worst case = retrieve everything.
+2. **Transparent**: LLM knows it can ask for more data.
+3. **Feedback Loop**: Learn from actual needs, not guesses.
+4. **Network Effect**: Retrieval patterns across users improve compression for everyone.
+5. **Zero-Risk**: If compression fails, instant fallback to original data.
+
+---
+
 ## File Structure Explained
 
 ```
@@ -405,10 +677,26 @@ headroom/
 │   ├── smart_crusher.py # Statistical compression (default)
 │   └── rolling_window.py # Token limit enforcement
 │
+├── cache/               # CCR Architecture
+│   ├── compression_store.py    # Phase 1: Store original content
+│   ├── compression_feedback.py # Phase 4: Learn from retrievals
+│   ├── anthropic.py     # Anthropic cache optimizer
+│   ├── openai.py        # OpenAI cache optimizer
+│   ├── google.py        # Google cache optimizer
+│   └── dynamic_detector.py # Dynamic content detection
+│
+├── relevance/           # Relevance scoring for compression
+│   ├── bm25.py          # BM25 keyword scorer
+│   ├── embedding.py     # Semantic embedding scorer
+│   └── hybrid.py        # Adaptive fusion scorer
+│
 ├── storage/
 │   ├── base.py          # Storage protocol
 │   ├── sqlite.py        # SQLite implementation
 │   └── jsonl.py         # JSON Lines implementation
+│
+├── proxy/
+│   └── server.py        # Production HTTP proxy (CCR endpoints)
 │
 └── reporting/
     └── generator.py     # HTML report generation

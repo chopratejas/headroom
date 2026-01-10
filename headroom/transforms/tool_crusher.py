@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..config import ToolCrusherConfig, TransformResult
 from ..tokenizer import Tokenizer
@@ -165,6 +168,12 @@ class ToolCrusher(Transform):
 
         if crushed_count > 0:
             transforms_applied.append(f"tool_crush:{crushed_count}")
+            logger.info(
+                "ToolCrusher: compressed %d tool outputs, %d -> %d tokens",
+                crushed_count,
+                tokens_before,
+                tokenizer.count_messages(result_messages),
+            )
 
         tokens_after = tokenizer.count_messages(result_messages)
 

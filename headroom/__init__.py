@@ -71,6 +71,17 @@ from .config import (
     TransformResult,
     WasteSignals,
 )
+from .exceptions import (
+    CacheError,
+    CompressionError,
+    ConfigurationError,
+    HeadroomError,
+    ProviderError,
+    StorageError,
+    TokenizationError,
+    TransformError,
+    ValidationError,
+)
 from .providers import AnthropicProvider, OpenAIProvider, Provider, TokenCounter
 from .relevance import (
     BM25Scorer,
@@ -101,6 +112,16 @@ __all__ = [
     "TokenCounter",
     "OpenAIProvider",
     "AnthropicProvider",
+    # Exceptions
+    "HeadroomError",
+    "ConfigurationError",
+    "ProviderError",
+    "StorageError",
+    "CompressionError",
+    "TokenizationError",
+    "CacheError",
+    "ValidationError",
+    "TransformError",
     # Config
     "HeadroomConfig",
     "HeadroomMode",
