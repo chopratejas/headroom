@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "headroom-ai"
-version = "0.2.0"
+version = "0.2.1"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
 license = "Apache-2.0"
@@ -83,11 +83,11 @@ all = [
 headroom = "headroom.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/headroom-sdk/headroom"
-Documentation = "https://headroom.dev/docs"
-Repository = "https://github.com/headroom-sdk/headroom"
-Issues = "https://github.com/headroom-sdk/headroom/issues"
-Changelog = "https://github.com/headroom-sdk/headroom/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/chopratejas/headroom"
+Documentation = "https://github.com/chopratejas/headroom#readme"
+Repository = "https://github.com/chopratejas/headroom"
+Issues = "https://github.com/chopratejas/headroom/issues"
+Changelog = "https://github.com/chopratejas/headroom/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["headroom"]

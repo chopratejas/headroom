@@ -9,16 +9,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/headroom-sdk/headroom/actions/workflows/ci.yml">
-    <img src="https://github.com/headroom-sdk/headroom/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <a href="https://github.com/chopratejas/headroom/actions/workflows/ci.yml">
+    <img src="https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://pypi.org/project/headroom/">
-    <img src="https://img.shields.io/pypi/v/headroom.svg" alt="PyPI">
+  <a href="https://pypi.org/project/headroom-ai/">
+    <img src="https://img.shields.io/pypi/v/headroom-ai.svg" alt="PyPI">
   </a>
-  <a href="https://pypi.org/project/headroom/">
-    <img src="https://img.shields.io/pypi/pyversions/headroom.svg" alt="Python">
+  <a href="https://pypi.org/project/headroom-ai/">
+    <img src="https://img.shields.io/pypi/pyversions/headroom-ai.svg" alt="Python">
   </a>
-  <a href="https://github.com/headroom-sdk/headroom/blob/main/LICENSE">
+  <a href="https://github.com/chopratejas/headroom/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
   </a>
 </p>
@@ -549,7 +549,7 @@ We welcome contributions!
 
 ```bash
 # Development setup
-git clone https://github.com/headroom-sdk/headroom.git
+git clone https://github.com/chopratejas/headroom.git
 cd headroom
 pip install -e ".[dev]"
 
