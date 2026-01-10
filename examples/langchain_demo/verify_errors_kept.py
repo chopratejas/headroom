@@ -6,16 +6,16 @@ This is critical - errors should NEVER be dropped during compression.
 import json
 
 from headroom.config import SmartCrusherConfig
-from headroom.transforms import SmartCrusher
 from headroom.providers import OpenAIProvider
+from headroom.transforms import SmartCrusher
 
 from .mock_tools import generate_log_entries
 
 
 def main():
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("VERIFYING ERROR PRESERVATION IN SMARTCRUSHER")
-    print("="*70)
+    print("=" * 70)
 
     # Generate logs with some ERROR entries
     raw_output = generate_log_entries("test-service", count=200)
@@ -43,7 +43,13 @@ def main():
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Find ERROR entries in the logs"},
-        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+            ],
+        },
         {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
     ]
 
@@ -57,11 +63,12 @@ def main():
     except json.JSONDecodeError:
         # Try to extract just the JSON object
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         if json_match:
             compressed_data = json.loads(json_match.group(1))
         else:
-            print(f"Could not parse compressed output:")
+            print("Could not parse compressed output:")
             print(compressed_output[:500])
             return
 
@@ -74,20 +81,22 @@ def main():
         print(f"  - {err['message'][:60]}...")
 
     # Verification
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     if len(compressed_errors) >= len(original_errors):
         print("SUCCESS: All ERROR entries were preserved!")
     elif len(compressed_errors) > 0:
         print(f"PARTIAL: {len(compressed_errors)}/{len(original_errors)} ERROR entries preserved")
     else:
         print("FAILURE: ERROR entries were dropped!")
-    print("="*70)
+    print("=" * 70)
 
     # Show compression ratio
     original_count = len(data["entries"])
     compressed_count = len(compressed_data["entries"])
     reduction = (original_count - compressed_count) / original_count * 100
-    print(f"\nCompression: {original_count} → {compressed_count} entries ({reduction:.1f}% reduction)")
+    print(
+        f"\nCompression: {original_count} → {compressed_count} entries ({reduction:.1f}% reduction)"
+    )
     print(f"But kept: {len(compressed_errors)} of {len(original_errors)} ERROR entries")
 
 

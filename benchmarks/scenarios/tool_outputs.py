@@ -14,9 +14,7 @@ and compression strategies.
 
 from __future__ import annotations
 
-import json
 import random
-import string
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -80,12 +78,14 @@ def generate_search_results(
         min(include_errors, len(results) - len(needle_indices)),
     )
     for idx in error_indices:
-        results[idx]["error"] = random.choice([
-            "Index out of range",
-            "Document not found",
-            "Permission denied",
-            "Timeout exceeded",
-        ])
+        results[idx]["error"] = random.choice(
+            [
+                "Index out of range",
+                "Document not found",
+                "Permission denied",
+                "Timeout exceeded",
+            ]
+        )
         results[idx]["status"] = "failed"
 
     return results
@@ -177,7 +177,9 @@ def generate_log_entries(
         # Add exception info for errors
         if level in ("ERROR", "CRITICAL"):
             entry["exception"] = {
-                "type": random.choice(["TimeoutError", "ConnectionError", "ValueError", "RuntimeError"]),
+                "type": random.choice(
+                    ["TimeoutError", "ConnectionError", "ValueError", "RuntimeError"]
+                ),
                 "message": message,
                 "stacktrace": _generate_stacktrace(),
             }
@@ -273,11 +275,13 @@ def generate_database_rows(
         elif table_type == "transactions":
             row = _generate_transaction_row(i)
         else:  # mixed
-            generator = random.choice([
-                _generate_user_row,
-                lambda i: _generate_metric_row(i, mean_value, std_value),
-                _generate_transaction_row,
-            ])
+            generator = random.choice(
+                [
+                    _generate_user_row,
+                    lambda i: _generate_metric_row(i, mean_value, std_value),
+                    _generate_transaction_row,
+                ]
+            )
             row = generator(i)
 
         rows.append(row)
@@ -295,6 +299,7 @@ def generate_database_rows(
 
 
 # Helper functions
+
 
 def _generate_title() -> str:
     """Generate a realistic document title."""
@@ -326,7 +331,9 @@ def _generate_name() -> str:
 def _generate_timestamp(offset_days: int = 0) -> str:
     """Generate an ISO timestamp."""
     base = datetime(2025, 1, 1, 12, 0, 0)
-    dt = base + timedelta(days=offset_days, hours=random.randint(0, 23), minutes=random.randint(0, 59))
+    dt = base + timedelta(
+        days=offset_days, hours=random.randint(0, 23), minutes=random.randint(0, 59)
+    )
     return dt.isoformat() + "Z"
 
 

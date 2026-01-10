@@ -112,7 +112,7 @@ class Storage(ABC):
         """
         pass
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: B027
         """Close storage connection if applicable."""
         pass
 

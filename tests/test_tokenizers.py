@@ -5,17 +5,17 @@ from __future__ import annotations
 import pytest
 
 from headroom.tokenizers import (
-    TokenizerRegistry,
-    get_tokenizer,
-    register_tokenizer,
-    list_supported_models,
-    TiktokenCounter,
-    EstimatingTokenCounter,
-    CharacterCounter,
-    TokenCounter,
     BaseTokenizer,
-    is_mistral_tokenizer_available,
+    CharacterCounter,
+    EstimatingTokenCounter,
+    TiktokenCounter,
+    TokenCounter,
+    TokenizerRegistry,
     get_mistral_tokenizer,
+    get_tokenizer,
+    is_mistral_tokenizer_available,
+    list_supported_models,
+    register_tokenizer,
 )
 
 
@@ -66,14 +66,16 @@ class TestTiktokenCounter:
             {"role": "user", "content": "Search for Python"},
             {
                 "role": "assistant",
-                "tool_calls": [{
-                    "id": "call_123",
-                    "type": "function",
-                    "function": {
-                        "name": "search",
-                        "arguments": '{"query": "Python"}',
-                    },
-                }],
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query": "Python"}',
+                        },
+                    }
+                ],
             },
             {
                 "role": "tool",

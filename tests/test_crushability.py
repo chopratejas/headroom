@@ -14,13 +14,13 @@ Test scenarios:
 """
 
 import json
+
 import pytest
+
 from headroom.transforms.smart_crusher import (
-    SmartCrusher,
-    SmartCrusherConfig,
-    SmartAnalyzer,
     CompressionStrategy,
-    CrushabilityAnalysis,
+    SmartAnalyzer,
+    SmartCrusherConfig,
     smart_crush_tool_output,
 )
 
@@ -92,8 +92,7 @@ class TestCrushabilityDetection:
         # Should detect score field as importance signal
         assert analysis.crushability is not None
         assert analysis.crushability.crushable, (
-            f"Search results should be crushable. "
-            f"Reason: {analysis.crushability.reason}"
+            f"Search results should be crushable. Reason: {analysis.crushability.reason}"
         )
         assert analysis.crushability.has_score_field
         assert any("score" in s for s in analysis.crushability.signals_present)
@@ -121,7 +120,10 @@ class TestCrushabilityDetection:
         assert analysis.crushability is not None
         assert analysis.crushability.crushable
         # Now uses structural_outliers instead of keyword-based error count
-        assert any("structural_outliers" in s or "outlier" in s.lower() for s in analysis.crushability.signals_present)
+        assert any(
+            "structural_outliers" in s or "outlier" in s.lower()
+            for s in analysis.crushability.signals_present
+        )
 
     def test_time_series_with_anomalies_crushable(self, analyzer):
         """Time series with numeric anomalies SHOULD be crushed."""
@@ -130,11 +132,13 @@ class TestCrushabilityDetection:
             value = 100.0  # Normal value
             if i in [25, 50, 75]:  # Anomaly points
                 value = 999.0
-            items.append({
-                "id": i,
-                "timestamp": i,
-                "cpu_usage": value,
-            })
+            items.append(
+                {
+                    "id": i,
+                    "timestamp": i,
+                    "cpu_usage": value,
+                }
+            )
 
         analysis = analyzer.analyze_array(items)
 
@@ -150,8 +154,8 @@ class TestCrushabilityDetection:
             {
                 "id": i,
                 "status": "success",  # Same for all
-                "code": 200,          # Same for all
-                "message": "OK",      # Same for all
+                "code": 200,  # Same for all
+                "message": "OK",  # Same for all
             }
             for i in range(100)
         ]
@@ -162,7 +166,10 @@ class TestCrushabilityDetection:
         assert analysis.crushability is not None
         assert analysis.crushability.crushable
         # Can be "low_uniqueness" or "repetitive_content_with_ids"
-        assert "low_uniqueness" in analysis.crushability.reason or "repetitive" in analysis.crushability.reason
+        assert (
+            "low_uniqueness" in analysis.crushability.reason
+            or "repetitive" in analysis.crushability.reason
+        )
 
     def test_file_listing_not_crushable(self, analyzer):
         """File listing with unique paths should NOT be crushed."""
@@ -208,10 +215,7 @@ class TestCrushabilityEndToEnd:
 
     def test_db_results_preserved_completely(self):
         """DB results should be returned unchanged when not crushable."""
-        items = [
-            {"id": i, "name": f"User {i}", "email": f"user{i}@test.com"}
-            for i in range(30)
-        ]
+        items = [{"id": i, "name": f"User {i}", "email": f"user{i}@test.com"} for i in range(30)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=10)
@@ -222,8 +226,7 @@ class TestCrushabilityEndToEnd:
             result = json.loads(crushed)
             # If it was modified, all items should still be there
             assert len(result) == 30, (
-                f"DB results should not lose items! "
-                f"Had 30, got {len(result)}. Info: {info}"
+                f"DB results should not lose items! Had 30, got {len(result)}. Info: {info}"
             )
 
     def test_search_results_crushed_by_score(self):
@@ -294,9 +297,7 @@ class TestCrushabilitySignals:
         for field_name, items in test_cases:
             analysis = analyzer.analyze_array(items)
             assert analysis.crushability is not None
-            assert analysis.crushability.has_id_field, (
-                f"Should detect '{field_name}' as ID field"
-            )
+            assert analysis.crushability.has_id_field, f"Should detect '{field_name}' as ID field"
 
     def test_detects_score_field_variations(self, analyzer):
         """Should detect various score field naming patterns."""
@@ -379,10 +380,7 @@ class TestCrushabilityEdgeCases:
         However, since ALL items are errors, they will ALL be preserved due to
         the preservation guarantee. The end result is the same - no data loss.
         """
-        items = [
-            {"id": i, "error": f"Error {i}", "status": "failed"}
-            for i in range(50)
-        ]
+        items = [{"id": i, "error": f"Error {i}", "status": "failed"} for i in range(50)]
 
         analysis = analyzer.analyze_array(items)
         assert analysis.crushability is not None

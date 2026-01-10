@@ -40,7 +40,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 # Benchmark suite definitions
 BENCHMARK_SUITES = {
     "all": [
@@ -75,19 +74,19 @@ BENCHMARK_SUITES = {
 
 # Performance targets (mean time in microseconds)
 PERFORMANCE_TARGETS = {
-    "test_compress_100_items": 2000,       # 2ms
-    "test_compress_1000_items": 10000,     # 10ms
-    "test_compress_10000_items": 100000,   # 100ms
-    "test_date_extraction": 1000,          # 1ms
-    "test_hash_computation": 500,          # 0.5ms
-    "test_window_50_turns": 5000,          # 5ms
-    "test_window_200_turns": 20000,        # 20ms
-    "test_single_item": 100,               # 0.1ms
-    "test_batch_100": 1000,                # 1ms
-    "test_batch_1000": 10000,              # 10ms
-    "test_pipeline_simple": 5000,          # 5ms
-    "test_pipeline_agentic": 30000,        # 30ms
-    "test_pipeline_rag": 50000,            # 50ms
+    "test_compress_100_items": 2000,  # 2ms
+    "test_compress_1000_items": 10000,  # 10ms
+    "test_compress_10000_items": 100000,  # 100ms
+    "test_date_extraction": 1000,  # 1ms
+    "test_hash_computation": 500,  # 0.5ms
+    "test_window_50_turns": 5000,  # 5ms
+    "test_window_200_turns": 20000,  # 20ms
+    "test_single_item": 100,  # 0.1ms
+    "test_batch_100": 1000,  # 1ms
+    "test_batch_1000": 10000,  # 10ms
+    "test_pipeline_simple": 5000,  # 5ms
+    "test_pipeline_agentic": 30000,  # 30ms
+    "test_pipeline_rag": 50000,  # 50ms
 }
 
 
@@ -243,8 +242,8 @@ def generate_markdown_report(
     if total > 0:
         lines.append("## Summary")
         lines.append("")
-        lines.append(f"- **Passed**: {passed}/{total} ({100*passed/total:.0f}%)")
-        lines.append(f"- **Failed**: {failed}/{total} ({100*failed/total:.0f}%)")
+        lines.append(f"- **Passed**: {passed}/{total} ({100 * passed / total:.0f}%)")
+        lines.append(f"- **Failed**: {failed}/{total} ({100 * failed / total:.0f}%)")
         lines.append("")
 
     # Performance notes
@@ -274,9 +273,9 @@ def _format_time(microseconds: float) -> str:
     if microseconds < 1000:
         return f"{microseconds:.1f}us"
     elif microseconds < 1_000_000:
-        return f"{microseconds/1000:.2f}ms"
+        return f"{microseconds / 1000:.2f}ms"
     else:
-        return f"{microseconds/1_000_000:.2f}s"
+        return f"{microseconds / 1_000_000:.2f}s"
 
 
 def main() -> int:

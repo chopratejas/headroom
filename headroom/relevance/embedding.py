@@ -36,12 +36,13 @@ def _get_numpy():
             import numpy as np
 
             _numpy = np
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "numpy is required for EmbeddingScorer. "
                 "Install with: pip install headroom[relevance]"
-            )
+            ) from e
     return _numpy
+
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -122,7 +123,7 @@ class EmbeddingScorer(RelevanceScorer):
             True if the package is available.
         """
         try:
-            import sentence_transformers
+            import sentence_transformers  # noqa: F401
 
             return True
         except ImportError:
@@ -220,10 +221,7 @@ class EmbeddingScorer(RelevanceScorer):
             return []
 
         if not context:
-            return [
-                RelevanceScore(score=0.0, reason="Embedding: empty context")
-                for _ in items
-            ]
+            return [RelevanceScore(score=0.0, reason="Embedding: empty context") for _ in items]
 
         # Encode all texts in one batch
         all_texts = items + [context]

@@ -28,9 +28,9 @@ Key Features:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
-import json
 import re
 import statistics
 import threading
@@ -45,6 +45,15 @@ from ..config import CCRConfig, RelevanceScorerConfig, TransformResult
 from ..relevance import RelevanceScorer, create_scorer
 from ..telemetry import TelemetryCollector, ToolSignature, get_telemetry_collector
 from ..telemetry.toin import ToolIntelligenceNetwork, get_toin
+from ..tokenizer import Tokenizer
+from ..utils import (
+    compute_short_hash,
+    create_tool_digest_marker,
+    deep_copy_messages,
+    safe_json_dumps,
+    safe_json_loads,
+)
+from .base import Transform
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +201,7 @@ def _item_has_preserve_field_match(
 
     query_lower = query_context.lower()
 
-    for field_name, value in _get_preserve_field_values(item, preserve_field_hashes):
+    for _field_name, value in _get_preserve_field_values(item, preserve_field_hashes):
         if value is not None:
             value_str = str(value).lower()
             if value_str in query_lower or query_lower in value_str:
@@ -201,25 +210,15 @@ def _item_has_preserve_field_match(
     return False
 
 
-from ..tokenizer import Tokenizer
-from ..utils import (
-    compute_short_hash,
-    create_tool_digest_marker,
-    deep_copy_messages,
-    safe_json_dumps,
-    safe_json_loads,
-)
-from .base import Transform
-
-
 class CompressionStrategy(Enum):
     """Compression strategies based on data patterns."""
-    NONE = "none"                    # No compression needed
-    SKIP = "skip"                    # Explicitly skip - not safe to crush
-    TIME_SERIES = "time_series"      # Keep change points, summarize stable
-    CLUSTER_SAMPLE = "cluster"       # Dedupe similar items
-    TOP_N = "top_n"                  # Keep highest scored items
-    SMART_SAMPLE = "smart_sample"    # Statistical sampling with constants
+
+    NONE = "none"  # No compression needed
+    SKIP = "skip"  # Explicitly skip - not safe to crush
+    TIME_SERIES = "time_series"  # Keep change points, summarize stable
+    CLUSTER_SAMPLE = "cluster"  # Dedupe similar items
+    TOP_N = "top_n"  # Keep highest scored items
+    SMART_SAMPLE = "smart_sample"  # Statistical sampling with constants
 
 
 # =====================================================================
@@ -262,6 +261,7 @@ def _calculate_string_entropy(s: str) -> float:
 
     # Calculate entropy
     import math
+
     entropy = 0.0
     length = len(s)
     for count in freq.values():
@@ -305,7 +305,7 @@ def _detect_sequential_pattern(values: list[Any], check_order: bool = True) -> b
 
     # Check if sorted values form a near-sequence
     sorted_nums = sorted(nums)
-    diffs = [sorted_nums[i+1] - sorted_nums[i] for i in range(len(sorted_nums)-1)]
+    diffs = [sorted_nums[i + 1] - sorted_nums[i] for i in range(len(sorted_nums) - 1)]
 
     if not diffs:
         return False
@@ -321,7 +321,7 @@ def _detect_sequential_pattern(values: list[Any], check_order: bool = True) -> b
         # Scores sorted by relevance are typically in DESCENDING order
         if check_order and is_sequential:
             # Check if original order is ascending (like IDs)
-            ascending_count = sum(1 for i in range(len(nums)-1) if nums[i] <= nums[i+1])
+            ascending_count = sum(1 for i in range(len(nums) - 1) if nums[i] <= nums[i + 1])
             is_ascending = ascending_count / (len(nums) - 1) > 0.7
             return is_ascending  # Only flag as sequential if ascending (ID-like)
 
@@ -330,7 +330,7 @@ def _detect_sequential_pattern(values: list[Any], check_order: bool = True) -> b
     return False
 
 
-def _detect_id_field_statistically(stats: "FieldStats", values: list[Any]) -> tuple[bool, float]:
+def _detect_id_field_statistically(stats: FieldStats, values: list[Any]) -> tuple[bool, float]:
     """Detect if a field is an ID field using statistical properties.
 
     Returns (is_id_field, confidence).
@@ -354,7 +354,9 @@ def _detect_id_field_statistically(stats: "FieldStats", values: list[Any]) -> tu
 
         # Check for high entropy (random string IDs)
         if sample_values:
-            avg_entropy = sum(_calculate_string_entropy(v) for v in sample_values) / len(sample_values)
+            avg_entropy = sum(_calculate_string_entropy(v) for v in sample_values) / len(
+                sample_values
+            )
             if avg_entropy > 0.7 and stats.unique_ratio > 0.95:
                 confidence = 0.8
                 return True, confidence
@@ -377,7 +379,7 @@ def _detect_id_field_statistically(stats: "FieldStats", values: list[Any]) -> tu
     return False, 0.0
 
 
-def _detect_score_field_statistically(stats: "FieldStats", items: list[dict]) -> tuple[bool, float]:
+def _detect_score_field_statistically(stats: FieldStats, items: list[dict]) -> tuple[bool, float]:
     """Detect if a field is a score/ranking field using statistical properties.
 
     Returns (is_score_field, confidence).
@@ -397,7 +399,7 @@ def _detect_score_field_statistically(stats: "FieldStats", items: list[dict]) ->
     confidence = 0.0
 
     # Check for bounded range typical of scores
-    value_range = stats.max_val - stats.min_val
+    stats.max_val - stats.min_val
     min_val, max_val = stats.min_val, stats.max_val
 
     # Common score ranges: [0,1], [0,10], [0,100], [-1,1], [0,5]
@@ -426,22 +428,26 @@ def _detect_score_field_statistically(stats: "FieldStats", items: list[dict]) ->
     # Check if data appears sorted by this field (descending = relevance sorted)
     # Filter out NaN/Inf which break comparisons
     values_in_order = [
-        item.get(stats.name) for item in items
+        item.get(stats.name)
+        for item in items
         if stats.name in item
         and isinstance(item.get(stats.name), (int, float))
         and math.isfinite(item.get(stats.name))
     ]
     if len(values_in_order) >= 5:
         # Check for descending sort
-        descending_count = sum(1 for i in range(len(values_in_order)-1) if values_in_order[i] >= values_in_order[i+1])
+        descending_count = sum(
+            1
+            for i in range(len(values_in_order) - 1)
+            if values_in_order[i] >= values_in_order[i + 1]
+        )
         if descending_count / (len(values_in_order) - 1) > 0.7:
             confidence += 0.3
 
     # Score fields often have floating point values
     # Filter out NaN/Inf which can't be converted to int
     float_count = sum(
-        1 for v in values_in_order[:20]
-        if isinstance(v, float) and math.isfinite(v) and v != int(v)
+        1 for v in values_in_order[:20] if isinstance(v, float) and math.isfinite(v) and v != int(v)
     )
     if float_count > len(values_in_order[:20]) * 0.3:
         confidence += 0.1
@@ -505,12 +511,14 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
     outlier_indices: list[int] = []
 
     # Find potential status fields (low cardinality)
-    for field in common_fields:
-        values = [item.get(field) for item in items if isinstance(item, dict) and field in item]
+    for field_name in common_fields:
+        values = [
+            item.get(field_name) for item in items if isinstance(item, dict) and field_name in item
+        ]
 
         # Skip if too few values or non-hashable
         try:
-            unique_values = set(str(v) for v in values if v is not None)
+            unique_values = {str(v) for v in values if v is not None}
         except Exception:
             continue
 
@@ -536,9 +544,9 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
             dominant_value = max(value_counts.keys(), key=lambda k: value_counts[k])
 
             for i, item in enumerate(items):
-                if not isinstance(item, dict) or field not in item:
+                if not isinstance(item, dict) or field_name not in item:
                     continue
-                item_value = str(item[field]) if item[field] is not None else "__none__"
+                item_value = str(item[field_name]) if item[field_name] is not None else "__none__"
                 if item_value != dominant_value:
                     outlier_indices.append(i)
 
@@ -548,10 +556,22 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
 # Error keywords for PRESERVATION guarantee (not crushability detection)
 # This is for the quality guarantee: "ALL error items are ALWAYS preserved"
 # regardless of how common they are. Used in _prioritize_indices().
-_ERROR_KEYWORDS_FOR_PRESERVATION = frozenset({
-    "error", "exception", "failed", "failure", "critical", "fatal",
-    "crash", "panic", "abort", "timeout", "denied", "rejected",
-})
+_ERROR_KEYWORDS_FOR_PRESERVATION = frozenset(
+    {
+        "error",
+        "exception",
+        "failed",
+        "failure",
+        "critical",
+        "fatal",
+        "crash",
+        "panic",
+        "abort",
+        "timeout",
+        "denied",
+        "rejected",
+    }
+)
 
 
 def _detect_error_items_for_preservation(items: list[dict]) -> list[int]:
@@ -599,6 +619,7 @@ class CrushabilityAnalysis:
 
     High variability + No signal = DON'T CRUSH
     """
+
     crushable: bool
     confidence: float  # 0.0 to 1.0
     reason: str
@@ -617,6 +638,7 @@ class CrushabilityAnalysis:
 @dataclass
 class FieldStats:
     """Statistics for a single field across array items."""
+
     name: str
     field_type: str  # "numeric", "string", "boolean", "object", "array", "null"
     count: int
@@ -640,6 +662,7 @@ class FieldStats:
 @dataclass
 class ArrayAnalysis:
     """Complete analysis of an array."""
+
     item_count: int
     field_stats: dict[str, FieldStats]
     detected_pattern: str  # "time_series", "logs", "search_results", "generic"
@@ -652,6 +675,7 @@ class ArrayAnalysis:
 @dataclass
 class CompressionPlan:
     """Plan for how to compress an array."""
+
     strategy: CompressionStrategy
     keep_indices: list[int] = field(default_factory=list)
     constant_fields: dict[str, Any] = field(default_factory=dict)
@@ -668,19 +692,20 @@ class SmartCrusherConfig:
     SCHEMA-PRESERVING: Output contains only items from the original array.
     No wrappers, no generated text, no metadata keys.
     """
+
     enabled: bool = True
-    min_items_to_analyze: int = 5      # Don't analyze tiny arrays
-    min_tokens_to_crush: int = 200     # Only crush if > N tokens
-    variance_threshold: float = 2.0    # Std devs for change point detection
+    min_items_to_analyze: int = 5  # Don't analyze tiny arrays
+    min_tokens_to_crush: int = 200  # Only crush if > N tokens
+    variance_threshold: float = 2.0  # Std devs for change point detection
     uniqueness_threshold: float = 0.1  # Below this = nearly constant
     similarity_threshold: float = 0.8  # For clustering similar strings
-    max_items_after_crush: int = 15    # Target max items in output
+    max_items_after_crush: int = 15  # Target max items in output
     preserve_change_points: bool = True
     factor_out_constants: bool = False  # Disabled - preserves original schema
-    include_summaries: bool = False     # Disabled - no generated text
+    include_summaries: bool = False  # Disabled - no generated text
 
     # Feedback loop integration
-    use_feedback_hints: bool = True    # Use learned patterns to adjust compression
+    use_feedback_hints: bool = True  # Use learned patterns to adjust compression
 
     # LOW FIX #21: Make TOIN confidence threshold configurable
     # Minimum confidence required to apply TOIN recommendations
@@ -719,11 +744,7 @@ class SmartAnalyzer:
         pattern = self._detect_pattern(field_stats, items)
 
         # Extract constants
-        constant_fields = {
-            k: v.constant_value
-            for k, v in field_stats.items()
-            if v.is_constant
-        }
+        constant_fields = {k: v.constant_value for k, v in field_stats.items() if v.is_constant}
 
         # CRITICAL: Analyze crushability BEFORE selecting strategy
         crushability = self.analyze_crushability(items, field_stats)
@@ -801,10 +822,7 @@ class SmartAnalyzer:
         # Numeric-specific analysis
         if field_type == "numeric":
             # Filter out NaN and Infinity which break statistics functions
-            nums = [
-                v for v in non_null_values
-                if isinstance(v, (int, float)) and math.isfinite(v)
-            ]
+            nums = [v for v in non_null_values if isinstance(v, (int, float)) and math.isfinite(v)]
             if nums:
                 try:
                     stats.min_val = min(nums)
@@ -845,8 +863,8 @@ class SmartAnalyzer:
 
         # Sliding window comparison
         for i in range(window, len(values) - window):
-            before_mean = statistics.mean(values[i-window:i])
-            after_mean = statistics.mean(values[i:i+window])
+            before_mean = statistics.mean(values[i - window : i])
+            after_mean = statistics.mean(values[i : i + window])
 
             if abs(after_mean - before_mean) > threshold:
                 change_points.append(i)
@@ -875,8 +893,7 @@ class SmartAnalyzer:
 
         numeric_fields = [k for k, v in field_stats.items() if v.field_type == "numeric"]
         has_numeric_with_variance = any(
-            field_stats[k].variance and field_stats[k].variance > 0
-            for k in numeric_fields
+            field_stats[k].variance and field_stats[k].variance > 0 for k in numeric_fields
         )
 
         if has_timestamp and has_numeric_with_variance:
@@ -887,7 +904,7 @@ class SmartAnalyzer:
         has_message_like = False
         has_level_like = False
 
-        for name, stats in field_stats.items():
+        for _name, stats in field_stats.items():
             if stats.field_type == "string":
                 # High-cardinality string = likely message field
                 if stats.unique_ratio > 0.5 and stats.avg_length and stats.avg_length > 20:
@@ -900,7 +917,7 @@ class SmartAnalyzer:
             return "logs"
 
         # Check for search results pattern using STATISTICAL score detection
-        for name, stats in field_stats.items():
+        for _name, stats in field_stats.items():
             is_score, confidence = _detect_score_field_statistically(stats, items)
             if is_score and confidence >= 0.5:
                 return "search_results"
@@ -920,13 +937,13 @@ class SmartAnalyzer:
             if stats.field_type == "string":
                 # Sample some values
                 sample_values = [
-                    item.get(name) for item in items[:10]
-                    if isinstance(item.get(name), str)
+                    item.get(name) for item in items[:10] if isinstance(item.get(name), str)
                 ]
                 if sample_values:
                     # Check if values look like dates/datetimes
                     iso_count = sum(
-                        1 for v in sample_values
+                        1
+                        for v in sample_values
                         if iso_datetime_pattern.match(v) or iso_date_pattern.match(v)
                     )
                     if iso_count / len(sample_values) > 0.5:
@@ -982,12 +999,10 @@ class SmartAnalyzer:
 
         # 2. Detect score/rank field STATISTICALLY (no hardcoded field names)
         has_score_field = False
-        score_field_name = None
         for name, stats in field_stats.items():
             is_score, confidence = _detect_score_field_statistically(stats, items)
             if is_score:
                 has_score_field = True
-                score_field_name = name
                 signals_present.append(f"score_field:{name}(conf={confidence:.2f})")
                 break
         if not has_score_field:
@@ -1019,7 +1034,7 @@ class SmartAnalyzer:
         anomaly_indices: set[int] = set()
         for stats in field_stats.values():
             if stats.field_type == "numeric" and stats.mean_val is not None and stats.variance:
-                std = stats.variance ** 0.5
+                std = stats.variance**0.5
                 if std > 0:
                     threshold = self.config.variance_threshold * std
                     for i, item in enumerate(items):
@@ -1036,22 +1051,20 @@ class SmartAnalyzer:
 
         # 5. Compute average string uniqueness (EXCLUDING statistically-detected ID fields)
         string_stats = [
-            s for s in field_stats.values()
-            if s.field_type == "string" and s.name != id_field_name
+            s for s in field_stats.values() if s.field_type == "string" and s.name != id_field_name
         ]
         avg_string_uniqueness = (
-            statistics.mean(s.unique_ratio for s in string_stats)
-            if string_stats else 0.0
+            statistics.mean(s.unique_ratio for s in string_stats) if string_stats else 0.0
         )
 
         # Compute uniqueness of non-ID numeric fields
         non_id_numeric_stats = [
-            s for s in field_stats.values()
-            if s.field_type == "numeric" and s.name != id_field_name
+            s for s in field_stats.values() if s.field_type == "numeric" and s.name != id_field_name
         ]
         avg_non_id_numeric_uniqueness = (
             statistics.mean(s.unique_ratio for s in non_id_numeric_stats)
-            if non_id_numeric_stats else 0.0
+            if non_id_numeric_stats
+            else 0.0
         )
 
         # Combined uniqueness metric (including ID fields)
@@ -1062,8 +1075,7 @@ class SmartAnalyzer:
 
         # 6. Check for change points (importance signal for time series)
         has_change_points = any(
-            stats.change_points for stats in field_stats.values()
-            if stats.field_type == "numeric"
+            stats.change_points for stats in field_stats.values() if stats.field_type == "numeric"
         )
         if has_change_points:
             signals_present.append("change_points")
@@ -1195,8 +1207,7 @@ class SmartAnalyzer:
         if pattern == "logs":
             # Check if messages are clusterable (low-medium uniqueness)
             message_field = next(
-                (v for k, v in field_stats.items() if "message" in k.lower()),
-                None
+                (v for k, v in field_stats.items() if "message" in k.lower()), None
             )
             if message_field and message_field.unique_ratio < 0.5:
                 return CompressionStrategy.CLUSTER_SAMPLE
@@ -1208,10 +1219,7 @@ class SmartAnalyzer:
         return CompressionStrategy.SMART_SAMPLE
 
     def _estimate_reduction(
-        self,
-        field_stats: dict[str, FieldStats],
-        strategy: CompressionStrategy,
-        item_count: int
+        self, field_stats: dict[str, FieldStats], strategy: CompressionStrategy, item_count: int
     ) -> float:
         """Estimate token reduction ratio."""
         if strategy == CompressionStrategy.NONE:
@@ -1473,7 +1481,7 @@ class SmartCrusher(Transform):
         if analysis and analysis.field_stats:
             for field_name, stats in analysis.field_stats.items():
                 if stats.field_type == "numeric" and stats.mean_val is not None and stats.variance:
-                    std = stats.variance ** 0.5
+                    std = stats.variance**0.5
                     if std > 0:
                         threshold = self.config.variance_threshold * std
                         for i, item in enumerate(items):
@@ -1668,9 +1676,7 @@ class SmartCrusher(Transform):
             warnings=warnings,
         )
 
-    def _extract_context_from_messages(
-        self, messages: list[dict[str, Any]]
-    ) -> str:
+    def _extract_context_from_messages(self, messages: list[dict[str, Any]]) -> str:
         """Extract query context from recent messages for relevance scoring.
 
         Builds a context string from:
@@ -1772,8 +1778,7 @@ class SmartCrusher(Transform):
             # Check if this array should be crushed
             # Must have enough items AND all items must be dicts (not mixed types)
             all_dicts = value and all(isinstance(item, dict) for item in value)
-            if (len(value) >= self.config.min_items_to_analyze and all_dicts):
-
+            if len(value) >= self.config.min_items_to_analyze and all_dicts:
                 crushed, strategy, ccr_hash = self._crush_array(value, query_context, tool_name)
                 info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
 
@@ -1786,7 +1791,9 @@ class SmartCrusher(Transform):
                 # Process items recursively
                 processed = []
                 for item in value:
-                    p_item, p_info, p_markers = self._process_value(item, depth + 1, query_context, tool_name)
+                    p_item, p_info, p_markers = self._process_value(
+                        item, depth + 1, query_context, tool_name
+                    )
                     processed.append(p_item)
                     if p_info:
                         info_parts.append(p_info)
@@ -1797,7 +1804,9 @@ class SmartCrusher(Transform):
             # Process values recursively
             processed = {}
             for k, v in value.items():
-                p_val, p_info, p_markers = self._process_value(v, depth + 1, query_context, tool_name)
+                p_val, p_info, p_markers = self._process_value(
+                    v, depth + 1, query_context, tool_name
+                )
                 processed[k] = p_val
                 if p_info:
                     info_parts.append(p_info)
@@ -1850,7 +1859,10 @@ class SmartCrusher(Transform):
         toin_recommended_strategy: str | None = None
         toin_compression_level: str | None = None
         # LOW FIX #21: Use configurable threshold instead of hardcoded 0.5
-        if toin_hint.source in ("network", "local") and toin_hint.confidence >= self.config.toin_confidence_threshold:
+        if (
+            toin_hint.source in ("network", "local")
+            and toin_hint.confidence >= self.config.toin_confidence_threshold
+        ):
             # TOIN recommendations take precedence over local feedback
             effective_max_items = toin_hint.max_items
             toin_preserve_fields = toin_hint.preserve_fields  # Fields to never remove
@@ -1879,9 +1891,7 @@ class SmartCrusher(Transform):
             # Note: CompressionFeedback stores actual field names, but _plan methods
             # expect SHA256[:8] hashes for privacy-preserving comparison
             if hints.preserve_fields:
-                toin_preserve_fields = [
-                    _hash_field_name(field) for field in hints.preserve_fields
-                ]
+                toin_preserve_fields = [_hash_field_name(field) for field in hints.preserve_fields]
 
             # Use recommended_strategy from local feedback if not already set by TOIN
             if hints.recommended_strategy and not toin_recommended_strategy:
@@ -1916,10 +1926,7 @@ class SmartCrusher(Transform):
                     return items, "skip:toin_level_none", None
                 elif toin_compression_level == "conservative":
                     # Be conservative - keep more items
-                    effective_max_items = max(
-                        effective_max_items,
-                        min(50, len(items) // 2)
-                    )
+                    effective_max_items = max(effective_max_items, min(50, len(items) // 2))
                 elif toin_compression_level == "aggressive":
                     # Be aggressive - keep fewer items
                     effective_max_items = min(effective_max_items, 15)
@@ -1928,7 +1935,9 @@ class SmartCrusher(Transform):
             # Pass TOIN preserve_fields so items with those fields get priority
             # Pass effective_max_items for thread-safe compression
             plan = self._create_plan(
-                analysis, items, query_context,
+                analysis,
+                items,
+                query_context,
                 preserve_fields=toin_preserve_fields or None,
                 effective_max_items=effective_max_items,
             )
@@ -2035,7 +2044,11 @@ class SmartCrusher(Transform):
             effective_max_items: Thread-safe max items limit (defaults to config value).
         """
         # Use provided effective_max_items or fall back to config
-        max_items = effective_max_items if effective_max_items is not None else self.config.max_items_after_crush
+        max_items = (
+            effective_max_items
+            if effective_max_items is not None
+            else self.config.max_items_after_crush
+        )
 
         plan = CompressionPlan(
             strategy=analysis.recommended_strategy,
@@ -2048,16 +2061,24 @@ class SmartCrusher(Transform):
             return plan
 
         if analysis.recommended_strategy == CompressionStrategy.TIME_SERIES:
-            plan = self._plan_time_series(analysis, items, plan, query_context, preserve_fields, max_items)
+            plan = self._plan_time_series(
+                analysis, items, plan, query_context, preserve_fields, max_items
+            )
 
         elif analysis.recommended_strategy == CompressionStrategy.CLUSTER_SAMPLE:
-            plan = self._plan_cluster_sample(analysis, items, plan, query_context, preserve_fields, max_items)
+            plan = self._plan_cluster_sample(
+                analysis, items, plan, query_context, preserve_fields, max_items
+            )
 
         elif analysis.recommended_strategy == CompressionStrategy.TOP_N:
-            plan = self._plan_top_n(analysis, items, plan, query_context, preserve_fields, max_items)
+            plan = self._plan_top_n(
+                analysis, items, plan, query_context, preserve_fields, max_items
+            )
 
         else:  # SMART_SAMPLE or NONE
-            plan = self._plan_smart_sample(analysis, items, plan, query_context, preserve_fields, max_items)
+            plan = self._plan_smart_sample(
+                analysis, items, plan, query_context, preserve_fields, max_items
+            )
 
         return plan
 
@@ -2262,17 +2283,16 @@ class SmartCrusher(Transform):
                 max_confidence = confidence
 
         if not score_field:
-            return self._plan_smart_sample(analysis, items, plan, query_context, preserve_fields, effective_max)
+            return self._plan_smart_sample(
+                analysis, items, plan, query_context, preserve_fields, effective_max
+            )
 
         plan.sort_field = score_field
         keep_indices = set()
 
         # 1. TOP N by score FIRST (the primary relevance signal)
         # The original system's score field is the authoritative ranking
-        scored_items = [
-            (i, item.get(score_field, 0))
-            for i, item in enumerate(items)
-        ]
+        scored_items = [(i, item.get(score_field, 0)) for i, item in enumerate(items)]
         scored_items.sort(key=lambda x: x[1], reverse=True)
 
         # Reserve slots for outliers
@@ -2370,7 +2390,7 @@ class SmartCrusher(Transform):
         # 4. Anomalous numeric items (> 2 std from mean)
         for name, stats in analysis.field_stats.items():
             if stats.field_type == "numeric" and stats.mean_val is not None and stats.variance:
-                std = stats.variance ** 0.5
+                std = stats.variance**0.5
                 if std > 0:
                     threshold = self.config.variance_threshold * std
                     for i, item in enumerate(items):
@@ -2412,10 +2432,7 @@ class SmartCrusher(Transform):
         return plan
 
     def _execute_plan(
-        self,
-        plan: CompressionPlan,
-        items: list[dict],
-        analysis: ArrayAnalysis
+        self, plan: CompressionPlan, items: list[dict], analysis: ArrayAnalysis
     ) -> list:
         """Execute a compression plan and return crushed array.
 

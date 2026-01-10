@@ -70,8 +70,7 @@ class LiteLLMTokenCounter:
         """
         if not LITELLM_AVAILABLE:
             raise RuntimeError(
-                "LiteLLM is required for LiteLLMProvider. "
-                "Install with: pip install litellm"
+                "LiteLLM is required for LiteLLMProvider. Install with: pip install litellm"
             )
         self.model = model
         # Fallback estimator for when litellm counting fails
@@ -163,8 +162,7 @@ class LiteLLMProvider(Provider):
         """Initialize LiteLLM provider."""
         if not LITELLM_AVAILABLE:
             raise RuntimeError(
-                "LiteLLM is required for LiteLLMProvider. "
-                "Install with: pip install litellm"
+                "LiteLLM is required for LiteLLMProvider. Install with: pip install litellm"
             )
 
     @property

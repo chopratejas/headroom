@@ -3,15 +3,15 @@
 import os
 import tempfile
 import time
-import json
+
 import pytest
 
 from headroom.telemetry import (
-    ToolSignature,
-    ToolIntelligenceNetwork,
-    ToolPattern,
     CompressionHint,
     TOINConfig,
+    ToolIntelligenceNetwork,
+    ToolPattern,
+    ToolSignature,
     get_toin,
     reset_toin,
 )

@@ -42,10 +42,9 @@ Usage:
 
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from .base import (
     BaseCacheOptimizer,
@@ -233,12 +232,8 @@ class OpenAICacheOptimizer(BaseCacheOptimizer):
                     warnings.extend(result.warnings)
 
                     if result.spans:
-                        transforms_applied.append(
-                            f"extracted_{len(result.spans)}_dynamic_elements"
-                        )
-                        transforms_applied.extend(
-                            f"tier_{tier}" for tier in result.tiers_used
-                        )
+                        transforms_applied.append(f"extracted_{len(result.spans)}_dynamic_elements")
+                        transforms_applied.extend(f"tier_{tier}" for tier in result.tiers_used)
 
                     # Get static content with dynamic parts removed
                     stabilized = result.static_content
@@ -382,8 +377,7 @@ class OpenAICacheOptimizer(BaseCacheOptimizer):
         # Check if prefix is stable
         current_hash = self._compute_prefix_hash(system_content)
         likely_hit = (
-            self._previous_prefix_hash is not None
-            and current_hash == self._previous_prefix_hash
+            self._previous_prefix_hash is not None and current_hash == self._previous_prefix_hash
         )
 
         if likely_hit:
@@ -427,7 +421,9 @@ class OpenAICacheOptimizer(BaseCacheOptimizer):
                 leading = len(line) - len(line.lstrip())
                 # Collapse multiple spaces in content (not indentation)
                 content_part = " ".join(stripped.split())
-                normalized_lines.append(" " * leading + content_part[leading:] if leading else content_part)
+                normalized_lines.append(
+                    " " * leading + content_part[leading:] if leading else content_part
+                )
             else:
                 normalized_lines.append("")
 
@@ -581,11 +577,8 @@ class OpenAICacheOptimizer(BaseCacheOptimizer):
                 for block in content:
                     if isinstance(block, dict):
                         if block.get("type") == "text":
-                            total += self._count_tokens_estimate(
-                                block.get("text", "")
-                            )
+                            total += self._count_tokens_estimate(block.get("text", ""))
                         elif block.get("type") == "image_url":
                             # Rough estimate for images
                             total += 85  # Base cost
         return total
-

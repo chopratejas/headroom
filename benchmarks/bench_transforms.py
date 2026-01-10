@@ -26,7 +26,6 @@ Run with:
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 
@@ -205,8 +204,16 @@ class TestSmartCrusherBenchmarks:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
-                    {"id": "call_2", "type": "function", "function": {"name": "logs", "arguments": "{}"}},
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "logs", "arguments": "{}"},
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "call_1", "content": json.dumps(items_100)},
@@ -345,7 +352,10 @@ And multiple blank lines."""
         Tests edge case of multiple system prompts.
         """
         messages = [
-            {"role": "system", "content": "You are a helpful assistant.\n\nCurrent date: 2025-01-06"},
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\n\nCurrent date: 2025-01-06",
+            },
             {"role": "system", "content": "Additional context: Technical support mode."},
             {"role": "user", "content": "Hello"},
         ]
@@ -511,12 +521,14 @@ class TestTransformPipelineBenchmarks:
         return provider
 
     @pytest.fixture
-    def pipeline(self, smart_crusher_config, cache_aligner_config, rolling_window_config, mock_provider):
+    def pipeline(
+        self, smart_crusher_config, cache_aligner_config, rolling_window_config, mock_provider
+    ):
         """Create transform pipeline."""
-        from headroom.transforms.pipeline import TransformPipeline
         from headroom.transforms.cache_aligner import CacheAligner
-        from headroom.transforms.smart_crusher import SmartCrusher
+        from headroom.transforms.pipeline import TransformPipeline
         from headroom.transforms.rolling_window import RollingWindow
+        from headroom.transforms.smart_crusher import SmartCrusher
 
         return TransformPipeline(
             transforms=[

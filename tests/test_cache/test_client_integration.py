@@ -1,15 +1,15 @@
 """Tests for HeadroomClient cache optimizer integration."""
 
-import pytest
-import tempfile
 import os
-from unittest.mock import MagicMock, patch
+import tempfile
+from unittest.mock import MagicMock
+
+import pytest
+
 from headroom import (
-    HeadroomClient,
     AnthropicCacheOptimizer,
-    CacheOptimizerRegistry,
+    HeadroomClient,
 )
-from headroom.providers import AnthropicProvider, OpenAIProvider
 
 
 @pytest.fixture

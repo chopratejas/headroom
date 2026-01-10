@@ -2,11 +2,8 @@
 
 import json
 
-import pytest
-
 from headroom import OpenAIProvider, Tokenizer, ToolCrusherConfig
 from headroom.transforms import ToolCrusher
-
 
 # Create a shared provider for tests
 _provider = OpenAIProvider()
@@ -120,7 +117,7 @@ class TestToolCrusher:
 
     def test_digest_marker_added(self):
         """Digest marker should be added to crushed content."""
-        large_data = {"items": [i for i in range(100)]}
+        large_data = {"items": list(range(100))}
 
         messages = [
             {"role": "system", "content": "You are helpful."},

@@ -1,7 +1,6 @@
 """Tests for CCR tool injection and MCP integration."""
 
 import json
-import pytest
 
 from headroom.ccr import (
     CCR_TOOL_NAME,
@@ -250,9 +249,7 @@ class TestCCRToolInjector:
             inject_tool=True,
             inject_system_instructions=True,
         )
-        updated_messages, updated_tools, was_injected = injector.process_request(
-            messages, None
-        )
+        updated_messages, updated_tools, was_injected = injector.process_request(messages, None)
 
         assert was_injected
         assert updated_tools is not None

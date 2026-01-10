@@ -6,12 +6,12 @@ import logging
 import re
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from ..config import CacheAlignerConfig, CachePrefixMetrics, TransformResult
 from ..tokenizer import Tokenizer
 from ..utils import compute_short_hash, deep_copy_messages
 from .base import Transform
+
+logger = logging.getLogger(__name__)
 
 
 class CacheAligner(Transform):
@@ -44,9 +44,7 @@ class CacheAligner(Transform):
 
     def _compile_patterns(self) -> None:
         """Compile regex patterns for efficiency."""
-        self._compiled_patterns = [
-            re.compile(pattern) for pattern in self.config.date_patterns
-        ]
+        self._compiled_patterns = [re.compile(pattern) for pattern in self.config.date_patterns]
 
     def should_apply(
         self,
@@ -121,8 +119,7 @@ class CacheAligner(Transform):
         prefix_bytes = len(stable_prefix_content.encode("utf-8"))
         prefix_tokens_est = tokenizer.count_text(stable_prefix_content)
         prefix_changed = (
-            self._previous_prefix_hash is not None
-            and self._previous_prefix_hash != stable_hash
+            self._previous_prefix_hash is not None and self._previous_prefix_hash != stable_hash
         )
         previous_hash = self._previous_prefix_hash
 

@@ -10,20 +10,19 @@ These tests verify that:
 
 import json
 import time
+
 import pytest
+
 from headroom.cache.compression_store import (
     CompressionStore,
-    CompressionEntry,
-    RetrievalEvent,
     get_compression_store,
     reset_compression_store,
 )
+from headroom.config import CCRConfig
 from headroom.transforms.smart_crusher import (
-    SmartCrusher,
     SmartCrusherConfig,
     smart_crush_tool_output,
 )
-from headroom.config import CCRConfig
 
 
 class TestCompressionStore:
@@ -52,7 +51,9 @@ class TestCompressionStore:
             compressed_item_count=10,
         )
 
-        assert len(hash_key) == 24  # SHA256 truncated to 24 chars (96 bits for collision resistance)
+        assert (
+            len(hash_key) == 24
+        )  # SHA256 truncated to 24 chars (96 bits for collision resistance)
 
         entry = store.retrieve(hash_key)
         assert entry is not None
@@ -246,10 +247,7 @@ class TestSmartCrusherCCRIntegration:
 
     def test_compression_caches_original(self):
         """SmartCrusher caches original content when compressing."""
-        items = [
-            {"id": i, "score": 100 - i, "data": f"item_{i}"}
-            for i in range(100)
-        ]
+        items = [{"id": i, "score": 100 - i, "data": f"item_{i}"} for i in range(100)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=15)
@@ -259,9 +257,7 @@ class TestSmartCrusherCCRIntegration:
             min_items_to_cache=10,
         )
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(
-            content, config, ccr_config
-        )
+        compressed_str, was_modified, _ = smart_crush_tool_output(content, config, ccr_config)
 
         assert was_modified
 
@@ -272,10 +268,7 @@ class TestSmartCrusherCCRIntegration:
 
     def test_retrieval_marker_injected(self):
         """CCR marker is injected when configured."""
-        items = [
-            {"id": i, "score": 100 - i, "data": f"item_{i}"}
-            for i in range(100)
-        ]
+        items = [{"id": i, "score": 100 - i, "data": f"item_{i}"} for i in range(100)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=15)
@@ -285,9 +278,7 @@ class TestSmartCrusherCCRIntegration:
             min_items_to_cache=10,
         )
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(
-            content, config, ccr_config
-        )
+        compressed_str, was_modified, _ = smart_crush_tool_output(content, config, ccr_config)
 
         assert was_modified
         # Marker should be present
@@ -314,18 +305,13 @@ class TestSmartCrusherCCRIntegration:
     def test_uncrushed_data_not_cached(self):
         """Data that doesn't get crushed is not cached."""
         # DB results with unique IDs - shouldn't be crushed
-        items = [
-            {"id": i, "name": f"User {i}", "email": f"user{i}@test.com"}
-            for i in range(30)
-        ]
+        items = [{"id": i, "name": f"User {i}", "email": f"user{i}@test.com"} for i in range(30)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=10)
         ccr_config = CCRConfig(enabled=True, min_items_to_cache=10)
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(
-            content, config, ccr_config
-        )
+        compressed_str, was_modified, _ = smart_crush_tool_output(content, config, ccr_config)
 
         # If not modified, shouldn't be cached
         if not was_modified:
@@ -336,8 +322,7 @@ class TestSmartCrusherCCRIntegration:
     def test_can_retrieve_after_compression(self):
         """Can retrieve original content after compression."""
         items = [
-            {"id": i, "score": 100 - i, "content": f"Document about topic {i}"}
-            for i in range(100)
+            {"id": i, "score": 100 - i, "content": f"Document about topic {i}"} for i in range(100)
         ]
         content = json.dumps(items)
 
@@ -348,16 +333,15 @@ class TestSmartCrusherCCRIntegration:
             min_items_to_cache=10,
         )
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(
-            content, config, ccr_config
-        )
+        compressed_str, was_modified, _ = smart_crush_tool_output(content, config, ccr_config)
 
         assert was_modified
 
         # Extract hash from marker
         # Marker format: [100 items compressed to 15. Retrieve more: hash=abc123...]
         import re
-        match = re.search(r'hash=([a-f0-9]+)', compressed_str)
+
+        match = re.search(r"hash=([a-f0-9]+)", compressed_str)
         assert match is not None, f"No hash found in: {compressed_str}"
 
         hash_key = match.group(1)
@@ -376,10 +360,7 @@ class TestSmartCrusherCCRIntegration:
             {"id": 1, "content": "Authentication error: invalid token"},
             {"id": 2, "content": "Database connection successful"},
             {"id": 3, "content": "User login completed"},
-        ] + [
-            {"id": i, "content": f"Generic log entry {i}"}
-            for i in range(4, 104)
-        ]
+        ] + [{"id": i, "content": f"Generic log entry {i}"} for i in range(4, 104)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=15)
@@ -389,15 +370,14 @@ class TestSmartCrusherCCRIntegration:
             min_items_to_cache=10,
         )
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(
-            content, config, ccr_config
-        )
+        compressed_str, was_modified, _ = smart_crush_tool_output(content, config, ccr_config)
 
         assert was_modified
 
         # Extract hash
         import re
-        match = re.search(r'hash=([a-f0-9]+)', compressed_str)
+
+        match = re.search(r"hash=([a-f0-9]+)", compressed_str)
         hash_key = match.group(1)
 
         # Search for authentication items
@@ -424,10 +404,7 @@ class TestCCRConfig:
 
     def test_custom_marker_template(self):
         """Custom marker template is used."""
-        items = [
-            {"id": i, "score": 100 - i}
-            for i in range(100)
-        ]
+        items = [{"id": i, "score": 100 - i} for i in range(100)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=15)
@@ -438,9 +415,7 @@ class TestCCRConfig:
             marker_template="\n[CUSTOM: {original_count} -> {compressed_count}, key={hash}]",
         )
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(
-            content, config, ccr_config
-        )
+        compressed_str, was_modified, _ = smart_crush_tool_output(content, config, ccr_config)
 
         if was_modified:
             assert "CUSTOM:" in compressed_str or "key=" in compressed_str
@@ -595,10 +570,7 @@ class TestCCREdgeCases:
         """When CCR disabled, no caching occurs."""
         reset_compression_store()
 
-        items = [
-            {"id": i, "score": 100 - i}
-            for i in range(100)
-        ]
+        items = [{"id": i, "score": 100 - i} for i in range(100)]
         content = json.dumps(items)
 
         config = SmartCrusherConfig(max_items_after_crush=15)
@@ -635,10 +607,7 @@ class TestCCREdgeCases:
             except Exception as e:
                 errors.append(str(e))
 
-        threads = [
-            threading.Thread(target=store_and_retrieve, args=(i,))
-            for i in range(20)
-        ]
+        threads = [threading.Thread(target=store_and_retrieve, args=(i,)) for i in range(20)]
 
         for t in threads:
             t.start()

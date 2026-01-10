@@ -108,7 +108,7 @@ class CohereTokenCounter:
                 "For accurate counting, pass a Cohere client: "
                 "CohereProvider(client=cohere.ClientV2())",
                 UserWarning,
-                stacklevel=4
+                stacklevel=4,
             )
             _FALLBACK_WARNING_SHOWN = True
 

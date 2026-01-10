@@ -24,21 +24,34 @@ from headroom.providers import OpenAIProvider
 # Test Data Generators (Deterministic for eval reproducibility)
 # ============================================================================
 
+
 def generate_slack_with_specific_errors(seed: int = 42) -> tuple[str, list[dict]]:
     """Generate Slack messages with SPECIFIC errors we'll query for."""
     random.seed(seed)
 
     # These are the "needle" errors we'll ask the agent to find
     critical_errors = [
-        {"id": "msg_17", "channel": "#incidents", "user": "alice",
-         "text": "CRITICAL: Payment service is DOWN - customers cannot checkout. Error: ConnectionRefused to payment-db-01",
-         "timestamp": "2025-01-06T03:45:00Z"},
-        {"id": "msg_42", "channel": "#alerts", "user": "bob",
-         "text": "ERROR: Auth service returning 500s. Stack trace shows NullPointerException in TokenValidator.java:127",
-         "timestamp": "2025-01-06T02:30:00Z"},
-        {"id": "msg_89", "channel": "#engineering", "user": "charlie",
-         "text": "FAILED: Deploy to prod-us-east failed. Reason: Health check timeout after 300s on api-gateway-03",
-         "timestamp": "2025-01-05T23:15:00Z"},
+        {
+            "id": "msg_17",
+            "channel": "#incidents",
+            "user": "alice",
+            "text": "CRITICAL: Payment service is DOWN - customers cannot checkout. Error: ConnectionRefused to payment-db-01",
+            "timestamp": "2025-01-06T03:45:00Z",
+        },
+        {
+            "id": "msg_42",
+            "channel": "#alerts",
+            "user": "bob",
+            "text": "ERROR: Auth service returning 500s. Stack trace shows NullPointerException in TokenValidator.java:127",
+            "timestamp": "2025-01-06T02:30:00Z",
+        },
+        {
+            "id": "msg_89",
+            "channel": "#engineering",
+            "user": "charlie",
+            "text": "FAILED: Deploy to prod-us-east failed. Reason: Health check timeout after 300s on api-gateway-03",
+            "timestamp": "2025-01-05T23:15:00Z",
+        },
     ]
 
     # Generate noise messages
@@ -62,13 +75,15 @@ def generate_slack_with_specific_errors(seed: int = 42) -> tuple[str, list[dict]
             messages.append(critical_errors[error_idx])
             error_idx += 1
         else:
-            messages.append({
-                "id": f"msg_{i}",
-                "channel": random.choice(channels),
-                "user": random.choice(users),
-                "text": random.choice(noise_messages),
-                "timestamp": (datetime.now() - timedelta(hours=i)).isoformat(),
-            })
+            messages.append(
+                {
+                    "id": f"msg_{i}",
+                    "channel": random.choice(channels),
+                    "user": random.choice(users),
+                    "text": random.choice(noise_messages),
+                    "timestamp": (datetime.now() - timedelta(hours=i)).isoformat(),
+                }
+            )
 
     return json.dumps({"messages": messages, "total": 150}), critical_errors
 
@@ -79,17 +94,43 @@ def generate_logs_with_specific_errors(seed: int = 43) -> tuple[str, list[dict]]
 
     # These are the "needle" errors
     critical_logs = [
-        {"timestamp": "2025-01-06T03:44:58Z", "level": "FATAL", "service": "payment-service",
-         "message": "Cannot connect to payment-db-01: Connection refused", "trace_id": "trace_payment_001"},
-        {"timestamp": "2025-01-06T02:29:55Z", "level": "ERROR", "service": "auth-service",
-         "message": "NullPointerException in TokenValidator.validate() at line 127", "trace_id": "trace_auth_001"},
-        {"timestamp": "2025-01-05T23:14:30Z", "level": "ERROR", "service": "api-gateway",
-         "message": "Health check failed: timeout after 300000ms", "trace_id": "trace_gateway_001"},
-        {"timestamp": "2025-01-06T01:00:00Z", "level": "ERROR", "service": "user-service",
-         "message": "Database query timeout: SELECT * FROM users WHERE last_login > ?", "trace_id": "trace_user_001"},
+        {
+            "timestamp": "2025-01-06T03:44:58Z",
+            "level": "FATAL",
+            "service": "payment-service",
+            "message": "Cannot connect to payment-db-01: Connection refused",
+            "trace_id": "trace_payment_001",
+        },
+        {
+            "timestamp": "2025-01-06T02:29:55Z",
+            "level": "ERROR",
+            "service": "auth-service",
+            "message": "NullPointerException in TokenValidator.validate() at line 127",
+            "trace_id": "trace_auth_001",
+        },
+        {
+            "timestamp": "2025-01-05T23:14:30Z",
+            "level": "ERROR",
+            "service": "api-gateway",
+            "message": "Health check failed: timeout after 300000ms",
+            "trace_id": "trace_gateway_001",
+        },
+        {
+            "timestamp": "2025-01-06T01:00:00Z",
+            "level": "ERROR",
+            "service": "user-service",
+            "message": "Database query timeout: SELECT * FROM users WHERE last_login > ?",
+            "trace_id": "trace_user_001",
+        },
     ]
 
-    services = ["api-gateway", "auth-service", "payment-service", "user-service", "notification-service"]
+    services = [
+        "api-gateway",
+        "auth-service",
+        "payment-service",
+        "user-service",
+        "notification-service",
+    ]
     info_messages = [
         "Request processed successfully",
         "Cache hit for user session",
@@ -105,13 +146,15 @@ def generate_logs_with_specific_errors(seed: int = 43) -> tuple[str, list[dict]]
             entries.append(critical_logs[error_idx])
             error_idx += 1
         else:
-            entries.append({
-                "timestamp": (datetime.now() - timedelta(minutes=i)).isoformat(),
-                "level": random.choice(["DEBUG", "INFO", "INFO", "INFO", "WARN"]),
-                "service": random.choice(services),
-                "message": random.choice(info_messages),
-                "trace_id": f"trace_{random.randint(100000, 999999)}",
-            })
+            entries.append(
+                {
+                    "timestamp": (datetime.now() - timedelta(minutes=i)).isoformat(),
+                    "level": random.choice(["DEBUG", "INFO", "INFO", "INFO", "WARN"]),
+                    "service": random.choice(services),
+                    "message": random.choice(info_messages),
+                    "trace_id": f"trace_{random.randint(100000, 999999)}",
+                }
+            )
 
     return json.dumps({"entries": entries}), critical_logs
 
@@ -122,10 +165,24 @@ def generate_database_with_anomalies(seed: int = 44) -> tuple[str, list[dict]]:
 
     # Anomalous records we'll ask about
     anomalies = [
-        {"id": 23, "user_id": "usr_99999", "email": "admin@internal.com", "status": "ERROR: account_locked",
-         "balance": 999999.99, "login_attempts": 47, "last_login": "2025-01-06T04:00:00Z"},
-        {"id": 156, "user_id": "usr_00001", "email": "test@test.com", "status": "ERROR: validation_failed",
-         "balance": -500.00, "login_attempts": 0, "last_login": None},
+        {
+            "id": 23,
+            "user_id": "usr_99999",
+            "email": "admin@internal.com",
+            "status": "ERROR: account_locked",
+            "balance": 999999.99,
+            "login_attempts": 47,
+            "last_login": "2025-01-06T04:00:00Z",
+        },
+        {
+            "id": 156,
+            "user_id": "usr_00001",
+            "email": "test@test.com",
+            "status": "ERROR: validation_failed",
+            "balance": -500.00,
+            "login_attempts": 0,
+            "last_login": None,
+        },
     ]
 
     rows = []
@@ -135,15 +192,19 @@ def generate_database_with_anomalies(seed: int = 44) -> tuple[str, list[dict]]:
             rows.append(anomalies[anomaly_idx])
             anomaly_idx += 1
         else:
-            rows.append({
-                "id": i,
-                "user_id": f"usr_{random.randint(10000, 99999)}",
-                "email": f"user{i}@example.com",
-                "status": random.choice(["active", "active", "active", "inactive", "pending"]),
-                "balance": round(random.uniform(0, 5000), 2),
-                "login_attempts": random.randint(0, 5),
-                "last_login": (datetime.now() - timedelta(days=random.randint(0, 30))).isoformat(),
-            })
+            rows.append(
+                {
+                    "id": i,
+                    "user_id": f"usr_{random.randint(10000, 99999)}",
+                    "email": f"user{i}@example.com",
+                    "status": random.choice(["active", "active", "active", "inactive", "pending"]),
+                    "balance": round(random.uniform(0, 5000), 2),
+                    "login_attempts": random.randint(0, 5),
+                    "last_login": (
+                        datetime.now() - timedelta(days=random.randint(0, 30))
+                    ).isoformat(),
+                }
+            )
 
     return json.dumps({"rows": rows, "count": 200}), anomalies
 
@@ -152,9 +213,11 @@ def generate_database_with_anomalies(seed: int = 44) -> tuple[str, list[dict]]:
 # Eval Test Cases
 # ============================================================================
 
+
 @dataclass
 class EvalCase:
     """A single evaluation case."""
+
     name: str
     tool_name: str
     tool_output: str
@@ -192,7 +255,13 @@ def create_eval_cases() -> list[EvalCase]:
             tool_name="mcp__logs__search",
             tool_output=logs_output,
             user_query="List all ERROR and FATAL log entries with their services and messages.",
-            expected_findings=["payment-service", "auth-service", "api-gateway", "Connection refused", "NullPointerException"],
+            expected_findings=[
+                "payment-service",
+                "auth-service",
+                "api-gateway",
+                "Connection refused",
+                "NullPointerException",
+            ],
             critical_data=log_errors,
         ),
         EvalCase(
@@ -218,6 +287,7 @@ def create_eval_cases() -> list[EvalCase]:
 # Agent Simulation
 # ============================================================================
 
+
 def run_agent_with_tool_output(
     client: OpenAI,
     user_query: str,
@@ -230,11 +300,22 @@ def run_agent_with_tool_output(
     Returns: (answer, tokens_used)
     """
     messages = [
-        {"role": "system", "content": "You are a helpful assistant analyzing tool outputs. Be specific and cite exact details from the data."},
+        {
+            "role": "system",
+            "content": "You are a helpful assistant analyzing tool outputs. Be specific and cite exact details from the data.",
+        },
         {"role": "user", "content": user_query},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_1", "type": "function", "function": {"name": tool_name, "arguments": "{}"}}
-        ]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }
+            ],
+        },
         {"role": "tool", "content": tool_output, "tool_call_id": "call_1"},
     ]
 
@@ -269,6 +350,7 @@ def evaluate_answer(answer: str, expected_findings: list[str]) -> tuple[int, int
 # Main Eval Runner
 # ============================================================================
 
+
 def main():
     # Check for API key
     if not os.environ.get("OPENAI_API_KEY"):
@@ -299,7 +381,7 @@ def main():
     for case in eval_cases:
         print(f"\n{'─' * 70}")
         print(f"EVAL: {case.name}")
-        print(f"Query: \"{case.user_query}\"")
+        print(f'Query: "{case.user_query}"')
         print(f"{'─' * 70}")
 
         # Measure original tokens
@@ -312,26 +394,32 @@ def main():
             user_query=case.user_query,
         )
 
-        print(f"\n  Tool Output:")
+        print("\n  Tool Output:")
         print(f"    Original:   {original_tokens:,} tokens")
         print(f"    Compressed: {compression.compressed_tokens:,} tokens")
         print(f"    Saved:      {compression.tokens_saved:,} ({compression.compression_ratio:.1%})")
 
         # Run agent BEFORE (with original output)
-        print(f"\n  Running agent with ORIGINAL output...")
+        print("\n  Running agent with ORIGINAL output...")
         try:
             answer_before, tokens_before = run_agent_with_tool_output(
                 client, case.user_query, case.tool_name, case.tool_output
             )
-            found_before, total, missing_before = evaluate_answer(answer_before, case.expected_findings)
+            found_before, total, missing_before = evaluate_answer(
+                answer_before, case.expected_findings
+            )
         except Exception as e:
             print(f"    ERROR: {e}")
             answer_before = ""
-            found_before, total, missing_before = 0, len(case.expected_findings), case.expected_findings
+            found_before, total, missing_before = (
+                0,
+                len(case.expected_findings),
+                case.expected_findings,
+            )
             tokens_before = 0
 
         # Run agent AFTER (with compressed output)
-        print(f"  Running agent with COMPRESSED output...")
+        print("  Running agent with COMPRESSED output...")
         try:
             answer_after, tokens_after = run_agent_with_tool_output(
                 client, case.user_query, case.tool_name, compression.compressed_content
@@ -344,7 +432,7 @@ def main():
             tokens_after = 0
 
         # Results
-        print(f"\n  Results:")
+        print("\n  Results:")
         print(f"    BEFORE: Found {found_before}/{total} expected findings")
         if missing_before:
             print(f"            Missing: {missing_before}")
@@ -353,30 +441,34 @@ def main():
             print(f"            Missing: {missing_after}")
 
         # Token usage comparison
-        print(f"\n  API Token Usage:")
+        print("\n  API Token Usage:")
         print(f"    BEFORE: {tokens_before:,} tokens")
         print(f"    AFTER:  {tokens_after:,} tokens")
         if tokens_before > 0:
-            print(f"    Saved:  {tokens_before - tokens_after:,} ({(tokens_before - tokens_after) / tokens_before:.1%})")
+            print(
+                f"    Saved:  {tokens_before - tokens_after:,} ({(tokens_before - tokens_after) / tokens_before:.1%})"
+            )
 
         # Pass/Fail
         passed = found_after >= found_before
         status = "PASS" if passed else "FAIL"
         print(f"\n  Status: {status}")
         if not passed:
-            print(f"    Reason: Compressed output lost information")
+            print("    Reason: Compressed output lost information")
             print(f"    Lost findings: {set(missing_after) - set(missing_before)}")
 
-        results.append({
-            "name": case.name,
-            "passed": passed,
-            "found_before": found_before,
-            "found_after": found_after,
-            "total": total,
-            "tokens_before": tokens_before,
-            "tokens_after": tokens_after,
-            "compression_ratio": compression.compression_ratio,
-        })
+        results.append(
+            {
+                "name": case.name,
+                "passed": passed,
+                "found_before": found_before,
+                "found_after": found_after,
+                "total": total,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+                "compression_ratio": compression.compression_ratio,
+            }
+        )
 
     # Summary
     print("\n" + "=" * 70)
@@ -387,27 +479,31 @@ def main():
     total_cases = len(results)
 
     print(f"\n  Tests Passed: {passed}/{total_cases}")
-    print(f"\n  Detailed Results:")
+    print("\n  Detailed Results:")
     print(f"  {'Test Name':<35} {'Before':<10} {'After':<10} {'Compress':<10} {'Status':<8}")
-    print(f"  {'-'*35} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
+    print(f"  {'-' * 35} {'-' * 10} {'-' * 10} {'-' * 10} {'-' * 8}")
 
     for r in results:
         status = "PASS" if r["passed"] else "FAIL"
-        print(f"  {r['name']:<35} {r['found_before']}/{r['total']:<8} {r['found_after']}/{r['total']:<8} {r['compression_ratio']:.0%}{'':>6} {status:<8}")
+        print(
+            f"  {r['name']:<35} {r['found_before']}/{r['total']:<8} {r['found_after']}/{r['total']:<8} {r['compression_ratio']:.0%}{'':>6} {status:<8}"
+        )
 
     # Token savings
     total_tokens_before = sum(r["tokens_before"] for r in results)
     total_tokens_after = sum(r["tokens_after"] for r in results)
 
-    print(f"\n  Total API Tokens:")
+    print("\n  Total API Tokens:")
     print(f"    Before: {total_tokens_before:,}")
     print(f"    After:  {total_tokens_after:,}")
-    print(f"    Saved:  {total_tokens_before - total_tokens_after:,} ({(total_tokens_before - total_tokens_after) / total_tokens_before:.1%})")
+    print(
+        f"    Saved:  {total_tokens_before - total_tokens_after:,} ({(total_tokens_before - total_tokens_after) / total_tokens_before:.1%})"
+    )
 
     # Cost estimate
     cost_before = total_tokens_before * 0.15 / 1_000_000  # gpt-4o-mini input
     cost_after = total_tokens_after * 0.15 / 1_000_000
-    print(f"\n  Cost (gpt-4o-mini):")
+    print("\n  Cost (gpt-4o-mini):")
     print(f"    Before: ${cost_before:.4f}")
     print(f"    After:  ${cost_after:.4f}")
     print(f"    Saved:  ${cost_before - cost_after:.4f}")

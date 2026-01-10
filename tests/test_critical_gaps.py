@@ -4,7 +4,6 @@ These tests demonstrate bugs BEFORE the fix and verify they're fixed AFTER.
 Each test documents the specific issue being addressed.
 """
 
-import copy
 import hashlib
 import json
 import tempfile
@@ -17,12 +16,10 @@ import pytest
 
 from headroom.cache.compression_feedback import (
     CompressionFeedback,
-    LocalToolPattern,
     get_compression_feedback,
     reset_compression_feedback,
 )
 from headroom.cache.compression_store import (
-    CompressionEntry,
     CompressionStore,
     RetrievalEvent,
     get_compression_store,
@@ -244,7 +241,11 @@ class TestUserCountMergeLogic:
         imported = ToolPattern(tool_signature_hash="test_hash")
         for i in range(3):
             # User 0 overlaps with existing
-            h = hashlib.sha256(f"existing_{i}".encode()).hexdigest()[:8] if i == 0 else hashlib.sha256(f"imported_{i}".encode()).hexdigest()[:8]
+            h = (
+                hashlib.sha256(f"existing_{i}".encode()).hexdigest()[:8]
+                if i == 0
+                else hashlib.sha256(f"imported_{i}".encode()).hexdigest()[:8]
+            )
             imported._all_seen_instances.add(h)
             imported._seen_instance_hashes.append(h)
             imported.user_count += 1
@@ -460,7 +461,7 @@ class TestLockOrderingDeadlockRisk:
         deadlock_detected = threading.Event()
 
         def toin_writer():
-            for i in range(50):
+            for _i in range(50):
                 if deadlock_detected.is_set():
                     break
                 try:
@@ -491,7 +492,7 @@ class TestLockOrderingDeadlockRisk:
                 time.sleep(0.001)
 
         def feedback_reader():
-            for i in range(50):
+            for _i in range(50):
                 if deadlock_detected.is_set():
                     break
                 try:
@@ -511,6 +512,7 @@ class TestLockOrderingDeadlockRisk:
 
             # Wait with timeout
             import concurrent.futures
+
             done, not_done = concurrent.futures.wait(futures, timeout=10)
 
             if not_done:
@@ -546,7 +548,7 @@ class TestHighPriorityFixes:
             hashes.append(h)
 
         # Store 6th entry - should evict oldest
-        h6 = store.store(
+        store.store(
             original='[{"id": 6}]',
             compressed='[{"id": 6}]',
         )
@@ -640,7 +642,9 @@ class TestCriticalFixesIntegration:
         sig = ToolSignature.from_items([{"id": 1, "score": 0.9, "name": "test"}])
 
         # Simulate compression workflow
-        original = json.dumps([{"id": i, "score": 0.9 - i*0.01, "name": f"item_{i}"} for i in range(100)])
+        original = json.dumps(
+            [{"id": i, "score": 0.9 - i * 0.01, "name": f"item_{i}"} for i in range(100)]
+        )
         compressed = json.dumps([{"id": 0, "score": 0.9, "name": "item_0"}])
 
         # 1. Record compression in feedback
@@ -679,11 +683,11 @@ class TestCriticalFixesIntegration:
         assert entry.original_item_count == 100
 
         # 5. Search within cached data
-        results = store.search(hash_key, "item_50")
+        store.search(hash_key, "item_50")
         # Should find the item even though it was compressed away
 
         # 6. Get recommendation from TOIN
-        hint = toin.get_recommendation(sig, "find item_50")
+        toin.get_recommendation(sig, "find item_50")
 
         # 7. Verify stats are consistent
         toin_stats = toin.get_stats()
@@ -974,7 +978,6 @@ class TestCompressionFeedbackHighPriorityFixes:
 
         HIGH: Without timestamp tracking, events could be processed multiple times.
         """
-        from .test_ccr import TestCompressionStore as CCRTests
 
         feedback = CompressionFeedback(analysis_interval=0)  # Allow immediate re-analysis
 
@@ -983,8 +986,6 @@ class TestCompressionFeedbackHighPriorityFixes:
 
         # Manually set last_event_timestamp to simulate processed events
         # This ensures we don't double-count
-
-        initial_retrievals = feedback._total_retrievals
 
         # Call analyze multiple times - should not double-count
         for _ in range(3):
@@ -1081,8 +1082,8 @@ class TestMediumPriorityTOINFixes:
 
     def test_query_pattern_frequency_tracking(self):
         """MEDIUM FIX #10: Query patterns should be ranked by frequency, not just recency."""
-        from headroom.telemetry.toin import ToolIntelligenceNetwork, TOINConfig
         from headroom.telemetry.models import ToolSignature
+        from headroom.telemetry.toin import TOINConfig, ToolIntelligenceNetwork
 
         toin = ToolIntelligenceNetwork(TOINConfig(enabled=True))
         sig = ToolSignature.from_items([{"id": 1, "status": "active"}])
@@ -1135,8 +1136,8 @@ class TestMediumPriorityTOINFixes:
 
     def test_common_queries_bounded(self):
         """Verify common_queries list is bounded."""
-        from headroom.telemetry.toin import ToolIntelligenceNetwork, TOINConfig
         from headroom.telemetry.models import ToolSignature
+        from headroom.telemetry.toin import TOINConfig, ToolIntelligenceNetwork
 
         toin = ToolIntelligenceNetwork(TOINConfig(enabled=True))
         sig = ToolSignature.from_items([{"id": 1}])
@@ -1176,7 +1177,7 @@ class TestLowPriorityFixes:
 
         hash_key = store.store(
             original='[{"id": 1}]',
-            compressed='[1]',
+            compressed="[1]",
             original_item_count=1,
             compressed_item_count=1,
             tool_name="test",
@@ -1187,6 +1188,7 @@ class TestLowPriorityFixes:
 
         # Wait for expiry
         import time
+
         time.sleep(1.1)
 
         # Entry is expired, exists() returns False but does NOT delete
@@ -1215,8 +1217,8 @@ class TestLowPriorityFixes:
 
     def test_toin_metrics_callback(self):
         """LOW FIX #22: TOIN should emit metrics via callback."""
-        from headroom.telemetry.toin import ToolIntelligenceNetwork, TOINConfig
         from headroom.telemetry.models import ToolSignature
+        from headroom.telemetry.toin import TOINConfig, ToolIntelligenceNetwork
 
         metrics_events = []
 
@@ -1259,8 +1261,9 @@ class TestMediumPriorityCompressionStoreFixes:
 
     def test_eviction_heap_order_correct(self):
         """MEDIUM FIX #16: Eviction heap should evict oldest entries first."""
-        from headroom.cache.compression_store import CompressionStore
         import time
+
+        from headroom.cache.compression_store import CompressionStore
 
         # Small store to trigger eviction
         store = CompressionStore(max_entries=3)
@@ -1268,7 +1271,7 @@ class TestMediumPriorityCompressionStoreFixes:
         # Store entries with small delays to ensure different timestamps
         hash1 = store.store(
             original='[{"id": 1}]',
-            compressed='[1]',
+            compressed="[1]",
             original_item_count=1,
             compressed_item_count=1,
             tool_name="tool1",
@@ -1277,7 +1280,7 @@ class TestMediumPriorityCompressionStoreFixes:
 
         hash2 = store.store(
             original='[{"id": 2}]',
-            compressed='[2]',
+            compressed="[2]",
             original_item_count=1,
             compressed_item_count=1,
             tool_name="tool2",
@@ -1286,7 +1289,7 @@ class TestMediumPriorityCompressionStoreFixes:
 
         hash3 = store.store(
             original='[{"id": 3}]',
-            compressed='[3]',
+            compressed="[3]",
             original_item_count=1,
             compressed_item_count=1,
             tool_name="tool3",
@@ -1299,7 +1302,7 @@ class TestMediumPriorityCompressionStoreFixes:
         # Add a 4th entry to trigger eviction
         hash4 = store.store(
             original='[{"id": 4}]',
-            compressed='[4]',
+            compressed="[4]",
             original_item_count=1,
             compressed_item_count=1,
             tool_name="tool4",

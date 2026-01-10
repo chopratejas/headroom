@@ -80,6 +80,7 @@ DEFAULT_ENCODING = "cl100k_base"
 def _get_encoding(encoding_name: str):
     """Get tiktoken encoding, cached for performance."""
     import tiktoken
+
     return tiktoken.get_encoding(encoding_name)
 
 

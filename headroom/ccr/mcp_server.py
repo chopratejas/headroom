@@ -32,7 +32,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 from typing import Any
 
 # Try to import MCP SDK
@@ -40,6 +39,7 @@ try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
     from mcp.types import TextContent, Tool
+
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
@@ -49,6 +49,7 @@ except ImportError:
 # Try to import httpx for proxy communication
 try:
     import httpx
+
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
@@ -88,14 +89,11 @@ class CCRMCPServer:
         self._http_client: httpx.AsyncClient | None = None
 
         if not MCP_AVAILABLE:
-            raise ImportError(
-                "MCP SDK not installed. Install with: pip install mcp"
-            )
+            raise ImportError("MCP SDK not installed. Install with: pip install mcp")
 
         if not direct_mode and not HTTPX_AVAILABLE:
             raise ImportError(
-                "httpx not installed (required for HTTP mode). "
-                "Install with: pip install httpx"
+                "httpx not installed (required for HTTP mode). Install with: pip install httpx"
             )
 
         self.server = Server("headroom-ccr")
@@ -140,19 +138,23 @@ class CCRMCPServer:
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             """Handle tool calls."""
             if name != CCR_TOOL_NAME:
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({"error": f"Unknown tool: {name}"}),
-                )]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({"error": f"Unknown tool: {name}"}),
+                    )
+                ]
 
             hash_key = arguments.get("hash")
             query = arguments.get("query")
 
             if not hash_key:
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({"error": "hash parameter is required"}),
-                )]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({"error": "hash parameter is required"}),
+                    )
+                ]
 
             # Retrieve content
             try:
@@ -161,16 +163,20 @@ class CCRMCPServer:
                 else:
                     result = await self._retrieve_via_proxy(hash_key, query)
 
-                return [TextContent(
-                    type="text",
-                    text=json.dumps(result, indent=2),
-                )]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(result, indent=2),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Retrieval failed: {e}")
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({"error": str(e)}),
-                )]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({"error": str(e)}),
+                    )
+                ]
 
     async def _retrieve_via_proxy(
         self,

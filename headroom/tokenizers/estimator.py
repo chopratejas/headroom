@@ -44,16 +44,15 @@ class EstimatingTokenCounter(BaseTokenizer):
 
     # Patterns for content type detection
     CODE_PATTERN = re.compile(
-        r'(?:def |class |function |const |let |var |import |from |'
-        r'if \(|for \(|while \(|switch \(|try \{|catch \(|'
-        r'=>|->|\{\{|\}\}|;$)',
-        re.MULTILINE
+        r"(?:def |class |function |const |let |var |import |from |"
+        r"if \(|for \(|while \(|switch \(|try \{|catch \(|"
+        r"=>|->|\{\{|\}\}|;$)",
+        re.MULTILINE,
     )
-    JSON_PATTERN = re.compile(r'^\s*[\[\{]')
-    URL_PATTERN = re.compile(r'https?://\S+')
+    JSON_PATTERN = re.compile(r"^\s*[\[\{]")
+    URL_PATTERN = re.compile(r"https?://\S+")
     UUID_PATTERN = re.compile(
-        r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
-        re.IGNORECASE
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
     )
 
     def __init__(self, chars_per_token: float | None = None):
@@ -134,7 +133,7 @@ class EstimatingTokenCounter(BaseTokenizer):
         urls = self.URL_PATTERN.findall(text)
         for url in urls:
             # Each URL component adds overhead
-            overhead += url.count('/') + url.count('?') + url.count('&')
+            overhead += url.count("/") + url.count("?") + url.count("&")
 
         # UUIDs are typically 8-10 tokens despite being 36 chars
         uuids = self.UUID_PATTERN.findall(text)

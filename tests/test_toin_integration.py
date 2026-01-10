@@ -9,26 +9,26 @@ Tests the complete flow:
 """
 
 import json
-import pytest
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from headroom.cache.compression_store import (
-    CompressionStore,
     get_compression_store,
     reset_compression_store,
-)
-from headroom.transforms.smart_crusher import (
-    SmartCrusher,
-    SmartCrusherConfig,
 )
 from headroom.config import CCRConfig
 from headroom.telemetry import ToolSignature
 from headroom.telemetry.toin import (
-    ToolIntelligenceNetwork,
     TOINConfig,
+    ToolIntelligenceNetwork,
     get_toin,
     reset_toin,
+)
+from headroom.transforms.smart_crusher import (
+    SmartCrusher,
+    SmartCrusherConfig,
 )
 
 
@@ -38,10 +38,12 @@ def fresh_toin():
     reset_toin()
     with tempfile.TemporaryDirectory() as tmpdir:
         storage_path = str(Path(tmpdir) / "toin.json")
-        toin = get_toin(TOINConfig(
-            storage_path=storage_path,
-            auto_save_interval=0,  # No auto-persist during tests
-        ))
+        toin = get_toin(
+            TOINConfig(
+                storage_path=storage_path,
+                auto_save_interval=0,  # No auto-persist during tests
+            )
+        )
         yield toin
         reset_toin()
 
@@ -346,7 +348,9 @@ class TestStoreToTOINHash:
 
         # Get the stored hash
         entries = list(fresh_store._store.values())
-        assert len(entries) >= 1, f"Should have stored entry. Modified: {was_modified}, Info: {info}"
+        assert len(entries) >= 1, (
+            f"Should have stored entry. Modified: {was_modified}, Info: {info}"
+        )
         stored_hash = entries[0].tool_signature_hash
 
         # Verify it matches ToolSignature

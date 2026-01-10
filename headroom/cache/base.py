@@ -82,11 +82,13 @@ class CacheConfig:
     max_breakpoints: int = 4
 
     # Patterns to extract and move to dynamic section
-    date_patterns: list[str] = field(default_factory=lambda: [
-        r"Today is \w+ \d{1,2},? \d{4}\.?",
-        r"Current date: \d{4}-\d{2}-\d{2}",
-        r"The current time is .+\.",
-    ])
+    date_patterns: list[str] = field(
+        default_factory=lambda: [
+            r"Today is \w+ \d{1,2},? \d{4}\.?",
+            r"Current date: \d{4}-\d{2}-\d{2}",
+            r"The current time is .+\.",
+        ]
+    )
 
     # Whether to normalize whitespace
     normalize_whitespace: bool = True
@@ -317,6 +319,7 @@ class BaseCacheOptimizer(ABC):
     def _compute_prefix_hash(self, content: str) -> str:
         """Compute a short hash of content."""
         import hashlib
+
         return hashlib.sha256(content.encode()).hexdigest()[:12]
 
     def _extract_system_content(self, messages: list[dict[str, Any]]) -> str:

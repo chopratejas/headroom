@@ -8,8 +8,8 @@ from typing import Any
 
 from .cache import (
     BaseCacheOptimizer,
-    CacheOptimizerRegistry,
     CacheConfig,
+    CacheOptimizerRegistry,
     OptimizationContext,
     SemanticCacheLayer,
 )
@@ -18,12 +18,6 @@ from .config import (
     HeadroomMode,
     RequestMetrics,
     SimulationResult,
-)
-from .exceptions import (
-    ConfigurationError,
-    ProviderError,
-    StorageError,
-    ValidationError,
 )
 from .parser import parse_messages
 from .providers.base import Provider
@@ -386,9 +380,7 @@ class HeadroomClient:
         tokenizer = self._get_tokenizer(model)
 
         # Analyze original messages
-        blocks, block_breakdown, waste_signals = parse_messages(
-            messages, tokenizer
-        )
+        blocks, block_breakdown, waste_signals = parse_messages(messages, tokenizer)
         tokens_before = tokenizer.count_messages(messages)
 
         # Compute cache alignment score
@@ -410,7 +402,9 @@ class HeadroomClient:
 
         # Apply transforms if in optimize mode
         if mode == HeadroomMode.OPTIMIZE:
-            output_buffer = headroom_output_buffer_tokens or self._config.rolling_window.output_buffer_tokens
+            output_buffer = (
+                headroom_output_buffer_tokens or self._config.rolling_window.output_buffer_tokens
+            )
             model_limit = self._get_context_limit(model)
 
             result = self._pipeline.apply(
@@ -443,7 +437,9 @@ class HeadroomClient:
                         cached_response = cache_result.cached_response
 
                     # Update metrics from cache result
-                    cache_optimizer_used = cache_result.metrics.optimizer_name or self._cache_optimizer.name
+                    cache_optimizer_used = (
+                        cache_result.metrics.optimizer_name or self._cache_optimizer.name
+                    )
                     cache_optimizer_strategy = cache_result.metrics.strategy
                     cacheable_tokens = cache_result.metrics.cacheable_tokens
                     breakpoints_inserted = cache_result.metrics.breakpoints_inserted
@@ -456,9 +452,7 @@ class HeadroomClient:
 
                 elif self._cache_optimizer is not None:
                     # Direct cache optimizer (no semantic layer)
-                    cache_result = self._cache_optimizer.optimize(
-                        optimized_messages, cache_context
-                    )
+                    cache_result = self._cache_optimizer.optimize(optimized_messages, cache_context)
                     cache_optimizer_used = self._cache_optimizer.name
                     cache_optimizer_strategy = self._cache_optimizer.strategy.value
                     cacheable_tokens = cache_result.metrics.cacheable_tokens
@@ -625,8 +619,7 @@ class HeadroomClient:
     ) -> Iterator[Any]:
         """Wrap stream to pass through chunks and save metrics at end."""
         try:
-            for chunk in stream:
-                yield chunk
+            yield from stream
         finally:
             # Save metrics when stream completes
             # Note: output tokens unknown for streams
@@ -666,9 +659,7 @@ class HeadroomClient:
             # Extract response content for caching
             response_data = self._extract_response_content(response)
             if response_data:
-                self._semantic_cache_layer.store_response(
-                    messages, response_data, cache_context
-                )
+                self._semantic_cache_layer.store_response(messages, response_data, cache_context)
 
     def _extract_response_content(self, response: Any) -> dict[str, Any] | None:
         """Extract cacheable content from API response."""
@@ -704,18 +695,18 @@ class HeadroomClient:
         tokenizer = self._get_tokenizer(model)
 
         # Analyze original
-        blocks, block_breakdown, waste_signals = parse_messages(
-            messages, tokenizer
-        )
+        blocks, block_breakdown, waste_signals = parse_messages(messages, tokenizer)
         tokens_before = tokenizer.count_messages(messages)
 
         # Compute original cache alignment
         aligner = CacheAligner(self._config.cache_aligner)
         cache_alignment_score = aligner.get_alignment_score(messages)
-        stable_prefix_hash = compute_prefix_hash(messages)
+        compute_prefix_hash(messages)
 
         # Apply transforms
-        output_buffer = headroom_output_buffer_tokens or self._config.rolling_window.output_buffer_tokens
+        output_buffer = (
+            headroom_output_buffer_tokens or self._config.rolling_window.output_buffer_tokens
+        )
         model_limit = self._get_context_limit(model)
 
         result = self._pipeline.simulate(
@@ -946,9 +937,7 @@ class HeadroomClient:
             "config": {
                 "mode": self._default_mode.value,
                 "provider": self._provider.name,
-                "cache_optimizer": (
-                    self._cache_optimizer.name if self._cache_optimizer else None
-                ),
+                "cache_optimizer": (self._cache_optimizer.name if self._cache_optimizer else None),
                 "semantic_cache": self._semantic_cache_layer is not None,
             },
             "transforms": {

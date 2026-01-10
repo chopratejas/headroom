@@ -30,6 +30,7 @@ def get_version() -> str:
     """Get the current version."""
     try:
         from headroom import __version__
+
         return __version__
     except ImportError:
         return "unknown"
@@ -63,9 +64,9 @@ def cmd_proxy(args: argparse.Namespace) -> int:
 Starting proxy server...
 
   URL:          http://{config.host}:{config.port}
-  Optimization: {'ENABLED' if config.optimize else 'DISABLED'}
-  Caching:      {'ENABLED' if config.cache_enabled else 'DISABLED'}
-  Rate Limit:   {'ENABLED' if config.rate_limit_enabled else 'DISABLED'}
+  Optimization: {"ENABLED" if config.optimize else "DISABLED"}
+  Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
+  Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
 
 Usage with Claude Code:
   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
@@ -119,7 +120,8 @@ Documentation: https://github.com/headroom-sdk/headroom
     )
 
     parser.add_argument(
-        "--version", "-V",
+        "--version",
+        "-V",
         action="store_true",
         help="Show version and exit",
     )
@@ -138,7 +140,8 @@ Documentation: https://github.com/headroom-sdk/headroom
         help="Host to bind to (default: 127.0.0.1)",
     )
     proxy_parser.add_argument(
-        "--port", "-p",
+        "--port",
+        "-p",
         type=int,
         default=8787,
         help="Port to bind to (default: 8787)",

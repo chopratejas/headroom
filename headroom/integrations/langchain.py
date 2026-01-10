@@ -142,6 +142,7 @@ class HeadroomChatModel(BaseChatModel):
 
     class Config:
         """Pydantic config for LangChain compatibility."""
+
         arbitrary_types_allowed = True
 
     def __init__(
@@ -206,9 +207,7 @@ class HeadroomChatModel(BaseChatModel):
         """History of optimization metrics."""
         return self._metrics_history.copy()
 
-    def _convert_messages_to_openai(
-        self, messages: list[BaseMessage]
-    ) -> list[dict[str, Any]]:
+    def _convert_messages_to_openai(self, messages: list[BaseMessage]) -> list[dict[str, Any]]:
         """Convert LangChain messages to OpenAI format for Headroom."""
         result = []
         for msg in messages:
@@ -232,22 +231,24 @@ class HeadroomChatModel(BaseChatModel):
                     ]
                 result.append(entry)
             elif isinstance(msg, ToolMessage):
-                result.append({
-                    "role": "tool",
-                    "tool_call_id": msg.tool_call_id,
-                    "content": msg.content,
-                })
+                result.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content,
+                    }
+                )
             else:
                 # Generic fallback
-                result.append({
-                    "role": getattr(msg, "type", "user"),
-                    "content": msg.content,
-                })
+                result.append(
+                    {
+                        "role": getattr(msg, "type", "user"),
+                        "content": msg.content,
+                    }
+                )
         return result
 
-    def _convert_messages_from_openai(
-        self, messages: list[dict[str, Any]]
-    ) -> list[BaseMessage]:
+    def _convert_messages_from_openai(self, messages: list[dict[str, Any]]) -> list[BaseMessage]:
         """Convert OpenAI format messages back to LangChain format."""
         result = []
         for msg in messages:
@@ -262,17 +263,21 @@ class HeadroomChatModel(BaseChatModel):
                 tool_calls = []
                 if "tool_calls" in msg:
                     for tc in msg["tool_calls"]:
-                        tool_calls.append({
-                            "id": tc["id"],
-                            "name": tc["function"]["name"],
-                            "args": json.loads(tc["function"]["arguments"]),
-                        })
+                        tool_calls.append(
+                            {
+                                "id": tc["id"],
+                                "name": tc["function"]["name"],
+                                "args": json.loads(tc["function"]["arguments"]),
+                            }
+                        )
                 result.append(AIMessage(content=content, tool_calls=tool_calls))
             elif role == "tool":
-                result.append(ToolMessage(
-                    content=content,
-                    tool_call_id=msg.get("tool_call_id", ""),
-                ))
+                result.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=msg.get("tool_call_id", ""),
+                    )
+                )
         return result
 
     def _optimize_messages(
@@ -308,7 +313,8 @@ class HeadroomChatModel(BaseChatModel):
             tokens_saved=result.tokens_before - result.tokens_after,
             savings_percent=(
                 (result.tokens_before - result.tokens_after) / result.tokens_before * 100
-                if result.tokens_before > 0 else 0
+                if result.tokens_before > 0
+                else 0
             ),
             transforms_applied=result.transforms_applied,
             model=model,
@@ -400,9 +406,8 @@ class HeadroomChatModel(BaseChatModel):
         return {
             "total_requests": len(self._metrics_history),
             "total_tokens_saved": self._total_tokens_saved,
-            "average_savings_percent": sum(
-                m.savings_percent for m in self._metrics_history
-            ) / len(self._metrics_history),
+            "average_savings_percent": sum(m.savings_percent for m in self._metrics_history)
+            / len(self._metrics_history),
             "total_tokens_before": sum(m.tokens_before for m in self._metrics_history),
             "total_tokens_after": sum(m.tokens_after for m in self._metrics_history),
         }
@@ -530,7 +535,7 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
         if self.log_level in ("DEBUG", "INFO"):
             logger.log(
                 logging.DEBUG if self.log_level == "DEBUG" else logging.INFO,
-                f"Chat model request: ~{estimated_tokens} input tokens"
+                f"Chat model request: ~{estimated_tokens} input tokens",
             )
 
     def on_llm_end(self, response: Any, **kwargs) -> None:
@@ -565,7 +570,7 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
             duration = f"{self._current_request['duration_ms']:.0f}ms"
             logger.log(
                 logging.DEBUG if self.log_level == "DEBUG" else logging.INFO,
-                f"LLM request completed: {tokens_info} in {duration}"
+                f"LLM request completed: {tokens_info} in {duration}",
             )
 
         self._current_request = None
@@ -602,7 +607,8 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
             "average_tokens": total_tokens / len(successful) if successful else 0,
             "average_duration_ms": (
                 sum(r.get("duration_ms", 0) for r in successful) / len(successful)
-                if successful else 0
+                if successful
+                else 0
             ),
             "errors": len(self._requests) - len(successful),
             "alerts": len(self._alerts),
@@ -670,11 +676,13 @@ class HeadroomRunnable:
     def __or__(self, other):
         """Support pipe operator for LCEL composition."""
         from langchain_core.runnables import RunnableSequence
+
         return RunnableSequence(first=self.as_runnable(), last=other)
 
     def __ror__(self, other):
         """Support reverse pipe operator."""
         from langchain_core.runnables import RunnableSequence
+
         return RunnableSequence(first=other, last=self.as_runnable())
 
     def as_runnable(self):
@@ -704,16 +712,20 @@ class HeadroomRunnable:
             elif isinstance(msg, AIMessage):
                 openai_messages.append({"role": "assistant", "content": msg.content})
             elif isinstance(msg, ToolMessage):
-                openai_messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg.tool_call_id,
-                    "content": msg.content,
-                })
+                openai_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content,
+                    }
+                )
             elif hasattr(msg, "type") and hasattr(msg, "content"):
-                openai_messages.append({
-                    "role": msg.type,
-                    "content": msg.content,
-                })
+                openai_messages.append(
+                    {
+                        "role": msg.type,
+                        "content": msg.content,
+                    }
+                )
 
         # Get model context limit
         model = "gpt-4o"  # Default model for estimation
@@ -735,7 +747,8 @@ class HeadroomRunnable:
             tokens_saved=result.tokens_before - result.tokens_after,
             savings_percent=(
                 (result.tokens_before - result.tokens_after) / result.tokens_before * 100
-                if result.tokens_before > 0 else 0
+                if result.tokens_before > 0
+                else 0
             ),
             transforms_applied=result.transforms_applied,
             model="gpt-4o",
@@ -755,10 +768,12 @@ class HeadroomRunnable:
             elif role == "assistant":
                 output_messages.append(AIMessage(content=content))
             elif role == "tool":
-                output_messages.append(ToolMessage(
-                    content=content,
-                    tool_call_id=msg.get("tool_call_id", ""),
-                ))
+                output_messages.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=msg.get("tool_call_id", ""),
+                    )
+                )
 
         return output_messages
 
@@ -823,11 +838,13 @@ def optimize_messages(
                 ]
             openai_messages.append(entry)
         elif isinstance(msg, ToolMessage):
-            openai_messages.append({
-                "role": "tool",
-                "tool_call_id": msg.tool_call_id,
-                "content": msg.content,
-            })
+            openai_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": msg.tool_call_id,
+                    "content": msg.content,
+                }
+            )
 
     # Get model context limit
     model_limit = provider.get_context_limit(model)
@@ -853,17 +870,21 @@ def optimize_messages(
             tool_calls = []
             if "tool_calls" in msg:
                 for tc in msg["tool_calls"]:
-                    tool_calls.append({
-                        "id": tc["id"],
-                        "name": tc["function"]["name"],
-                        "args": json.loads(tc["function"]["arguments"]),
-                    })
+                    tool_calls.append(
+                        {
+                            "id": tc["id"],
+                            "name": tc["function"]["name"],
+                            "args": json.loads(tc["function"]["arguments"]),
+                        }
+                    )
             output_messages.append(AIMessage(content=content, tool_calls=tool_calls))
         elif role == "tool":
-            output_messages.append(ToolMessage(
-                content=content,
-                tool_call_id=msg.get("tool_call_id", ""),
-            ))
+            output_messages.append(
+                ToolMessage(
+                    content=content,
+                    tool_call_id=msg.get("tool_call_id", ""),
+                )
+            )
 
     metrics = {
         "tokens_before": result.tokens_before,
@@ -871,7 +892,8 @@ def optimize_messages(
         "tokens_saved": result.tokens_before - result.tokens_after,
         "savings_percent": (
             (result.tokens_before - result.tokens_after) / result.tokens_before * 100
-            if result.tokens_before > 0 else 0
+            if result.tokens_before > 0
+            else 0
         ),
         "transforms_applied": result.transforms_applied,
     }

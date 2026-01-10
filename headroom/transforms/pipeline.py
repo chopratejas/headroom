@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
 from ..config import (
     CacheAlignerConfig,
     DiffArtifact,
@@ -26,6 +24,8 @@ from .tool_crusher import ToolCrusher
 
 if TYPE_CHECKING:
     from ..providers.base import Provider
+
+logger = logging.getLogger(__name__)
 
 
 class TransformPipeline:
@@ -75,6 +75,7 @@ class TransformPipeline:
         if self.config.smart_crusher.enabled:
             # Use smart statistical crushing
             from .smart_crusher import SmartCrusherConfig as SCConfig
+
             smart_config = SCConfig(
                 enabled=True,
                 min_items_to_analyze=self.config.smart_crusher.min_items_to_analyze,
@@ -196,13 +197,17 @@ class TransformPipeline:
 
             # Record diff if enabled
             if generate_diff:
-                transform_diffs.append(TransformDiff(
-                    transform_name=transform.name,
-                    tokens_before=tokens_before_transform,
-                    tokens_after=tokens_after_transform,
-                    tokens_saved=tokens_before_transform - tokens_after_transform,
-                    details=", ".join(result.transforms_applied) if result.transforms_applied else "",
-                ))
+                transform_diffs.append(
+                    TransformDiff(
+                        transform_name=transform.name,
+                        tokens_before=tokens_before_transform,
+                        tokens_after=tokens_after_transform,
+                        tokens_saved=tokens_before_transform - tokens_after_transform,
+                        details=", ".join(result.transforms_applied)
+                        if result.transforms_applied
+                        else "",
+                    )
+                )
 
         # Final token count
         tokens_after = tokenizer.count_messages(current_messages)

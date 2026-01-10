@@ -80,7 +80,9 @@ def example_optimize_mode():
                 {
                     "type": "tool_result",
                     "tool_use_id": "call_1",
-                    "content": '{"results": [' + ",".join([f'{{"id": {i}}}' for i in range(50)]) + "]}",
+                    "content": '{"results": ['
+                    + ",".join([f'{{"id": {i}}}' for i in range(50)])
+                    + "]}",
                 }
             ],
         },
@@ -125,7 +127,9 @@ def example_simulate_mode():
                 {
                     "type": "tool_result",
                     "tool_use_id": "call_1",
-                    "content": '{"results": [' + ",".join([f'{{"id": {i}}}' for i in range(100)]) + "]}",
+                    "content": '{"results": ['
+                    + ",".join([f'{{"id": {i}}}' for i in range(100)])
+                    + "]}",
                 }
             ],
         },

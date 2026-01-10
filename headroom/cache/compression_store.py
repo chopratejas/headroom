@@ -33,7 +33,6 @@ Usage:
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import heapq
 import json
@@ -231,8 +230,7 @@ class CompressionStore:
                     # True hash collision - different content, same hash
                     # This is extremely rare with SHA256[:24] but should be logged
                     logger.warning(
-                        "Hash collision detected: hash=%s tool=%s "
-                        "(existing_len=%d, new_len=%d)",
+                        "Hash collision detected: hash=%s tool=%s (existing_len=%d, new_len=%d)",
                         hash_key,
                         tool_name,
                         len(existing.original_content),
@@ -437,15 +435,9 @@ class CompressionStore:
             # Clean expired entries
             self._clean_expired()
 
-            total_original_tokens = sum(
-                e.original_tokens for e in self._store.values()
-            )
-            total_compressed_tokens = sum(
-                e.compressed_tokens for e in self._store.values()
-            )
-            total_retrievals = sum(
-                e.retrieval_count for e in self._store.values()
-            )
+            total_original_tokens = sum(e.original_tokens for e in self._store.values())
+            total_compressed_tokens = sum(e.compressed_tokens for e in self._store.values())
+            total_retrievals = sum(e.retrieval_count for e in self._store.values())
 
             return {
                 "entry_count": len(self._store),
@@ -534,10 +526,7 @@ class CompressionStore:
 
         CRITICAL FIX: Track stale heap entries when deleting to prevent memory leak.
         """
-        expired_keys = [
-            key for key, entry in self._store.items()
-            if entry.is_expired()
-        ]
+        expired_keys = [key for key, entry in self._store.items() if entry.is_expired()]
         for key in expired_keys:
             del self._store[key]
             # CRITICAL FIX: Increment stale counter - the heap still has an entry
@@ -552,8 +541,7 @@ class CompressionStore:
         """
         # Build new heap from current store entries only
         self._eviction_heap = [
-            (entry.created_at, hash_key)
-            for hash_key, entry in self._store.items()
+            (entry.created_at, hash_key) for hash_key, entry in self._store.items()
         ]
         heapq.heapify(self._eviction_heap)
         # Reset stale counter - heap is now clean
@@ -630,7 +618,7 @@ class CompressionStore:
 
         # Keep only recent events
         if len(self._retrieval_events) > self._max_events:
-            self._retrieval_events = self._retrieval_events[-self._max_events:]
+            self._retrieval_events = self._retrieval_events[-self._max_events :]
 
         # Queue event for feedback processing (will be processed after lock release)
         # This is safe because process_pending_feedback() uses the lock to atomically
@@ -648,9 +636,9 @@ class CompressionStore:
         This is called automatically on each retrieval to ensure the
         feedback loop operates in real-time.
         """
-        from .compression_feedback import get_compression_feedback
         from ..telemetry import get_telemetry_collector
         from ..telemetry.toin import get_toin
+        from .compression_feedback import get_compression_feedback
 
         # Get pending events and related entry data atomically
         with self._lock:
@@ -664,12 +652,14 @@ class CompressionStore:
                 if entry:
                     # Use the ACTUAL tool_signature_hash stored during compression
                     # This MUST match the hash used by SmartCrusher
-                    event_data.append((
-                        event,
-                        entry.tool_name,
-                        entry.tool_signature_hash,  # The correct hash!
-                        entry.compression_strategy,
-                    ))
+                    event_data.append(
+                        (
+                            event,
+                            entry.tool_name,
+                            entry.tool_signature_hash,  # The correct hash!
+                            entry.compression_strategy,
+                        )
+                    )
                 else:
                     event_data.append((event, None, None, None))
 
@@ -679,7 +669,7 @@ class CompressionStore:
             telemetry = get_telemetry_collector()
             toin = get_toin()
 
-            for event, tool_name, sig_hash, strategy in event_data:
+            for event, _tool_name, sig_hash, strategy in event_data:
                 # Notify feedback system (pass strategy for success rate tracking)
                 feedback.record_retrieval(event, strategy=strategy)
 
@@ -687,7 +677,7 @@ class CompressionStore:
                 query_fields = None
                 if event.query:
                     # Extract field:value patterns
-                    query_fields = re.findall(r'(\w+)[=:]', event.query)
+                    query_fields = re.findall(r"(\w+)[=:]", event.query)
 
                 # Notify telemetry for data flywheel
                 try:

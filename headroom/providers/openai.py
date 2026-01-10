@@ -100,8 +100,7 @@ def _get_encoding(encoding_name: str) -> Any:
     """Get tiktoken encoding, cached."""
     if not TIKTOKEN_AVAILABLE:
         raise RuntimeError(
-            "tiktoken is required for OpenAI provider. "
-            "Install with: pip install tiktoken"
+            "tiktoken is required for OpenAI provider. Install with: pip install tiktoken"
         )
     return tiktoken.get_encoding(encoding_name)
 
@@ -118,8 +117,7 @@ def _get_encoding_name_for_model(model: str) -> str:
             return encoding
 
     raise ValueError(
-        f"Unknown OpenAI model: {model}. "
-        f"Supported models: {list(_MODEL_ENCODINGS.keys())}"
+        f"Unknown OpenAI model: {model}. Supported models: {list(_MODEL_ENCODINGS.keys())}"
     )
 
 

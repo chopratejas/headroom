@@ -1,12 +1,12 @@
 """Tests for the dynamic content detector."""
 
 import pytest
+
 from headroom.cache.dynamic_detector import (
     DetectionResult,
     DetectorConfig,
     DynamicCategory,
     DynamicContentDetector,
-    DynamicSpan,
     RegexDetector,
     detect_dynamic_content,
 )
@@ -118,7 +118,7 @@ class TestRegexDetector:
         content = "Date: 2024-01-15"
         spans = detector.detect(content)
         assert len(spans) == 1
-        assert content[spans[0].start:spans[0].end] == spans[0].text
+        assert content[spans[0].start : spans[0].end] == spans[0].text
 
 
 class TestDynamicContentDetector:
@@ -221,7 +221,7 @@ Request ID: req_xyz789abc123def456ghi"""
         config = DetectorConfig(tiers=["regex", "ner", "semantic"])
         detector = DynamicContentDetector(config)
 
-        result = detector.detect("Test content")
+        detector.detect("Test content")
 
         # If NER/semantic not installed, should have warnings
         # (This test passes either way - it's informational)
@@ -366,7 +366,11 @@ Your task is to help users with coding questions."""
         assert "2024" not in result.static_content or "January" in result.static_content
 
         # Dynamic content should have the dates
-        assert "January" in result.dynamic_content or "2024-01-15" in result.dynamic_content or "10:30" in result.dynamic_content
+        assert (
+            "January" in result.dynamic_content
+            or "2024-01-15" in result.dynamic_content
+            or "10:30" in result.dynamic_content
+        )
 
     def test_request_metadata(self):
         """Test extracting request metadata."""
@@ -381,7 +385,7 @@ Process the following query:"""
         result = detector.detect(content)
 
         # Should find request ID, UUID, timestamp
-        categories = {s.category for s in result.spans}
+        {s.category for s in result.spans}
         assert len(result.spans) >= 2
 
     def test_mixed_static_dynamic(self):
@@ -410,7 +414,7 @@ class TestNERDetector:
     @pytest.fixture
     def ner_detector(self):
         """Create detector with NER enabled."""
-        from headroom.cache.dynamic_detector import NERDetector, _SPACY_AVAILABLE
+        from headroom.cache.dynamic_detector import _SPACY_AVAILABLE, NERDetector
 
         if not _SPACY_AVAILABLE:
             pytest.skip("spaCy not installed")
@@ -427,7 +431,7 @@ class TestNERDetector:
         """Test detecting person names."""
         spans, _ = ner_detector.detect("John Smith sent the message.")
 
-        person_spans = [s for s in spans if s.category == DynamicCategory.PERSON]
+        [s for s in spans if s.category == DynamicCategory.PERSON]
         # NER might or might not detect "John Smith" depending on model
         # This is more of an integration test
 
@@ -435,7 +439,7 @@ class TestNERDetector:
         """Test detecting money amounts."""
         spans, _ = ner_detector.detect("The total is $500.00")
 
-        money_spans = [s for s in spans if s.category == DynamicCategory.MONEY]
+        [s for s in spans if s.category == DynamicCategory.MONEY]
         # May or may not detect depending on spaCy model
 
 
@@ -445,7 +449,10 @@ class TestSemanticDetector:
     @pytest.fixture
     def semantic_detector(self):
         """Create detector with semantic enabled."""
-        from headroom.cache.dynamic_detector import SemanticDetector, _SENTENCE_TRANSFORMERS_AVAILABLE
+        from headroom.cache.dynamic_detector import (
+            _SENTENCE_TRANSFORMERS_AVAILABLE,
+            SemanticDetector,
+        )
 
         if not _SENTENCE_TRANSFORMERS_AVAILABLE:
             pytest.skip("sentence-transformers not installed")

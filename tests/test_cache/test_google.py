@@ -1,14 +1,16 @@
 """Tests for GoogleCacheOptimizer."""
 
-import pytest
 from datetime import datetime, timedelta
-from headroom.cache import GoogleCacheOptimizer, CacheConfig, OptimizationContext
+
+import pytest
+
+from headroom.cache import CacheConfig, GoogleCacheOptimizer, OptimizationContext
 from headroom.cache.base import CacheStrategy
 from headroom.cache.google import (
-    GOOGLE_MIN_CACHE_TOKENS,
     GOOGLE_CACHE_DISCOUNT,
-    CachedContentInfo,
+    GOOGLE_MIN_CACHE_TOKENS,
     CacheabilityAnalysis,
+    CachedContentInfo,
 )
 
 

@@ -107,7 +107,7 @@ class GeminiTokenCounter:
                 "For accurate counting, pass google.generativeai: "
                 "GoogleProvider(client=genai)",
                 UserWarning,
-                stacklevel=4
+                stacklevel=4,
             )
             _FALLBACK_WARNING_SHOWN = True
 

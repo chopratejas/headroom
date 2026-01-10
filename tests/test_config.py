@@ -12,8 +12,6 @@ Tests all configuration dataclasses, enums, and utility classes:
 from dataclasses import fields
 from datetime import datetime
 
-import pytest
-
 from headroom.config import (
     Block,
     CacheAlignerConfig,
@@ -220,17 +218,13 @@ class TestHeadroomConfig:
 
     def test_get_context_limit_direct_match(self):
         """get_context_limit returns limit for exact model match."""
-        config = HeadroomConfig(
-            model_context_limits={"gpt-4o": 128000, "claude-3-opus": 200000}
-        )
+        config = HeadroomConfig(model_context_limits={"gpt-4o": 128000, "claude-3-opus": 200000})
         assert config.get_context_limit("gpt-4o") == 128000
         assert config.get_context_limit("claude-3-opus") == 200000
 
     def test_get_context_limit_prefix_match(self):
         """get_context_limit returns limit for prefix match."""
-        config = HeadroomConfig(
-            model_context_limits={"gpt-4": 128000, "claude-3": 200000}
-        )
+        config = HeadroomConfig(model_context_limits={"gpt-4": 128000, "claude-3": 200000})
         # Prefix matches
         assert config.get_context_limit("gpt-4-turbo") == 128000
         assert config.get_context_limit("gpt-4o") == 128000

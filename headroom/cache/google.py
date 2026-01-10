@@ -274,16 +274,13 @@ class GoogleCacheOptimizer(BaseCacheOptimizer):
         Returns:
             CacheResult with analysis and cache information
         """
-        effective_config = config or self.config
 
         # Extract cacheable content (system messages + static context)
         cacheable_content = self._extract_cacheable_content(messages)
         content_hash = self._compute_prefix_hash(cacheable_content)
 
         # Estimate tokens
-        total_tokens = self._count_tokens_estimate(
-            self._messages_to_text(messages)
-        )
+        total_tokens = self._count_tokens_estimate(self._messages_to_text(messages))
         cacheable_tokens = self._count_tokens_estimate(cacheable_content)
 
         # Check for existing cache
@@ -371,9 +368,7 @@ class GoogleCacheOptimizer(BaseCacheOptimizer):
         cacheable_content = self._extract_cacheable_content(messages)
         content_hash = self._compute_prefix_hash(cacheable_content)
 
-        total_tokens = self._count_tokens_estimate(
-            self._messages_to_text(messages)
-        )
+        total_tokens = self._count_tokens_estimate(self._messages_to_text(messages))
         cacheable_tokens = self._count_tokens_estimate(cacheable_content)
 
         is_cacheable = cacheable_tokens >= GOOGLE_MIN_CACHE_TOKENS
@@ -384,33 +379,30 @@ class GoogleCacheOptimizer(BaseCacheOptimizer):
 
         if not is_cacheable:
             recommendations.append(
-                f"Add {tokens_below_minimum:,} more tokens to static content "
-                f"to enable caching"
+                f"Add {tokens_below_minimum:,} more tokens to static content to enable caching"
             )
             recommendations.append(
                 "Consider adding detailed examples or documentation to system prompt"
             )
         else:
             recommendations.append(
-                f"Content is cacheable. Create cache with google-generativeai SDK"
+                "Content is cacheable. Create cache with google-generativeai SDK"
             )
 
             # Storage cost estimation (rough - actual pricing varies)
             # Assuming ~$0.001 per 1000 tokens per hour (simplified)
             hourly_cost = (cacheable_tokens / 1000) * 0.001
-            recommendations.append(
-                f"Estimated storage cost: ~${hourly_cost:.4f}/hour"
-            )
+            recommendations.append(f"Estimated storage cost: ~${hourly_cost:.4f}/hour")
 
             # Break-even analysis
             if hourly_cost > 0:
                 # Assuming $0.01 per 1000 input tokens base price
                 base_cost_per_request = (cacheable_tokens / 1000) * 0.01
                 savings_per_request = base_cost_per_request * GOOGLE_CACHE_DISCOUNT
-                break_even_requests = hourly_cost / savings_per_request if savings_per_request > 0 else float('inf')
-                recommendations.append(
-                    f"Break-even: ~{int(break_even_requests)} requests/hour"
+                break_even_requests = (
+                    hourly_cost / savings_per_request if savings_per_request > 0 else float("inf")
                 )
+                recommendations.append(f"Break-even: ~{int(break_even_requests)} requests/hour")
 
         return CacheabilityAnalysis(
             is_cacheable=is_cacheable,
@@ -580,9 +572,7 @@ class GoogleCacheOptimizer(BaseCacheOptimizer):
         old_expires = cache_info.expires_at
         cache_info.expires_at = new_expires_at
 
-        logger.info(
-            f"Extended cache {cache_id} TTL from {old_expires} to {new_expires_at}"
-        )
+        logger.info(f"Extended cache {cache_id} TTL from {old_expires} to {new_expires_at}")
 
         return cache_info
 
@@ -721,8 +711,7 @@ class GoogleCacheOptimizer(BaseCacheOptimizer):
 
         if not analysis.is_cacheable:
             logger.debug(
-                f"Content not cacheable: {analysis.tokens_below_minimum} "
-                f"tokens below minimum"
+                f"Content not cacheable: {analysis.tokens_below_minimum} tokens below minimum"
             )
             return None
 
@@ -764,8 +753,7 @@ class GoogleCacheOptimizer(BaseCacheOptimizer):
             "cached_content": cache_id,
             "contents": dynamic_messages,
             "_headroom_note": (
-                "Use cached_content parameter with GenerativeModel "
-                "to leverage the cache"
+                "Use cached_content parameter with GenerativeModel to leverage the cache"
             ),
         }
 

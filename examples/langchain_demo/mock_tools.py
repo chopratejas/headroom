@@ -10,7 +10,6 @@ These simulate real-world API responses that benefit from Headroom compression:
 import json
 import random
 from datetime import datetime, timedelta
-from typing import Any
 
 
 def generate_user_database_results(query: str, count: int = 100) -> str:
@@ -39,9 +38,11 @@ def generate_user_database_results(query: str, count: int = 100) -> str:
                     "notifications": random.choice([True, False]),
                     "timezone": random.choice(["UTC", "PST", "EST", "CST"]),
                 },
-                "tags": random.sample(["premium", "verified", "beta", "enterprise"], k=random.randint(0, 3)),
+                "tags": random.sample(
+                    ["premium", "verified", "beta", "enterprise"], k=random.randint(0, 3)
+                ),
                 "login_count": random.randint(1, 500),
-            }
+            },
         }
         users.append(user)
 
@@ -61,8 +62,8 @@ def generate_search_results(query: str, count: int = 50) -> str:
         result = {
             "id": f"doc_{random.randint(10000, 99999)}",
             "title": f"Document {i}: {query.title()} Guide",
-            "snippet": f"This document covers {query}. " * random.randint(2, 5) +
-                       f"Learn more about implementing {query} in your application...",
+            "snippet": f"This document covers {query}. " * random.randint(2, 5)
+            + f"Learn more about implementing {query} in your application...",
             "url": f"https://docs.example.com/{query.replace(' ', '-')}/{i}",
             "category": random.choice(categories),
             "relevance_score": round(random.uniform(0.5, 1.0), 3),
@@ -88,23 +89,27 @@ def generate_log_entries(service: str, count: int = 200) -> str:
     entries = []
     levels = ["DEBUG", "INFO", "INFO", "INFO", "WARN", "ERROR"]  # Most are INFO
 
-    for i in range(count):
+    for _i in range(count):
         timestamp = datetime.now() - timedelta(minutes=random.randint(1, 1440))
         level = random.choice(levels)
 
         if level == "ERROR":
-            message = random.choice([
-                f"Connection refused to {service}-db: timeout after 30s",
-                f"Failed to process request: NullPointerException at line 42",
-                f"Authentication failed for user: invalid token",
-                f"Rate limit exceeded: 429 Too Many Requests",
-            ])
+            message = random.choice(
+                [
+                    f"Connection refused to {service}-db: timeout after 30s",
+                    "Failed to process request: NullPointerException at line 42",
+                    "Authentication failed for user: invalid token",
+                    "Rate limit exceeded: 429 Too Many Requests",
+                ]
+            )
         elif level == "WARN":
-            message = random.choice([
-                f"Slow query detected: took 2.5s",
-                f"Memory usage high: 85% of heap",
-                f"Retrying request after transient failure",
-            ])
+            message = random.choice(
+                [
+                    "Slow query detected: took 2.5s",
+                    "Memory usage high: 85% of heap",
+                    "Retrying request after transient failure",
+                ]
+            )
         else:
             message = f"Processing request {random.randint(1000, 9999)} for {service}"
 
@@ -120,7 +125,7 @@ def generate_log_entries(service: str, count: int = 200) -> str:
                 "request_id": f"req_{random.randint(100000, 999999)}",
                 "user_agent": "Mozilla/5.0" if random.random() > 0.5 else "API-Client/1.0",
                 "duration_ms": random.randint(1, 5000),
-            }
+            },
         }
         entries.append(entry)
 
@@ -154,7 +159,9 @@ def generate_metrics_data(service: str, count: int = 100) -> str:
             "error_rate": random.uniform(5, 15) if is_anomaly else random.uniform(0, 1),
             "latency_p50_ms": random.randint(200, 500) if is_anomaly else random.randint(10, 50),
             "latency_p99_ms": random.randint(1000, 3000) if is_anomaly else random.randint(50, 200),
-            "active_connections": random.randint(500, 1000) if is_anomaly else random.randint(50, 150),
+            "active_connections": random.randint(500, 1000)
+            if is_anomaly
+            else random.randint(50, 150),
         }
         metrics.append(metric)
 
@@ -184,24 +191,29 @@ def generate_api_response(endpoint: str, count: int = 75) -> str:
                 "name": f"Owner {random.randint(1, 100)}",
                 "email": f"owner{random.randint(1, 100)}@example.com",
             },
-            "tags": random.sample(["urgent", "review", "approved", "blocked", "in-progress"], k=random.randint(1, 3)),
+            "tags": random.sample(
+                ["urgent", "review", "approved", "blocked", "in-progress"], k=random.randint(1, 3)
+            ),
             "metadata": {
                 "source": random.choice(["web", "api", "mobile", "import"]),
                 "version": f"v{random.randint(1, 5)}.{random.randint(0, 9)}",
-            }
+            },
         }
         items.append(item)
 
-    return json.dumps({
-        "data": items,
-        "pagination": {
-            "page": 1,
-            "per_page": count,
-            "total": count * 10,  # Simulate more pages available
-            "total_pages": 10,
+    return json.dumps(
+        {
+            "data": items,
+            "pagination": {
+                "page": 1,
+                "per_page": count,
+                "total": count * 10,  # Simulate more pages available
+                "total_pages": 10,
+            },
+            "endpoint": endpoint,
         },
-        "endpoint": endpoint,
-    }, indent=2)
+        indent=2,
+    )
 
 
 # Tool definitions for LangChain
@@ -217,6 +229,7 @@ TOOL_FUNCTIONS = {
 if __name__ == "__main__":
     # Test output sizes
     import tiktoken
+
     enc = tiktoken.get_encoding("cl100k_base")
 
     print("Tool Output Token Counts:")

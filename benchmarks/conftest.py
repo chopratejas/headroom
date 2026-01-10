@@ -15,21 +15,19 @@ from __future__ import annotations
 import json
 import random
 from typing import Any
-from unittest.mock import Mock
 
 import pytest
 
+from benchmarks.scenarios.conversations import (
+    generate_agentic_conversation,
+    generate_rag_conversation,
+)
 from benchmarks.scenarios.tool_outputs import (
     generate_api_responses,
     generate_database_rows,
     generate_log_entries,
     generate_search_results,
 )
-from benchmarks.scenarios.conversations import (
-    generate_agentic_conversation,
-    generate_rag_conversation,
-)
-
 
 # Set seed for reproducible benchmarks
 random.seed(42)
@@ -159,21 +157,27 @@ def api_responses_100() -> list[dict[str, Any]]:
 def conversation_10_turns() -> list[dict[str, Any]]:
     """Generate 10-turn agentic conversation with tool calls."""
     random.seed(42)
-    return generate_agentic_conversation(turns=10, tool_calls_per_turn=1, items_per_tool_response=50)
+    return generate_agentic_conversation(
+        turns=10, tool_calls_per_turn=1, items_per_tool_response=50
+    )
 
 
 @pytest.fixture
 def conversation_50_turns() -> list[dict[str, Any]]:
     """Generate 50-turn agentic conversation with tool calls."""
     random.seed(42)
-    return generate_agentic_conversation(turns=50, tool_calls_per_turn=2, items_per_tool_response=50)
+    return generate_agentic_conversation(
+        turns=50, tool_calls_per_turn=2, items_per_tool_response=50
+    )
 
 
 @pytest.fixture
 def conversation_200_turns() -> list[dict[str, Any]]:
     """Generate 200-turn agentic conversation (stress test)."""
     random.seed(42)
-    return generate_agentic_conversation(turns=200, tool_calls_per_turn=1, items_per_tool_response=30)
+    return generate_agentic_conversation(
+        turns=200, tool_calls_per_turn=1, items_per_tool_response=30
+    )
 
 
 @pytest.fixture

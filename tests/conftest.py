@@ -1,11 +1,13 @@
 """Shared pytest fixtures for Headroom tests."""
 
 import json
-import pytest
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
+
+import pytest
+
 
 # Sample messages fixtures
 @pytest.fixture
@@ -16,6 +18,7 @@ def sample_messages():
         {"role": "user", "content": "Hello, how are you?"},
         {"role": "assistant", "content": "I'm doing well, thank you!"},
     ]
+
 
 @pytest.fixture
 def sample_messages_with_tools():
@@ -30,28 +33,34 @@ def sample_messages_with_tools():
                 {
                     "id": "call_123",
                     "type": "function",
-                    "function": {
-                        "name": "search_user",
-                        "arguments": '{"user_id": "12345"}'
-                    }
+                    "function": {"name": "search_user", "arguments": '{"user_id": "12345"}'},
                 }
-            ]
+            ],
         },
         {
             "role": "tool",
             "tool_call_id": "call_123",
-            "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com"}'
+            "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com"}',
         },
         {"role": "assistant", "content": "I found user Alice with ID 12345."},
     ]
 
+
 @pytest.fixture
 def sample_tool_output_large():
     """Large tool output for compression testing (100 items)."""
-    return json.dumps([
-        {"id": i, "name": f"Item {i}", "score": i * 0.1, "status": "active" if i % 2 == 0 else "inactive"}
-        for i in range(100)
-    ])
+    return json.dumps(
+        [
+            {
+                "id": i,
+                "name": f"Item {i}",
+                "score": i * 0.1,
+                "status": "active" if i % 2 == 0 else "inactive",
+            }
+            for i in range(100)
+        ]
+    )
+
 
 @pytest.fixture
 def sample_tool_output_with_errors():
@@ -61,10 +70,12 @@ def sample_tool_output_with_errors():
     items[15] = {"id": 15, "status": "failed", "exception": "TimeoutError"}
     return json.dumps(items)
 
+
 @pytest.fixture
 def sample_system_prompt_with_date():
     """System prompt containing dynamic date."""
     return "You are a helpful assistant. Current date: 2025-01-06. Help the user with their tasks."
+
 
 @pytest.fixture
 def sample_anthropic_messages():
@@ -74,10 +85,14 @@ def sample_anthropic_messages():
             "role": "user",
             "content": [
                 {"type": "text", "text": "Analyze this image"},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
-            ]
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "..."},
+                },
+            ],
         }
     ]
+
 
 # Mock client fixtures
 @pytest.fixture
@@ -97,6 +112,7 @@ def mock_openai_response():
     mock.choices[0].finish_reason = "stop"
     return mock
 
+
 @pytest.fixture
 def mock_openai_client(mock_openai_response):
     """Mock OpenAI client."""
@@ -106,6 +122,7 @@ def mock_openai_client(mock_openai_response):
     client.chat.completions.create = Mock(return_value=mock_openai_response)
     return client
 
+
 # Storage fixtures
 @pytest.fixture
 def temp_sqlite_db():
@@ -114,6 +131,7 @@ def temp_sqlite_db():
         yield f.name
     Path(f.name).unlink(missing_ok=True)
 
+
 @pytest.fixture
 def temp_jsonl_file():
     """Temporary JSONL file path."""
@@ -121,30 +139,38 @@ def temp_jsonl_file():
         yield f.name
     Path(f.name).unlink(missing_ok=True)
 
+
 # Provider fixtures
 @pytest.fixture
 def openai_provider():
     """OpenAI provider instance."""
     from headroom.providers.openai import OpenAIProvider
+
     return OpenAIProvider()
+
 
 @pytest.fixture
 def openai_tokenizer():
     """OpenAI token counter for gpt-4o."""
     from headroom.providers.openai import OpenAITokenCounter
+
     return OpenAITokenCounter("gpt-4o")
+
 
 # Config fixtures
 @pytest.fixture
 def default_config():
     """Default HeadroomConfig."""
     from headroom.config import HeadroomConfig
+
     return HeadroomConfig()
+
 
 @pytest.fixture
 def smart_crusher_config():
     """SmartCrusher config for testing."""
     from headroom.config import SmartCrusherConfig
+
     return SmartCrusherConfig(
         enabled=True,
         min_items_to_analyze=3,
@@ -152,11 +178,13 @@ def smart_crusher_config():
         max_items_after_crush=10,
     )
 
+
 # Helper for creating RequestMetrics
 @pytest.fixture
 def sample_request_metrics():
     """Sample RequestMetrics for storage tests."""
     from headroom.config import RequestMetrics
+
     return RequestMetrics(
         request_id="test-123",
         timestamp=datetime(2025, 1, 6, 12, 0, 0),

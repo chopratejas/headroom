@@ -22,16 +22,16 @@ def main():
 
     print("\nBEFORE (in your MCP host application):")
     print("-" * 40)
-    before_standalone = '''
+    before_standalone = """
 # Your MCP host application
 result = await mcp_client.call_tool("search_logs", {"service": "api"})
 messages.append({"role": "tool", "content": result})
-'''
+"""
     print(before_standalone)
 
     print("\nAFTER (with Headroom compression):")
     print("-" * 40)
-    after_standalone = '''
+    after_standalone = """
 from headroom.integrations.mcp import compress_tool_result  # ADD THIS
 
 # Your MCP host application
@@ -42,7 +42,7 @@ compressed = compress_tool_result(                          # ADD THIS
     user_query="find errors in api",                        # ADD THIS
 )                                                           # ADD THIS
 messages.append({"role": "tool", "content": compressed})
-'''
+"""
     print(after_standalone)
 
     # =========================================================================
@@ -54,7 +54,7 @@ messages.append({"role": "tool", "content": compressed})
 
     print("\nBEFORE:")
     print("-" * 40)
-    before_wrapper = '''
+    before_wrapper = """
 from mcp import Client
 
 # Create MCP client
@@ -62,12 +62,12 @@ client = Client(transport)
 
 # Use client normally
 result = await client.call_tool("search_logs", {"service": "api"})
-'''
+"""
     print(before_wrapper)
 
     print("\nAFTER:")
     print("-" * 40)
-    after_wrapper = '''
+    after_wrapper = """
 from mcp import Client
 from headroom.integrations.mcp import HeadroomMCPClientWrapper  # ADD THIS
 
@@ -77,7 +77,7 @@ client = HeadroomMCPClientWrapper(base_client)  # WRAP IT (1 line)
 
 # Use client normally - compression is automatic!
 result = await client.call_tool("search_logs", {"service": "api"})
-'''
+"""
     print(after_wrapper)
 
     # =========================================================================
@@ -89,7 +89,7 @@ result = await client.call_tool("search_logs", {"service": "api"})
 
     print("\nCode with metrics tracking:")
     print("-" * 40)
-    with_metrics = '''
+    with_metrics = """
 from headroom.integrations.mcp import compress_tool_result_with_metrics
 
 result = await mcp_client.call_tool("search_logs", {"service": "api"})
@@ -104,7 +104,7 @@ print(f"Compression: {compression.compression_ratio:.1%}")
 print(f"Errors preserved: {compression.errors_preserved}")
 
 messages.append({"role": "tool", "content": compression.compressed_content})
-'''
+"""
     print(with_metrics)
 
     # =========================================================================

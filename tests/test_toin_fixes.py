@@ -11,31 +11,26 @@ This file tests all the fixes made to the TOIN implementation:
 """
 
 import json
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-from headroom.telemetry.toin import (
-    ToolIntelligenceNetwork,
-    TOINConfig,
-    ToolPattern,
-    CompressionHint,
-    get_toin,
-    reset_toin,
-)
-from headroom.telemetry import ToolSignature
+import pytest
+
 from headroom.cache.compression_feedback import (
-    CompressionFeedback,
-    LocalToolPattern as FeedbackToolPattern,
     get_compression_feedback,
     reset_compression_feedback,
 )
 from headroom.cache.compression_store import (
-    CompressionStore,
     RetrievalEvent,
     get_compression_store,
     reset_compression_store,
+)
+from headroom.telemetry import ToolSignature
+from headroom.telemetry.toin import (
+    TOINConfig,
+    ToolIntelligenceNetwork,
+    get_toin,
+    reset_toin,
 )
 
 
@@ -45,10 +40,12 @@ def fresh_toin():
     reset_toin()
     with tempfile.TemporaryDirectory() as tmpdir:
         storage_path = str(Path(tmpdir) / "toin_test.json")
-        toin = get_toin(TOINConfig(
-            storage_path=storage_path,
-            auto_save_interval=0,
-        ))
+        toin = get_toin(
+            TOINConfig(
+                storage_path=storage_path,
+                auto_save_interval=0,
+            )
+        )
         yield toin
         reset_toin()
 
@@ -420,7 +417,7 @@ class TestFieldRetrievalFrequencyWeighting:
             # field_b should come before field_c which should come before field_a
             b_idx = hint.preserve_fields.index(field_b) if field_b in hint.preserve_fields else -1
             c_idx = hint.preserve_fields.index(field_c) if field_c in hint.preserve_fields else -1
-            a_idx = hint.preserve_fields.index(field_a) if field_a in hint.preserve_fields else -1
+            hint.preserve_fields.index(field_a) if field_a in hint.preserve_fields else -1
 
             if b_idx >= 0 and c_idx >= 0:
                 assert b_idx < c_idx, "Higher frequency field should come first"
@@ -679,7 +676,7 @@ class TestIntegration:
         )
 
         # Retrieve triggers feedback
-        entry = fresh_store.retrieve(hash_key, query="test query")
+        fresh_store.retrieve(hash_key, query="test query")
 
         # Verify feedback received the strategy
         pattern = fresh_feedback._tool_patterns.get("test_tool")

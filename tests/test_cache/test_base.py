@@ -1,13 +1,12 @@
 """Tests for cache base types and interfaces."""
 
-import pytest
 from headroom.cache.base import (
-    CacheStrategy,
     BreakpointLocation,
     CacheBreakpoint,
     CacheConfig,
     CacheMetrics,
     CacheResult,
+    CacheStrategy,
     OptimizationContext,
 )
 

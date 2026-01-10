@@ -25,6 +25,7 @@ try:
     )
     from mistral_common.protocol.instruct.request import ChatCompletionRequest
     from mistral_common.tokens.tokenizers.mistral import MistralTokenizer as _MistralTokenizer
+
     MISTRAL_AVAILABLE = True
 except ImportError:
     MISTRAL_AVAILABLE = False

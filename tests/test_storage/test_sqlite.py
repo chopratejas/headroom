@@ -33,9 +33,7 @@ class TestSQLiteStorageInit:
         cursor = conn.cursor()
 
         # Check that requests table exists
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='requests'"
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='requests'")
         result = cursor.fetchone()
         assert result is not None
         assert result[0] == "requests"

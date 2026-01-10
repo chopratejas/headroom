@@ -649,7 +649,7 @@ class ModelRegistry:
         Returns:
             List of provider names.
         """
-        return list(set(info.provider for info in _MODELS.values()))
+        return list({info.provider for info in _MODELS.values()})
 
     @classmethod
     def get_context_limit(cls, model: str, default: int = 128000) -> int:

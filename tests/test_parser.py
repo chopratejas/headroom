@@ -10,22 +10,22 @@ Tests all parsing and analysis functions:
 - get_message_content_text: Content extraction
 """
 
-import pytest
 from unittest.mock import Mock
+
+import pytest
 
 from headroom.parser import (
     compute_hash,
     detect_waste_signals,
+    find_tool_units,
+    get_message_content_text,
     is_rag_content,
     parse_message_to_blocks,
     parse_messages,
-    find_tool_units,
-    get_message_content_text,
 )
-from headroom.config import Block, WasteSignals
-
 
 # --- Fixtures ---
+
 
 @pytest.fixture
 def mock_tokenizer():
@@ -64,12 +64,9 @@ def tool_call_message():
             {
                 "id": "call_abc123",
                 "type": "function",
-                "function": {
-                    "name": "search_user",
-                    "arguments": '{"user_id": "12345"}'
-                }
+                "function": {"name": "search_user", "arguments": '{"user_id": "12345"}'},
             }
-        ]
+        ],
     }
 
 
@@ -79,7 +76,7 @@ def tool_result_message():
     return {
         "role": "tool",
         "tool_call_id": "call_abc123",
-        "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com"}'
+        "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com"}',
     }
 
 
@@ -91,8 +88,8 @@ def multimodal_message():
         "content": [
             {"type": "text", "text": "Analyze this image:"},
             {"type": "image", "source": {"type": "base64", "data": "..."}},
-            {"type": "text", "text": "What do you see?"}
-        ]
+            {"type": "text", "text": "What do you see?"},
+        ],
     }
 
 
@@ -101,7 +98,7 @@ def rag_user_message():
     """User message containing RAG content markers."""
     return {
         "role": "user",
-        "content": "[Document 1] Here is the relevant context from our knowledge base. [Source: docs/manual.md]"
+        "content": "[Document 1] Here is the relevant context from our knowledge base. [Source: docs/manual.md]",
     }
 
 
@@ -135,6 +132,7 @@ def json_bloat_text():
 
 
 # --- TestComputeHash ---
+
 
 class TestComputeHash:
     """Tests for compute_hash function."""
@@ -171,6 +169,7 @@ class TestComputeHash:
 
 
 # --- TestDetectWasteSignals ---
+
 
 class TestDetectWasteSignals:
     """Tests for detect_waste_signals function."""
@@ -227,6 +226,7 @@ class TestDetectWasteSignals:
 
 # --- TestIsRagContent ---
 
+
 class TestIsRagContent:
     """Tests for is_rag_content function."""
 
@@ -267,6 +267,7 @@ class TestIsRagContent:
 
 
 # --- TestParseMessageToBlocks ---
+
 
 class TestParseMessageToBlocks:
     """Tests for parse_message_to_blocks function."""
@@ -337,12 +338,7 @@ class TestParseMessageToBlocks:
         msg = {
             "role": "assistant",
             "content": "Let me search for that.",
-            "tool_calls": [
-                {
-                    "id": "call_xyz",
-                    "function": {"name": "search", "arguments": "{}"}
-                }
-            ]
+            "tool_calls": [{"id": "call_xyz", "function": {"name": "search", "arguments": "{}"}}],
         }
         blocks = parse_message_to_blocks(msg, 0, mock_tokenizer)
         kinds = [b.kind for b in blocks]
@@ -368,6 +364,7 @@ class TestParseMessageToBlocks:
 
 
 # --- TestParseMessages ---
+
 
 class TestParseMessages:
     """Tests for parse_messages function."""
@@ -412,6 +409,7 @@ class TestParseMessages:
 
 # --- TestFindToolUnits ---
 
+
 class TestFindToolUnits:
     """Tests for find_tool_units function."""
 
@@ -433,8 +431,8 @@ class TestFindToolUnits:
                 "content": None,
                 "tool_calls": [
                     {"id": "call_1", "function": {"name": "search", "arguments": "{}"}},
-                    {"id": "call_2", "function": {"name": "fetch", "arguments": "{}"}}
-                ]
+                    {"id": "call_2", "function": {"name": "fetch", "arguments": "{}"}},
+                ],
             },
             {"role": "tool", "tool_call_id": "call_1", "content": "result 1"},
             {"role": "tool", "tool_call_id": "call_2", "content": "result 2"},
@@ -475,7 +473,7 @@ class TestFindToolUnits:
                 "tool_calls": [
                     {"id": "call_a", "function": {"name": "first", "arguments": "{}"}},
                     {"id": "call_b", "function": {"name": "second", "arguments": "{}"}},
-                ]
+                ],
             },
             {"role": "tool", "tool_call_id": "call_b", "content": "second result"},
             {"role": "tool", "tool_call_id": "call_a", "content": "first result"},
@@ -487,6 +485,7 @@ class TestFindToolUnits:
 
 
 # --- TestGetMessageContentText ---
+
 
 class TestGetMessageContentText:
     """Tests for get_message_content_text function."""
@@ -505,7 +504,7 @@ class TestGetMessageContentText:
                 {"type": "text", "text": "First part"},
                 {"type": "image", "source": {}},
                 {"type": "text", "text": "Second part"},
-            ]
+            ],
         }
         text = get_message_content_text(msg)
         assert "First part" in text
@@ -524,7 +523,7 @@ class TestGetMessageContentText:
             "content": [
                 {"type": "text", "text": "Dict text"},
                 "Plain string",
-            ]
+            ],
         }
         text = get_message_content_text(msg)
         assert "Dict text" in text
@@ -543,7 +542,7 @@ class TestGetMessageContentText:
             "content": [
                 {"type": "image", "data": "..."},
                 {"type": "text", "text": "Only this"},
-            ]
+            ],
         }
         text = get_message_content_text(msg)
         assert text == "Only this"
@@ -556,6 +555,7 @@ class TestGetMessageContentText:
 
 
 # --- Additional fixtures for complex tests ---
+
 
 @pytest.fixture
 def sample_messages():
@@ -580,17 +580,14 @@ def sample_messages_with_tools():
                 {
                     "id": "call_123",
                     "type": "function",
-                    "function": {
-                        "name": "search_user",
-                        "arguments": '{"user_id": "12345"}'
-                    }
+                    "function": {"name": "search_user", "arguments": '{"user_id": "12345"}'},
                 }
-            ]
+            ],
         },
         {
             "role": "tool",
             "tool_call_id": "call_123",
-            "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com"}'
+            "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com"}',
         },
         {"role": "assistant", "content": "I found user Alice with ID 12345."},
     ]

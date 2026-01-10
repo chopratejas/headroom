@@ -217,10 +217,7 @@ class BM25Scorer(RelevanceScorer):
         context_tokens = self._tokenize(context)
 
         if not context_tokens:
-            return [
-                RelevanceScore(score=0.0, reason="BM25: empty context")
-                for _ in items
-            ]
+            return [RelevanceScore(score=0.0, reason="BM25: empty context") for _ in items]
 
         # Compute average document length for normalization
         all_tokens = [self._tokenize(item) for item in items]
@@ -228,9 +225,7 @@ class BM25Scorer(RelevanceScorer):
 
         results = []
         for item_tokens in all_tokens:
-            raw_score, matched = self._bm25_score(
-                item_tokens, context_tokens, avg_doc_len=avg_len
-            )
+            raw_score, matched = self._bm25_score(item_tokens, context_tokens, avg_doc_len=avg_len)
 
             # Normalize
             if self.normalize_score:

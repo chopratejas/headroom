@@ -7,26 +7,27 @@ from __future__ import annotations
 
 import pytest
 
+from headroom.providers import (
+    GoogleProvider,
+    ModelCapabilities,
+    OpenAICompatibleProvider,
+    create_groq_provider,
+    create_lmstudio_provider,
+    create_ollama_provider,
+    create_together_provider,
+    create_vllm_provider,
+    is_litellm_available,
+)
+
 
 def _transformers_available() -> bool:
     """Check if transformers is available."""
     try:
         import transformers  # noqa: F401
+
         return True
     except ImportError:
         return False
-
-from headroom.providers import (
-    OpenAICompatibleProvider,
-    ModelCapabilities,
-    GoogleProvider,
-    create_ollama_provider,
-    create_together_provider,
-    create_groq_provider,
-    create_vllm_provider,
-    create_lmstudio_provider,
-    is_litellm_available,
-)
 
 
 class TestOpenAICompatibleProvider:
@@ -58,7 +59,7 @@ class TestOpenAICompatibleProvider:
 
     @pytest.mark.skipif(
         not _transformers_available(),
-        reason="transformers not installed - needed for HuggingFace tokenizer"
+        reason="transformers not installed - needed for HuggingFace tokenizer",
     )
     def test_get_token_counter(self):
         """Test getting token counter."""

@@ -11,9 +11,8 @@ These are the 4 required acceptance tests from the spec:
 import pytest
 
 from headroom import OpenAIProvider, Tokenizer
-from headroom.transforms import CacheAligner, RollingWindow, ToolCrusher
+from headroom.transforms import CacheAligner, RollingWindow
 from headroom.transforms.tool_crusher import crush_tool_output
-
 
 # Create a shared provider for tests
 _provider = OpenAIProvider()
@@ -273,10 +272,26 @@ class TestToolOrphan:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "search_web", "arguments": '{"q": "a"}'}},
-                    {"id": "call_2", "type": "function", "function": {"name": "search_files", "arguments": '{"q": "b"}'}},
-                    {"id": "call_3", "type": "function", "function": {"name": "search_db", "arguments": '{"q": "c"}'}},
-                    {"id": "call_4", "type": "function", "function": {"name": "search_api", "arguments": '{"q": "d"}'}},
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "search_web", "arguments": '{"q": "a"}'},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "search_files", "arguments": '{"q": "b"}'},
+                    },
+                    {
+                        "id": "call_3",
+                        "type": "function",
+                        "function": {"name": "search_db", "arguments": '{"q": "c"}'},
+                    },
+                    {
+                        "id": "call_4",
+                        "type": "function",
+                        "function": {"name": "search_api", "arguments": '{"q": "d"}'},
+                    },
                 ],
             },
             {"role": "tool", "tool_call_id": "call_1", "content": '{"results": ["web_result"]}'},
@@ -331,7 +346,9 @@ class TestStreaming:
 
         class MockChunk:
             def __init__(self, content: str):
-                self.choices = [type("Choice", (), {"delta": type("Delta", (), {"content": content})()})]
+                self.choices = [
+                    type("Choice", (), {"delta": type("Delta", (), {"content": content})()})
+                ]
 
         class MockStream:
             def __init__(self):
@@ -428,12 +445,13 @@ class TestQueryAnchorExtraction:
 
     def test_preserves_needle_by_name(self):
         """If user asks for 'Alice', item with Alice should be preserved."""
+        import json
+
         from headroom.transforms.smart_crusher import (
             SmartCrusher,
             SmartCrusherConfig,
             extract_query_anchors,
         )
-        import json
 
         # User is searching for 'Alice'
         messages = [
@@ -443,16 +461,20 @@ class TestQueryAnchorExtraction:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "find_users", "arguments": '{"name": "Alice"}'}}
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "find_users", "arguments": '{"name": "Alice"}'},
+                    }
                 ],
             },
             {
                 "role": "tool",
                 "tool_call_id": "call_1",
-                "content": json.dumps([
-                    {"id": i, "name": f"User{i}", "score": 0.1}
-                    for i in range(50)
-                ] + [{"id": 42, "name": "Alice", "score": 0.1}])  # Alice is at the END, not in first/last K
+                "content": json.dumps(
+                    [{"id": i, "name": f"User{i}", "score": 0.1} for i in range(50)]
+                    + [{"id": 42, "name": "Alice", "score": 0.1}]
+                ),  # Alice is at the END, not in first/last K
             },
         ]
 
@@ -481,12 +503,13 @@ class TestQueryAnchorExtraction:
 
     def test_preserves_needle_by_uuid(self):
         """If user asks for a UUID, item with that UUID should be preserved."""
+        import json
+
         from headroom.transforms.smart_crusher import (
             SmartCrusher,
             SmartCrusherConfig,
             extract_query_anchors,
         )
-        import json
 
         target_uuid = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -497,16 +520,20 @@ class TestQueryAnchorExtraction:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "call_1", "type": "function", "function": {"name": "get_requests", "arguments": "{}"}}
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_requests", "arguments": "{}"},
+                    }
                 ],
             },
             {
                 "role": "tool",
                 "tool_call_id": "call_1",
-                "content": json.dumps([
-                    {"request_id": f"other-{i}", "status": "ok"}
-                    for i in range(50)
-                ] + [{"request_id": target_uuid, "status": "ok"}])  # Target at end
+                "content": json.dumps(
+                    [{"request_id": f"other-{i}", "status": "ok"} for i in range(50)]
+                    + [{"request_id": target_uuid, "status": "ok"}]
+                ),  # Target at end
             },
         ]
 

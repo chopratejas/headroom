@@ -39,7 +39,6 @@ from .base import (
     OptimizationContext,
 )
 
-
 # Anthropic-specific constants
 ANTHROPIC_MIN_CACHEABLE_TOKENS = 1024
 ANTHROPIC_MAX_BREAKPOINTS = 4
@@ -147,13 +146,9 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
         warnings.extend(plan.warnings)
 
         # Step 4: Insert cache_control blocks
-        optimized_messages = self._insert_breakpoints(
-            optimized_messages, plan.breakpoints
-        )
+        optimized_messages = self._insert_breakpoints(optimized_messages, plan.breakpoints)
         if plan.breakpoints:
-            transforms_applied.append(
-                f"inserted_{len(plan.breakpoints)}_cache_breakpoints"
-            )
+            transforms_applied.append(f"inserted_{len(plan.breakpoints)}_cache_breakpoints")
 
         # Step 5: Compute metrics
         prefix_content = self._extract_cacheable_content(optimized_messages)
@@ -194,9 +189,7 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
             warnings=warnings,
         )
 
-    def _analyze_sections(
-        self, messages: list[dict[str, Any]]
-    ) -> list[ContentSection]:
+    def _analyze_sections(self, messages: list[dict[str, Any]]) -> list[ContentSection]:
         """Analyze messages to identify distinct content sections."""
         sections: list[ContentSection] = []
 
@@ -207,9 +200,13 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
             if role == "system":
                 section_type = "system"
             elif role == "user":
-                section_type = "examples" if self._looks_like_example(message, messages, idx) else "user"
+                section_type = (
+                    "examples" if self._looks_like_example(message, messages, idx) else "user"
+                )
             elif role == "assistant":
-                section_type = "examples" if self._looks_like_example(message, messages, idx) else "assistant"
+                section_type = (
+                    "examples" if self._looks_like_example(message, messages, idx) else "assistant"
+                )
             else:
                 section_type = role
 
@@ -227,17 +224,17 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
 
             if isinstance(content, str):
                 token_count = self._count_tokens_estimate(content)
-                is_cacheable, reason = self._assess_cacheability(
-                    section_type, token_count, content
+                is_cacheable, reason = self._assess_cacheability(section_type, token_count, content)
+                sections.append(
+                    ContentSection(
+                        content=content,
+                        section_type=section_type,
+                        message_index=idx,
+                        token_count=token_count,
+                        is_cacheable=is_cacheable,
+                        reason=reason,
+                    )
                 )
-                sections.append(ContentSection(
-                    content=content,
-                    section_type=section_type,
-                    message_index=idx,
-                    token_count=token_count,
-                    is_cacheable=is_cacheable,
-                    reason=reason,
-                ))
 
             elif isinstance(content, list):
                 for block_idx, block in enumerate(content):
@@ -247,15 +244,17 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
                         is_cacheable, reason = self._assess_cacheability(
                             section_type, token_count, text
                         )
-                        sections.append(ContentSection(
-                            content=block,
-                            section_type=section_type,
-                            message_index=idx,
-                            content_index=block_idx,
-                            token_count=token_count,
-                            is_cacheable=is_cacheable,
-                            reason=reason,
-                        ))
+                        sections.append(
+                            ContentSection(
+                                content=block,
+                                section_type=section_type,
+                                message_index=idx,
+                                content_index=block_idx,
+                                token_count=token_count,
+                                is_cacheable=is_cacheable,
+                                reason=reason,
+                            )
+                        )
 
         return sections
 
@@ -264,7 +263,10 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
     ) -> tuple[bool, str]:
         """Assess whether a section is cacheable."""
         if token_count < self.config.min_cacheable_tokens:
-            return False, f"Below minimum tokens ({token_count} < {self.config.min_cacheable_tokens})"
+            return (
+                False,
+                f"Below minimum tokens ({token_count} < {self.config.min_cacheable_tokens})",
+            )
 
         if section_type == "system":
             return True, "System prompts are highly cacheable"
@@ -318,6 +320,7 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
     def _estimate_tools_tokens(self, tools: Any) -> int:
         """Estimate token count for tool definitions."""
         import json
+
         try:
             return self._count_tokens_estimate(json.dumps(tools))
         except (TypeError, ValueError):
@@ -353,9 +356,7 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
 
         return messages, transforms
 
-    def _stabilize_text(
-        self, text: str, config: CacheConfig
-    ) -> tuple[str, list[str]]:
+    def _stabilize_text(self, text: str, config: CacheConfig) -> tuple[str, list[str]]:
         """Stabilize a text string."""
         transforms: list[str] = []
         result = text
@@ -408,9 +409,7 @@ class AnthropicCacheOptimizer(BaseCacheOptimizer):
 
         for section in cacheable:
             if len(selected) >= config.max_breakpoints:
-                plan.warnings.append(
-                    f"Reached maximum breakpoints ({config.max_breakpoints})"
-                )
+                plan.warnings.append(f"Reached maximum breakpoints ({config.max_breakpoints})")
                 break
 
             selected.append(section)

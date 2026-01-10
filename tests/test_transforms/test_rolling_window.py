@@ -1,13 +1,10 @@
 """Tests for rolling window transform."""
 
-import json
-
 import pytest
 
-from headroom import OpenAIProvider, Tokenizer, RollingWindowConfig
-from headroom.transforms import RollingWindow
+from headroom import OpenAIProvider, RollingWindowConfig, Tokenizer
 from headroom.parser import find_tool_units
-
+from headroom.transforms import RollingWindow
 
 # Create a shared provider for tests
 _provider = OpenAIProvider()
@@ -21,15 +18,22 @@ def get_tokenizer(model: str = "gpt-4o") -> Tokenizer:
 
 # Fixtures for realistic message scenarios
 
+
 @pytest.fixture
 def messages_with_system():
     """Messages with a system prompt."""
     return [
-        {"role": "system", "content": "You are a helpful assistant. You help users with their tasks."},
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. You help users with their tasks.",
+        },
         {"role": "user", "content": "Hello, can you help me?"},
         {"role": "assistant", "content": "Of course! What do you need help with?"},
         {"role": "user", "content": "I need to analyze some data."},
-        {"role": "assistant", "content": "I'd be happy to help analyze your data. What kind of data do you have?"},
+        {
+            "role": "assistant",
+            "content": "I'd be happy to help analyze your data. What kind of data do you have?",
+        },
     ]
 
 
@@ -46,19 +50,19 @@ def messages_with_tool_calls():
                 {
                     "id": "call_abc123",
                     "type": "function",
-                    "function": {
-                        "name": "get_user",
-                        "arguments": '{"user_id": "12345"}'
-                    }
+                    "function": {"name": "get_user", "arguments": '{"user_id": "12345"}'},
                 }
-            ]
+            ],
         },
         {
             "role": "tool",
             "tool_call_id": "call_abc123",
-            "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com", "status": "active"}'
+            "content": '{"id": "12345", "name": "Alice", "email": "alice@example.com", "status": "active"}',
         },
-        {"role": "assistant", "content": "I found the user. Alice (ID: 12345) is an active user with email alice@example.com."},
+        {
+            "role": "assistant",
+            "content": "I found the user. Alice (ID: 12345) is an active user with email alice@example.com.",
+        },
         {"role": "user", "content": "Can you also find user 67890?"},
         {
             "role": "assistant",
@@ -67,17 +71,14 @@ def messages_with_tool_calls():
                 {
                     "id": "call_def456",
                     "type": "function",
-                    "function": {
-                        "name": "get_user",
-                        "arguments": '{"user_id": "67890"}'
-                    }
+                    "function": {"name": "get_user", "arguments": '{"user_id": "67890"}'},
                 }
-            ]
+            ],
         },
         {
             "role": "tool",
             "tool_call_id": "call_def456",
-            "content": '{"id": "67890", "name": "Bob", "email": "bob@example.com", "status": "inactive"}'
+            "content": '{"id": "67890", "name": "Bob", "email": "bob@example.com", "status": "inactive"}',
         },
         {"role": "assistant", "content": "Found Bob (ID: 67890). This user is currently inactive."},
         {"role": "user", "content": "Thanks for the help!"},
@@ -98,31 +99,17 @@ def messages_multiple_tool_calls():
                 {
                     "id": "call_multi_1",
                     "type": "function",
-                    "function": {
-                        "name": "search_user",
-                        "arguments": '{"name": "Alice"}'
-                    }
+                    "function": {"name": "search_user", "arguments": '{"name": "Alice"}'},
                 },
                 {
                     "id": "call_multi_2",
                     "type": "function",
-                    "function": {
-                        "name": "search_user",
-                        "arguments": '{"name": "Bob"}'
-                    }
-                }
-            ]
+                    "function": {"name": "search_user", "arguments": '{"name": "Bob"}'},
+                },
+            ],
         },
-        {
-            "role": "tool",
-            "tool_call_id": "call_multi_1",
-            "content": '{"id": "1", "name": "Alice"}'
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_multi_2",
-            "content": '{"id": "2", "name": "Bob"}'
-        },
+        {"role": "tool", "tool_call_id": "call_multi_1", "content": '{"id": "1", "name": "Alice"}'},
+        {"role": "tool", "tool_call_id": "call_multi_2", "content": '{"id": "2", "name": "Bob"}'},
         {"role": "assistant", "content": "I found both users."},
     ]
 
@@ -135,8 +122,12 @@ def long_conversation():
     ]
     # Add 20 turns of conversation
     for i in range(20):
-        messages.append({"role": "user", "content": f"This is user message number {i}. " * 10})  # ~50 tokens each
-        messages.append({"role": "assistant", "content": f"This is assistant response number {i}. " * 10})
+        messages.append(
+            {"role": "user", "content": f"This is user message number {i}. " * 10}
+        )  # ~50 tokens each
+        messages.append(
+            {"role": "assistant", "content": f"This is assistant response number {i}. " * 10}
+        )
     return messages
 
 
@@ -221,20 +212,20 @@ class TestRollingWindowProtection:
                     {
                         "id": "call_protected",
                         "type": "function",
-                        "function": {"name": "get_user", "arguments": '{"id": "999"}'}
+                        "function": {"name": "get_user", "arguments": '{"id": "999"}'},
                     }
-                ]
+                ],
             },
             {
                 "role": "tool",
                 "tool_call_id": "call_protected",
-                "content": '{"id": "999", "name": "Protected User"}'
+                "content": '{"id": "999", "name": "Protected User"}',
             },
             {"role": "user", "content": "Thanks!"},
             {"role": "assistant", "content": "You're welcome!"},
         ]
 
-        result = window.apply(
+        window.apply(
             messages,
             tokenizer,
             model_limit=500,
@@ -252,8 +243,13 @@ class TestRollingWindowProtection:
                     for tc in msg.get("tool_calls", []):
                         tc_id = tc.get("id")
                         for j, other_msg in enumerate(messages):
-                            if other_msg.get("role") == "tool" and other_msg.get("tool_call_id") == tc_id:
-                                assert j in protected_indices, f"Tool response at {j} should be protected"
+                            if (
+                                other_msg.get("role") == "tool"
+                                and other_msg.get("tool_call_id") == tc_id
+                            ):
+                                assert j in protected_indices, (
+                                    f"Tool response at {j} should be protected"
+                                )
 
 
 class TestDropPriority:
@@ -268,7 +264,7 @@ class TestDropPriority:
             output_buffer_tokens=0,
         )
         window = RollingWindow(config)
-        tokenizer = get_tokenizer()
+        get_tokenizer()
 
         # Check drop candidates ordering
         protected = window._get_protected_indices(messages_with_tool_calls)
@@ -344,7 +340,8 @@ class TestDropPriority:
                 tool_call_ids = {tc.get("id") for tc in msg.get("tool_calls", [])}
                 # Find matching tool responses
                 tool_responses = [
-                    m for m in result.messages
+                    m
+                    for m in result.messages
                     if m.get("role") == "tool" and m.get("tool_call_id") in tool_call_ids
                 ]
                 # All tool calls should have their responses
@@ -555,7 +552,9 @@ class TestMarkers:
 
         # All system messages should come before the marker
         for i in range(marker_idx):
-            assert result.messages[i].get("role") == "system" or "<headroom:" in result.messages[i].get("content", "")
+            assert result.messages[i].get("role") == "system" or "<headroom:" in result.messages[
+                i
+            ].get("content", "")
 
     def test_marker_contains_count(self, long_conversation):
         """Marker should contain the count of dropped items."""
@@ -619,7 +618,7 @@ class TestBuildDropCandidates:
         config = RollingWindowConfig(enabled=True, keep_last_turns=0)
         window = RollingWindow(config)
 
-        protected = set([0])  # Only protect system
+        protected = {0}  # Only protect system
         tool_units = []
         candidates = window._build_drop_candidates(long_conversation, protected, tool_units)
 
@@ -657,9 +656,7 @@ class TestEdgeCases:
 
     def test_system_only(self):
         """Conversation with only system message should not drop anything."""
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."}
-        ]
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
         config = RollingWindowConfig(enabled=True, keep_system=True)
         window = RollingWindow(config)
         tokenizer = get_tokenizer()
@@ -765,7 +762,9 @@ class TestConvenienceFunction:
     These tests are skipped until that bug is fixed.
     """
 
-    @pytest.mark.skip(reason="Bug in source: apply_rolling_window calls Tokenizer() without token_counter")
+    @pytest.mark.skip(
+        reason="Bug in source: apply_rolling_window calls Tokenizer() without token_counter"
+    )
     def test_convenience_function(self, long_conversation):
         """The convenience function should work correctly."""
         from headroom.transforms.rolling_window import apply_rolling_window
@@ -781,7 +780,9 @@ class TestConvenienceFunction:
         assert len(messages) < len(long_conversation)
         assert len(transforms) > 0
 
-    @pytest.mark.skip(reason="Bug in source: apply_rolling_window calls Tokenizer() without token_counter")
+    @pytest.mark.skip(
+        reason="Bug in source: apply_rolling_window calls Tokenizer() without token_counter"
+    )
     def test_convenience_function_with_config(self, long_conversation):
         """The convenience function should accept a config."""
         from headroom.transforms.rolling_window import apply_rolling_window

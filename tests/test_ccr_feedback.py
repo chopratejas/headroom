@@ -1,11 +1,11 @@
 """Tests for CCR feedback loop and pattern learning."""
 
 import time
+
 import pytest
 
 from headroom.cache.compression_feedback import (
     CompressionFeedback,
-    CompressionHints,
     LocalToolPattern,
     get_compression_feedback,
     reset_compression_feedback,

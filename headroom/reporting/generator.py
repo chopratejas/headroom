@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..storage import create_storage
+from ..utils import estimate_cost, format_cost
 
 if TYPE_CHECKING:
-    from jinja2 import Template
+    pass
 
 
 def _get_jinja2_template(template_str: str):
@@ -18,14 +19,11 @@ def _get_jinja2_template(template_str: str):
         from jinja2 import Template
 
         return Template(template_str)
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
-            "jinja2 is required for report generation. "
-            "Install with: pip install headroom[reports]"
-        )
+            "jinja2 is required for report generation. Install with: pip install headroom[reports]"
+        ) from e
 
-
-from ..utils import estimate_cost, format_cost
 
 # HTML template embedded as string
 REPORT_TEMPLATE = """
@@ -433,11 +431,13 @@ def _build_waste_histogram(
     histogram = []
     for key, tokens in sorted(totals.items(), key=lambda x: x[1], reverse=True):
         percentage = (tokens / max_val * 100) if max_val > 0 else 0
-        histogram.append({
-            "label": labels.get(key, key),
-            "tokens": tokens,
-            "percentage": percentage,
-        })
+        histogram.append(
+            {
+                "label": labels.get(key, key),
+                "tokens": tokens,
+                "percentage": percentage,
+            }
+        )
 
     return histogram
 
@@ -459,14 +459,16 @@ def _get_top_waste_requests(
 
         tokens_saved = metrics.tokens_input_before - metrics.tokens_input_after
 
-        requests.append({
-            "request_id": metrics.request_id,
-            "model": metrics.model,
-            "mode": metrics.mode,
-            "tokens_before": metrics.tokens_input_before,
-            "tokens_saved": tokens_saved,
-            "cache_alignment": metrics.cache_alignment_score,
-        })
+        requests.append(
+            {
+                "request_id": metrics.request_id,
+                "model": metrics.model,
+                "mode": metrics.mode,
+                "tokens_before": metrics.tokens_input_before,
+                "tokens_saved": tokens_saved,
+                "cache_alignment": metrics.cache_alignment_score,
+            }
+        )
 
     # Sort by tokens saved (waste potential)
     requests.sort(key=lambda x: x["tokens_before"], reverse=True)
@@ -484,52 +486,64 @@ def _generate_recommendations(
 
     # Check cache alignment
     if stats["avg_cache_alignment"] < 50:
-        recommendations.append({
-            "title": "Improve Cache Alignment",
-            "description": "Your cache alignment score is low. Consider moving dynamic content "
-            "(dates, timestamps, session IDs) out of system prompts into user messages.",
-        })
+        recommendations.append(
+            {
+                "title": "Improve Cache Alignment",
+                "description": "Your cache alignment score is low. Consider moving dynamic content "
+                "(dates, timestamps, session IDs) out of system prompts into user messages.",
+            }
+        )
 
     # Check for tool JSON bloat
     for item in waste_histogram:
         if item["label"] == "Tool JSON Bloat" and item["tokens"] > 10000:
-            recommendations.append({
-                "title": "Enable Tool Output Compression",
-                "description": f"Detected {item['tokens']:,} tokens of tool JSON bloat. "
-                "Switch to 'optimize' mode and configure tool profiles to compress large tool outputs.",
-            })
+            recommendations.append(
+                {
+                    "title": "Enable Tool Output Compression",
+                    "description": f"Detected {item['tokens']:,} tokens of tool JSON bloat. "
+                    "Switch to 'optimize' mode and configure tool profiles to compress large tool outputs.",
+                }
+            )
             break
 
     # Check for history bloat
     for item in waste_histogram:
         if item["label"] == "History Bloat" and item["tokens"] > 50000:
-            recommendations.append({
-                "title": "Review Rolling Window Settings",
-                "description": f"Detected {item['tokens']:,} tokens of history bloat. "
-                "Consider reducing keep_last_turns or increasing output_buffer_tokens.",
-            })
+            recommendations.append(
+                {
+                    "title": "Review Rolling Window Settings",
+                    "description": f"Detected {item['tokens']:,} tokens of history bloat. "
+                    "Consider reducing keep_last_turns or increasing output_buffer_tokens.",
+                }
+            )
             break
 
     # Check audit vs optimize ratio
     if stats["audit_count"] > stats["optimize_count"] * 2:
-        recommendations.append({
-            "title": "Switch to Optimize Mode",
-            "description": f"{stats['audit_count']} requests in audit mode vs {stats['optimize_count']} in optimize. "
-            "Consider switching default_mode to 'optimize' to realize token savings.",
-        })
+        recommendations.append(
+            {
+                "title": "Switch to Optimize Mode",
+                "description": f"{stats['audit_count']} requests in audit mode vs {stats['optimize_count']} in optimize. "
+                "Consider switching default_mode to 'optimize' to realize token savings.",
+            }
+        )
 
     # General recommendation
     if stats["total_tokens_saved"] > 0:
-        recommendations.append({
-            "title": "Continue Monitoring",
-            "description": f"You've saved {stats['total_tokens_saved']:,} tokens so far. "
-            f"Estimated cost savings: {stats['estimated_savings']}. Keep up the good work!",
-        })
+        recommendations.append(
+            {
+                "title": "Continue Monitoring",
+                "description": f"You've saved {stats['total_tokens_saved']:,} tokens so far. "
+                f"Estimated cost savings: {stats['estimated_savings']}. Keep up the good work!",
+            }
+        )
     else:
-        recommendations.append({
-            "title": "Get Started",
-            "description": "No optimizations applied yet. Try setting headroom_mode='optimize' "
-            "on your next request to start seeing token savings.",
-        })
+        recommendations.append(
+            {
+                "title": "Get Started",
+                "description": "No optimizations applied yet. Try setting headroom_mode='optimize' "
+                "on your next request to start seeing token savings.",
+            }
+        )
 
     return recommendations

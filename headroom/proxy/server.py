@@ -41,9 +41,10 @@ import httpx
 
 try:
     import uvicorn
-    from fastapi import FastAPI, Header, HTTPException, Request, Response
+    from fastapi import FastAPI, HTTPException, Request, Response
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import PlainTextResponse, StreamingResponse
+
     FASTAPI_AVAILABLE = True
 except ImportError:
     FASTAPI_AVAILABLE = False
@@ -53,16 +54,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom.cache.compression_feedback import get_compression_feedback
 from headroom.cache.compression_store import get_compression_store
-from headroom.telemetry import get_telemetry_collector
-from headroom.ccr import CCRToolInjector, CCR_TOOL_NAME, parse_tool_call
-from headroom.config import CacheAlignerConfig, CCRConfig, RollingWindowConfig, SmartCrusherConfig
+from headroom.ccr import CCR_TOOL_NAME, CCRToolInjector, parse_tool_call
+from headroom.config import CacheAlignerConfig, RollingWindowConfig, SmartCrusherConfig
 from headroom.providers import AnthropicProvider, OpenAIProvider
+from headroom.telemetry import get_telemetry_collector
 from headroom.tokenizers import get_tokenizer
 from headroom.transforms import CacheAligner, RollingWindow, SmartCrusher, TransformPipeline
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("headroom.proxy")
 
@@ -71,9 +71,11 @@ logger = logging.getLogger("headroom.proxy")
 # Data Models
 # =============================================================================
 
+
 @dataclass
 class RequestLog:
     """Complete log of a single request."""
+
     request_id: str
     timestamp: str
     provider: str
@@ -108,6 +110,7 @@ class RequestLog:
 @dataclass
 class CacheEntry:
     """Cached response entry."""
+
     response_body: bytes
     response_headers: dict[str, str]
     created_at: datetime
@@ -119,6 +122,7 @@ class CacheEntry:
 @dataclass
 class RateLimitState:
     """Token bucket rate limiter state."""
+
     tokens: float
     last_update: float
 
@@ -126,6 +130,7 @@ class RateLimitState:
 @dataclass
 class ProxyConfig:
     """Proxy configuration."""
+
     # Server
     host: str = "127.0.0.1"
     port: int = 8787
@@ -179,6 +184,7 @@ class ProxyConfig:
 # Caching
 # =============================================================================
 
+
 class SemanticCache:
     """Simple semantic cache based on message content hash."""
 
@@ -191,10 +197,13 @@ class SemanticCache:
     def _compute_key(self, messages: list[dict], model: str) -> str:
         """Compute cache key from messages and model."""
         # Normalize messages for consistent hashing
-        normalized = json.dumps({
-            "model": model,
-            "messages": messages,
-        }, sort_keys=True)
+        normalized = json.dumps(
+            {
+                "model": model,
+                "messages": messages,
+            },
+            sort_keys=True,
+        )
         return hashlib.sha256(normalized.encode()).hexdigest()[:32]
 
     def get(self, messages: list[dict], model: str) -> CacheEntry | None:
@@ -259,6 +268,7 @@ class SemanticCache:
 # =============================================================================
 # Rate Limiting
 # =============================================================================
+
 
 class TokenBucketRateLimiter:
     """Token bucket rate limiter for requests and tokens."""
@@ -325,6 +335,7 @@ class TokenBucketRateLimiter:
 # Cost Tracking
 # =============================================================================
 
+
 class CostTracker:
     """Track costs and enforce budgets."""
 
@@ -378,9 +389,9 @@ class CostTracker:
 
         regular_input = input_tokens - cached_tokens
         cost = (
-            (regular_input / 1_000_000) * input_price +
-            (cached_tokens / 1_000_000) * cached_price +
-            (output_tokens / 1_000_000) * output_price
+            (regular_input / 1_000_000) * input_price
+            + (cached_tokens / 1_000_000) * cached_price
+            + (output_tokens / 1_000_000) * output_price
         )
         return cost
 
@@ -409,7 +420,7 @@ class CostTracker:
     def check_budget(self) -> tuple[bool, float]:
         """Check if within budget. Returns (allowed, remaining)."""
         if self.budget_limit_usd is None:
-            return True, float('inf')
+            return True, float("inf")
 
         period_cost = self.get_period_cost()
         remaining = self.budget_limit_usd - period_cost
@@ -423,13 +434,16 @@ class CostTracker:
             "period_cost_usd": round(self.get_period_cost(), 4),
             "budget_limit_usd": self.budget_limit_usd,
             "budget_period": self.budget_period,
-            "budget_remaining_usd": round(self.check_budget()[1], 4) if self.budget_limit_usd else None,
+            "budget_remaining_usd": round(self.check_budget()[1], 4)
+            if self.budget_limit_usd
+            else None,
         }
 
 
 # =============================================================================
 # Prometheus Metrics
 # =============================================================================
+
 
 class PrometheusMetrics:
     """Prometheus-compatible metrics."""
@@ -533,20 +547,24 @@ class PrometheusMetrics:
         ]
 
         # Per-provider metrics
-        lines.extend([
-            "",
-            "# HELP headroom_requests_by_provider Requests by provider",
-            "# TYPE headroom_requests_by_provider counter",
-        ])
+        lines.extend(
+            [
+                "",
+                "# HELP headroom_requests_by_provider Requests by provider",
+                "# TYPE headroom_requests_by_provider counter",
+            ]
+        )
         for provider, count in self.requests_by_provider.items():
             lines.append(f'headroom_requests_by_provider{{provider="{provider}"}} {count}')
 
         # Per-model metrics
-        lines.extend([
-            "",
-            "# HELP headroom_requests_by_model Requests by model",
-            "# TYPE headroom_requests_by_model counter",
-        ])
+        lines.extend(
+            [
+                "",
+                "# HELP headroom_requests_by_model Requests by model",
+                "# TYPE headroom_requests_by_model counter",
+            ]
+        )
         for model, count in self.requests_by_model.items():
             lines.append(f'headroom_requests_by_model{{model="{model}"}} {count}')
 
@@ -556,6 +574,7 @@ class PrometheusMetrics:
 # =============================================================================
 # Request Logger
 # =============================================================================
+
 
 class RequestLogger:
     """Log requests to JSONL file."""
@@ -584,8 +603,11 @@ class RequestLogger:
         """Get recent log entries."""
         entries = self._logs[-n:]
         return [
-            {k: v for k, v in asdict(e).items()
-             if k not in ("request_messages", "response_content")}
+            {
+                k: v
+                for k, v in asdict(e).items()
+                if k not in ("request_messages", "response_content")
+            }
             for e in entries
         ]
 
@@ -600,6 +622,7 @@ class RequestLogger:
 # =============================================================================
 # Main Proxy
 # =============================================================================
+
 
 class HeadroomProxy:
     """Production-ready Headroom optimization proxy."""
@@ -617,16 +640,20 @@ class HeadroomProxy:
         # Initialize transforms
         transforms = [
             CacheAligner(CacheAlignerConfig(enabled=True)),
-            SmartCrusher(SmartCrusherConfig(
-                enabled=True,
-                min_tokens_to_crush=config.min_tokens_to_crush,
-                max_items_after_crush=config.max_items_after_crush,
-            )),
-            RollingWindow(RollingWindowConfig(
-                enabled=True,
-                keep_system=True,
-                keep_last_turns=config.keep_last_turns,
-            )),
+            SmartCrusher(
+                SmartCrusherConfig(
+                    enabled=True,
+                    min_tokens_to_crush=config.min_tokens_to_crush,
+                    max_items_after_crush=config.max_items_after_crush,
+                )
+            ),
+            RollingWindow(
+                RollingWindowConfig(
+                    enabled=True,
+                    keep_system=True,
+                    keep_last_turns=config.keep_last_turns,
+                )
+            ),
         ]
 
         self.anthropic_pipeline = TransformPipeline(
@@ -639,27 +666,43 @@ class HeadroomProxy:
         )
 
         # Initialize components
-        self.cache = SemanticCache(
-            max_entries=config.cache_max_entries,
-            ttl_seconds=config.cache_ttl_seconds,
-        ) if config.cache_enabled else None
+        self.cache = (
+            SemanticCache(
+                max_entries=config.cache_max_entries,
+                ttl_seconds=config.cache_ttl_seconds,
+            )
+            if config.cache_enabled
+            else None
+        )
 
-        self.rate_limiter = TokenBucketRateLimiter(
-            requests_per_minute=config.rate_limit_requests_per_minute,
-            tokens_per_minute=config.rate_limit_tokens_per_minute,
-        ) if config.rate_limit_enabled else None
+        self.rate_limiter = (
+            TokenBucketRateLimiter(
+                requests_per_minute=config.rate_limit_requests_per_minute,
+                tokens_per_minute=config.rate_limit_tokens_per_minute,
+            )
+            if config.rate_limit_enabled
+            else None
+        )
 
-        self.cost_tracker = CostTracker(
-            budget_limit_usd=config.budget_limit_usd,
-            budget_period=config.budget_period,
-        ) if config.cost_tracking_enabled else None
+        self.cost_tracker = (
+            CostTracker(
+                budget_limit_usd=config.budget_limit_usd,
+                budget_period=config.budget_period,
+            )
+            if config.cost_tracking_enabled
+            else None
+        )
 
         self.metrics = PrometheusMetrics()
 
-        self.logger = RequestLogger(
-            log_file=config.log_file,
-            log_full_messages=config.log_full_messages,
-        ) if config.log_requests else None
+        self.logger = (
+            RequestLogger(
+                log_file=config.log_file,
+                log_full_messages=config.log_full_messages,
+            )
+            if config.log_requests
+            else None
+        )
 
         # HTTP client
         self.http_client: httpx.AsyncClient | None = None
@@ -716,7 +759,9 @@ class HeadroomProxy:
         logger.info(f"Output tokens:         {m.tokens_output_total:,}")
         logger.info(f"Tokens saved:          {m.tokens_saved_total:,}")
         if m.tokens_input_total > 0:
-            savings_pct = (m.tokens_saved_total / (m.tokens_input_total + m.tokens_saved_total)) * 100
+            savings_pct = (
+                m.tokens_saved_total / (m.tokens_input_total + m.tokens_saved_total)
+            ) * 100
             logger.info(f"Token savings:         {savings_pct:.1f}%")
         logger.info(f"Total cost:            ${m.cost_total_usd:.4f}")
         logger.info(f"Total savings:         ${m.savings_total_usd:.4f}")
@@ -780,7 +825,7 @@ class HeadroomProxy:
 
                 # Exponential backoff with jitter
                 delay = min(
-                    self.config.retry_base_delay_ms * (2 ** attempt),
+                    self.config.retry_base_delay_ms * (2**attempt),
                     self.config.retry_max_delay_ms,
                 )
                 delay_with_jitter = delay * (0.5 + random.random())
@@ -807,7 +852,7 @@ class HeadroomProxy:
         stream = body.get("stream", False)
 
         # Extract headers and tags
-        headers = {k: v for k, v in request.headers.items()}
+        headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
         tags = self._extract_tags(headers)
@@ -859,10 +904,7 @@ class HeadroomProxy:
 
         # Count original tokens
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(
-            tokenizer.count_text(str(m.get("content", "")))
-            for m in messages
-        )
+        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
 
         # Apply optimization
         transforms_applied = []
@@ -882,8 +924,7 @@ class HeadroomProxy:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     optimized_tokens = sum(
-                        tokenizer.count_text(str(m.get("content", "")))
-                        for m in optimized_messages
+                        tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
                     )
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
@@ -900,7 +941,9 @@ class HeadroomProxy:
                 inject_tool=self.config.ccr_inject_tool,
                 inject_system_instructions=self.config.ccr_inject_system_instructions,
             )
-            optimized_messages, tools, was_injected = injector.process_request(optimized_messages, tools)
+            optimized_messages, tools, was_injected = injector.process_request(
+                optimized_messages, tools
+            )
 
             if injector.has_compressed_content:
                 if was_injected:
@@ -923,9 +966,18 @@ class HeadroomProxy:
         try:
             if stream:
                 return await self._stream_response(
-                    url, headers, body, "anthropic", model, request_id,
-                    original_tokens, optimized_tokens, tokens_saved,
-                    transforms_applied, tags, optimization_latency,
+                    url,
+                    headers,
+                    body,
+                    "anthropic",
+                    model,
+                    request_id,
+                    original_tokens,
+                    optimized_tokens,
+                    tokens_saved,
+                    transforms_applied,
+                    tags,
+                    optimization_latency,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -937,7 +989,7 @@ class HeadroomProxy:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
-                except:
+                except Exception:
                     pass
 
                 # Calculate cost
@@ -958,7 +1010,8 @@ class HeadroomProxy:
                 # Cache response
                 if self.cache and response.status_code == 200:
                     self.cache.set(
-                        messages, model,
+                        messages,
+                        model,
                         response.content,
                         dict(response.headers),
                         tokens_saved=tokens_saved,
@@ -978,32 +1031,37 @@ class HeadroomProxy:
 
                 # Log request
                 if self.logger:
-                    self.logger.log(RequestLog(
-                        request_id=request_id,
-                        timestamp=datetime.now().isoformat(),
-                        provider="anthropic",
-                        model=model,
-                        input_tokens_original=original_tokens,
-                        input_tokens_optimized=optimized_tokens,
-                        output_tokens=output_tokens,
-                        tokens_saved=tokens_saved,
-                        savings_percent=(tokens_saved / original_tokens * 100) if original_tokens > 0 else 0,
-                        estimated_cost_usd=cost_usd,
-                        estimated_savings_usd=savings_usd,
-                        optimization_latency_ms=optimization_latency,
-                        total_latency_ms=total_latency,
-                        tags=tags,
-                        cache_hit=cache_hit,
-                        transforms_applied=transforms_applied,
-                        request_messages=messages if self.config.log_full_messages else None,
-                    ))
+                    self.logger.log(
+                        RequestLog(
+                            request_id=request_id,
+                            timestamp=datetime.now().isoformat(),
+                            provider="anthropic",
+                            model=model,
+                            input_tokens_original=original_tokens,
+                            input_tokens_optimized=optimized_tokens,
+                            output_tokens=output_tokens,
+                            tokens_saved=tokens_saved,
+                            savings_percent=(tokens_saved / original_tokens * 100)
+                            if original_tokens > 0
+                            else 0,
+                            estimated_cost_usd=cost_usd,
+                            estimated_savings_usd=savings_usd,
+                            optimization_latency_ms=optimization_latency,
+                            total_latency_ms=total_latency,
+                            tags=tags,
+                            cache_hit=cache_hit,
+                            transforms_applied=transforms_applied,
+                            request_messages=messages if self.config.log_full_messages else None,
+                        )
+                    )
 
                 # Log to console
                 if tokens_saved > 0:
                     logger.info(
                         f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
-                        f"(saved {tokens_saved:,} tokens, ${savings_usd:.4f})" if savings_usd else
-                        f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
+                        f"(saved {tokens_saved:,} tokens, ${savings_usd:.4f})"
+                        if savings_usd
+                        else f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
                         f"(saved {tokens_saved:,} tokens)"
                     )
 
@@ -1023,7 +1081,7 @@ class HeadroomProxy:
                 # Convert to OpenAI format and retry
                 # (simplified - would need message format conversion)
 
-            raise HTTPException(status_code=502, detail=str(e))
+            raise HTTPException(status_code=502, detail=str(e)) from e
 
     async def _stream_response(
         self,
@@ -1046,7 +1104,9 @@ class HeadroomProxy:
         async def generate():
             output_chunks = []
             try:
-                async with self.http_client.stream("POST", url, json=body, headers=headers) as response:
+                async with self.http_client.stream(
+                    "POST", url, json=body, headers=headers
+                ) as response:
                     async for chunk in response.aiter_bytes():
                         output_chunks.append(chunk)
                         yield chunk
@@ -1090,7 +1150,7 @@ class HeadroomProxy:
         messages = body.get("messages", [])
         stream = body.get("stream", False)
 
-        headers = {k: v for k, v in request.headers.items()}
+        headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
         tags = self._extract_tags(headers)
@@ -1107,14 +1167,14 @@ class HeadroomProxy:
                 )
 
         # Check cache
-        cache_hit = False
         if self.cache and not stream:
             cached = self.cache.get(messages, model)
             if cached:
-                cache_hit = True
                 self.metrics.record_request(
-                    provider="openai", model=model,
-                    input_tokens=0, output_tokens=0,
+                    provider="openai",
+                    model=model,
+                    input_tokens=0,
+                    output_tokens=0,
                     tokens_saved=cached.tokens_saved_per_hit,
                     latency_ms=(time.time() - start_time) * 1000,
                     cached=True,
@@ -1123,10 +1183,7 @@ class HeadroomProxy:
 
         # Token counting
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(
-            tokenizer.count_text(str(m.get("content", "")))
-            for m in messages
-        )
+        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
 
         # Optimization
         transforms_applied = []
@@ -1145,8 +1202,7 @@ class HeadroomProxy:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     optimized_tokens = sum(
-                        tokenizer.count_text(str(m.get("content", "")))
-                        for m in optimized_messages
+                        tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
                     )
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
@@ -1162,7 +1218,9 @@ class HeadroomProxy:
                 inject_tool=self.config.ccr_inject_tool,
                 inject_system_instructions=self.config.ccr_inject_system_instructions,
             )
-            optimized_messages, tools, was_injected = injector.process_request(optimized_messages, tools)
+            optimized_messages, tools, was_injected = injector.process_request(
+                optimized_messages, tools
+            )
 
             if injector.has_compressed_content:
                 if was_injected:
@@ -1182,9 +1240,18 @@ class HeadroomProxy:
         try:
             if stream:
                 return await self._stream_response(
-                    url, headers, body, "openai", model, request_id,
-                    original_tokens, optimized_tokens, tokens_saved,
-                    transforms_applied, tags, optimization_latency,
+                    url,
+                    headers,
+                    body,
+                    "openai",
+                    model,
+                    request_id,
+                    original_tokens,
+                    optimized_tokens,
+                    tokens_saved,
+                    transforms_applied,
+                    tags,
+                    optimization_latency,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -1195,14 +1262,18 @@ class HeadroomProxy:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("completion_tokens", 0)
-                except:
+                except Exception:
                     pass
 
                 # Cost tracking
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(model, optimized_tokens, output_tokens)
-                    original_cost = self.cost_tracker.estimate_cost(model, original_tokens, output_tokens)
+                    cost_usd = self.cost_tracker.estimate_cost(
+                        model, optimized_tokens, output_tokens
+                    )
+                    original_cost = self.cost_tracker.estimate_cost(
+                        model, original_tokens, output_tokens
+                    )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
                         self.cost_tracker.record_cost(cost_usd)
@@ -1210,14 +1281,20 @@ class HeadroomProxy:
 
                 # Cache
                 if self.cache and response.status_code == 200:
-                    self.cache.set(messages, model, response.content, dict(response.headers), tokens_saved)
+                    self.cache.set(
+                        messages, model, response.content, dict(response.headers), tokens_saved
+                    )
 
                 # Metrics
                 self.metrics.record_request(
-                    provider="openai", model=model,
-                    input_tokens=optimized_tokens, output_tokens=output_tokens,
-                    tokens_saved=tokens_saved, latency_ms=total_latency,
-                    cost_usd=cost_usd or 0, savings_usd=savings_usd or 0,
+                    provider="openai",
+                    model=model,
+                    input_tokens=optimized_tokens,
+                    output_tokens=output_tokens,
+                    tokens_saved=tokens_saved,
+                    latency_ms=total_latency,
+                    cost_usd=cost_usd or 0,
+                    savings_usd=savings_usd or 0,
                 )
 
                 if tokens_saved > 0:
@@ -1233,14 +1310,14 @@ class HeadroomProxy:
                 )
         except Exception as e:
             self.metrics.record_failed()
-            raise HTTPException(status_code=502, detail=str(e))
+            raise HTTPException(status_code=502, detail=str(e)) from e
 
     async def handle_passthrough(self, request: Request, base_url: str) -> Response:
         """Pass through request unchanged."""
         path = request.url.path
         url = f"{base_url}{path}"
 
-        headers = {k: v for k, v in request.headers.items()}
+        headers = dict(request.headers.items())
         headers.pop("host", None)
 
         body = await request.body()
@@ -1262,6 +1339,7 @@ class HeadroomProxy:
 # =============================================================================
 # FastAPI App
 # =============================================================================
+
 
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
     """Create FastAPI application."""
@@ -1305,7 +1383,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "optimize": config.optimize,
                 "cache": config.cache_enabled,
                 "rate_limit": config.rate_limit_enabled,
-            }
+            },
         }
 
     @app.get("/stats")
@@ -1324,7 +1402,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "saved": m.tokens_saved_total,
                 "savings_percent": round(
                     (m.tokens_saved_total / (m.tokens_input_total + m.tokens_saved_total) * 100)
-                    if m.tokens_input_total > 0 else 0, 2
+                    if m.tokens_input_total > 0
+                    else 0,
+                    2,
                 ),
             },
             "cost": proxy.cost_tracker.stats() if proxy.cost_tracker else None,
@@ -1398,8 +1478,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "retrieval_count": entry.retrieval_count,
                 }
             raise HTTPException(
-                status_code=404,
-                detail="Entry not found or expired (TTL: 5 minutes)"
+                status_code=404, detail="Entry not found or expired (TTL: 5 minutes)"
             )
 
     @app.get("/v1/retrieve/stats")
@@ -1443,7 +1522,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "hints_example": {
                 tool_name: {
                     "hints": {
-                        "max_items": hints.max_items if (hints := feedback.get_compression_hints(tool_name)) else 15,
+                        "max_items": hints.max_items
+                        if (hints := feedback.get_compression_hints(tool_name))
+                        else 15,
                         "suggested_items": hints.suggested_items if hints else None,
                         "skip_compression": hints.skip_compression if hints else False,
                         "preserve_fields": hints.preserve_fields if hints else [],
@@ -1484,7 +1565,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "search_rate": patterns.search_rate if patterns else 0.0,
                 "common_queries": list(patterns.common_queries.keys())[:10] if patterns else [],
                 "queried_fields": list(patterns.queried_fields.keys())[:10] if patterns else [],
-            } if patterns else None,
+            }
+            if patterns
+            else None,
         }
 
     # Telemetry endpoints (Data Flywheel)
@@ -1554,10 +1637,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         all_stats = telemetry.get_all_tool_stats()
         return {
             "tool_count": len(all_stats),
-            "tools": {
-                sig_hash: stats.to_dict()
-                for sig_hash, stats in all_stats.items()
-            },
+            "tools": {sig_hash: stats.to_dict() for sig_hash, stats in all_stats.items()},
         }
 
     @app.get("/v1/telemetry/tools/{signature_hash}")
@@ -1572,8 +1652,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         if stats is None:
             raise HTTPException(
-                status_code=404,
-                detail=f"No telemetry found for signature: {signature_hash}"
+                status_code=404, detail=f"No telemetry found for signature: {signature_hash}"
             )
 
         return {
@@ -1607,10 +1686,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "tool_name": entry.tool_name,
                     "retrieval_count": entry.retrieval_count,
                 }
-            raise HTTPException(
-                status_code=404,
-                detail="Entry not found or expired"
-            )
+            raise HTTPException(status_code=404, detail="Entry not found or expired")
 
     # CCR Tool Call Handler - for agent frameworks to call when LLM uses headroom_retrieve
     @app.post("/v1/retrieve/tool_call")
@@ -1659,8 +1735,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         if hash_key is None:
             raise HTTPException(
-                status_code=400,
-                detail=f"Invalid tool call or not a {CCR_TOOL_NAME} call"
+                status_code=400, detail=f"Invalid tool call or not a {CCR_TOOL_NAME} call"
             )
 
         # Perform retrieval
@@ -1760,11 +1835,11 @@ def run_server(config: ProxyConfig | None = None):
 ║  Listening: http://{config.host}:{config.port:<5}                                      ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
-║    Optimization:    {'ENABLED ' if config.optimize else 'DISABLED'}                                       ║
-║    Caching:         {'ENABLED ' if config.cache_enabled else 'DISABLED'}   (TTL: {config.cache_ttl_seconds}s)                          ║
-║    Rate Limiting:   {'ENABLED ' if config.rate_limit_enabled else 'DISABLED'}   ({config.rate_limit_requests_per_minute} req/min, {config.rate_limit_tokens_per_minute:,} tok/min)       ║
-║    Retry:           {'ENABLED ' if config.retry_enabled else 'DISABLED'}   (max {config.retry_max_attempts} attempts)                       ║
-║    Cost Tracking:   {'ENABLED ' if config.cost_tracking_enabled else 'DISABLED'}   (budget: {'$' + str(config.budget_limit_usd) + '/' + config.budget_period if config.budget_limit_usd else 'unlimited'})          ║
+║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
+║    Caching:         {"ENABLED " if config.cache_enabled else "DISABLED"}   (TTL: {config.cache_ttl_seconds}s)                          ║
+║    Rate Limiting:   {"ENABLED " if config.rate_limit_enabled else "DISABLED"}   ({config.rate_limit_requests_per_minute} req/min, {config.rate_limit_tokens_per_minute:,} tok/min)       ║
+║    Retry:           {"ENABLED " if config.retry_enabled else "DISABLED"}   (max {config.retry_max_attempts} attempts)                       ║
+║    Cost Tracking:   {"ENABLED " if config.cost_tracking_enabled else "DISABLED"}   (budget: {"$" + str(config.budget_limit_usd) + "/" + config.budget_period if config.budget_limit_usd else "unlimited"})          ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  USAGE:                                                              ║
 ║    Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude     ║

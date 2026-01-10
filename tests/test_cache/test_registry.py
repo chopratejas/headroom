@@ -1,14 +1,15 @@
 """Tests for CacheOptimizerRegistry."""
 
 import pytest
+
 from headroom.cache import (
-    CacheOptimizerRegistry,
     AnthropicCacheOptimizer,
-    OpenAICacheOptimizer,
-    GoogleCacheOptimizer,
     CacheConfig,
+    CacheOptimizerRegistry,
+    GoogleCacheOptimizer,
+    OpenAICacheOptimizer,
 )
-from headroom.cache.base import BaseCacheOptimizer, CacheStrategy, CacheResult, OptimizationContext
+from headroom.cache.base import BaseCacheOptimizer, CacheResult, CacheStrategy
 
 
 class MockOptimizer(BaseCacheOptimizer):

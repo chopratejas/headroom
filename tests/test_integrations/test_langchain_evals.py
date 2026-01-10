@@ -15,9 +15,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from headroom.config import SmartCrusherConfig, RelevanceScorerConfig
-from headroom.transforms import SmartCrusher
+from headroom.config import SmartCrusherConfig
 from headroom.providers import OpenAIProvider
+from headroom.transforms import SmartCrusher
 
 
 # Test fixtures for realistic data
@@ -44,18 +44,20 @@ def generate_log_entries(count: int, error_rate: float = 0.15) -> list[dict]:
     entries = []
     levels = ["DEBUG", "INFO", "INFO", "INFO", "WARN"]  # Base levels (no ERROR)
 
-    for i in range(count):
+    for _i in range(count):
         timestamp = datetime.now() - timedelta(minutes=random.randint(1, 1440))
 
         # Force specific error rate
         if random.random() < error_rate:
             level = "ERROR"
-            message = random.choice([
-                "Connection refused to db: timeout after 30s",
-                "Failed to process request: NullPointerException",
-                "Authentication failed for user: invalid token",
-                "Rate limit exceeded: 429 Too Many Requests",
-            ])
+            message = random.choice(
+                [
+                    "Connection refused to db: timeout after 30s",
+                    "Failed to process request: NullPointerException",
+                    "Authentication failed for user: invalid token",
+                    "Rate limit exceeded: 429 Too Many Requests",
+                ]
+            )
         else:
             level = random.choice(levels)
             message = f"Processing request {random.randint(1000, 9999)}"
@@ -107,13 +109,15 @@ def generate_search_results(count: int, query: str) -> list[dict]:
             snippet = f"This article discusses {query} in detail. {query} is important..."
         else:
             title = f"Unrelated Document {i}"
-            snippet = f"This document covers something else entirely. Not about your search."
+            snippet = "This document covers something else entirely. Not about your search."
 
         result = {
             "id": f"doc_{random.randint(10000, 99999)}",
             "title": title,
             "snippet": snippet,
-            "relevance_score": round(random.uniform(0.9, 1.0) if i < 5 else random.uniform(0.1, 0.5), 3),
+            "relevance_score": round(
+                random.uniform(0.9, 1.0) if i < 5 else random.uniform(0.1, 0.5), 3
+            ),
             "url": f"https://docs.example.com/{i}",
         }
         results.append(result)
@@ -158,7 +162,13 @@ class TestErrorPreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Find ERROR entries in the logs"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -168,15 +178,17 @@ class TestErrorPreservation:
 
         # Extract JSON (handle potential markers)
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         # Count preserved errors
         compressed_errors = [e for e in compressed_data["entries"] if e["level"] == "ERROR"]
 
         # CRITICAL: 100% of errors must be preserved
-        assert len(compressed_errors) == len(original_errors), \
+        assert len(compressed_errors) == len(original_errors), (
             f"ERROR preservation failed: {len(compressed_errors)}/{len(original_errors)} preserved"
+        )
 
     def test_errors_preserved_with_many_errors(self, smart_crusher, tokenizer):
         """Even with many errors (exceeding max_items), all must be preserved."""
@@ -188,7 +200,13 @@ class TestErrorPreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Find errors"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -196,14 +214,16 @@ class TestErrorPreservation:
         compressed_output = result.messages[-1]["content"]
 
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         compressed_errors = [e for e in compressed_data["entries"] if e["level"] == "ERROR"]
 
         # Even with many errors, ALL must be preserved
-        assert len(compressed_errors) == len(original_errors), \
+        assert len(compressed_errors) == len(original_errors), (
             f"High-error-rate preservation failed: {len(compressed_errors)}/{len(original_errors)}"
+        )
 
 
 class TestAnomalyPreservation:
@@ -220,7 +240,13 @@ class TestAnomalyPreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Look for CPU spikes or high error rates"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "get_metrics", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "get_metrics", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -228,15 +254,17 @@ class TestAnomalyPreservation:
         compressed_output = result.messages[-1]["content"]
 
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         compressed_anomalies = [m for m in compressed_data["metrics"] if m["cpu_percent"] > 70]
 
         # Most anomalies should be preserved (statistical detection may miss some edge cases)
-        preservation_rate = len(compressed_anomalies) / len(original_anomalies) if original_anomalies else 1.0
-        assert preservation_rate >= 0.8, \
-            f"Anomaly preservation too low: {preservation_rate:.1%}"
+        preservation_rate = (
+            len(compressed_anomalies) / len(original_anomalies) if original_anomalies else 1.0
+        )
+        assert preservation_rate >= 0.8, f"Anomaly preservation too low: {preservation_rate:.1%}"
 
 
 class TestRelevancePreservation:
@@ -257,7 +285,13 @@ class TestRelevancePreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": f"Find documentation about {query}"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_docs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_docs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -265,17 +299,19 @@ class TestRelevancePreservation:
         compressed_output = result.messages[-1]["content"]
 
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         # At least some high-relevance results should be preserved
         # (BM25 may not catch all without exact keyword matches)
-        compressed_high_relevance = [r for r in compressed_data["results"] if r["relevance_score"] > 0.8]
+        compressed_high_relevance = [
+            r for r in compressed_data["results"] if r["relevance_score"] > 0.8
+        ]
 
         # With BM25, we should preserve at least 1 high-relevance result
         # Full embedding support would preserve more
-        assert len(compressed_high_relevance) >= 1, \
-            f"No high-relevance results preserved"
+        assert len(compressed_high_relevance) >= 1, "No high-relevance results preserved"
 
     def test_exact_keyword_needle(self, smart_crusher, tokenizer):
         """A user with exact keyword match should be found."""
@@ -291,7 +327,13 @@ class TestRelevancePreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Find users with ERROR status"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_users", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_users", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -299,8 +341,9 @@ class TestRelevancePreservation:
         compressed_output = result.messages[-1]["content"]
 
         # The ERROR user should be preserved (error keyword detection)
-        assert "ERROR_SUSPENDED" in compressed_output, \
+        assert "ERROR_SUSPENDED" in compressed_output, (
             "User with ERROR keyword not found in compressed results"
+        )
 
     def test_first_last_items_always_preserved(self, smart_crusher, tokenizer):
         """First and last items should always be preserved for context."""
@@ -314,7 +357,13 @@ class TestRelevancePreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "List all users"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_users", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_users", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -322,10 +371,8 @@ class TestRelevancePreservation:
         compressed_output = result.messages[-1]["content"]
 
         # First and last items should always be preserved
-        assert "FIRST_USER_MARKER" in compressed_output, \
-            "First item not preserved"
-        assert "LAST_USER_MARKER" in compressed_output, \
-            "Last item not preserved"
+        assert "FIRST_USER_MARKER" in compressed_output, "First item not preserved"
+        assert "LAST_USER_MARKER" in compressed_output, "Last item not preserved"
 
 
 class TestCompressionEfficiency:
@@ -341,7 +388,13 @@ class TestCompressionEfficiency:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Check the logs"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -352,8 +405,7 @@ class TestCompressionEfficiency:
         compression_ratio = 1 - (compressed_tokens / original_tokens)
 
         # Should achieve at least 50% compression
-        assert compression_ratio >= 0.5, \
-            f"Compression ratio too low: {compression_ratio:.1%}"
+        assert compression_ratio >= 0.5, f"Compression ratio too low: {compression_ratio:.1%}"
 
     def test_token_savings_reported(self, smart_crusher, tokenizer):
         """TransformResult should report accurate token savings."""
@@ -364,15 +416,22 @@ class TestCompressionEfficiency:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Check the logs"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
         result = smart_crusher.apply(messages, tokenizer=tokenizer)
 
         # Token counts should be accurate
-        assert result.tokens_before > result.tokens_after, \
+        assert result.tokens_before > result.tokens_after, (
             f"No compression: {result.tokens_before} -> {result.tokens_after}"
+        )
 
         tokens_saved = result.tokens_before - result.tokens_after
         assert tokens_saved > 0, "Should save tokens"
@@ -390,7 +449,13 @@ class TestSchemaPreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Check the logs"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -399,7 +464,8 @@ class TestSchemaPreservation:
 
         # Should be valid JSON
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         # Should have same top-level key
@@ -409,8 +475,9 @@ class TestSchemaPreservation:
         if compressed_data["entries"]:
             first_entry = compressed_data["entries"][0]
             expected_fields = {"timestamp", "level", "service", "message", "trace_id"}
-            assert expected_fields.issubset(set(first_entry.keys())), \
+            assert expected_fields.issubset(set(first_entry.keys())), (
                 f"Original fields missing: {expected_fields - set(first_entry.keys())}"
+            )
 
     def test_no_summary_metadata(self, smart_crusher, tokenizer):
         """No summary or metadata fields should be added to output."""
@@ -421,7 +488,13 @@ class TestSchemaPreservation:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Check the logs"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -429,7 +502,8 @@ class TestSchemaPreservation:
         compressed_output = result.messages[-1]["content"]
 
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         # Should NOT have added metadata keys
@@ -448,19 +522,27 @@ class TestEdgeCases:
         # Create entries that are ALL errors
         entries = []
         for i in range(50):
-            entries.append({
-                "timestamp": datetime.now().isoformat(),
-                "level": "ERROR",
-                "message": f"Error message {i}",
-                "service": "test",
-            })
+            entries.append(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "level": "ERROR",
+                    "message": f"Error message {i}",
+                    "service": "test",
+                }
+            )
 
         raw_output = json.dumps({"entries": entries}, indent=2)
 
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Check errors"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -468,12 +550,14 @@ class TestEdgeCases:
         compressed_output = result.messages[-1]["content"]
 
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         # ALL entries should be kept (they're all errors)
-        assert len(compressed_data["entries"]) == 50, \
+        assert len(compressed_data["entries"]) == 50, (
             f"Should keep all 50 error entries, got {len(compressed_data['entries'])}"
+        )
 
     def test_small_input_no_compression(self, smart_crusher, tokenizer):
         """Small inputs below threshold should not be compressed."""
@@ -484,7 +568,13 @@ class TestEdgeCases:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Check logs"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}]},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "search_logs", "arguments": "{}"}}
+                ],
+            },
             {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
         ]
 
@@ -492,7 +582,8 @@ class TestEdgeCases:
         compressed_output = result.messages[-1]["content"]
 
         import re
-        json_match = re.search(r'(\{.*\})', compressed_output, re.DOTALL)
+
+        json_match = re.search(r"(\{.*\})", compressed_output, re.DOTALL)
         compressed_data = json.loads(json_match.group(1) if json_match else compressed_output)
 
         # Should keep all entries (below min_items_to_analyze)

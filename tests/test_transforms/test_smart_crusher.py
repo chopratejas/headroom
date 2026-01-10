@@ -8,7 +8,6 @@ Comprehensive tests covering:
 """
 
 import json
-from unittest.mock import Mock
 
 import pytest
 
@@ -18,15 +17,12 @@ from headroom import (
     SmartCrusherConfig,
     Tokenizer,
 )
-from headroom.relevance import BM25Scorer, RelevanceScore, RelevanceScorer
+from headroom.relevance import RelevanceScore, RelevanceScorer
 from headroom.transforms.smart_crusher import (
-    ArrayAnalysis,
     CompressionStrategy,
-    FieldStats,
     SmartAnalyzer,
     SmartCrusher,
 )
-
 
 # =============================================================================
 # Test Fixtures
@@ -84,11 +80,13 @@ def generate_time_series_data(n: int = 20, with_spike: bool = False) -> list[dic
         value = 100.0 + (i * 0.5)  # Slight upward trend
         if with_spike and i == n // 2:
             value = 500.0  # Spike in the middle
-        data.append({
-            "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
-            "value": value,
-            "metric": "cpu_usage",
-        })
+        data.append(
+            {
+                "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
+                "value": value,
+                "metric": "cpu_usage",
+            }
+        )
     return data
 
 
@@ -103,11 +101,13 @@ def generate_log_data(n: int = 20, with_errors: bool = False) -> list[dict]:
             message = f"Connection failed: timeout after 30s (attempt {i})"
         else:
             message = f"Processing request {i} successfully"
-        data.append({
-            "level": level,
-            "message": message,
-            "timestamp": f"2025-01-06T{12 + (i // 60):02d}:{i % 60:02d}:00Z",
-        })
+        data.append(
+            {
+                "level": level,
+                "message": message,
+                "timestamp": f"2025-01-06T{12 + (i // 60):02d}:{i % 60:02d}:00Z",
+            }
+        )
     return data
 
 
@@ -235,11 +235,13 @@ class TestSmartAnalyzer:
             value = 100.0 + (i * 2.0)  # Steady increase with variance
             if i == 20:
                 value = 999.0  # Anomaly provides importance signal
-            items.append({
-                "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
-                "value": value,
-                "metric": "cpu_usage",
-            })
+            items.append(
+                {
+                    "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
+                    "value": value,
+                    "metric": "cpu_usage",
+                }
+            )
 
         result = analyzer.analyze_array(items)
 
@@ -272,11 +274,13 @@ class TestSmartAnalyzer:
                 value = 100.0 + (i * 0.5)  # Values around 100-110
             else:
                 value = 300.0 + ((i - 20) * 0.5)  # Values around 300-310 (jump)
-            items.append({
-                "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
-                "value": value,
-                "metric": "cpu_usage",
-            })
+            items.append(
+                {
+                    "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
+                    "value": value,
+                    "metric": "cpu_usage",
+                }
+            )
 
         result = analyzer.analyze_array(items)
 
@@ -436,10 +440,12 @@ class TestSmartCrusher:
             # Add anomaly to provide importance signal for crushing
             if i == 25:
                 value = 999.0  # Extreme anomaly
-            items.append({
-                "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
-                "value": value,
-            })
+            items.append(
+                {
+                    "timestamp": f"2025-01-{(i % 28) + 1:02d}T12:00:00Z",
+                    "value": value,
+                }
+            )
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -786,10 +792,7 @@ class TestRelevanceScoring:
     def test_relevance_keeps_matching_items(self, tokenizer):
         """Items matching user query should be preserved."""
         # Create items where one matches the user query
-        items = [
-            {"id": i, "name": f"User {i}", "email": f"user{i}@example.com"}
-            for i in range(30)
-        ]
+        items = [{"id": i, "name": f"User {i}", "email": f"user{i}@example.com"} for i in range(30)]
         # Add special user Alice
         items[15] = {"id": 15, "name": "Alice", "email": "alice@example.com"}
 
@@ -1074,10 +1077,7 @@ class TestEdgeCases:
         signals, so it will be SKIPPED (not crushed) - which is correct behavior.
         The test verifies that null values don't crash the analyzer.
         """
-        items = [
-            {"id": i, "value": None if i % 2 == 0 else i * 10}
-            for i in range(20)
-        ]
+        items = [{"id": i, "value": None if i % 2 == 0 else i * 10} for i in range(20)]
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -1112,7 +1112,11 @@ class TestEdgeCases:
 
         messages = [
             {"role": "system", "content": "You are helpful."},
-            {"role": "tool", "tool_call_id": "call_1", "content": json.dumps(items, ensure_ascii=False)},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": json.dumps(items, ensure_ascii=False),
+            },
         ]
 
         config = SmartCrusherConfig(
@@ -1319,12 +1323,14 @@ class TestSmartCrusherIntegration:
             # Spike at index 30
             if i == 30:
                 cpu = 95.0
-            items.append({
-                "timestamp": f"2025-01-06T{10 + (i // 60):02d}:{i % 60:02d}:00Z",
-                "cpu_percent": cpu,
-                "memory_percent": 60.0,
-                "host": "server-01",
-            })
+            items.append(
+                {
+                    "timestamp": f"2025-01-06T{10 + (i // 60):02d}:{i % 60:02d}:00Z",
+                    "cpu_percent": cpu,
+                    "memory_percent": 60.0,
+                    "host": "server-01",
+                }
+            )
 
         messages = [
             {"role": "system", "content": "You are a monitoring assistant."},

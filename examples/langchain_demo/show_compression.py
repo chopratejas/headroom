@@ -19,12 +19,10 @@ except ImportError:
     print("ERROR: tiktoken required. Run: uv pip install tiktoken")
     sys.exit(1)
 
-from headroom import HeadroomConfig
-from headroom.transforms import SmartCrusher
 from headroom.providers import OpenAIProvider
+from headroom.transforms import SmartCrusher
 
 from .mock_tools import TOOL_FUNCTIONS
-
 
 ENCODER = tiktoken.get_encoding("cl100k_base")
 
@@ -37,10 +35,10 @@ def count_tokens(text: str) -> int:
 def demonstrate_compression(tool_name: str, tool_arg: str, context: str):
     """Show before/after compression for a tool output."""
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"TOOL: {tool_name}({tool_arg!r})")
     print(f"CONTEXT: {context!r}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Generate tool output
     raw_output = TOOL_FUNCTIONS[tool_name](tool_arg)
@@ -59,11 +57,11 @@ def demonstrate_compression(tool_name: str, tool_arg: str, context: str):
     else:
         item_count = "?"
 
-    print(f"\n--- BEFORE COMPRESSION ---")
+    print("\n--- BEFORE COMPRESSION ---")
     print(f"Items: {item_count}")
     print(f"Tokens: {raw_tokens:,}")
     print(f"Chars: {len(raw_output):,}")
-    print(f"\nFirst 500 chars:")
+    print("\nFirst 500 chars:")
     print(raw_output[:500] + "...")
 
     # Create SmartCrusher with context
@@ -84,7 +82,19 @@ def demonstrate_compression(tool_name: str, tool_arg: str, context: str):
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": context},
-        {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1", "function": {"name": tool_name, "arguments": json.dumps({tool_name.split("_")[-1]: tool_arg})}}]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps({tool_name.split("_")[-1]: tool_arg}),
+                    },
+                }
+            ],
+        },
         {"role": "tool", "content": raw_output, "tool_call_id": "call_1"},
     ]
 
@@ -112,18 +122,18 @@ def demonstrate_compression(tool_name: str, tool_arg: str, context: str):
     except json.JSONDecodeError:
         compressed_items = "N/A"
 
-    print(f"\n--- AFTER COMPRESSION ---")
+    print("\n--- AFTER COMPRESSION ---")
     print(f"Items: {compressed_items}")
     print(f"Tokens: {compressed_tokens:,}")
     print(f"Chars: {len(compressed_output):,}")
-    print(f"\nFirst 500 chars:")
+    print("\nFirst 500 chars:")
     print(compressed_output[:500] + "...")
 
     # Calculate savings
     tokens_saved = raw_tokens - compressed_tokens
     pct_saved = (tokens_saved / raw_tokens * 100) if raw_tokens > 0 else 0
 
-    print(f"\n--- SAVINGS ---")
+    print("\n--- SAVINGS ---")
     print(f"Tokens saved: {tokens_saved:,} ({pct_saved:.1f}%)")
     print(f"Items reduced: {item_count} -> {compressed_items}")
 
@@ -139,9 +149,9 @@ def demonstrate_compression(tool_name: str, tool_arg: str, context: str):
 def main():
     """Run compression demonstrations."""
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("HEADROOM SMARTCRUSHER: BEFORE/AFTER COMPRESSION")
-    print("="*70)
+    print("=" * 70)
     print("""
 This demonstrates how Headroom's SmartCrusher compresses large tool outputs.
 
@@ -156,44 +166,54 @@ Key techniques:
     results = []
 
     # Demo 1: User database search
-    results.append(demonstrate_compression(
-        tool_name="search_users",
-        tool_arg="Engineering users",
-        context="Find all users in the Engineering department who are currently active",
-    ))
+    results.append(
+        demonstrate_compression(
+            tool_name="search_users",
+            tool_arg="Engineering users",
+            context="Find all users in the Engineering department who are currently active",
+        )
+    )
 
     # Demo 2: Log search with errors
-    results.append(demonstrate_compression(
-        tool_name="search_logs",
-        tool_arg="payment-service",
-        context="Check the payment-service logs for any ERROR entries",
-    ))
+    results.append(
+        demonstrate_compression(
+            tool_name="search_logs",
+            tool_arg="payment-service",
+            context="Check the payment-service logs for any ERROR entries",
+        )
+    )
 
     # Demo 3: Metrics with anomalies
-    results.append(demonstrate_compression(
-        tool_name="get_metrics",
-        tool_arg="api-gateway",
-        context="Look for any CPU spikes or high error rates in the api-gateway metrics",
-    ))
+    results.append(
+        demonstrate_compression(
+            tool_name="get_metrics",
+            tool_arg="api-gateway",
+            context="Look for any CPU spikes or high error rates in the api-gateway metrics",
+        )
+    )
 
     # Demo 4: Documentation search
-    results.append(demonstrate_compression(
-        tool_name="search_docs",
-        tool_arg="authentication",
-        context="Find documentation about authentication troubleshooting",
-    ))
+    results.append(
+        demonstrate_compression(
+            tool_name="search_docs",
+            tool_arg="authentication",
+            context="Find documentation about authentication troubleshooting",
+        )
+    )
 
     # Demo 5: API data
-    results.append(demonstrate_compression(
-        tool_name="fetch_api_data",
-        tool_arg="orders",
-        context="Get recent orders with status 'pending'",
-    ))
+    results.append(
+        demonstrate_compression(
+            tool_name="fetch_api_data",
+            tool_arg="orders",
+            context="Get recent orders with status 'pending'",
+        )
+    )
 
     # Summary
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("SUMMARY: TOKEN SAVINGS ACROSS ALL TOOLS")
-    print("="*70)
+    print("=" * 70)
 
     print(f"\n{'Tool':<20} {'Before':>12} {'After':>12} {'Saved':>12} {'%':>8}")
     print("-" * 66)
@@ -202,7 +222,9 @@ Key techniques:
     total_after = 0
 
     for r in results:
-        print(f"{r['tool']:<20} {r['before_tokens']:>12,} {r['after_tokens']:>12,} {r['saved_tokens']:>12,} {r['saved_pct']:>7.1f}%")
+        print(
+            f"{r['tool']:<20} {r['before_tokens']:>12,} {r['after_tokens']:>12,} {r['saved_tokens']:>12,} {r['saved_pct']:>7.1f}%"
+        )
         total_before += r["before_tokens"]
         total_after += r["after_tokens"]
 
@@ -210,7 +232,9 @@ Key techniques:
     total_pct = (total_saved / total_before * 100) if total_before > 0 else 0
 
     print("-" * 66)
-    print(f"{'TOTAL':<20} {total_before:>12,} {total_after:>12,} {total_saved:>12,} {total_pct:>7.1f}%")
+    print(
+        f"{'TOTAL':<20} {total_before:>12,} {total_after:>12,} {total_saved:>12,} {total_pct:>7.1f}%"
+    )
 
     # Cost savings
     input_cost_per_1m = 2.50  # gpt-4o pricing
@@ -218,11 +242,13 @@ Key techniques:
     cost_after = total_after * input_cost_per_1m / 1_000_000
     cost_saved = cost_before - cost_after
 
-    print(f"\n--- COST IMPACT (at gpt-4o $2.50/1M input tokens) ---")
+    print("\n--- COST IMPACT (at gpt-4o $2.50/1M input tokens) ---")
     print(f"Before: ${cost_before:.4f}")
     print(f"After:  ${cost_after:.4f}")
     print(f"Saved:  ${cost_saved:.4f} per request")
-    print(f"\nAt 1000 requests/day: ${cost_saved * 1000:.2f}/day = ${cost_saved * 1000 * 30:.2f}/month")
+    print(
+        f"\nAt 1000 requests/day: ${cost_saved * 1000:.2f}/day = ${cost_saved * 1000 * 30:.2f}/month"
+    )
 
 
 if __name__ == "__main__":

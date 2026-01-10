@@ -38,8 +38,9 @@ from __future__ import annotations
 import hashlib
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from .base import (
     BaseCacheOptimizer,
@@ -303,7 +304,8 @@ class SemanticCache:
 
         now = time.time()
         expired = [
-            key for key, entry in self._cache.items()
+            key
+            for key, entry in self._cache.items()
             if now - entry.created_at > self.config.ttl_seconds
         ]
 
@@ -440,6 +442,7 @@ class SemanticCacheLayer:
     def _compute_messages_hash(self, messages: list[dict[str, Any]]) -> str:
         """Compute a hash of all messages."""
         import json
+
         try:
             content = json.dumps(messages, sort_keys=True)
             return hashlib.sha256(content.encode()).hexdigest()[:24]

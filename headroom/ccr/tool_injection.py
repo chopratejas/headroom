@@ -321,10 +321,12 @@ class CCRToolInjector:
                 else:
                     # Append instructions
                     if isinstance(content, str):
-                        updated_messages.append({
-                            **message,
-                            "content": content + instructions,
-                        })
+                        updated_messages.append(
+                            {
+                                **message,
+                                "content": content + instructions,
+                            }
+                        )
                     else:
                         # Handle structured content
                         updated_messages.append(message)
@@ -333,10 +335,13 @@ class CCRToolInjector:
 
         # If no system message, prepend one
         if not system_found:
-            updated_messages.insert(0, {
-                "role": "system",
-                "content": instructions.strip(),
-            })
+            updated_messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": instructions.strip(),
+                },
+            )
 
         return updated_messages
 

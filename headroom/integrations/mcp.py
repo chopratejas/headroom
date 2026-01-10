@@ -222,7 +222,7 @@ class HeadroomMCPCompressor:
 
         # Try to parse as JSON
         try:
-            data = json.loads(content)
+            json.loads(content)
         except json.JSONDecodeError:
             # Not JSON, return as-is
             return MCPCompressionResult(
@@ -260,7 +260,12 @@ class HeadroomMCPCompressor:
             {
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [{"id": "call_1", "function": {"name": tool_name, "arguments": json.dumps(tool_args or {})}}]
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": tool_name, "arguments": json.dumps(tool_args or {})},
+                    }
+                ],
             },
             {"role": "tool", "content": content, "tool_call_id": "call_1"},
         ]
@@ -287,7 +292,7 @@ class HeadroomMCPCompressor:
         compressed_content = result.messages[-1]["content"]
 
         # Remove any Headroom markers for clean output
-        compressed_content = re.sub(r'\n<headroom:[^>]+>', '', compressed_content)
+        compressed_content = re.sub(r"\n<headroom:[^>]+>", "", compressed_content)
 
         # Count items and errors
         try:
@@ -295,13 +300,13 @@ class HeadroomMCPCompressor:
             compressed_data = json.loads(compressed_content)
 
             # Find the array in original
-            for key, value in original_data.items():
+            for _key, value in original_data.items():
                 if isinstance(value, list):
                     items_before = len(value)
                     break
 
             # Find the array in compressed
-            for key, value in compressed_data.items():
+            for _key, value in compressed_data.items():
                 if isinstance(value, list):
                     items_after = len(value)
                     # Count errors preserved
@@ -521,7 +526,7 @@ def create_headroom_mcp_proxy(
         ```
     """
     return {
-        "upstream_servers": {name: server for name, server in upstream_servers},
+        "upstream_servers": dict(upstream_servers),
         "compressor": HeadroomMCPCompressor(config=config),
         "config": config or HeadroomConfig(),
     }

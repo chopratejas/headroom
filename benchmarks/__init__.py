@@ -23,15 +23,15 @@ Performance Targets:
 
 __version__ = "0.2.0"
 
+from .scenarios.conversations import (
+    generate_agentic_conversation,
+    generate_rag_conversation,
+)
 from .scenarios.tool_outputs import (
     generate_api_responses,
     generate_database_rows,
     generate_log_entries,
     generate_search_results,
-)
-from .scenarios.conversations import (
-    generate_agentic_conversation,
-    generate_rag_conversation,
 )
 
 __all__ = [

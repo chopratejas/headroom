@@ -25,7 +25,6 @@ Run with:
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 
@@ -33,7 +32,8 @@ import pytest
 def _check_embedding_available() -> bool:
     """Check if sentence-transformers is available for embedding tests."""
     try:
-        import sentence_transformers
+        import sentence_transformers  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -203,8 +203,8 @@ class TestHybridBenchmarks:
     @pytest.fixture
     def scorer_fallback(self):
         """Create hybrid scorer without embeddings (BM25 fallback)."""
-        from headroom.relevance.hybrid import HybridScorer
         from headroom.relevance.bm25 import BM25Scorer
+        from headroom.relevance.hybrid import HybridScorer
 
         # Force BM25-only mode by not providing embedding scorer
         scorer = HybridScorer(
@@ -378,8 +378,8 @@ class TestRelevanceInSmartCrusher:
     @pytest.fixture
     def crusher_with_bm25(self, smart_crusher_config):
         """SmartCrusher with BM25 relevance scorer."""
-        from headroom.transforms.smart_crusher import SmartCrusher
         from headroom.config import RelevanceScorerConfig
+        from headroom.transforms.smart_crusher import SmartCrusher
 
         return SmartCrusher(
             config=smart_crusher_config,
@@ -389,8 +389,8 @@ class TestRelevanceInSmartCrusher:
     @pytest.fixture
     def crusher_with_hybrid(self, smart_crusher_config):
         """SmartCrusher with hybrid relevance scorer."""
-        from headroom.transforms.smart_crusher import SmartCrusher
         from headroom.config import RelevanceScorerConfig
+        from headroom.transforms.smart_crusher import SmartCrusher
 
         return SmartCrusher(
             config=smart_crusher_config,

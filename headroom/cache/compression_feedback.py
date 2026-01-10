@@ -30,7 +30,6 @@ from __future__ import annotations
 import re
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -185,7 +184,9 @@ class CompressionFeedback:
         # Time-based tracking
         self._last_analysis: float = 0.0
         self._analysis_interval: float = analysis_interval
-        self._last_event_timestamp: float = 0.0  # Track last processed event to avoid double-counting
+        self._last_event_timestamp: float = (
+            0.0  # Track last processed event to avoid double-counting
+        )
 
         # Global statistics
         self._total_compressions: int = 0
@@ -196,6 +197,7 @@ class CompressionFeedback:
         """Get the compression store (lazy load global if not set)."""
         if self._store is None:
             from .compression_store import get_compression_store
+
             self._store = get_compression_store()
         return self._store
 
@@ -301,9 +303,7 @@ class CompressionFeedback:
             # Track query patterns
             if event.query:
                 query_lower = event.query.lower()
-                pattern.common_queries[query_lower] = (
-                    pattern.common_queries.get(query_lower, 0) + 1
-                )
+                pattern.common_queries[query_lower] = pattern.common_queries.get(query_lower, 0) + 1
 
                 # HIGH: Limit common_queries dict to prevent unbounded growth
                 if len(pattern.common_queries) > 100:
@@ -325,32 +325,32 @@ class CompressionFeedback:
         from both dicts, then truncate both to the same key set.
         """
         # Get top 40 strategies from each dict (using 40 to allow union to stay under 50)
-        top_compressions = set(
-            k for k, _ in sorted(
+        top_compressions = {
+            k
+            for k, _ in sorted(
                 pattern.strategy_compressions.items(),
                 key=lambda x: x[1],
                 reverse=True,
             )[:40]
-        )
-        top_retrievals = set(
-            k for k, _ in sorted(
+        }
+        top_retrievals = {
+            k
+            for k, _ in sorted(
                 pattern.strategy_retrievals.items(),
                 key=lambda x: x[1],
                 reverse=True,
             )[:40]
-        )
+        }
 
         # Keep union of top strategies from both
         keys_to_keep = top_compressions | top_retrievals
 
         # Truncate both dicts to same keys
         pattern.strategy_compressions = {
-            k: v for k, v in pattern.strategy_compressions.items()
-            if k in keys_to_keep
+            k: v for k, v in pattern.strategy_compressions.items() if k in keys_to_keep
         }
         pattern.strategy_retrievals = {
-            k: v for k, v in pattern.strategy_retrievals.items()
-            if k in keys_to_keep
+            k: v for k, v in pattern.strategy_retrievals.items() if k in keys_to_keep
         }
 
     def _extract_field_hints(self, pattern: LocalToolPattern, query: str) -> None:
@@ -361,22 +361,30 @@ class CompressionFeedback:
         - JSON field names like "status", "error", "id"
         """
         # Look for field:value patterns
-        field_patterns = re.findall(r'(\w+)[=:]', query)
-        for field in field_patterns:
-            pattern.queried_fields[field] = (
-                pattern.queried_fields.get(field, 0) + 1
-            )
+        field_patterns = re.findall(r"(\w+)[=:]", query)
+        for field_name in field_patterns:
+            pattern.queried_fields[field_name] = pattern.queried_fields.get(field_name, 0) + 1
 
         # Look for common JSON field names
         common_fields = [
-            "id", "name", "status", "error", "message", "type",
-            "code", "result", "value", "data", "items", "count",
+            "id",
+            "name",
+            "status",
+            "error",
+            "message",
+            "type",
+            "code",
+            "result",
+            "value",
+            "data",
+            "items",
+            "count",
         ]
         query_lower = query.lower()
-        for field in common_fields:
-            if field in query_lower:
-                pattern.queried_fields[field] = (
-                    pattern.queried_fields.get(field, 0) + 1
+        for common_field in common_fields:
+            if common_field in query_lower:
+                pattern.queried_fields[common_field] = (
+                    pattern.queried_fields.get(common_field, 0) + 1
                 )
 
         # HIGH: Limit queried_fields dict to prevent unbounded growth
@@ -459,8 +467,7 @@ class CompressionFeedback:
                 hints.suggested_items = 10
                 hints.aggressiveness = 0.7
                 hints.reason = (
-                    f"Low retrieval rate ({retrieval_rate:.0%}), "
-                    f"current compression is effective"
+                    f"Low retrieval rate ({retrieval_rate:.0%}), current compression is effective"
                 )
 
             # Add field preservation hints based on common queries
@@ -488,6 +495,7 @@ class CompressionFeedback:
             HIGH FIX: Returns deep copies to prevent external mutation of internal state.
         """
         import copy as copy_module
+
         with self._lock:
             # Deep copy to prevent external code from modifying internal state
             return copy_module.deepcopy(self._tool_patterns)
@@ -504,7 +512,8 @@ class CompressionFeedback:
                 "total_retrievals": self._total_retrievals,
                 "global_retrieval_rate": (
                     self._total_retrievals / self._total_compressions
-                    if self._total_compressions > 0 else 0.0
+                    if self._total_compressions > 0
+                    else 0.0
                 ),
                 "tools_tracked": len(self._tool_patterns),
                 "tool_patterns": {

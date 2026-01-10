@@ -1,21 +1,19 @@
 """Tests for telemetry module (data flywheel)."""
 
-import time
-import tempfile
 import os
-import json
+import tempfile
+
 import pytest
 
 from headroom.telemetry import (
+    AnonymizedToolStats,
+    FieldDistribution,
+    RetrievalStats,
     TelemetryCollector,
     TelemetryConfig,
+    ToolSignature,
     get_telemetry_collector,
     reset_telemetry_collector,
-    FieldDistribution,
-    ToolSignature,
-    CompressionEvent,
-    RetrievalStats,
-    AnonymizedToolStats,
 )
 
 
@@ -294,18 +292,27 @@ class TestTelemetryCollector:
 
         # Different strategies
         collector.record_compression(
-            items=items, original_count=100, compressed_count=10,
-            original_tokens=1000, compressed_tokens=100,
+            items=items,
+            original_count=100,
+            compressed_count=10,
+            original_tokens=1000,
+            compressed_tokens=100,
             strategy="top_n",
         )
         collector.record_compression(
-            items=items, original_count=100, compressed_count=10,
-            original_tokens=1000, compressed_tokens=100,
+            items=items,
+            original_count=100,
+            compressed_count=10,
+            original_tokens=1000,
+            compressed_tokens=100,
             strategy="smart_sample",
         )
         collector.record_compression(
-            items=items, original_count=100, compressed_count=10,
-            original_tokens=1000, compressed_tokens=100,
+            items=items,
+            original_count=100,
+            compressed_count=10,
+            original_tokens=1000,
+            compressed_tokens=100,
             strategy="top_n",
         )
 
@@ -324,8 +331,11 @@ class TestTelemetryCollector:
         items = [{"id": "1"}]
         for _ in range(5):  # Less than 10
             collector.record_compression(
-                items=items, original_count=100, compressed_count=10,
-                original_tokens=1000, compressed_tokens=100,
+                items=items,
+                original_count=100,
+                compressed_count=10,
+                original_tokens=1000,
+                compressed_tokens=100,
                 strategy="top_n",
             )
 
@@ -343,8 +353,11 @@ class TestTelemetryCollector:
         items = [{"id": "1"}]
         for _ in range(10):
             collector.record_compression(
-                items=items, original_count=100, compressed_count=10,
-                original_tokens=1000, compressed_tokens=100,
+                items=items,
+                original_count=100,
+                compressed_count=10,
+                original_tokens=1000,
+                compressed_tokens=100,
                 strategy="top_n",
             )
 
@@ -388,8 +401,11 @@ class TestTelemetryCollector:
         # Collector 1 records some compressions
         for _ in range(5):
             collector1.record_compression(
-                items=items, original_count=100, compressed_count=10,
-                original_tokens=1000, compressed_tokens=100,
+                items=items,
+                original_count=100,
+                compressed_count=10,
+                original_tokens=1000,
+                compressed_tokens=100,
                 strategy="top_n",
             )
 
@@ -399,8 +415,11 @@ class TestTelemetryCollector:
         # Collector 2 records different compressions
         for _ in range(3):
             collector2.record_compression(
-                items=items, original_count=100, compressed_count=10,
-                original_tokens=1000, compressed_tokens=100,
+                items=items,
+                original_count=100,
+                compressed_count=10,
+                original_tokens=1000,
+                compressed_tokens=100,
                 strategy="smart_sample",
             )
 
@@ -420,8 +439,11 @@ class TestTelemetryCollector:
 
         items = [{"id": "1"}]
         collector.record_compression(
-            items=items, original_count=100, compressed_count=10,
-            original_tokens=1000, compressed_tokens=100,
+            items=items,
+            original_count=100,
+            compressed_count=10,
+            original_tokens=1000,
+            compressed_tokens=100,
             strategy="top_n",
         )
 
@@ -468,8 +490,11 @@ class TestTelemetryCollector:
         # Record more than max events
         for i in range(10):
             collector.record_compression(
-                items=items, original_count=100 + i, compressed_count=10,
-                original_tokens=1000, compressed_tokens=100,
+                items=items,
+                original_count=100 + i,
+                compressed_count=10,
+                original_tokens=1000,
+                compressed_tokens=100,
                 strategy="top_n",
             )
 
@@ -493,8 +518,11 @@ class TestTelemetryPersistence:
             items = [{"id": "1", "name": "test"}]
             for _ in range(3):
                 collector.record_compression(
-                    items=items, original_count=100, compressed_count=10,
-                    original_tokens=1000, compressed_tokens=100,
+                    items=items,
+                    original_count=100,
+                    compressed_count=10,
+                    original_tokens=1000,
+                    compressed_tokens=100,
                     strategy="top_n",
                 )
 
@@ -525,8 +553,11 @@ class TestGlobalTelemetryCollector:
         collector1 = get_telemetry_collector()
         items = [{"id": "1"}]
         collector1.record_compression(
-            items=items, original_count=100, compressed_count=10,
-            original_tokens=1000, compressed_tokens=100,
+            items=items,
+            original_count=100,
+            compressed_count=10,
+            original_tokens=1000,
+            compressed_tokens=100,
             strategy="top_n",
         )
 
@@ -658,6 +689,7 @@ class TestAnonymizedToolStats:
 
         # Make a deep copy to compare after
         import copy
+
         original_data = copy.deepcopy(data)
 
         stats = AnonymizedToolStats.from_dict(data)

@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from ..config import RollingWindowConfig, TransformResult
 from ..parser import find_tool_units
 from ..tokenizer import Tokenizer
 from ..utils import create_dropped_context_marker, deep_copy_messages
 from .base import Transform
+
+logger = logging.getLogger(__name__)
 
 
 class RollingWindow(Transform):
@@ -109,9 +109,7 @@ class RollingWindow(Transform):
         tool_units = find_tool_units(result_messages)
 
         # Create drop candidates with priorities
-        drop_candidates = self._build_drop_candidates(
-            result_messages, protected, tool_units
-        )
+        drop_candidates = self._build_drop_candidates(result_messages, protected, tool_units)
 
         # Drop until under budget
         indices_to_drop: set[int] = set()
@@ -261,12 +259,14 @@ class RollingWindow(Transform):
                 continue
 
             all_indices = [assistant_idx] + response_indices
-            candidates.append({
-                "type": "tool_unit",
-                "indices": all_indices,
-                "priority": 1,
-                "position": assistant_idx,  # For sorting by age
-            })
+            candidates.append(
+                {
+                    "type": "tool_unit",
+                    "indices": all_indices,
+                    "priority": 1,
+                    "position": assistant_idx,  # For sorting by age
+                }
+            )
 
         # Priority 2: Oldest non-tool messages (user/assistant pairs)
         i = 0
@@ -283,22 +283,26 @@ class RollingWindow(Transform):
                 if role == "user" and i + 1 < len(messages):
                     next_msg = messages[i + 1]
                     if next_msg.get("role") == "assistant" and i + 1 not in tool_unit_indices:
-                        candidates.append({
-                            "type": "turn",
-                            "indices": [i, i + 1],
-                            "priority": 2,
-                            "position": i,
-                        })
+                        candidates.append(
+                            {
+                                "type": "turn",
+                                "indices": [i, i + 1],
+                                "priority": 2,
+                                "position": i,
+                            }
+                        )
                         i += 2
                         continue
 
                 # Single message
-                candidates.append({
-                    "type": "single",
-                    "indices": [i],
-                    "priority": 2,
-                    "position": i,
-                })
+                candidates.append(
+                    {
+                        "type": "single",
+                        "indices": [i],
+                        "priority": 2,
+                        "position": i,
+                    }
+                )
 
             i += 1
 

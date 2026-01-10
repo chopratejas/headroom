@@ -152,7 +152,9 @@ class ToolSignature:
             return current_depth
 
     @staticmethod
-    def _matches_pattern(key_lower: str, patterns: list[str], original_key: str | None = None) -> bool:
+    def _matches_pattern(
+        key_lower: str, patterns: list[str], original_key: str | None = None
+    ) -> bool:
         """Check if key matches patterns using word boundary matching.
 
         MEDIUM FIX #14: Prevent false positives like "hidden" matching "id".
@@ -191,7 +193,7 @@ class ToolSignature:
                 # Pattern capitalized (e.g., "Id" for "id")
                 cap_pattern = pattern.capitalize()
                 # Look for capital letter at start of pattern, preceded by lowercase
-                camel_regex = rf'(?<=[a-z]){re.escape(cap_pattern)}(?=[A-Z]|$)'
+                camel_regex = rf"(?<=[a-z]){re.escape(cap_pattern)}(?=[A-Z]|$)"
                 if re.search(camel_regex, original_key):
                     return True
 
@@ -205,6 +207,7 @@ class ToolSignature:
             # different tools' empty responses from colliding into one pattern.
             # Use a random component to ensure uniqueness across tool types.
             import uuid
+
             # MEDIUM FIX #15: Use 24 chars (96 bits) instead of 16 (64 bits) to reduce collision risk
             empty_hash = hashlib.sha256(f"empty:{uuid.uuid4()}".encode()).hexdigest()[:24]
             return cls(
@@ -306,19 +309,31 @@ class ToolSignature:
             # MEDIUM FIX #14: Pattern detection with word boundary matching
             # Prevents false positives like "hidden" matching "id"
             # Pass original key for camelCase detection
-            if cls._matches_pattern(key_lower, ["id", "uuid", "guid"], key) or key_lower.endswith("key"):
+            if cls._matches_pattern(key_lower, ["id", "uuid", "guid"], key) or key_lower.endswith(
+                "key"
+            ):
                 has_id = True
-            if cls._matches_pattern(key_lower, ["score", "rank", "rating", "relevance", "priority"], key):
+            if cls._matches_pattern(
+                key_lower, ["score", "rank", "rating", "relevance", "priority"], key
+            ):
                 has_score = True
-            if cls._matches_pattern(key_lower, ["time", "date", "timestamp"], key) or \
-               key_lower.endswith("_at") or key_lower in ["created", "updated"]:
+            if (
+                cls._matches_pattern(key_lower, ["time", "date", "timestamp"], key)
+                or key_lower.endswith("_at")
+                or key_lower in ["created", "updated"]
+            ):
                 has_timestamp = True
-            if cls._matches_pattern(key_lower, ["status", "state"], key) or \
-               key_lower in ["level", "type", "kind"]:
+            if cls._matches_pattern(key_lower, ["status", "state"], key) or key_lower in [
+                "level",
+                "type",
+                "kind",
+            ]:
                 has_status = True
             if cls._matches_pattern(key_lower, ["error", "exception", "fail", "warning"], key):
                 has_error = True
-            if cls._matches_pattern(key_lower, ["message", "msg", "text", "content", "body", "description"], key):
+            if cls._matches_pattern(
+                key_lower, ["message", "msg", "text", "content", "body", "description"], key
+            ):
                 has_message = True
 
         # Create structure hash
@@ -485,7 +500,9 @@ class AnonymizedToolStats:
 
     # Strategy distribution
     strategy_counts: dict[str, int] = field(default_factory=dict)  # strategy -> count
-    strategy_success_rate: dict[str, float] = field(default_factory=dict)  # strategy -> success rate
+    strategy_success_rate: dict[str, float] = field(
+        default_factory=dict
+    )  # strategy -> success rate
 
     # Retrieval statistics
     retrieval_stats: RetrievalStats | None = None

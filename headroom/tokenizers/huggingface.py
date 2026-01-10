@@ -298,7 +298,8 @@ class HuggingFaceTokenizer(BaseTokenizer):
             True if transformers is installed.
         """
         try:
-            import transformers
+            import transformers  # noqa: F401
+
             return True
         except ImportError:
             return False

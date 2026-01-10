@@ -25,6 +25,7 @@ Usage:
     CacheOptimizerRegistry.register("my-provider", MyOptimizer)
 """
 
+from .anthropic import AnthropicCacheOptimizer
 from .base import (
     BaseCacheOptimizer,
     CacheBreakpoint,
@@ -42,11 +43,10 @@ from .dynamic_detector import (
     DynamicSpan,
     detect_dynamic_content,
 )
-from .registry import CacheOptimizerRegistry
-from .anthropic import AnthropicCacheOptimizer
-from .openai import OpenAICacheOptimizer
 from .google import GoogleCacheOptimizer
-from .semantic import SemanticCacheLayer, SemanticCache
+from .openai import OpenAICacheOptimizer
+from .registry import CacheOptimizerRegistry
+from .semantic import SemanticCache, SemanticCacheLayer
 
 __all__ = [
     # Base types

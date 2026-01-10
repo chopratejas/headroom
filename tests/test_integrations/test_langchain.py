@@ -8,9 +8,10 @@ Tests cover:
 """
 
 import json
-import pytest
 from datetime import datetime
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Check if LangChain is available
 try:
@@ -21,6 +22,7 @@ try:
         ToolMessage,
     )
     from langchain_core.outputs import ChatGeneration, ChatResult
+
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
@@ -28,10 +30,7 @@ except ImportError:
 from headroom import HeadroomConfig, HeadroomMode
 
 # Skip all tests if LangChain not installed
-pytestmark = pytest.mark.skipif(
-    not LANGCHAIN_AVAILABLE,
-    reason="LangChain not installed"
-)
+pytestmark = pytest.mark.skipif(not LANGCHAIN_AVAILABLE, reason="LangChain not installed")
 
 
 @pytest.fixture
@@ -50,13 +49,15 @@ def mock_chat_model():
                     message=AIMessage(content="Hello! I'm a mock response."),
                 )
             ],
-            llm_output={"token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}},
+            llm_output={
+                "token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            },
         )
 
     mock._generate = MagicMock(side_effect=mock_generate)
-    mock._stream = MagicMock(return_value=iter([
-        ChatGeneration(message=AIMessage(content="Streaming..."))
-    ]))
+    mock._stream = MagicMock(
+        return_value=iter([ChatGeneration(message=AIMessage(content="Streaming..."))])
+    )
 
     return mock
 
@@ -74,8 +75,7 @@ def sample_messages():
 def large_tool_output():
     """Large tool output that should trigger compression."""
     items = [
-        {"id": i, "name": f"Item {i}", "value": i * 100, "status": "active"}
-        for i in range(100)
+        {"id": i, "name": f"Item {i}", "value": i * 100, "status": "active"} for i in range(100)
     ]
     return json.dumps(items)
 
@@ -86,11 +86,13 @@ class TestLangchainAvailable:
     def test_returns_bool(self):
         """langchain_available returns boolean."""
         from headroom.integrations.langchain import langchain_available
+
         assert isinstance(langchain_available(), bool)
 
     def test_returns_true_when_installed(self):
         """Returns True when LangChain is installed."""
         from headroom.integrations.langchain import langchain_available
+
         assert langchain_available() is True
 
 
@@ -161,9 +163,7 @@ class TestHeadroomChatModel:
             HumanMessage(content="Get the weather"),
             AIMessage(
                 content="I'll check the weather.",
-                tool_calls=[
-                    {"id": "call_123", "name": "get_weather", "args": {"city": "Paris"}}
-                ],
+                tool_calls=[{"id": "call_123", "name": "get_weather", "args": {"city": "Paris"}}],
             ),
             ToolMessage(content='{"temp": 20}', tool_call_id="call_123"),
         ]
@@ -207,7 +207,7 @@ class TestHeadroomChatModel:
         _ = model.pipeline  # Force lazy init
 
         # Mock the pipeline apply method
-        with patch.object(model._pipeline, 'apply') as mock_apply:
+        with patch.object(model._pipeline, "apply") as mock_apply:
             mock_result = MagicMock()
             mock_result.messages = [
                 {"role": "system", "content": "You are helpful."},
@@ -218,7 +218,7 @@ class TestHeadroomChatModel:
             mock_result.transforms_applied = ["cache_aligner"]
             mock_apply.return_value = mock_result
 
-            result = model._generate(sample_messages)
+            model._generate(sample_messages)
 
             # Verify pipeline.apply was called
             mock_apply.assert_called_once()
@@ -234,7 +234,7 @@ class TestHeadroomChatModel:
         model = HeadroomChatModel(mock_chat_model)
 
         # Add 150 fake metrics
-        for i in range(150):
+        for _i in range(150):
             model._metrics_history.append(MagicMock())
 
         # Simulate a call that trims
@@ -444,8 +444,9 @@ class TestHeadroomRunnable:
 
     def test_as_runnable(self):
         """Convert to LangChain Runnable."""
-        from headroom.integrations.langchain import HeadroomRunnable
         from langchain_core.runnables import RunnableLambda
+
+        from headroom.integrations.langchain import HeadroomRunnable
 
         runnable = HeadroomRunnable()
         lc_runnable = runnable.as_runnable()
@@ -463,7 +464,7 @@ class TestHeadroomRunnable:
         runnable._provider = OpenAIProvider()
         _ = runnable.pipeline  # Force lazy init
 
-        with patch.object(runnable._pipeline, 'apply') as mock_apply:
+        with patch.object(runnable._pipeline, "apply") as mock_apply:
             mock_result = MagicMock()
             mock_result.messages = [
                 {"role": "system", "content": "You are helpful."},
@@ -487,7 +488,7 @@ class TestOptimizeMessages:
         """Basic message optimization."""
         from headroom.integrations import optimize_messages
 
-        with patch('headroom.integrations.langchain.TransformPipeline') as MockPipeline:
+        with patch("headroom.integrations.langchain.TransformPipeline") as MockPipeline:
             mock_instance = MagicMock()
             mock_result = MagicMock()
             mock_result.messages = [
@@ -512,7 +513,7 @@ class TestOptimizeMessages:
 
         config = HeadroomConfig(default_mode=HeadroomMode.AUDIT)
 
-        with patch('headroom.integrations.langchain.TransformPipeline') as MockPipeline:
+        with patch("headroom.integrations.langchain.TransformPipeline") as MockPipeline:
             mock_instance = MagicMock()
             mock_result = MagicMock()
             mock_result.messages = []
@@ -546,14 +547,22 @@ class TestOptimizeMessages:
             ToolMessage(content="Sunny", tool_call_id="1"),
         ]
 
-        with patch('headroom.integrations.langchain.TransformPipeline') as MockPipeline:
+        with patch("headroom.integrations.langchain.TransformPipeline") as MockPipeline:
             mock_instance = MagicMock()
             mock_result = MagicMock()
             mock_result.messages = [
                 {"role": "user", "content": "Get weather"},
-                {"role": "assistant", "content": "Checking...", "tool_calls": [
-                    {"id": "1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}
-                ]},
+                {
+                    "role": "assistant",
+                    "content": "Checking...",
+                    "tool_calls": [
+                        {
+                            "id": "1",
+                            "type": "function",
+                            "function": {"name": "weather", "arguments": "{}"},
+                        }
+                    ],
+                },
                 {"role": "tool", "tool_call_id": "1", "content": "Sunny"},
             ]
             mock_result.tokens_before = 100
@@ -583,7 +592,9 @@ class TestIntegrationWithRealHeadroom:
 
         # Should return valid messages
         assert len(optimized) >= 1
-        assert all(isinstance(m, (SystemMessage, HumanMessage, AIMessage, ToolMessage)) for m in optimized)
+        assert all(
+            isinstance(m, (SystemMessage, HumanMessage, AIMessage, ToolMessage)) for m in optimized
+        )
 
         # Metrics should be populated
         assert "tokens_before" in metrics

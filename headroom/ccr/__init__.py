@@ -21,6 +21,7 @@ from .tool_injection import (
 # MCP server is optional (requires mcp package)
 try:
     from .mcp_server import CCRMCPServer, create_ccr_mcp_server
+
     MCP_SERVER_AVAILABLE = True
 except ImportError:
     CCRMCPServer = None  # type: ignore

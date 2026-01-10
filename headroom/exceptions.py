@@ -60,6 +60,7 @@ class ConfigurationError(HeadroomError):
             details={"valid_modes": ["audit", "optimize"]}
         )
     """
+
     pass
 
 
@@ -77,6 +78,7 @@ class ProviderError(HeadroomError):
             details={"provider": "foo", "known_providers": ["openai", "anthropic"]}
         )
     """
+
     pass
 
 
@@ -94,6 +96,7 @@ class StorageError(HeadroomError):
             details={"url": "sqlite:///foo.db", "error": "Permission denied"}
         )
     """
+
     pass
 
 
@@ -111,6 +114,7 @@ class CompressionError(HeadroomError):
             details={"tool_name": "search_api", "content_preview": "..."}
         )
     """
+
     pass
 
 
@@ -128,6 +132,7 @@ class TokenizationError(HeadroomError):
             details={"model": "gpt-99", "fallback_used": True}
         )
     """
+
     pass
 
 
@@ -145,6 +150,7 @@ class CacheError(HeadroomError):
             details={"hash": "abc123", "ttl": 300}
         )
     """
+
     pass
 
 
@@ -164,6 +170,7 @@ class ValidationError(HeadroomError):
             }
         )
     """
+
     pass
 
 
@@ -181,4 +188,5 @@ class TransformError(HeadroomError):
             details={"transform": "smart_crusher", "reason": "..."}
         )
     """
+
     pass

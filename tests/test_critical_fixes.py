@@ -8,9 +8,8 @@ These tests verify the before/after behavior of critical bug fixes:
 5. SmartCrusher integration with TOIN
 """
 
-import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -31,7 +30,12 @@ class TestTOINConfidenceMathFix:
 
     def test_confidence_user_boost_at_3_users(self):
         """With 3 users (min for network effect), boost should be meaningful."""
-        from headroom.telemetry.toin import ToolIntelligenceNetwork, TOINConfig, reset_toin, ToolPattern
+        from headroom.telemetry.toin import (
+            TOINConfig,
+            ToolIntelligenceNetwork,
+            ToolPattern,
+            reset_toin,
+        )
 
         reset_toin()
         config = TOINConfig(min_users_for_network_effect=3)
@@ -52,11 +56,18 @@ class TestTOINConfidenceMathFix:
         # BUG: With user_count * 0.01: boost = 0.03, total = 0.73
 
         # After fix, confidence should be at least 0.75
-        assert confidence >= 0.75, f"Confidence {confidence} too low for 3 users - user boost not meaningful"
+        assert confidence >= 0.75, (
+            f"Confidence {confidence} too low for 3 users - user boost not meaningful"
+        )
 
     def test_confidence_user_boost_at_10_users(self):
         """With 10 users, boost should hit or approach cap."""
-        from headroom.telemetry.toin import ToolIntelligenceNetwork, TOINConfig, reset_toin, ToolPattern
+        from headroom.telemetry.toin import (
+            TOINConfig,
+            ToolIntelligenceNetwork,
+            ToolPattern,
+            reset_toin,
+        )
 
         reset_toin()
         config = TOINConfig(min_users_for_network_effect=3)
@@ -92,8 +103,8 @@ class TestTOINDoubleCountFix:
 
     def test_user_count_no_double_counting_after_cap(self):
         """Same instance shouldn't be counted twice even after cap hit."""
-        from headroom.telemetry.toin import ToolIntelligenceNetwork, TOINConfig, reset_toin
         from headroom.telemetry.models import ToolSignature
+        from headroom.telemetry.toin import TOINConfig, ToolIntelligenceNetwork, reset_toin
 
         reset_toin()
         toin = ToolIntelligenceNetwork(TOINConfig())
@@ -149,7 +160,10 @@ class TestCompressionFeedbackRaceCondition:
 
     def test_analyze_from_store_thread_safety(self):
         """Concurrent analyze_from_store and record_retrieval should not lose events."""
-        from headroom.cache.compression_feedback import CompressionFeedback, reset_compression_feedback
+        from headroom.cache.compression_feedback import (
+            CompressionFeedback,
+            reset_compression_feedback,
+        )
         from headroom.cache.compression_store import CompressionStore, RetrievalEvent
 
         reset_compression_feedback()
@@ -191,7 +205,10 @@ class TestCompressionFeedbackRaceCondition:
 
     def test_timestamp_filtering_inside_lock(self):
         """Verify that timestamp filtering happens atomically with update."""
-        from headroom.cache.compression_feedback import CompressionFeedback, reset_compression_feedback
+        from headroom.cache.compression_feedback import (
+            CompressionFeedback,
+            reset_compression_feedback,
+        )
         from headroom.cache.compression_store import CompressionStore, RetrievalEvent
 
         reset_compression_feedback()
@@ -204,21 +221,36 @@ class TestCompressionFeedbackRaceCondition:
         # Create mock store with events (correct API)
         mock_events = [
             RetrievalEvent(
-                hash="h1", query=None, items_retrieved=5, total_items=50,
-                tool_name="tool_a", timestamp=99.0, retrieval_type="full",
+                hash="h1",
+                query=None,
+                items_retrieved=5,
+                total_items=50,
+                tool_name="tool_a",
+                timestamp=99.0,
+                retrieval_type="full",
             ),
             RetrievalEvent(
-                hash="h2", query=None, items_retrieved=5, total_items=50,
-                tool_name="tool_b", timestamp=101.0, retrieval_type="full",
+                hash="h2",
+                query=None,
+                items_retrieved=5,
+                total_items=50,
+                tool_name="tool_b",
+                timestamp=101.0,
+                retrieval_type="full",
             ),
             RetrievalEvent(
-                hash="h3", query="test", items_retrieved=5, total_items=50,
-                tool_name="tool_c", timestamp=102.0, retrieval_type="search",
+                hash="h3",
+                query="test",
+                items_retrieved=5,
+                total_items=50,
+                tool_name="tool_c",
+                timestamp=102.0,
+                retrieval_type="search",
             ),
         ]
 
         # Mock store.get_retrieval_events
-        with patch.object(store, 'get_retrieval_events', return_value=mock_events):
+        with patch.object(store, "get_retrieval_events", return_value=mock_events):
             feedback.analyze_from_store()
 
         # Only events with timestamp > 100.0 should be processed (h2, h3)
@@ -242,7 +274,10 @@ class TestUnboundedStrategyDicts:
 
     def test_strategy_dicts_have_size_limits(self):
         """Strategy dicts should be bounded to prevent memory leaks."""
-        from headroom.cache.compression_feedback import CompressionFeedback, reset_compression_feedback
+        from headroom.cache.compression_feedback import (
+            CompressionFeedback,
+            reset_compression_feedback,
+        )
         from headroom.cache.compression_store import CompressionStore
 
         reset_compression_feedback()
@@ -280,9 +315,9 @@ class TestSmartCrusherTOINIntegration:
 
     def test_smart_crusher_records_to_toin(self):
         """SmartCrusher should record compression events to TOIN."""
-        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
-        from headroom.telemetry.toin import get_toin, reset_toin
         from headroom.telemetry.models import ToolSignature
+        from headroom.telemetry.toin import get_toin, reset_toin
+        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
 
         reset_toin()
 
@@ -311,13 +346,17 @@ class TestSmartCrusherTOINIntegration:
 
         # Get TOIN instance and check initial state
         toin = get_toin()
-        initial_pattern_count = len(toin._patterns)
+        len(toin._patterns)
 
         # Crush the array
-        result, info, markers = crusher._crush_array(items, query_context="test query", tool_name="test_tool")
+        result, info, markers = crusher._crush_array(
+            items, query_context="test query", tool_name="test_tool"
+        )
 
         # Verify compression happened (not skipped)
-        assert "skip" not in info.lower(), f"Compression was skipped: {info}. Test needs crushable data."
+        assert "skip" not in info.lower(), (
+            f"Compression was skipped: {info}. Test needs crushable data."
+        )
 
         # Get the signature that would have been created
         sig = ToolSignature.from_items(items)
@@ -342,11 +381,13 @@ class TestAllFixesIntegrated:
 
     def test_full_feedback_loop(self):
         """Test complete feedback loop: compress -> store -> retrieve -> learn."""
-        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
-        from headroom.cache.compression_store import get_compression_store, reset_compression_store
-        from headroom.cache.compression_feedback import get_compression_feedback, reset_compression_feedback
-        from headroom.telemetry.toin import get_toin, reset_toin
+        from headroom.cache.compression_feedback import (
+            reset_compression_feedback,
+        )
+        from headroom.cache.compression_store import reset_compression_store
         from headroom.telemetry.models import ToolSignature
+        from headroom.telemetry.toin import get_toin, reset_toin
+        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
 
         # Reset all singletons
         reset_toin()
@@ -382,7 +423,9 @@ class TestAllFixesIntegrated:
         )
 
         # Verify compression happened (not skipped)
-        assert "skip" not in info.lower(), f"Compression was skipped: {info}. Test needs crushable data."
+        assert "skip" not in info.lower(), (
+            f"Compression was skipped: {info}. Test needs crushable data."
+        )
 
         # Step 2: Check TOIN was notified (after fix)
         toin = get_toin()

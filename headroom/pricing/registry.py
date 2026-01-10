@@ -10,6 +10,7 @@ class ModelPricing:
 
     All prices are in USD per 1 million tokens.
     """
+
     model: str
     provider: str
     input_per_1m: float
@@ -24,6 +25,7 @@ class ModelPricing:
 @dataclass
 class CostEstimate:
     """Result of a cost estimation calculation."""
+
     cost_usd: float
     breakdown: dict = field(default_factory=dict)
     pricing_date: date | None = None

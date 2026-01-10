@@ -5,26 +5,25 @@ while preserving 100% of critical data (errors, anomalies).
 """
 
 import json
-import pytest
 import random
 from datetime import datetime, timedelta
 
+import pytest
+
 from headroom.integrations.mcp import (
-    HeadroomMCPCompressor,
     HeadroomMCPClientWrapper,
+    HeadroomMCPCompressor,
     MCPCompressionResult,
     MCPToolProfile,
     compress_tool_result,
     compress_tool_result_with_metrics,
-    DEFAULT_MCP_PROFILES,
 )
-from headroom.config import HeadroomConfig
 from headroom.providers import OpenAIProvider
-
 
 # ============================================================================
 # Test Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mcp_compressor():
@@ -48,30 +47,36 @@ def generate_slack_messages(count: int, error_rate: float = 0.1) -> str:
     for i in range(count):
         is_error = random.random() < error_rate
         if is_error:
-            text = random.choice([
-                "ERROR: Database connection failed at 2:30am",
-                "CRITICAL: API latency spike detected",
-                "Exception: NullPointerException in AuthService",
-                "FAILED: Build pipeline broke on main branch",
-                "BUG: Users can't login - investigating now",
-            ])
+            text = random.choice(
+                [
+                    "ERROR: Database connection failed at 2:30am",
+                    "CRITICAL: API latency spike detected",
+                    "Exception: NullPointerException in AuthService",
+                    "FAILED: Build pipeline broke on main branch",
+                    "BUG: Users can't login - investigating now",
+                ]
+            )
         else:
-            text = random.choice([
-                "Reviewed the PR, looks good to merge",
-                "Updated the docs with new API endpoints",
-                "Meeting notes from standup attached",
-                "Can someone review my changes?",
-                "Deployed v2.3.1 to staging",
-            ])
+            text = random.choice(
+                [
+                    "Reviewed the PR, looks good to merge",
+                    "Updated the docs with new API endpoints",
+                    "Meeting notes from standup attached",
+                    "Can someone review my changes?",
+                    "Deployed v2.3.1 to staging",
+                ]
+            )
 
-        messages.append({
-            "id": f"msg_{i}",
-            "channel": random.choice(channels),
-            "user": random.choice(users),
-            "text": text,
-            "timestamp": (datetime.now() - timedelta(hours=i)).isoformat(),
-            "reactions": random.randint(0, 10),
-        })
+        messages.append(
+            {
+                "id": f"msg_{i}",
+                "channel": random.choice(channels),
+                "user": random.choice(users),
+                "text": text,
+                "timestamp": (datetime.now() - timedelta(hours=i)).isoformat(),
+                "reactions": random.randint(0, 10),
+            }
+        )
 
     return json.dumps({"messages": messages, "total": count})
 
@@ -87,7 +92,9 @@ def generate_database_results(count: int, null_rate: float = 0.1) -> str:
             "id": i + 1,
             "user_id": f"user_{random.randint(1000, 9999)}",
             "email": f"user{i}@example.com",
-            "status": "ERROR: validation failed" if has_error else random.choice(["active", "inactive", "pending"]),
+            "status": "ERROR: validation failed"
+            if has_error
+            else random.choice(["active", "inactive", "pending"]),
             "created_at": (datetime.now() - timedelta(days=random.randint(1, 365))).isoformat(),
             "balance": None if has_null else round(random.uniform(0, 10000), 2),
         }
@@ -98,37 +105,42 @@ def generate_database_results(count: int, null_rate: float = 0.1) -> str:
 
 def generate_log_entries(count: int, error_rate: float = 0.15) -> str:
     """Generate realistic log entries."""
-    levels = ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
     services = ["api-gateway", "auth-service", "payment-service", "user-service"]
 
     entries = []
     for i in range(count):
         if random.random() < error_rate:
             level = random.choice(["ERROR", "FATAL"])
-            message = random.choice([
-                "Connection timeout to database",
-                "Failed to process payment: insufficient funds",
-                "Authentication failed for user",
-                "Memory limit exceeded",
-                "Unhandled exception in request handler",
-            ])
+            message = random.choice(
+                [
+                    "Connection timeout to database",
+                    "Failed to process payment: insufficient funds",
+                    "Authentication failed for user",
+                    "Memory limit exceeded",
+                    "Unhandled exception in request handler",
+                ]
+            )
         else:
             level = random.choice(["DEBUG", "INFO", "INFO", "INFO", "WARN"])
-            message = random.choice([
-                "Request processed successfully",
-                "Cache hit for user data",
-                "Starting health check",
-                "Connection pool recycled",
-                "Metrics exported",
-            ])
+            message = random.choice(
+                [
+                    "Request processed successfully",
+                    "Cache hit for user data",
+                    "Starting health check",
+                    "Connection pool recycled",
+                    "Metrics exported",
+                ]
+            )
 
-        entries.append({
-            "timestamp": (datetime.now() - timedelta(minutes=i)).isoformat(),
-            "level": level,
-            "service": random.choice(services),
-            "message": message,
-            "trace_id": f"trace_{random.randint(100000, 999999)}",
-        })
+        entries.append(
+            {
+                "timestamp": (datetime.now() - timedelta(minutes=i)).isoformat(),
+                "level": level,
+                "service": random.choice(services),
+                "message": message,
+                "trace_id": f"trace_{random.randint(100000, 999999)}",
+            }
+        )
 
     return json.dumps({"entries": entries})
 
@@ -141,17 +153,23 @@ def generate_github_issues(count: int, bug_rate: float = 0.2) -> str:
     issues = []
     for i in range(count):
         is_bug = random.random() < bug_rate
-        labels = random.sample(bug_labels, k=random.randint(1, 2)) if is_bug else random.sample(labels_pool, k=random.randint(0, 2))
+        labels = (
+            random.sample(bug_labels, k=random.randint(1, 2))
+            if is_bug
+            else random.sample(labels_pool, k=random.randint(0, 2))
+        )
 
-        issues.append({
-            "number": i + 1,
-            "title": f"{'BUG: ' if is_bug else ''}{random.choice(['Fix login flow', 'Update API docs', 'Add dark mode', 'Improve performance'])}",
-            "state": random.choice(["open", "closed"]),
-            "labels": labels,
-            "author": f"user{random.randint(1, 100)}",
-            "created_at": (datetime.now() - timedelta(days=random.randint(1, 30))).isoformat(),
-            "comments": random.randint(0, 20),
-        })
+        issues.append(
+            {
+                "number": i + 1,
+                "title": f"{'BUG: ' if is_bug else ''}{random.choice(['Fix login flow', 'Update API docs', 'Add dark mode', 'Improve performance'])}",
+                "state": random.choice(["open", "closed"]),
+                "labels": labels,
+                "author": f"user{random.randint(1, 100)}",
+                "created_at": (datetime.now() - timedelta(days=random.randint(1, 30))).isoformat(),
+                "comments": random.randint(0, 20),
+            }
+        )
 
     return json.dumps({"issues": issues, "total_count": count})
 
@@ -159,6 +177,7 @@ def generate_github_issues(count: int, bug_rate: float = 0.2) -> str:
 # ============================================================================
 # Test Classes
 # ============================================================================
+
 
 class TestMCPToolProfiles:
     """Test tool profile matching."""
@@ -260,11 +279,14 @@ class TestMCPErrorPreservation:
         )
 
         compressed_data = json.loads(result.compressed_content)
-        compressed_errors = [e for e in compressed_data["entries"] if e["level"] in ["ERROR", "FATAL"]]
+        compressed_errors = [
+            e for e in compressed_data["entries"] if e["level"] in ["ERROR", "FATAL"]
+        ]
 
         # CRITICAL: 100% of errors must be preserved
-        assert len(compressed_errors) >= len(original_errors), \
+        assert len(compressed_errors) >= len(original_errors), (
             f"Lost errors: {len(original_errors)} -> {len(compressed_errors)}"
+        )
 
     def test_slack_significant_compression_with_content(self, mcp_compressor):
         """Slack messages should compress while preserving error keywords in text."""
@@ -282,8 +304,11 @@ class TestMCPErrorPreservation:
 
         compressed_data = json.loads(result.compressed_content)
         # Should preserve some messages with error keywords (SmartCrusher detects these)
-        error_msgs = [m for m in compressed_data["messages"]
-                     if any(kw in m["text"].lower() for kw in ["error", "failed", "exception"])]
+        error_msgs = [
+            m
+            for m in compressed_data["messages"]
+            if any(kw in m["text"].lower() for kw in ["error", "failed", "exception"])
+        ]
         assert len(error_msgs) > 0, "Should preserve some error messages"
 
     def test_database_error_status_preserved(self, mcp_compressor):
@@ -292,8 +317,7 @@ class TestMCPErrorPreservation:
         content = generate_database_results(150, null_rate=0.15)
         data = json.loads(content)
 
-        original_errors = [r for r in data["rows"]
-                         if "error" in str(r["status"]).lower()]
+        original_errors = [r for r in data["rows"] if "error" in str(r["status"]).lower()]
 
         result = mcp_compressor.compress(
             content=content,
@@ -302,12 +326,14 @@ class TestMCPErrorPreservation:
         )
 
         compressed_data = json.loads(result.compressed_content)
-        compressed_errors = [r for r in compressed_data["rows"]
-                           if "error" in str(r["status"]).lower()]
+        compressed_errors = [
+            r for r in compressed_data["rows"] if "error" in str(r["status"]).lower()
+        ]
 
         # Should preserve most error rows
-        assert len(compressed_errors) >= len(original_errors) * 0.8, \
+        assert len(compressed_errors) >= len(original_errors) * 0.8, (
             f"Lost too many errors: {len(original_errors)} -> {len(compressed_errors)}"
+        )
 
     def test_github_bugs_partial_preservation(self, mcp_compressor):
         """GitHub bug issues should have partial preservation."""
@@ -322,8 +348,11 @@ class TestMCPErrorPreservation:
 
         compressed_data = json.loads(result.compressed_content)
         # Should preserve at least some bugs
-        compressed_bugs = [i for i in compressed_data["issues"]
-                         if any(l in ["bug", "critical", "urgent", "blocker"] for l in i["labels"])]
+        compressed_bugs = [
+            i
+            for i in compressed_data["issues"]
+            if any(label in ["bug", "critical", "urgent", "blocker"] for label in i["labels"])
+        ]
 
         # At least 5 bugs should be preserved
         assert len(compressed_bugs) >= 5, "Should preserve at least 5 bug issues"
@@ -364,6 +393,7 @@ class TestMCPClientWrapper:
     @pytest.fixture
     def mock_mcp_client(self):
         """Create a mock MCP client."""
+
         class MockMCPClient:
             async def call_tool(self, name: str, arguments: dict | None = None) -> str:
                 if "slack" in name:
@@ -372,6 +402,7 @@ class TestMCPClientWrapper:
                     return generate_log_entries(150)
                 else:
                     return generate_database_results(80)
+
         return MockMCPClient()
 
     @pytest.mark.asyncio
@@ -421,8 +452,9 @@ class TestMCPCompressionRatio:
             content=content,
             tool_name="slack_search",
         )
-        assert result.compression_ratio > 0.5, \
+        assert result.compression_ratio > 0.5, (
             f"Compression ratio too low: {result.compression_ratio:.2%}"
+        )
 
     def test_significant_compression_logs(self, mcp_compressor):
         """Log entries should compress well (>50%)."""
@@ -431,8 +463,9 @@ class TestMCPCompressionRatio:
             content=content,
             tool_name="search_logs",
         )
-        assert result.compression_ratio > 0.5, \
+        assert result.compression_ratio > 0.5, (
             f"Compression ratio too low: {result.compression_ratio:.2%}"
+        )
 
     def test_compression_efficiency_increases_with_size(self, mcp_compressor):
         """Larger outputs should compress more efficiently."""

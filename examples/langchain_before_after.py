@@ -21,18 +21,19 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
 
 # Check dependencies
 try:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
     print("LangChain not installed. Install with: pip install langchain-core")
 
 try:
-    from langchain_openai import ChatOpenAI
+    from langchain_openai import ChatOpenAI  # noqa: F401
+
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
@@ -40,12 +41,13 @@ except ImportError:
 
 # Import Headroom
 try:
-    from headroom import (
+    from headroom import (  # noqa: F401
         HeadroomClient,
         HeadroomConfig,
         HeadroomMode,
         OpenAIProvider,
     )
+
     HEADROOM_AVAILABLE = True
 except ImportError:
     HEADROOM_AVAILABLE = False
@@ -55,6 +57,7 @@ except ImportError:
 @dataclass
 class ComparisonResult:
     """Result of before/after comparison."""
+
     scenario: str
     tokens_before: int
     tokens_after: int
@@ -82,18 +85,18 @@ def print_comparison(result: ComparisonResult) -> None:
     print(f"\n{'=' * 60}")
     print(f"Scenario: {result.scenario}")
     print(f"{'=' * 60}")
-    print(f"\n[Token Comparison]")
+    print("\n[Token Comparison]")
     print(f"   Before: {result.tokens_before:,} tokens")
     print(f"   After:  {result.tokens_after:,} tokens")
     print(f"   Saved:  {result.tokens_saved:,} tokens ({result.savings_percent:.1f}%)")
 
-    print(f"\n[Cost Impact] (GPT-4o pricing)")
+    print("\n[Cost Impact] (GPT-4o pricing)")
     print(f"   Before: ${result.cost_before_usd:.4f}")
     print(f"   After:  ${result.cost_after_usd:.4f}")
     print(f"   Saved:  ${result.cost_saved_usd:.4f}")
 
     if result.latency_before_ms and result.latency_after_ms:
-        print(f"\n[Latency]")
+        print("\n[Latency]")
         print(f"   Before: {result.latency_before_ms:.0f}ms")
         print(f"   After:  {result.latency_after_ms:.0f}ms")
 
@@ -122,17 +125,20 @@ def langchain_to_openai_messages(messages: list) -> list[dict]:
                 ]
             openai_messages.append(msg_dict)
         elif isinstance(msg, ToolMessage):
-            openai_messages.append({
-                "role": "tool",
-                "tool_call_id": msg.tool_call_id,
-                "content": msg.content,
-            })
+            openai_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": msg.tool_call_id,
+                    "content": msg.content,
+                }
+            )
     return openai_messages
 
 
 # ============================================================================
 # SCENARIO 1: Agentic Workflow with Large Tool Outputs
 # ============================================================================
+
 
 def scenario_agentic_workflow() -> ComparisonResult:
     """
@@ -158,20 +164,24 @@ def scenario_agentic_workflow() -> ComparisonResult:
             "metadata": {
                 "preferences": {"theme": "dark", "notifications": True},
                 "tags": ["premium", "verified"] if i % 5 == 0 else [],
-            }
+            },
         }
         for i in range(100)
     ]
 
     # The conversation in LangChain format
     lc_messages = [
-        SystemMessage(content="""You are a helpful database assistant.
+        SystemMessage(
+            content="""You are a helpful database assistant.
         When searching for users, analyze the results and provide a summary.
-        Focus on active users in the Engineering department."""),
+        Focus on active users in the Engineering department."""
+        ),
         HumanMessage(content="Find users in the Engineering department"),
         AIMessage(
             content="I'll search the database for Engineering users.",
-            tool_calls=[{"id": "call_1", "name": "search_users", "args": {"department": "Engineering"}}],
+            tool_calls=[
+                {"id": "call_1", "name": "search_users", "args": {"department": "Engineering"}}
+            ],
         ),
         ToolMessage(
             content=json.dumps(search_results),  # 100 records!
@@ -207,13 +217,13 @@ def scenario_agentic_workflow() -> ComparisonResult:
     tokens_saved = plan.tokens_saved
     savings_percent = (tokens_saved / tokens_before * 100) if tokens_before > 0 else 0
 
-    print(f"\n[Before Optimization]")
-    print(f"   - System prompt + conversation")
+    print("\n[Before Optimization]")
+    print("   - System prompt + conversation")
     print(f"   - Tool output: 100 user records ({len(json.dumps(search_results))} chars)")
 
-    print(f"\n[After Optimization]")
-    print(f"   - SmartCrusher kept: first 3, last 2, + relevance matches")
-    print(f"   - Estimated ~15 items preserved (Engineering dept matches)")
+    print("\n[After Optimization]")
+    print("   - SmartCrusher kept: first 3, last 2, + relevance matches")
+    print("   - Estimated ~15 items preserved (Engineering dept matches)")
     print(f"   - Transforms: {plan.transforms}")
 
     client.close()
@@ -236,6 +246,7 @@ def scenario_agentic_workflow() -> ComparisonResult:
 # SCENARIO 2: Long Conversation with Context Window Pressure
 # ============================================================================
 
+
 def scenario_long_conversation() -> ComparisonResult:
     """
     Scenario: Multi-turn conversation approaching context window limit.
@@ -249,7 +260,8 @@ def scenario_long_conversation() -> ComparisonResult:
 
     # Simulate 50-turn conversation in LangChain format
     lc_messages = [
-        SystemMessage(content="""You are a customer support agent for TechCorp.
+        SystemMessage(
+            content="""You are a customer support agent for TechCorp.
         You have access to customer data and can help with:
         - Account issues
         - Billing questions
@@ -258,7 +270,8 @@ def scenario_long_conversation() -> ComparisonResult:
 
         Current date: 2024-12-15
         Agent ID: support-agent-42
-        """),
+        """
+        ),
     ]
 
     # Add 50 turns of conversation
@@ -273,10 +286,12 @@ def scenario_long_conversation() -> ComparisonResult:
     for i in range(50):
         topic = topics[i % len(topics)]
         lc_messages.append(HumanMessage(content=f"Turn {i}: {topic}"))
-        lc_messages.append(AIMessage(
-            content=f"Response to turn {i}: Thank you for reaching out about '{topic}'. "
-            f"I can help you with that. Here's what I found... " * 3
-        ))
+        lc_messages.append(
+            AIMessage(
+                content=f"Response to turn {i}: Thank you for reaching out about '{topic}'. "
+                f"I can help you with that. Here's what I found... " * 3
+            )
+        )
 
     # Convert to OpenAI format
     messages = langchain_to_openai_messages(lc_messages)
@@ -306,13 +321,13 @@ def scenario_long_conversation() -> ComparisonResult:
     tokens_saved = plan.tokens_saved
     savings_percent = (tokens_saved / tokens_before * 100) if tokens_before > 0 else 0
 
-    print(f"\n[Before Optimization]")
-    print(f"   - 50-turn conversation")
+    print("\n[Before Optimization]")
+    print("   - 50-turn conversation")
     print(f"   - ~{tokens_before:,} tokens total")
 
-    print(f"\n[After Optimization]")
-    print(f"   - RollingWindow kept system + last N turns")
-    print(f"   - CacheAligner moved date to dynamic tail")
+    print("\n[After Optimization]")
+    print("   - RollingWindow kept system + last N turns")
+    print("   - CacheAligner moved date to dynamic tail")
     print(f"   - Transforms: {plan.transforms}")
 
     client.close()
@@ -334,6 +349,7 @@ def scenario_long_conversation() -> ComparisonResult:
 # ============================================================================
 # SCENARIO 3: RAG with Retrieved Documents
 # ============================================================================
+
 
 def scenario_rag_pipeline() -> ComparisonResult:
     """
@@ -358,23 +374,24 @@ def scenario_rag_pipeline() -> ComparisonResult:
                 "author": f"Author {i}",
                 "date": "2024-01-15",
                 "category": "Technical",
-            }
+            },
         }
         chunks.append(chunk)
 
-    context = "\n\n".join([
-        f"[Source: {c['source']}, Page {c['page']}]\n{c['content']}"
-        for c in chunks
-    ])
+    context = "\n\n".join(
+        [f"[Source: {c['source']}, Page {c['page']}]\n{c['content']}" for c in chunks]
+    )
 
     # LangChain format
     lc_messages = [
         SystemMessage(content="You are a helpful assistant. Answer based on the provided context."),
-        HumanMessage(content=f"""Based on the following retrieved documents:
+        HumanMessage(
+            content=f"""Based on the following retrieved documents:
 
 {context}
 
-Question: What are the key technical requirements?"""),
+Question: What are the key technical requirements?"""
+        ),
     ]
 
     # Convert to OpenAI format
@@ -405,12 +422,12 @@ Question: What are the key technical requirements?"""),
     tokens_saved = plan.tokens_saved
     savings_percent = (tokens_saved / tokens_before * 100) if tokens_before > 0 else 0
 
-    print(f"\n[Before Optimization]")
-    print(f"   - 10 retrieved document chunks")
+    print("\n[Before Optimization]")
+    print("   - 10 retrieved document chunks")
     print(f"   - ~{tokens_before:,} tokens total")
 
-    print(f"\n[After Optimization]")
-    print(f"   - CacheAligner normalized whitespace")
+    print("\n[After Optimization]")
+    print("   - CacheAligner normalized whitespace")
     print(f"   - Transforms: {plan.transforms}")
 
     client.close()
@@ -432,6 +449,7 @@ Question: What are the key technical requirements?"""),
 # ============================================================================
 # SCENARIO 4: Real API Comparison (if API key available)
 # ============================================================================
+
 
 def scenario_live_api() -> ComparisonResult | None:
     """
@@ -497,7 +515,7 @@ def scenario_live_api() -> ComparisonResult | None:
     print(f"\n[Latency] {latency_before:.0f}ms -> {latency_after:.0f}ms")
 
     # Get metrics
-    summary = headroom_client.get_summary()
+    headroom_client.get_summary()
 
     headroom_client.close()
 
@@ -523,6 +541,7 @@ def scenario_live_api() -> ComparisonResult | None:
 # ============================================================================
 # MAIN: Run All Scenarios
 # ============================================================================
+
 
 def main():
     """Run all comparison scenarios."""
@@ -585,7 +604,7 @@ def main():
         print(f"   Total tokens saved: {total_saved:,}")
         print(f"   Average savings: {avg_savings:.1f}%")
         print(f"   Total cost saved: ${total_cost_saved:.4f}")
-        print(f"\n[Projection] At scale (1M requests/month):")
+        print("\n[Projection] At scale (1M requests/month):")
         print(f"   Estimated monthly savings: ${total_cost_saved * 1_000_000 / len(results):,.2f}")
 
 

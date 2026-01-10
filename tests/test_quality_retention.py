@@ -9,14 +9,16 @@ This is a FORMAL EVAL - any failure here is a CRITICAL BUG.
 """
 
 import json
+
 import pytest
+
+from headroom.providers.anthropic import AnthropicTokenCounter
+from headroom.tokenizer import Tokenizer
 from headroom.transforms.smart_crusher import (
     SmartCrusher,
     SmartCrusherConfig,
     smart_crush_tool_output,
 )
-from headroom.tokenizer import Tokenizer
-from headroom.providers.anthropic import AnthropicTokenCounter
 
 
 class TestErrorRetention:
@@ -31,12 +33,14 @@ class TestErrorRetention:
         error_indices = []
 
         for i in range(1000):
-            items.append({
-                "id": f"item_{i}",
-                "value": i,
-                "status": "ok",
-                "message": f"Normal operation {i}",
-            })
+            items.append(
+                {
+                    "id": f"item_{i}",
+                    "value": i,
+                    "status": "ok",
+                    "message": f"Normal operation {i}",
+                }
+            )
 
         # Insert errors at specific positions
         for idx in [10, 50, 100, 250, 500, 750, 999]:
@@ -129,11 +133,13 @@ class TestAnomalyRetention:
 
         # Create items with normal values around mean=100, std=10
         for i in range(1000):
-            items.append({
-                "id": f"item_{i}",
-                "value": 100 + (i % 20) - 10,  # Values 90-110
-                "name": f"Normal item {i}",
-            })
+            items.append(
+                {
+                    "id": f"item_{i}",
+                    "value": 100 + (i % 20) - 10,  # Values 90-110
+                    "name": f"Normal item {i}",
+                }
+            )
 
         # Insert anomalies (> 2 std = > 120 or < 80)
         for idx in [100, 300, 500, 700, 900]:
@@ -171,10 +177,7 @@ class TestRelevanceRetention:
 
     def test_relevance_with_query_context(self):
         """Items matching query should be retained when context is provided."""
-        items = [
-            {"id": i, "content": f"Generic content about topic {i}"}
-            for i in range(100)
-        ]
+        items = [{"id": i, "content": f"Generic content about topic {i}"} for i in range(100)]
 
         # Insert a specific item that matches our query
         # Note: This also contains "error" keyword which will trigger error retention
@@ -201,9 +204,7 @@ class TestRelevanceRetention:
         compressed = json.loads(tool_msg["content"].split("\n")[0])  # Remove marker
 
         targets = [x for x in compressed if x.get("is_target")]
-        assert len(targets) >= 1, (
-            "Target item was dropped despite matching query context!"
-        )
+        assert len(targets) >= 1, "Target item was dropped despite matching query context!"
 
 
 class TestFirstLastRetention:
@@ -281,7 +282,7 @@ class TestCombinedRetention:
 
         # Count retained critical items
         errors_retained = sum(1 for x in compressed if x.get("error"))
-        anomalies_retained = sum(1 for x in compressed if x.get("value", 0) > 900000)
+        sum(1 for x in compressed if x.get("value", 0) > 900000)
 
         # All errors should be retained
         errors_original = sum(1 for x in items if x.get("error"))
@@ -298,13 +299,15 @@ class TestCompressionRatio:
         # Create realistic large dataset
         items = []
         for i in range(1000):
-            items.append({
-                "id": f"doc_{i}",
-                "score": 0.5,
-                "title": f"Document {i} about various topics",
-                "snippet": "Lorem ipsum " * 20,
-                "metadata": {"source": "web", "date": "2024-01-01"},
-            })
+            items.append(
+                {
+                    "id": f"doc_{i}",
+                    "score": 0.5,
+                    "title": f"Document {i} about various topics",
+                    "snippet": "Lorem ipsum " * 20,
+                    "metadata": {"source": "web", "date": "2024-01-01"},
+                }
+            )
 
         # Add some critical items
         items[100]["error"] = "Parse error"
@@ -355,8 +358,7 @@ class TestEdgeCases:
 
         # All 50 errors should be retained (errors override max_items)
         assert len(compressed) == 50, (
-            f"Some errors dropped when all items are errors! "
-            f"Expected 50, got {len(compressed)}"
+            f"Some errors dropped when all items are errors! Expected 50, got {len(compressed)}"
         )
 
     def test_unicode_content(self):

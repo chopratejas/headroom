@@ -44,13 +44,15 @@ _SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 try:
     import spacy
+
     _SPACY_AVAILABLE = True
 except ImportError:
     spacy = None  # type: ignore
 
 try:
-    from sentence_transformers import SentenceTransformer
     import numpy as np
+    from sentence_transformers import SentenceTransformer
+
     _SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     SentenceTransformer = None  # type: ignore
@@ -138,35 +140,77 @@ class DetectorConfig:
     """Configuration for the dynamic content detector."""
 
     # Which tiers to enable (order matters - later tiers can use earlier results)
-    tiers: list[Literal["regex", "ner", "semantic"]] = field(
-        default_factory=lambda: ["regex"]
-    )
+    tiers: list[Literal["regex", "ner", "semantic"]] = field(default_factory=lambda: ["regex"])
 
     # Tier 1: Structural labels that indicate dynamic content
     # These are the KEY names that hint the VALUE is dynamic
     # Users can add domain-specific labels
-    dynamic_labels: list[str] = field(default_factory=lambda: [
-        # Time-related
-        "date", "time", "timestamp", "datetime", "created", "updated",
-        "modified", "expires", "last", "current", "today", "now",
-        # Identifiers
-        "id", "uuid", "guid", "session", "request", "trace", "span",
-        "transaction", "correlation", "token", "key", "secret",
-        # User-related
-        "user", "username", "email", "name", "phone", "address",
-        "customer", "client", "employee", "member",
-        # System state
-        "version", "build", "commit", "branch", "revision",
-        "status", "state", "count", "total", "balance", "remaining",
-        "load", "queue", "active", "pending",
-        # Order/ticket related
-        "order", "ticket", "case", "invoice", "reference",
-    ])
+    dynamic_labels: list[str] = field(
+        default_factory=lambda: [
+            # Time-related
+            "date",
+            "time",
+            "timestamp",
+            "datetime",
+            "created",
+            "updated",
+            "modified",
+            "expires",
+            "last",
+            "current",
+            "today",
+            "now",
+            # Identifiers
+            "id",
+            "uuid",
+            "guid",
+            "session",
+            "request",
+            "trace",
+            "span",
+            "transaction",
+            "correlation",
+            "token",
+            "key",
+            "secret",
+            # User-related
+            "user",
+            "username",
+            "email",
+            "name",
+            "phone",
+            "address",
+            "customer",
+            "client",
+            "employee",
+            "member",
+            # System state
+            "version",
+            "build",
+            "commit",
+            "branch",
+            "revision",
+            "status",
+            "state",
+            "count",
+            "total",
+            "balance",
+            "remaining",
+            "load",
+            "queue",
+            "active",
+            "pending",
+            # Order/ticket related
+            "order",
+            "ticket",
+            "case",
+            "invoice",
+            "reference",
+        ]
+    )
 
     # Tier 1: Custom regex patterns (user-provided)
-    custom_patterns: list[tuple[str, DynamicCategory]] = field(
-        default_factory=list
-    )
+    custom_patterns: list[tuple[str, DynamicCategory]] = field(default_factory=list)
 
     # Entropy threshold for detecting random strings (0-1 scale normalized)
     # Higher = more selective (only very random strings)
@@ -237,48 +281,47 @@ class RegexDetector:
     # Universal patterns (these formats are language-agnostic)
     UNIVERSAL_PATTERNS = [
         # UUID - truly universal format
-        (r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-         DynamicCategory.UUID, "uuid"),
-
+        (
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            DynamicCategory.UUID,
+            "uuid",
+        ),
         # ISO 8601 datetime (most universal date format)
-        (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
-         DynamicCategory.DATETIME, "iso_datetime"),
-
+        (
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
+            DynamicCategory.DATETIME,
+            "iso_datetime",
+        ),
         # ISO 8601 date only
-        (r"\d{4}-\d{2}-\d{2}(?!\d)",
-         DynamicCategory.DATE, "iso_date"),
-
+        (r"\d{4}-\d{2}-\d{2}(?!\d)", DynamicCategory.DATE, "iso_date"),
         # Unix timestamps (10-13 digits, but NOT within longer numbers)
-        (r"(?<![0-9])\d{10,13}(?![0-9])",
-         DynamicCategory.TIMESTAMP, "unix_timestamp"),
-
+        (r"(?<![0-9])\d{10,13}(?![0-9])", DynamicCategory.TIMESTAMP, "unix_timestamp"),
         # 24-hour time HH:MM:SS or HH:MM
-        (r"(?<![0-9])\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|am|pm))?(?![0-9])",
-         DynamicCategory.TIME, "time"),
-
+        (
+            r"(?<![0-9])\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|am|pm))?(?![0-9])",
+            DynamicCategory.TIME,
+            "time",
+        ),
         # Version numbers with v prefix (unambiguous)
-        (r"\bv\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.]+)?",
-         DynamicCategory.VERSION, "version"),
-
+        (r"\bv\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.]+)?", DynamicCategory.VERSION, "version"),
         # API key/token patterns (prefix + random string)
-        (r"\b(?:sk|pk|api|key|token|bearer|auth)[-_][a-zA-Z0-9]{16,}",
-         DynamicCategory.REQUEST_ID, "api_key"),
-
+        (
+            r"\b(?:sk|pk|api|key|token|bearer|auth)[-_][a-zA-Z0-9]{16,}",
+            DynamicCategory.REQUEST_ID,
+            "api_key",
+        ),
         # Common prefixed IDs (req_, sess_, txn_, etc.)
-        (r"\b[a-z]{2,6}_[a-zA-Z0-9]{8,}",
-         DynamicCategory.REQUEST_ID, "prefixed_id"),
-
+        (r"\b[a-z]{2,6}_[a-zA-Z0-9]{8,}", DynamicCategory.REQUEST_ID, "prefixed_id"),
         # Hex strings of common ID lengths (32 = MD5, 40 = SHA1, 64 = SHA256)
-        (r"\b[a-fA-F0-9]{32}\b",
-         DynamicCategory.IDENTIFIER, "hex_32"),
-        (r"\b[a-fA-F0-9]{40}\b",
-         DynamicCategory.IDENTIFIER, "hex_40"),
-        (r"\b[a-fA-F0-9]{64}\b",
-         DynamicCategory.IDENTIFIER, "hex_64"),
-
+        (r"\b[a-fA-F0-9]{32}\b", DynamicCategory.IDENTIFIER, "hex_32"),
+        (r"\b[a-fA-F0-9]{40}\b", DynamicCategory.IDENTIFIER, "hex_40"),
+        (r"\b[a-fA-F0-9]{64}\b", DynamicCategory.IDENTIFIER, "hex_64"),
         # JWT tokens (three base64 sections separated by dots)
-        (r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+",
-         DynamicCategory.REQUEST_ID, "jwt"),
+        (
+            r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+",
+            DynamicCategory.REQUEST_ID,
+            "jwt",
+        ),
     ]
 
     def __init__(self, config: DetectorConfig):
@@ -296,7 +339,7 @@ class RegexDetector:
         labels_pattern = "|".join(re.escape(label) for label in config.dynamic_labels)
         self._structural_pattern = re.compile(
             rf"(?P<label>(?:{labels_pattern}))(?P<sep>\s*[:=]\s*|\s+)(?P<value>[^\n,;]+)",
-            re.IGNORECASE
+            re.IGNORECASE,
         )
 
         # Compile custom patterns
@@ -319,15 +362,17 @@ class RegexDetector:
                 if end - start < self.config.min_span_length:
                     continue
 
-                spans.append(DynamicSpan(
-                    text=match.group(),
-                    start=start,
-                    end=end,
-                    category=category,
-                    tier="regex",
-                    confidence=1.0,
-                    metadata={"pattern": pattern_name, "method": "universal"},
-                ))
+                spans.append(
+                    DynamicSpan(
+                        text=match.group(),
+                        start=start,
+                        end=end,
+                        category=category,
+                        tier="regex",
+                        confidence=1.0,
+                        metadata={"pattern": pattern_name, "method": "universal"},
+                    )
+                )
                 seen_ranges.add((start, end))
 
         # 2. Structural detection: "Label: value" patterns
@@ -355,15 +400,17 @@ class RegexDetector:
             if not value.strip():
                 continue
 
-            spans.append(DynamicSpan(
-                text=value,
-                start=value_start,
-                end=value_end,
-                category=category,
-                tier="regex",
-                confidence=0.9,
-                metadata={"pattern": "structural", "method": "structural", "label": label},
-            ))
+            spans.append(
+                DynamicSpan(
+                    text=value,
+                    start=value_start,
+                    end=value_end,
+                    category=category,
+                    tier="regex",
+                    confidence=0.9,
+                    metadata={"pattern": "structural", "method": "structural", "label": label},
+                )
+            )
             seen_ranges.add((value_start, value_end))
 
         # 3. Entropy-based detection for remaining potential IDs
@@ -378,15 +425,17 @@ class RegexDetector:
                 if end - start < self.config.min_span_length:
                     continue
 
-                spans.append(DynamicSpan(
-                    text=match.group(),
-                    start=start,
-                    end=end,
-                    category=category,
-                    tier="regex",
-                    confidence=0.8,
-                    metadata={"pattern": "custom", "method": "custom"},
-                ))
+                spans.append(
+                    DynamicSpan(
+                        text=match.group(),
+                        start=start,
+                        end=end,
+                        category=category,
+                        tier="regex",
+                        confidence=0.8,
+                        metadata={"pattern": "custom", "method": "custom"},
+                    )
+                )
                 seen_ranges.add((start, end))
 
         return sorted(spans, key=lambda s: s.start)
@@ -432,15 +481,17 @@ class RegexDetector:
             entropy = calculate_entropy(text)
 
             if entropy >= self.config.entropy_threshold:
-                spans.append(DynamicSpan(
-                    text=text,
-                    start=start,
-                    end=end,
-                    category=DynamicCategory.IDENTIFIER,
-                    tier="regex",
-                    confidence=entropy,  # Use entropy as confidence
-                    metadata={"pattern": "entropy", "method": "entropy", "entropy": entropy},
-                ))
+                spans.append(
+                    DynamicSpan(
+                        text=text,
+                        start=start,
+                        end=end,
+                        category=DynamicCategory.IDENTIFIER,
+                        tier="regex",
+                        confidence=entropy,  # Use entropy as confidence
+                        metadata={"pattern": "entropy", "method": "entropy", "entropy": entropy},
+                    )
+                )
                 seen_ranges.add((start, end))
 
         return spans
@@ -452,10 +503,7 @@ class RegexDetector:
         seen_ranges: set[tuple[int, int]],
     ) -> bool:
         """Check if range overlaps with any existing range."""
-        return any(
-            not (end <= s or start >= e)
-            for s, e in seen_ranges
-        )
+        return any(not (end <= s or start >= e) for s, e in seen_ranges)
 
     def _categorize_label(self, label: str) -> DynamicCategory:
         """Categorize based on the label name."""
@@ -478,15 +526,35 @@ class RegexDetector:
             return DynamicCategory.REQUEST_ID
 
         # User-related
-        if label in {"user", "username", "email", "name", "phone", "address",
-                     "customer", "client", "employee", "member"}:
+        if label in {
+            "user",
+            "username",
+            "email",
+            "name",
+            "phone",
+            "address",
+            "customer",
+            "client",
+            "employee",
+            "member",
+        }:
             return DynamicCategory.USER_DATA
 
         # System state
         if label in {"version", "build", "commit", "branch", "revision"}:
             return DynamicCategory.VERSION
-        if label in {"status", "state", "count", "total", "balance", "remaining",
-                     "load", "queue", "active", "pending"}:
+        if label in {
+            "status",
+            "state",
+            "count",
+            "total",
+            "balance",
+            "remaining",
+            "load",
+            "queue",
+            "active",
+            "pending",
+        }:
             return DynamicCategory.VOLATILE
 
         # Order/ticket
@@ -570,8 +638,7 @@ class NERDetector:
 
             # Check for overlap with existing spans
             overlaps = any(
-                not (ent.end_char <= s or ent.start_char >= e)
-                for s, e in existing_ranges
+                not (ent.end_char <= s or ent.start_char >= e) for s, e in existing_ranges
             )
             if overlaps:
                 continue
@@ -583,15 +650,17 @@ class NERDetector:
             if category == DynamicCategory.UNKNOWN:
                 continue
 
-            spans.append(DynamicSpan(
-                text=ent.text,
-                start=ent.start_char,
-                end=ent.end_char,
-                category=category,
-                tier="ner",
-                confidence=0.9,
-                metadata={"entity_type": ent.label_},
-            ))
+            spans.append(
+                DynamicSpan(
+                    text=ent.text,
+                    start=ent.start_char,
+                    end=ent.end_char,
+                    category=category,
+                    tier="ner",
+                    confidence=0.9,
+                    metadata={"entity_type": ent.label_},
+                )
+            )
             existing_ranges.add((ent.start_char, ent.end_char))
 
         return sorted(spans, key=lambda s: s.start), None
@@ -611,18 +680,15 @@ class SemanticDetector:
         "Real-time data",
         "Live prices",
         "Current stock price",
-
         # Session-specific
         "Your session ID",
         "Your account balance",
         "Your recent orders",
         "Your conversation history",
-
         # User-specific
         "Hello [user]",
         "Dear customer",
         "Your name is",
-
         # System state
         "Server status",
         "System load",
@@ -707,10 +773,7 @@ class SemanticDetector:
                 continue
 
             # Check overlap with existing spans
-            overlaps = any(
-                not (end <= s or start >= e)
-                for s, e in existing_ranges
-            )
+            overlaps = any(not (end <= s or start >= e) for s, e in existing_ranges)
             if overlaps:
                 continue
 
@@ -721,18 +784,20 @@ class SemanticDetector:
             # Determine category based on exemplar
             category = self._categorize_exemplar(best_exemplar)
 
-            spans.append(DynamicSpan(
-                text=text,
-                start=start,
-                end=end,
-                category=category,
-                tier="semantic",
-                confidence=max_sim,
-                metadata={
-                    "matched_exemplar": best_exemplar,
-                    "similarity": max_sim,
-                },
-            ))
+            spans.append(
+                DynamicSpan(
+                    text=text,
+                    start=start,
+                    end=end,
+                    category=category,
+                    tier="semantic",
+                    confidence=max_sim,
+                    metadata={
+                        "matched_exemplar": best_exemplar,
+                        "similarity": max_sim,
+                    },
+                )
+            )
             existing_ranges.add((start, end))
 
         return sorted(spans, key=lambda s: s.start), None
@@ -740,7 +805,7 @@ class SemanticDetector:
     def _split_sentences(self, content: str) -> list[tuple[str, int, int]]:
         """Split content into sentences with positions."""
         sentences: list[tuple[str, int, int]] = []
-        pattern = r'[^.!?\n]+[.!?\n]?'
+        pattern = r"[^.!?\n]+[.!?\n]?"
         for match in re.finditer(pattern, content):
             text = match.group().strip()
             if len(text) > 10:
@@ -820,6 +885,7 @@ class DynamicContentDetector:
             DetectionResult with spans, static/dynamic content split, etc.
         """
         import time
+
         start_time = time.perf_counter()
 
         all_spans: list[DynamicSpan] = []
@@ -881,7 +947,7 @@ class DynamicContentDetector:
 
         for span in reversed(spans):
             dynamic_parts.append(span.text)
-            static = static[:span.start] + static[span.end:]
+            static = static[: span.start] + static[span.end :]
 
         static = self._clean_static_content(static)
         dynamic_parts.reverse()

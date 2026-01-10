@@ -1,7 +1,8 @@
 """Tests for OpenAICacheOptimizer."""
 
 import pytest
-from headroom.cache import OpenAICacheOptimizer, CacheConfig, OptimizationContext
+
+from headroom.cache import CacheConfig, OpenAICacheOptimizer, OptimizationContext
 from headroom.cache.base import CacheStrategy
 
 
@@ -94,7 +95,7 @@ class TestOpenAICacheOptimizer:
         ]
 
         # First call
-        result1 = optimizer.optimize(messages, context)
+        optimizer.optimize(messages, context)
 
         # Second call with same messages
         result2 = optimizer.optimize(messages, context)
@@ -114,7 +115,7 @@ class TestOpenAICacheOptimizer:
             {"role": "user", "content": "Hello!"},
         ]
 
-        result1 = optimizer.optimize(messages1, context)
+        optimizer.optimize(messages1, context)
         result2 = optimizer.optimize(messages2, context)
 
         # Second call should detect prefix change

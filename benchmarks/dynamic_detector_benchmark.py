@@ -6,21 +6,21 @@ Tests the detector against realistic system prompts from AI coding agents,
 chatbots, and enterprise applications.
 """
 
-import time
 import statistics
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from headroom.cache.dynamic_detector import (
     DetectorConfig,
     DynamicContentDetector,
-    DynamicCategory,
 )
 
 
 @dataclass
 class BenchmarkResult:
     """Result of a single benchmark run."""
+
     name: str
     content_length: int
     spans_found: int
@@ -50,7 +50,6 @@ User: tchopra
 Workspace: /Users/tchopra/claude-projects/headroom
 
 Be concise, accurate, and helpful. Follow the user's instructions carefully.""",
-
     "enterprise_assistant": """You are an enterprise AI assistant for Acme Corporation.
 
 Current Date: 2026-01-07T10:30:00Z
@@ -76,7 +75,6 @@ Budget Information:
 - Remaining: $2,658.33
 
 Help the user with their work tasks while following company policies.""",
-
     "coding_agent": """You are an autonomous coding agent with access to tools.
 
 Environment:
@@ -99,7 +97,6 @@ API Keys Available:
 - DATABASE_URL: postgresql://user:pass@localhost:5432/mydb
 
 Execute tasks step by step, verify each action, and report progress.""",
-
     "customer_support": """You are a customer support agent for TechStore Inc.
 
 Current Time: January 7, 2026, 3:45 PM EST
@@ -122,7 +119,6 @@ Active Issues:
 - Case #CS-2026-0107-001 - Battery drain issue - Open since today
 
 Provide helpful, empathetic support while following company guidelines.""",
-
     "data_analysis": """You are a data analysis assistant.
 
 Report Generated: 2026-01-07 10:30:00 UTC
@@ -147,7 +143,6 @@ Anomalies Detected:
 - Drop on Dec 25: 0.4x normal (expected - holiday)
 
 Help analyze the data and provide insights.""",
-
     "minimal_static": """You are a helpful AI assistant.
 
 Your role is to:
@@ -157,7 +152,6 @@ Your role is to:
 4. Admit when you don't know something
 
 Always be helpful, harmless, and honest.""",
-
     "heavy_dynamic": """Session started at 2026-01-07T10:30:45.123Z
 Request ID: req_abc123def456ghi789jkl012mno345pqr678
 Trace ID: 550e8400-e29b-41d4-a716-446655440000
@@ -205,19 +199,21 @@ def run_benchmark(
             result = detector.detect(content)
             elapsed = (time.perf_counter() - start) * 1000
 
-            categories = list(set(s.category.value for s in result.spans))
+            categories = list({s.category.value for s in result.spans})
 
-            results[name].append(BenchmarkResult(
-                name=name,
-                content_length=len(content),
-                spans_found=len(result.spans),
-                categories=categories,
-                static_length=len(result.static_content),
-                dynamic_length=len(result.dynamic_content),
-                latency_ms=elapsed,
-                tiers_used=result.tiers_used,
-                warnings=result.warnings,
-            ))
+            results[name].append(
+                BenchmarkResult(
+                    name=name,
+                    content_length=len(content),
+                    spans_found=len(result.spans),
+                    categories=categories,
+                    static_length=len(result.static_content),
+                    dynamic_length=len(result.dynamic_content),
+                    latency_ms=elapsed,
+                    tiers_used=result.tiers_used,
+                    warnings=result.warnings,
+                )
+            )
 
     return results
 
@@ -228,9 +224,9 @@ def print_results(
 ):
     """Print benchmark results."""
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"BENCHMARK RESULTS: {tier_name}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     for name, runs in results.items():
         latencies = [r.latency_ms for r in runs]
@@ -240,7 +236,11 @@ def print_results(
         # Use first run for span info (consistent across runs)
         first = runs[0]
 
-        compression = (1 - first.static_length / first.content_length) * 100 if first.content_length > 0 else 0
+        compression = (
+            (1 - first.static_length / first.content_length) * 100
+            if first.content_length > 0
+            else 0
+        )
 
         print(f"\n📄 {name}")
         print(f"   Content: {first.content_length:,} chars")
@@ -257,9 +257,9 @@ def print_results(
 def print_comparison(all_results: dict[str, dict[str, list[BenchmarkResult]]]):
     """Print comparison across tiers."""
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("TIER COMPARISON")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     prompts = list(REAL_WORLD_PROMPTS.keys())
     tiers = list(all_results.keys())
@@ -284,9 +284,9 @@ def print_comparison(all_results: dict[str, dict[str, list[BenchmarkResult]]]):
         print(row)
 
     # Summary
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("SUMMARY")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     for tier in tiers:
         all_latencies = []
@@ -297,7 +297,9 @@ def print_comparison(all_results: dict[str, dict[str, list[BenchmarkResult]]]):
 
         avg = statistics.mean(all_latencies)
         p50 = statistics.median(all_latencies)
-        p99 = sorted(all_latencies)[int(len(all_latencies) * 0.99)] if len(all_latencies) > 1 else avg
+        p99 = (
+            sorted(all_latencies)[int(len(all_latencies) * 0.99)] if len(all_latencies) > 1 else avg
+        )
 
         print(f"\n{tier}:")
         print(f"   Total spans detected: {total_spans}")
@@ -309,9 +311,9 @@ def print_comparison(all_results: dict[str, dict[str, list[BenchmarkResult]]]):
 def show_detection_details(prompt_name: str, content: str):
     """Show detailed detection for a specific prompt."""
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"DETECTION DETAILS: {prompt_name}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     config = DetectorConfig(tiers=["regex"])
     detector = DynamicContentDetector(config)
@@ -324,11 +326,17 @@ def show_detection_details(prompt_name: str, content: str):
     print(f"\n\nDetected spans ({len(result.spans)}):")
     print("-" * 40)
     for span in result.spans:
-        print(f"  [{span.category.value:12}] '{span.text[:50]}{'...' if len(span.text) > 50 else ''}'")
+        print(
+            f"  [{span.category.value:12}] '{span.text[:50]}{'...' if len(span.text) > 50 else ''}'"
+        )
 
     print(f"\n\nStatic content ({len(result.static_content)} chars):")
     print("-" * 40)
-    print(result.static_content[:500] + "..." if len(result.static_content) > 500 else result.static_content)
+    print(
+        result.static_content[:500] + "..."
+        if len(result.static_content) > 500
+        else result.static_content
+    )
 
     print(f"\n\nDynamic content ({len(result.dynamic_content)} chars):")
     print("-" * 40)

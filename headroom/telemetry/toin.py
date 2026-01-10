@@ -47,17 +47,18 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
+
+from .models import ToolSignature
 
 logger = logging.getLogger(__name__)
 
 # LOW FIX #22: Define callback types for metrics/monitoring hooks
 # These allow users to plug in their own metrics collection (Prometheus, StatsD, etc.)
 MetricsCallback = Callable[[str, dict[str, Any]], None]  # (event_name, event_data) -> None
-
-from .models import ToolSignature
 
 
 @dataclass
@@ -171,9 +172,9 @@ class ToolPattern:
             # CRITICAL FIX: Track if truncation occurred during serialization
             # This tells from_dict() that some users were lost and prevents double-counting
             "tracking_truncated": (
-                self._tracking_truncated or
-                self.user_count > len(self._seen_instance_hashes) or
-                len(self._all_seen_instances) > 100
+                self._tracking_truncated
+                or self.user_count > len(self._seen_instance_hashes)
+                or len(self._all_seen_instances) > 100
             ),
         }
 
@@ -182,13 +183,28 @@ class ToolPattern:
         """Create from dictionary."""
         # Filter to only valid fields
         valid_fields = {
-            "tool_signature_hash", "total_compressions", "total_items_seen",
-            "total_items_kept", "avg_compression_ratio", "avg_token_reduction",
-            "total_retrievals", "full_retrievals", "search_retrievals",
-            "commonly_retrieved_fields", "field_retrieval_frequency",
-            "common_query_patterns", "query_pattern_frequency", "optimal_strategy",
-            "strategy_success_rates", "optimal_max_items", "skip_compression_recommended",
-            "preserve_fields", "sample_size", "user_count", "confidence", "last_updated",
+            "tool_signature_hash",
+            "total_compressions",
+            "total_items_seen",
+            "total_items_kept",
+            "avg_compression_ratio",
+            "avg_token_reduction",
+            "total_retrievals",
+            "full_retrievals",
+            "search_retrievals",
+            "commonly_retrieved_fields",
+            "field_retrieval_frequency",
+            "common_query_patterns",
+            "query_pattern_frequency",
+            "optimal_strategy",
+            "strategy_success_rates",
+            "optimal_max_items",
+            "skip_compression_recommended",
+            "preserve_fields",
+            "sample_size",
+            "user_count",
+            "confidence",
+            "last_updated",
         }
         filtered = {k: v for k, v in data.items() if k in valid_fields}
 
@@ -320,15 +336,18 @@ class ToolIntelligenceNetwork:
         """
         if self._config.storage_path:
             # Derive from storage path - same path = same instance
-            return hashlib.sha256(
-                self._config.storage_path.encode()
-            ).hexdigest()[:16]  # HIGH FIX: 64 bits instead of 32
+            return hashlib.sha256(self._config.storage_path.encode()).hexdigest()[
+                :16
+            ]  # HIGH FIX: 64 bits instead of 32
         else:
             # No storage - use a combination of hostname and process info
             # This is less stable but better than pure random
             import os
             import socket
-            machine_info = f"{socket.gethostname()}:{os.getuid() if hasattr(os, 'getuid') else 'unknown'}"
+
+            machine_info = (
+                f"{socket.gethostname()}:{os.getuid() if hasattr(os, 'getuid') else 'unknown'}"
+            )
             return hashlib.sha256(machine_info.encode()).hexdigest()[:16]  # HIGH FIX: 64 bits
 
     def _emit_metric(self, event_name: str, event_data: dict[str, Any]) -> None:
@@ -380,22 +399,23 @@ class ToolIntelligenceNetwork:
         sig_hash = tool_signature.structure_hash
 
         # LOW FIX #22: Emit compression metric
-        self._emit_metric("toin.compression", {
-            "signature_hash": sig_hash,
-            "original_count": original_count,
-            "compressed_count": compressed_count,
-            "original_tokens": original_tokens,
-            "compressed_tokens": compressed_tokens,
-            "strategy": strategy,
-            "compression_ratio": compressed_count / original_count if original_count > 0 else 0,
-        })
+        self._emit_metric(
+            "toin.compression",
+            {
+                "signature_hash": sig_hash,
+                "original_count": original_count,
+                "compressed_count": compressed_count,
+                "original_tokens": original_tokens,
+                "compressed_tokens": compressed_tokens,
+                "strategy": strategy,
+                "compression_ratio": compressed_count / original_count if original_count > 0 else 0,
+            },
+        )
 
         with self._lock:
             # Get or create pattern
             if sig_hash not in self._patterns:
-                self._patterns[sig_hash] = ToolPattern(
-                    tool_signature_hash=sig_hash
-                )
+                self._patterns[sig_hash] = ToolPattern(tool_signature_hash=sig_hash)
 
             pattern = self._patterns[sig_hash]
 
@@ -408,14 +428,16 @@ class ToolIntelligenceNetwork:
             # Update rolling averages
             n = pattern.total_compressions
             compression_ratio = compressed_count / original_count if original_count > 0 else 0.0
-            token_reduction = 1 - (compressed_tokens / original_tokens) if original_tokens > 0 else 0.0
+            token_reduction = (
+                1 - (compressed_tokens / original_tokens) if original_tokens > 0 else 0.0
+            )
 
             pattern.avg_compression_ratio = (
-                (pattern.avg_compression_ratio * (n - 1) + compression_ratio) / n
-            )
+                pattern.avg_compression_ratio * (n - 1) + compression_ratio
+            ) / n
             pattern.avg_token_reduction = (
-                (pattern.avg_token_reduction * (n - 1) + token_reduction) / n
-            )
+                pattern.avg_token_reduction * (n - 1) + token_reduction
+            ) / n
 
             # Update strategy stats
             if strategy not in pattern.strategy_success_rates:
@@ -481,14 +503,14 @@ class ToolIntelligenceNetwork:
                             pattern.common_query_patterns,
                             key=lambda p: pattern.query_pattern_frequency.get(p, 0),
                             reverse=True,
-                        )[:self._config.max_query_patterns]
+                        )[: self._config.max_query_patterns]
                     # Also limit the frequency dict
                     if len(pattern.query_pattern_frequency) > self._config.max_query_patterns * 2:
                         top_patterns = sorted(
                             pattern.query_pattern_frequency.items(),
                             key=lambda x: x[1],
                             reverse=True,
-                        )[:self._config.max_query_patterns * 2]
+                        )[: self._config.max_query_patterns * 2]
                         pattern.query_pattern_frequency = dict(top_patterns)
 
             # Periodically update recommendations even without retrievals
@@ -527,13 +549,16 @@ class ToolIntelligenceNetwork:
             return
 
         # LOW FIX #22: Emit retrieval metric
-        self._emit_metric("toin.retrieval", {
-            "signature_hash": tool_signature_hash,
-            "retrieval_type": retrieval_type,
-            "has_query": query is not None,
-            "query_fields_count": len(query_fields) if query_fields else 0,
-            "strategy": strategy,
-        })
+        self._emit_metric(
+            "toin.retrieval",
+            {
+                "signature_hash": tool_signature_hash,
+                "retrieval_type": retrieval_type,
+                "has_query": query is not None,
+                "query_fields_count": len(query_fields) if query_fields else 0,
+                "strategy": strategy,
+            },
+        )
 
         with self._lock:
             if tool_signature_hash not in self._patterns:
@@ -609,7 +634,7 @@ class ToolIntelligenceNetwork:
                             pattern.common_query_patterns,
                             key=lambda p: pattern.query_pattern_frequency.get(p, 0),
                             reverse=True,
-                        )[:self._config.max_query_patterns]
+                        )[: self._config.max_query_patterns]
 
             # Update recommendations based on new retrieval data
             self._update_recommendations(pattern)
@@ -659,7 +684,27 @@ class ToolIntelligenceNetwork:
                     based_on_samples=pattern.sample_size,
                 )
                 # LOW FIX #22: Emit recommendation metric
-                self._emit_metric("toin.recommendation", {
+                self._emit_metric(
+                    "toin.recommendation",
+                    {
+                        "signature_hash": sig_hash,
+                        "source": hint.source,
+                        "confidence": hint.confidence,
+                        "skip_compression": hint.skip_compression,
+                        "max_items": hint.max_items,
+                        "compression_level": hint.compression_level,
+                        "based_on_samples": hint.based_on_samples,
+                    },
+                )
+                return hint
+
+            # Build recommendation based on learned patterns
+            hint = self._build_recommendation(pattern, query_context)
+
+            # LOW FIX #22: Emit recommendation metric
+            self._emit_metric(
+                "toin.recommendation",
+                {
                     "signature_hash": sig_hash,
                     "source": hint.source,
                     "confidence": hint.confidence,
@@ -667,22 +712,8 @@ class ToolIntelligenceNetwork:
                     "max_items": hint.max_items,
                     "compression_level": hint.compression_level,
                     "based_on_samples": hint.based_on_samples,
-                })
-                return hint
-
-            # Build recommendation based on learned patterns
-            hint = self._build_recommendation(pattern, query_context)
-
-            # LOW FIX #22: Emit recommendation metric
-            self._emit_metric("toin.recommendation", {
-                "signature_hash": sig_hash,
-                "source": hint.source,
-                "confidence": hint.confidence,
-                "skip_compression": hint.skip_compression,
-                "max_items": hint.max_items,
-                "compression_level": hint.compression_level,
-                "based_on_samples": hint.based_on_samples,
-            })
+                },
+            )
             return hint
 
     def _build_recommendation(
@@ -692,7 +723,9 @@ class ToolIntelligenceNetwork:
     ) -> CompressionHint:
         """Build a recommendation based on pattern data and query context."""
         hint = CompressionHint(
-            source="network" if pattern.user_count >= self._config.min_users_for_network_effect else "local",
+            source="network"
+            if pattern.user_count >= self._config.min_users_for_network_effect
+            else "local",
             confidence=pattern.confidence,
             based_on_samples=pattern.sample_size,
         )
@@ -734,7 +767,8 @@ class ToolIntelligenceNetwork:
         if query_context and pattern.field_retrieval_frequency:
             # Extract field names from query context
             import re
-            query_field_names = re.findall(r'(\w+)[=:]', query_context.lower())
+
+            query_field_names = re.findall(r"(\w+)[=:]", query_context.lower())
 
             # Hash them and check if they're in our frequency data
             for field_name in query_field_names:
@@ -762,9 +796,7 @@ class ToolIntelligenceNetwork:
 
         # Use optimal strategy if known AND it has good success rate
         if pattern.optimal_strategy != "default":
-            success_rate = pattern.strategy_success_rates.get(
-                pattern.optimal_strategy, 1.0
-            )
+            success_rate = pattern.strategy_success_rates.get(pattern.optimal_strategy, 1.0)
             # Only recommend strategy if success rate >= 0.5
             # Lower success rates mean this strategy often causes retrievals
             if success_rate >= 0.5:
@@ -772,7 +804,9 @@ class ToolIntelligenceNetwork:
             else:
                 # Strategy has poor success rate - reduce confidence
                 hint.confidence *= success_rate
-                hint.reason += f" (strategy {pattern.optimal_strategy} has low success: {success_rate:.1%})"
+                hint.reason += (
+                    f" (strategy {pattern.optimal_strategy} has low success: {success_rate:.1%})"
+                )
                 # Try to find a better strategy
                 best_strategy = self._find_best_strategy(pattern)
                 if best_strategy and best_strategy != pattern.optimal_strategy:
@@ -804,16 +838,12 @@ class ToolIntelligenceNetwork:
                         # Partial match: check if any stored pattern is contained in query
                         for stored_pattern in pattern.common_query_patterns:
                             # Check if key fields match (e.g., "status:*" in both)
-                            stored_fields = set(
-                                f.split(":")[0]
-                                for f in stored_pattern.split()
-                                if ":" in f
-                            )
-                            query_fields = set(
-                                f.split(":")[0]
-                                for f in query_pattern.split()
-                                if ":" in f
-                            )
+                            stored_fields = {
+                                f.split(":")[0] for f in stored_pattern.split() if ":" in f
+                            }
+                            query_fields = {
+                                f.split(":")[0] for f in query_pattern.split() if ":" in f
+                            }
                             # If query uses same fields as a problematic pattern, be conservative
                             if stored_fields and stored_fields.issubset(query_fields):
                                 hint.max_items = max(hint.max_items, 25)
@@ -849,7 +879,9 @@ class ToolIntelligenceNetwork:
         if retrieval_rate > self._config.high_retrieval_threshold:
             if pattern.full_retrieval_rate > 0.8:
                 pattern.skip_compression_recommended = True
-                pattern.optimal_max_items = pattern.total_items_seen // max(1, pattern.total_compressions)
+                pattern.optimal_max_items = pattern.total_items_seen // max(
+                    1, pattern.total_compressions
+                )
             else:
                 pattern.optimal_max_items = 50
         elif retrieval_rate > self._config.medium_retrieval_threshold:
@@ -906,8 +938,9 @@ class ToolIntelligenceNetwork:
 
         # Simple pattern extraction: replace values after : or =
         import re
+
         # Match field:value or field="value" patterns, but don't include spaces in unquoted values
-        pattern = re.sub(r'(\w+)[=:](?:"[^"]*"|\'[^\']*\'|\w+)', r'\1:*', query)
+        pattern = re.sub(r'(\w+)[=:](?:"[^"]*"|\'[^\']*\'|\w+)', r"\1:*", query)
 
         # Remove if it's just generic
         if pattern in ("*", ""):
@@ -927,11 +960,11 @@ class ToolIntelligenceNetwork:
                 "total_compressions": total_compressions,
                 "total_retrievals": total_retrievals,
                 "global_retrieval_rate": (
-                    total_retrievals / total_compressions
-                    if total_compressions > 0 else 0.0
+                    total_retrievals / total_compressions if total_compressions > 0 else 0.0
                 ),
                 "patterns_with_recommendations": sum(
-                    1 for p in self._patterns.values()
+                    1
+                    for p in self._patterns.values()
                     if p.sample_size >= self._config.min_samples_for_recommendation
                 ),
             }
@@ -942,6 +975,7 @@ class ToolIntelligenceNetwork:
         HIGH FIX: Returns a deep copy to prevent external mutation of internal state.
         """
         import copy
+
         with self._lock:
             pattern = self._patterns.get(signature_hash)
             if pattern is not None:
@@ -956,8 +990,7 @@ class ToolIntelligenceNetwork:
                 "export_timestamp": time.time(),
                 "instance_id": self._instance_id,
                 "patterns": {
-                    sig_hash: pattern.to_dict()
-                    for sig_hash, pattern in self._patterns.items()
+                    sig_hash: pattern.to_dict() for sig_hash, pattern in self._patterns.items()
                 },
             }
 
@@ -1019,12 +1052,11 @@ class ToolIntelligenceNetwork:
 
         # Weighted averages
         existing.avg_compression_ratio = (
-            existing.avg_compression_ratio * w_existing +
-            imported.avg_compression_ratio * w_imported
+            existing.avg_compression_ratio * w_existing
+            + imported.avg_compression_ratio * w_imported
         )
         existing.avg_token_reduction = (
-            existing.avg_token_reduction * w_existing +
-            imported.avg_token_reduction * w_imported
+            existing.avg_token_reduction * w_existing + imported.avg_token_reduction * w_imported
         )
 
         # Merge field frequencies
@@ -1073,22 +1105,21 @@ class ToolIntelligenceNetwork:
                 existing.common_query_patterns,
                 key=lambda p: existing.query_pattern_frequency.get(p, 0),
                 reverse=True,
-            )[:self._config.max_query_patterns]
+            )[: self._config.max_query_patterns]
         # Limit frequency dict
         if len(existing.query_pattern_frequency) > self._config.max_query_patterns * 2:
             top_patterns = sorted(
                 existing.query_pattern_frequency.items(),
                 key=lambda x: x[1],
                 reverse=True,
-            )[:self._config.max_query_patterns * 2]
+            )[: self._config.max_query_patterns * 2]
             existing.query_pattern_frequency = dict(top_patterns)
 
         # Merge strategy success rates (weighted average)
         for strategy, rate in imported.strategy_success_rates.items():
             if strategy in existing.strategy_success_rates:
                 existing.strategy_success_rates[strategy] = (
-                    existing.strategy_success_rates[strategy] * w_existing +
-                    rate * w_imported
+                    existing.strategy_success_rates[strategy] * w_existing + rate * w_imported
                 )
             else:
                 existing.strategy_success_rates[strategy] = rate
@@ -1103,9 +1134,9 @@ class ToolIntelligenceNetwork:
             existing.strategy_success_rates = dict(sorted_strategies)
 
         # Merge preserve_fields (union of both, deduplicated)
-        for field in imported.preserve_fields:
-            if field not in existing.preserve_fields:
-                existing.preserve_fields.append(field)
+        for preserve_field in imported.preserve_fields:
+            if preserve_field not in existing.preserve_fields:
+                existing.preserve_fields.append(preserve_field)
         # Keep only top 10 most important fields
         if len(existing.preserve_fields) > 10:
             # Prioritize by retrieval frequency if available
@@ -1126,12 +1157,12 @@ class ToolIntelligenceNetwork:
 
         # Merge optimal_strategy (prefer the one with better success rate)
         if imported.optimal_strategy != "default":
-            imported_rate = imported.strategy_success_rates.get(
-                imported.optimal_strategy, 0.5
+            imported_rate = imported.strategy_success_rates.get(imported.optimal_strategy, 0.5)
+            existing_rate = (
+                existing.strategy_success_rates.get(existing.optimal_strategy, 0.5)
+                if existing.optimal_strategy != "default"
+                else 0.0
             )
-            existing_rate = existing.strategy_success_rates.get(
-                existing.optimal_strategy, 0.5
-            ) if existing.optimal_strategy != "default" else 0.0
 
             if imported_rate > existing_rate:
                 existing.optimal_strategy = imported.optimal_strategy
@@ -1139,8 +1170,7 @@ class ToolIntelligenceNetwork:
         # Merge optimal_max_items (weighted average with bounds)
         if imported.optimal_max_items > 0:
             merged_max_items = int(
-                existing.optimal_max_items * w_existing +
-                imported.optimal_max_items * w_imported
+                existing.optimal_max_items * w_existing + imported.optimal_max_items * w_imported
             )
             # Ensure valid bounds: min 3 items, max 1000 items
             existing.optimal_max_items = max(3, min(1000, merged_max_items))
@@ -1177,8 +1207,7 @@ class ToolIntelligenceNetwork:
         # that imported had beyond what we could deduplicate (when both hit caps).
         # imported.user_count may be > len(imported._all_seen_instances) if they hit cap
         users_beyond_imported_tracking = max(
-            0,
-            imported.user_count - len(imported._all_seen_instances)
+            0, imported.user_count - len(imported._all_seen_instances)
         )
         existing.user_count += new_users_found + users_beyond_imported_tracking
 
@@ -1217,11 +1246,7 @@ class ToolIntelligenceNetwork:
 
             # Write to temporary file first (atomic write pattern)
             # Use same directory to ensure same filesystem for rename
-            fd, tmp_path = tempfile.mkstemp(
-                dir=path.parent,
-                prefix=".toin_",
-                suffix=".tmp"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".toin_", suffix=".tmp")
             try:
                 with open(fd, "w") as f:
                     f.write(json_data)

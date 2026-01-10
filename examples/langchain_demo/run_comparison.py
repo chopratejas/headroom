@@ -20,7 +20,6 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
 
 # Check for required dependencies
 try:
@@ -30,16 +29,20 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-    from langchain_core.tools import tool
-    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import (  # noqa: F401
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
+    from langchain_core.tools import tool  # noqa: F401
+    from langchain_openai import ChatOpenAI  # noqa: F401
 except ImportError:
     print("ERROR: LangChain required. Run: pip install langchain langchain-openai langchain-core")
     sys.exit(1)
 
 # Import our mock tools
 from .mock_tools import TOOL_FUNCTIONS
-
 
 # Token counter
 ENCODER = tiktoken.get_encoding("cl100k_base")
@@ -71,6 +74,7 @@ def count_message_tokens(messages: list[dict]) -> int:
 @dataclass
 class AgentRun:
     """Results from a single agent run."""
+
     scenario: str
     mode: str  # "baseline" or "headroom"
     total_input_tokens: int
@@ -185,7 +189,7 @@ def run_agent_baseline(scenario: dict, api_key: str) -> AgentRun:
         # Count output tokens
         output_tokens = count_tokens(response.content) if response.content else 0
         if response.tool_calls:
-            output_tokens += count_tokens(json.dumps([tc for tc in response.tool_calls]))
+            output_tokens += count_tokens(json.dumps(list(response.tool_calls)))
         total_output_tokens += output_tokens
 
         # Check if done
@@ -212,10 +216,12 @@ def run_agent_baseline(scenario: dict, api_key: str) -> AgentRun:
             tool_output_tokens += tool_tokens
 
             # Add tool result
-            messages.append(ToolMessage(
-                content=result,
-                tool_call_id=tool_call["id"],
-            ))
+            messages.append(
+                ToolMessage(
+                    content=result,
+                    tool_call_id=tool_call["id"],
+                )
+            )
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -251,7 +257,7 @@ def run_agent_headroom(scenario: dict, api_key: str) -> AgentRun:
     # Wrap with Headroom
     config = HeadroomConfig(
         smart_crusher_threshold=500,  # Compress tool outputs > 500 tokens
-        smart_crusher_max_items=20,   # Keep max 20 items
+        smart_crusher_max_items=20,  # Keep max 20 items
         cache_alignment=True,
         rolling_window=True,
     )
@@ -287,7 +293,7 @@ def run_agent_headroom(scenario: dict, api_key: str) -> AgentRun:
         # Count output tokens
         output_tokens = count_tokens(response.content) if response.content else 0
         if response.tool_calls:
-            output_tokens += count_tokens(json.dumps([tc for tc in response.tool_calls]))
+            output_tokens += count_tokens(json.dumps(list(response.tool_calls)))
         total_output_tokens += output_tokens
 
         # Check if done
@@ -311,10 +317,12 @@ def run_agent_headroom(scenario: dict, api_key: str) -> AgentRun:
             tool_tokens = count_tokens(result)
             tool_output_tokens += tool_tokens
 
-            messages.append(ToolMessage(
-                content=result,
-                tool_call_id=tool_call["id"],
-            ))
+            messages.append(
+                ToolMessage(
+                    content=result,
+                    tool_call_id=tool_call["id"],
+                )
+            )
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -337,41 +345,59 @@ def run_agent_headroom(scenario: dict, api_key: str) -> AgentRun:
 def print_comparison(baseline: AgentRun, headroom: AgentRun):
     """Print comparison between baseline and headroom runs."""
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"SCENARIO: {baseline.scenario}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Token comparison
     input_saved = baseline.total_input_tokens - headroom.total_input_tokens
-    input_pct = (input_saved / baseline.total_input_tokens * 100) if baseline.total_input_tokens > 0 else 0
+    input_pct = (
+        (input_saved / baseline.total_input_tokens * 100) if baseline.total_input_tokens > 0 else 0
+    )
 
     print(f"\n{'METRIC':<30} {'BASELINE':>15} {'HEADROOM':>15} {'SAVINGS':>15}")
     print("-" * 75)
-    print(f"{'Input Tokens':<30} {baseline.total_input_tokens:>15,} {headroom.total_input_tokens:>15,} {input_saved:>14,} ({input_pct:.1f}%)")
-    print(f"{'Output Tokens':<30} {baseline.total_output_tokens:>15,} {headroom.total_output_tokens:>15,} {'N/A':>15}")
-    print(f"{'Tool Output Tokens':<30} {baseline.tool_output_tokens:>15,} {headroom.tool_output_tokens:>15,} {'(raw)':>15}")
+    print(
+        f"{'Input Tokens':<30} {baseline.total_input_tokens:>15,} {headroom.total_input_tokens:>15,} {input_saved:>14,} ({input_pct:.1f}%)"
+    )
+    print(
+        f"{'Output Tokens':<30} {baseline.total_output_tokens:>15,} {headroom.total_output_tokens:>15,} {'N/A':>15}"
+    )
+    print(
+        f"{'Tool Output Tokens':<30} {baseline.tool_output_tokens:>15,} {headroom.tool_output_tokens:>15,} {'(raw)':>15}"
+    )
     print(f"{'Tool Calls':<30} {baseline.tool_calls:>15} {headroom.tool_calls:>15} {'':>15}")
     print(f"{'Messages':<30} {baseline.messages_count:>15} {headroom.messages_count:>15} {'':>15}")
-    print(f"{'Duration (ms)':<30} {baseline.duration_ms:>15.0f} {headroom.duration_ms:>15.0f} {'':>15}")
+    print(
+        f"{'Duration (ms)':<30} {baseline.duration_ms:>15.0f} {headroom.duration_ms:>15.0f} {'':>15}"
+    )
 
     # Cost estimation (gpt-4o-mini pricing)
     input_cost_per_1m = 0.15
     output_cost_per_1m = 0.60
 
-    baseline_cost = (baseline.total_input_tokens * input_cost_per_1m + baseline.total_output_tokens * output_cost_per_1m) / 1_000_000
-    headroom_cost = (headroom.total_input_tokens * input_cost_per_1m + headroom.total_output_tokens * output_cost_per_1m) / 1_000_000
+    baseline_cost = (
+        baseline.total_input_tokens * input_cost_per_1m
+        + baseline.total_output_tokens * output_cost_per_1m
+    ) / 1_000_000
+    headroom_cost = (
+        headroom.total_input_tokens * input_cost_per_1m
+        + headroom.total_output_tokens * output_cost_per_1m
+    ) / 1_000_000
     cost_saved = baseline_cost - headroom_cost
     cost_pct = (cost_saved / baseline_cost * 100) if baseline_cost > 0 else 0
 
-    print(f"\n{'Estimated Cost (USD)':<30} ${baseline_cost:>14.6f} ${headroom_cost:>14.6f} ${cost_saved:>13.6f} ({cost_pct:.1f}%)")
+    print(
+        f"\n{'Estimated Cost (USD)':<30} ${baseline_cost:>14.6f} ${headroom_cost:>14.6f} ${cost_saved:>13.6f} ({cost_pct:.1f}%)"
+    )
 
 
 def main():
     """Run the before/after comparison."""
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("LANGCHAIN AGENT: BEFORE/AFTER HEADROOM COMPARISON")
-    print("="*70)
+    print("=" * 70)
 
     # Check for API key
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -431,15 +457,17 @@ def run_simulation():
         print(f"\n  Total tool output: {total_tool_tokens:,} tokens")
         print(f"  With 3 iterations, baseline input would be: ~{total_tool_tokens * 2:,} tokens")
         print(f"  With Headroom (20 items max), estimated: ~{total_tool_tokens // 5:,} tokens")
-        print(f"  Estimated savings: ~{total_tool_tokens * 2 - total_tool_tokens // 5:,} tokens (~80%)")
+        print(
+            f"  Estimated savings: ~{total_tool_tokens * 2 - total_tool_tokens // 5:,} tokens (~80%)"
+        )
 
 
 def print_summary(baseline_runs: list[AgentRun], headroom_runs: list[AgentRun]):
     """Print overall summary."""
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("OVERALL SUMMARY")
-    print("="*70)
+    print("=" * 70)
 
     total_baseline_input = sum(r.total_input_tokens for r in baseline_runs)
     total_headroom_input = sum(r.total_input_tokens for r in headroom_runs)
@@ -448,7 +476,9 @@ def print_summary(baseline_runs: list[AgentRun], headroom_runs: list[AgentRun]):
 
     print(f"\n{'Metric':<30} {'Baseline':>15} {'Headroom':>15} {'Savings':>15}")
     print("-" * 75)
-    print(f"{'Total Input Tokens':<30} {total_baseline_input:>15,} {total_headroom_input:>15,} {total_saved:>14,}")
+    print(
+        f"{'Total Input Tokens':<30} {total_baseline_input:>15,} {total_headroom_input:>15,} {total_saved:>14,}"
+    )
     print(f"{'Percentage Saved':<30} {'':>15} {'':>15} {pct_saved:>14.1f}%")
 
     # Cost
@@ -457,11 +487,13 @@ def print_summary(baseline_runs: list[AgentRun], headroom_runs: list[AgentRun]):
     headroom_cost = total_headroom_input * input_cost
     cost_saved = baseline_cost - headroom_cost
 
-    print(f"\n{'Est. Input Cost (USD)':<30} ${baseline_cost:>14.4f} ${headroom_cost:>14.4f} ${cost_saved:>13.4f}")
+    print(
+        f"\n{'Est. Input Cost (USD)':<30} ${baseline_cost:>14.4f} ${headroom_cost:>14.4f} ${cost_saved:>13.4f}"
+    )
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("CONCLUSION")
-    print("="*70)
+    print("=" * 70)
     print(f"""
 Headroom reduced input tokens by {pct_saved:.1f}% across all scenarios.
 

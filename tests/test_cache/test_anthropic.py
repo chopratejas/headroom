@@ -1,12 +1,13 @@
 """Tests for AnthropicCacheOptimizer."""
 
 import pytest
+
 from headroom.cache import (
     AnthropicCacheOptimizer,
     CacheConfig,
     OptimizationContext,
 )
-from headroom.cache.base import CacheStrategy, BreakpointLocation
+from headroom.cache.base import CacheStrategy
 
 
 class TestAnthropicCacheOptimizer:
@@ -70,9 +71,7 @@ class TestAnthropicCacheOptimizer:
         system_content = result.messages[0]["content"]
         if isinstance(system_content, list):
             has_cache_control = any(
-                "cache_control" in block
-                for block in system_content
-                if isinstance(block, dict)
+                "cache_control" in block for block in system_content if isinstance(block, dict)
             )
             assert has_cache_control
 
@@ -89,7 +88,10 @@ class TestAnthropicCacheOptimizer:
         result = optimizer.optimize(messages, context)
 
         # Dates should be moved to end
-        assert "extracted_dates" in result.transforms_applied or result.metrics.breakpoints_inserted >= 0
+        assert (
+            "extracted_dates" in result.transforms_applied
+            or result.metrics.breakpoints_inserted >= 0
+        )
 
     def test_optimize_disabled(self, context):
         """Test optimization when disabled."""
@@ -134,9 +136,7 @@ class TestAnthropicCacheOptimizer:
         messages = [
             {
                 "role": "system",
-                "content": [
-                    {"type": "text", "text": "You are a helpful assistant. " * 500}
-                ],
+                "content": [{"type": "text", "text": "You are a helpful assistant. " * 500}],
             },
             {"role": "user", "content": "Hello!"},
         ]

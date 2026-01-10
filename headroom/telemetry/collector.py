@@ -11,7 +11,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -184,7 +184,7 @@ class TelemetryCollector:
             # Store event
             self._events.append(event)
             if len(self._events) > self._config.max_events_in_memory:
-                self._events = self._events[-self._config.max_events_in_memory:]
+                self._events = self._events[-self._config.max_events_in_memory :]
 
             # Update aggregated stats
             self._update_tool_stats(signature, event)
@@ -318,9 +318,7 @@ class TelemetryCollector:
                 "confidence": stats.confidence,
                 "based_on_samples": stats.sample_size,
                 "retrieval_rate": (
-                    stats.retrieval_stats.retrieval_rate
-                    if stats.retrieval_stats
-                    else None
+                    stats.retrieval_stats.retrieval_rate if stats.retrieval_stats else None
                 ),
             }
 
@@ -344,8 +342,7 @@ class TelemetryCollector:
                     "tool_signatures_tracked": len(self._tool_stats),
                 },
                 "tool_stats": {
-                    sig_hash: stats.to_dict()
-                    for sig_hash, stats in self._tool_stats.items()
+                    sig_hash: stats.to_dict() for sig_hash, stats in self._tool_stats.items()
                 },
             }
 
@@ -422,8 +419,7 @@ class TelemetryCollector:
                     "tool_signatures_tracked": len(self._tool_stats),
                 },
                 "tool_stats": {
-                    sig_hash: stats.to_dict()
-                    for sig_hash, stats in self._tool_stats.items()
+                    sig_hash: stats.to_dict() for sig_hash, stats in self._tool_stats.items()
                 },
             }
 
@@ -473,7 +469,7 @@ class TelemetryCollector:
 
         # Get all field names from first item
         sample = items[0] if isinstance(items[0], dict) else {}
-        for field_name, sample_value in sample.items():
+        for field_name, _sample_value in sample.items():
             # Collect all values for this field
             values = [
                 item.get(field_name)
@@ -538,11 +534,20 @@ class TelemetryCollector:
         elif field_type == "numeric":
             num_values = [v for v in values if isinstance(v, (int, float))]
             # Filter out infinity and NaN which can cause issues
-            num_values = [v for v in num_values if not (isinstance(v, float) and (v != v or v == float('inf') or v == float('-inf')))]
+            num_values = [
+                v
+                for v in num_values
+                if not (
+                    isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf"))
+                )
+            ]
             if num_values:
                 dist.has_negative = any(v < 0 for v in num_values)
                 # Safe integer check (avoid OverflowError from int(inf))
-                dist.is_integer = all(isinstance(v, int) or (isinstance(v, float) and v.is_integer()) for v in num_values)
+                dist.is_integer = all(
+                    isinstance(v, int) or (isinstance(v, float) and v.is_integer())
+                    for v in num_values
+                )
 
                 if len(num_values) > 1:
                     mean = sum(num_values) / len(num_values)
@@ -559,7 +564,7 @@ class TelemetryCollector:
                         dist.variance_bucket = "high"
 
                     # Check for outliers
-                    std = variance ** 0.5
+                    std = variance**0.5
                     if std > 0:
                         outliers = sum(1 for v in num_values if abs(v - mean) > 2 * std)
                         dist.has_outliers = outliers > 0
@@ -567,8 +572,7 @@ class TelemetryCollector:
                     # Pattern detection
                     sorted_vals = sorted(num_values)
                     is_monotonic = (
-                        sorted_vals == num_values or
-                        list(reversed(sorted_vals)) == num_values
+                        sorted_vals == num_values or list(reversed(sorted_vals)) == num_values
                     )
                     if is_monotonic and dist.variance_bucket in ("medium", "high"):
                         dist.is_likely_score = True
@@ -598,11 +602,11 @@ class TelemetryCollector:
         # Update averages (rolling)
         n = stats.total_compressions
         stats.avg_compression_ratio = (
-            (stats.avg_compression_ratio * (n - 1) + event.compression_ratio) / n
-        )
+            stats.avg_compression_ratio * (n - 1) + event.compression_ratio
+        ) / n
         stats.avg_token_reduction = (
-            (stats.avg_token_reduction * (n - 1) + event.token_reduction_ratio) / n
-        )
+            stats.avg_token_reduction * (n - 1) + event.token_reduction_ratio
+        ) / n
 
         # Update strategy counts
         strategy = event.strategy
@@ -672,20 +676,17 @@ class TelemetryCollector:
         existing.total_items_seen += imported.total_items_seen
         existing.total_items_kept += imported.total_items_kept
         existing.avg_compression_ratio = (
-            existing.avg_compression_ratio * w_existing +
-            imported.avg_compression_ratio * w_imported
+            existing.avg_compression_ratio * w_existing
+            + imported.avg_compression_ratio * w_imported
         )
         existing.avg_token_reduction = (
-            existing.avg_token_reduction * w_existing +
-            imported.avg_token_reduction * w_imported
+            existing.avg_token_reduction * w_existing + imported.avg_token_reduction * w_imported
         )
         existing.sample_size = total_samples
 
         # Merge strategy counts
         for strategy, count in imported.strategy_counts.items():
-            existing.strategy_counts[strategy] = (
-                existing.strategy_counts.get(strategy, 0) + count
-            )
+            existing.strategy_counts[strategy] = existing.strategy_counts.get(strategy, 0) + count
 
         # Update confidence
         existing.confidence = min(0.95, total_samples / 100)

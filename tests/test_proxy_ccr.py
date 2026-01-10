@@ -4,14 +4,16 @@ These tests verify the /v1/retrieve endpoints work correctly.
 """
 
 import json
+
 import pytest
 
 # Skip if fastapi not available
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
-from headroom.proxy.server import create_app, ProxyConfig
-from headroom.cache.compression_store import reset_compression_store, get_compression_store
+
+from headroom.cache.compression_store import get_compression_store, reset_compression_store
+from headroom.proxy.server import ProxyConfig, create_app
 
 
 @pytest.fixture
@@ -106,8 +108,7 @@ class TestCCRRetrieveEndpoint:
         )
 
         response = client.post(
-            "/v1/retrieve",
-            json={"hash": hash_key, "query": "Python programming"}
+            "/v1/retrieve", json={"hash": hash_key, "query": "Python programming"}
         )
         assert response.status_code == 200
 
@@ -221,13 +222,16 @@ class TestCCRStatsEndpoint:
     def test_stats_tracks_retrievals(self, client):
         """Stats include recent retrieval events."""
         import json as json_module
+
         store = get_compression_store()
 
         # Use non-empty content so search actually logs
-        content = json_module.dumps([
-            {"id": "1", "name": "test item", "value": 100},
-            {"id": "2", "name": "another item", "value": 200},
-        ])
+        content = json_module.dumps(
+            [
+                {"id": "1", "name": "test item", "value": 100},
+                {"id": "2", "name": "another item", "value": 200},
+            ]
+        )
         hash_key = store.store(
             original=content,
             compressed=content,
@@ -304,10 +308,7 @@ class TestCCREdgeCases:
         items = [{"id": 1, "text": "hello world"}]
         hash_key = store.store(original=json.dumps(items), compressed="[]")
 
-        response = client.post(
-            "/v1/retrieve",
-            json={"hash": hash_key, "query": "xyznonexistent"}
-        )
+        response = client.post("/v1/retrieve", json={"hash": hash_key, "query": "xyznonexistent"})
         assert response.status_code == 200
 
         data = response.json()

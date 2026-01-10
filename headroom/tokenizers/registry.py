@@ -157,8 +157,7 @@ class TokenizerRegistry:
         except Exception as e:
             if fallback:
                 logger.warning(
-                    f"Failed to create tokenizer for {model}: {e}. "
-                    "Falling back to estimation."
+                    f"Failed to create tokenizer for {model}: {e}. Falling back to estimation."
                 )
                 tokenizer = EstimatingTokenCounter()
                 registry._cache[cache_key] = tokenizer
@@ -257,6 +256,7 @@ class TokenizerRegistry:
         """Create Mistral tokenizer using official mistral-common."""
         try:
             from .mistral import MistralTokenizer, is_mistral_available
+
             if is_mistral_available():
                 return MistralTokenizer(model)
         except ImportError:
@@ -290,17 +290,17 @@ class TokenizerRegistry:
         """Create tiktoken-based tokenizer."""
         try:
             from .tiktoken_counter import TiktokenCounter
+
             return TiktokenCounter(model)
         except ImportError:
-            logger.warning(
-                "tiktoken not installed. Install with: pip install tiktoken"
-            )
+            logger.warning("tiktoken not installed. Install with: pip install tiktoken")
             return EstimatingTokenCounter()
 
     def _create_huggingface(self, model: str) -> TokenCounter:
         """Create HuggingFace-based tokenizer."""
         try:
             from .huggingface import HuggingFaceTokenizer
+
             return HuggingFaceTokenizer(model)
         except ImportError:
             logger.warning(
@@ -395,4 +395,4 @@ def list_supported_models() -> dict[str, str]:
     Returns:
         Dict mapping model pattern to backend.
     """
-    return {pattern: backend for pattern, backend in MODEL_PATTERNS}
+    return dict(MODEL_PATTERNS)

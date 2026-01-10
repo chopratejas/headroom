@@ -87,13 +87,14 @@ class AnthropicTokenCounter(TokenCounter):
                 "For accurate counting, pass an Anthropic client: "
                 "AnthropicProvider(client=Anthropic())",
                 UserWarning,
-                stacklevel=4
+                stacklevel=4,
             )
             _FALLBACK_WARNING_SHOWN = True
 
         # Load tiktoken as fallback
         try:
             import tiktoken
+
             self._encoding = tiktoken.get_encoding("cl100k_base")
         except ImportError:
             if not self._use_api:
@@ -101,7 +102,7 @@ class AnthropicTokenCounter(TokenCounter):
                     "tiktoken not installed - token counting will be very approximate. "
                     "Install tiktoken or provide an Anthropic client.",
                     UserWarning,
-                    stacklevel=4
+                    stacklevel=4,
                 )
 
     def count_text(self, text: str) -> int:
@@ -184,11 +185,13 @@ class AnthropicTokenCounter(TokenCounter):
             # Tool results in OpenAI format
             return {
                 "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": message.get("tool_call_id", ""),
-                    "content": message.get("content", ""),
-                }]
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": message.get("tool_call_id", ""),
+                        "content": message.get("content", ""),
+                    }
+                ],
             }
 
         return {"role": role, "content": message.get("content", "")}
@@ -232,9 +235,7 @@ class AnthropicTokenCounter(TokenCounter):
         except Exception as e:
             # Fall back to estimation on API error
             warnings.warn(
-                f"Token Count API failed ({e}), using estimation",
-                UserWarning,
-                stacklevel=3
+                f"Token Count API failed ({e}), using estimation", UserWarning, stacklevel=3
             )
             return self._count_messages_estimated(messages)
 
@@ -318,8 +319,7 @@ class AnthropicProvider(Provider):
             return True
         # Check prefix matches
         return any(
-            model.startswith(prefix)
-            for prefix in ["claude-3", "claude-2", "claude-instant"]
+            model.startswith(prefix) for prefix in ["claude-3", "claude-2", "claude-instant"]
         )
 
     def estimate_cost(

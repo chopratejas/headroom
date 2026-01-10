@@ -1,14 +1,16 @@
 """Tests for SemanticCache and SemanticCacheLayer."""
 
-import pytest
 import time
+
+import pytest
+
 from headroom.cache import (
-    SemanticCacheLayer,
-    SemanticCache,
     AnthropicCacheOptimizer,
     OptimizationContext,
+    SemanticCache,
+    SemanticCacheLayer,
 )
-from headroom.cache.semantic import SemanticCacheConfig, CacheEntry
+from headroom.cache.semantic import SemanticCacheConfig
 
 
 class TestSemanticCacheConfig:

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from datetime import date
 
 from headroom.models import (
-    ModelRegistry,
     ModelInfo,
+    ModelRegistry,
     get_model_info,
     list_models,
     register_model,

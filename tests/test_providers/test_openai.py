@@ -1,12 +1,11 @@
 """Tests for OpenAI provider."""
+
 import pytest
+
 from headroom.providers.openai import (
-    OpenAIProvider,
-    OpenAITokenCounter,
     _get_encoding_name_for_model,
-    _check_pricing_staleness,
-    TIKTOKEN_AVAILABLE,
 )
+
 
 class TestOpenAITokenCounting:
     def test_count_text_empty(self, openai_tokenizer):
@@ -32,13 +31,8 @@ class TestOpenAITokenCounting:
             {"role": "user", "content": "Search"},
             {
                 "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "function": {"name": "search", "arguments": "{}"}
-                    }
-                ]
-            }
+                "tool_calls": [{"id": "call_1", "function": {"name": "search", "arguments": "{}"}}],
+            },
         ]
         count = openai_tokenizer.count_messages(messages)
         assert count > 10  # Tool calls add overhead
@@ -48,6 +42,7 @@ class TestOpenAITokenCounting:
         msg = {"role": "user", "content": ""}
         count = openai_tokenizer.count_message(msg)
         assert count >= 4
+
 
 class TestOpenAIModelLimits:
     def test_get_context_limit_gpt4o(self, openai_provider):
@@ -66,6 +61,7 @@ class TestOpenAIModelLimits:
 
     def test_supports_model_unknown(self, openai_provider):
         assert openai_provider.supports_model("claude-3") is False
+
 
 class TestOpenAICostEstimation:
     def test_estimate_cost_input_only(self, openai_provider):
@@ -102,6 +98,7 @@ class TestOpenAICostEstimation:
             model="unknown-model",
         )
         assert cost is None
+
 
 class TestEncodingSelection:
     def test_gpt4o_uses_o200k(self):

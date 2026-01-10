@@ -179,9 +179,7 @@ class BaseTokenizer(ABC):
         Raises:
             NotImplementedError: If encoding is not supported.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support encoding"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} does not support encoding")
 
     def decode(self, tokens: list[int]) -> str:
         """Decode token IDs to text.
@@ -198,6 +196,4 @@ class BaseTokenizer(ABC):
         Raises:
             NotImplementedError: If decoding is not supported.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support decoding"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} does not support decoding")

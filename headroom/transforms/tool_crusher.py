@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from ..config import ToolCrusherConfig, TransformResult
 from ..tokenizer import Tokenizer
 from ..utils import (
@@ -17,6 +15,8 @@ from ..utils import (
     safe_json_loads,
 )
 from .base import Transform
+
+logger = logging.getLogger(__name__)
 
 
 class ToolCrusher(Transform):
@@ -253,7 +253,10 @@ class ToolCrusher(Transform):
             elif isinstance(value, list):
                 return {"__headroom_depth_exceeded": len(value)}
             elif isinstance(value, str) and len(value) > max_string_length:
-                return value[:max_string_length] + f"...[truncated {len(value) - max_string_length} chars]"
+                return (
+                    value[:max_string_length]
+                    + f"...[truncated {len(value) - max_string_length} chars]"
+                )
             return value
 
         if isinstance(value, dict):
@@ -297,7 +300,10 @@ class ToolCrusher(Transform):
 
         elif isinstance(value, str):
             if len(value) > max_string_length:
-                return value[:max_string_length] + f"...[truncated {len(value) - max_string_length} chars]"
+                return (
+                    value[:max_string_length]
+                    + f"...[truncated {len(value) - max_string_length} chars]"
+                )
             return value
 
         else:

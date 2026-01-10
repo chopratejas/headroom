@@ -6,7 +6,6 @@ from headroom import OpenAIProvider, Tokenizer
 from headroom.config import CacheAlignerConfig, CachePrefixMetrics
 from headroom.transforms import CacheAligner
 
-
 # Create a shared provider for tests
 _provider = OpenAIProvider()
 
@@ -79,11 +78,7 @@ def system_prompt_with_multiple_dates():
 @pytest.fixture
 def system_prompt_no_dates():
     """System prompt without any date patterns."""
-    return (
-        "You are a helpful assistant. "
-        "Help users with their questions. "
-        "Be concise and accurate."
-    )
+    return "You are a helpful assistant. Help users with their questions. Be concise and accurate."
 
 
 @pytest.fixture
@@ -192,12 +187,7 @@ class TestDateExtraction:
             r"Build #\d+",  # Build number
         ]
 
-        system_prompt = (
-            "You are an assistant.\n"
-            "Version 1.2.3\n"
-            "Build #456\n"
-            "Help users."
-        )
+        system_prompt = "You are an assistant.\nVersion 1.2.3\nBuild #456\nHelp users."
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -323,7 +313,7 @@ class TestWhitespaceNormalization:
             date_patterns=[r"Line \d"],
         )
         aligner = CacheAligner(config)
-        result = aligner.apply(messages, tokenizer)
+        aligner.apply(messages, tokenizer)
 
         # When normalization is disabled, CRLF should be preserved
         # (though dates are still extracted and reinserted)
@@ -666,7 +656,10 @@ class TestApply:
         assert result.tokens_before > 0
         assert result.tokens_after > 0
         # Token count may change due to dynamic context addition
-        assert result.tokens_before != result.tokens_after or result.tokens_before == result.tokens_after
+        assert (
+            result.tokens_before != result.tokens_after
+            or result.tokens_before == result.tokens_after
+        )
 
     def test_apply_deep_copies_messages(self, tokenizer):
         """Test that apply does not modify original messages."""

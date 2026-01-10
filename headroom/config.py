@@ -266,7 +266,9 @@ class CCRConfig:
 
     # Retrieval marker format
     # Inserted at end of compressed content to tell LLM how to get more
-    marker_template: str = "\n[{original_count} items compressed to {compressed_count}. Retrieve more: hash={hash}]"
+    marker_template: str = (
+        "\n[{original_count} items compressed to {compressed_count}. Retrieve more: hash={hash}]"
+    )
 
 
 @dataclass

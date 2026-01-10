@@ -4,20 +4,18 @@ Run with:
     PYTHONPATH=. python -m examples.mcp_demo.show_compression
 """
 
-import json
 import random
 
 from headroom.integrations.mcp import (
     compress_tool_result_with_metrics,
-    HeadroomMCPCompressor,
 )
 from headroom.providers import OpenAIProvider
 
 from .mock_mcp_servers import (
-    generate_slack_search_results,
     generate_database_query_results,
-    generate_log_search_results,
     generate_github_issues_results,
+    generate_log_search_results,
+    generate_slack_search_results,
 )
 
 
@@ -30,7 +28,7 @@ def main():
 
     # Get token counter
     provider = OpenAIProvider()
-    tokenizer = provider.get_token_counter("gpt-4o")
+    provider.get_token_counter("gpt-4o")
 
     # Test scenarios
     scenarios = [
@@ -71,7 +69,7 @@ def main():
         print(f"\n{'─' * 70}")
         print(f"Tool: {scenario['name']}")
         print(f"MCP Server: {scenario['tool_name']}")
-        print(f"User Query: \"{scenario['user_query']}\"")
+        print(f'User Query: "{scenario["user_query"]}"')
         print(f"{'─' * 70}")
 
         result = compress_tool_result_with_metrics(

@@ -37,18 +37,21 @@ from .tiktoken_counter import TiktokenCounter
 def get_huggingface_tokenizer():
     """Get HuggingFaceTokenizer class (requires transformers)."""
     from .huggingface import HuggingFaceTokenizer
+
     return HuggingFaceTokenizer
 
 
 def get_mistral_tokenizer():
     """Get MistralTokenizer class (requires mistral-common)."""
     from .mistral import MistralTokenizer
+
     return MistralTokenizer
 
 
 def is_mistral_tokenizer_available() -> bool:
     """Check if Mistral tokenizer is available."""
     from .mistral import is_mistral_available
+
     return is_mistral_available()
 
 

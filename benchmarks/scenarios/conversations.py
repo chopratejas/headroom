@@ -53,19 +53,23 @@ def generate_agentic_conversation(
     messages = []
 
     # System prompt
-    messages.append({
-        "role": "system",
-        "content": _generate_system_prompt(),
-    })
+    messages.append(
+        {
+            "role": "system",
+            "content": _generate_system_prompt(),
+        }
+    )
 
     # Generate turns
     for turn_idx in range(turns):
         # User message
         user_query = _generate_user_query(turn_idx)
-        messages.append({
-            "role": "user",
-            "content": user_query,
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": user_query,
+            }
+        )
 
         # Assistant with tool calls
         num_calls = max(1, tool_calls_per_turn + random.randint(-1, 1))
@@ -75,20 +79,24 @@ def generate_agentic_conversation(
             tool_name, arguments = _generate_tool_call(turn_idx, call_idx)
             call_id = f"call_{uuid.uuid4().hex[:16]}"
 
-            tool_calls.append({
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "arguments": json.dumps(arguments),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(arguments),
+                    },
+                }
+            )
 
-        messages.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": tool_calls,
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": tool_calls,
+            }
+        )
 
         # Tool responses
         for tool_call in tool_calls:
@@ -96,18 +104,22 @@ def generate_agentic_conversation(
                 tool_call["function"]["name"],
                 items_per_tool_response,
             )
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "content": json.dumps(tool_response),
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": json.dumps(tool_response),
+                }
+            )
 
         # Assistant summary (most turns, not all)
         if random.random() < 0.8:
-            messages.append({
-                "role": "assistant",
-                "content": _generate_assistant_summary(turn_idx, tool_calls),
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": _generate_assistant_summary(turn_idx, tool_calls),
+                }
+            )
 
     return messages
 
@@ -137,39 +149,49 @@ def generate_rag_conversation(
     messages = []
 
     # System prompt with date (for CacheAligner testing)
-    messages.append({
-        "role": "system",
-        "content": _generate_rag_system_prompt(),
-    })
+    messages.append(
+        {
+            "role": "system",
+            "content": _generate_rag_system_prompt(),
+        }
+    )
 
     # Generate context documents
     context_content = _generate_rag_context(context_tokens)
 
     # Inject context as first user message
-    messages.append({
-        "role": "user",
-        "content": f"Here are the relevant documents for context:\n\n{context_content}\n\nPlease analyze these documents.",
-    })
+    messages.append(
+        {
+            "role": "user",
+            "content": f"Here are the relevant documents for context:\n\n{context_content}\n\nPlease analyze these documents.",
+        }
+    )
 
     # Assistant acknowledgment
-    messages.append({
-        "role": "assistant",
-        "content": "I've reviewed the provided documents. I can see information about technical documentation, API specifications, and configuration guides. What would you like to know?",
-    })
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "I've reviewed the provided documents. I can see information about technical documentation, API specifications, and configuration guides. What would you like to know?",
+        }
+    )
 
     # Generate Q&A turns
     for i in range(num_queries):
         question = _generate_rag_question(i)
-        messages.append({
-            "role": "user",
-            "content": question,
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": question,
+            }
+        )
 
         answer = _generate_rag_answer(i)
-        messages.append({
-            "role": "assistant",
-            "content": answer,
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": answer,
+            }
+        )
 
     return messages
 
@@ -195,17 +217,21 @@ def generate_anthropic_agentic_conversation(
     messages = []
 
     # System message (Anthropic uses separate system parameter, but we include it)
-    messages.append({
-        "role": "system",
-        "content": _generate_system_prompt(),
-    })
+    messages.append(
+        {
+            "role": "system",
+            "content": _generate_system_prompt(),
+        }
+    )
 
     for turn_idx in range(turns):
         # User message
-        messages.append({
-            "role": "user",
-            "content": [{"type": "text", "text": _generate_user_query(turn_idx)}],
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": _generate_user_query(turn_idx)}],
+            }
+        )
 
         # Assistant with tool_use blocks
         num_calls = max(1, tool_calls_per_turn + random.randint(-1, 1))
@@ -215,17 +241,21 @@ def generate_anthropic_agentic_conversation(
             tool_name, arguments = _generate_tool_call(turn_idx, call_idx)
             tool_use_id = f"toolu_{uuid.uuid4().hex[:16]}"
 
-            content_blocks.append({
-                "type": "tool_use",
-                "id": tool_use_id,
-                "name": tool_name,
-                "input": arguments,
-            })
+            content_blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": tool_name,
+                    "input": arguments,
+                }
+            )
 
-        messages.append({
-            "role": "assistant",
-            "content": content_blocks,
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": content_blocks,
+            }
+        )
 
         # Tool results in user message
         tool_results = []
@@ -234,28 +264,37 @@ def generate_anthropic_agentic_conversation(
                 block["name"],
                 items_per_tool_response,
             )
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block["id"],
-                "content": json.dumps(tool_response),
-            })
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block["id"],
+                    "content": json.dumps(tool_response),
+                }
+            )
 
-        messages.append({
-            "role": "user",
-            "content": tool_results,
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": tool_results,
+            }
+        )
 
         # Assistant response
         if random.random() < 0.8:
-            messages.append({
-                "role": "assistant",
-                "content": [{"type": "text", "text": _generate_assistant_summary(turn_idx, [])}],
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": _generate_assistant_summary(turn_idx, [])}
+                    ],
+                }
+            )
 
     return messages
 
 
 # Helper functions
+
 
 def _generate_system_prompt() -> str:
     """Generate a realistic system prompt."""

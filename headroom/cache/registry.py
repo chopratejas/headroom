@@ -7,9 +7,7 @@ This allows users to swap implementations and register custom optimizers.
 
 from __future__ import annotations
 
-from typing import Type
-
-from .base import CacheOptimizer, BaseCacheOptimizer, CacheConfig
+from .base import BaseCacheOptimizer, CacheConfig
 
 
 class CacheOptimizerRegistry:
@@ -32,14 +30,14 @@ class CacheOptimizerRegistry:
         CacheOptimizerRegistry.register("my-provider", MyOptimizer)
     """
 
-    _optimizers: dict[str, Type[BaseCacheOptimizer]] = {}
+    _optimizers: dict[str, type[BaseCacheOptimizer]] = {}
     _instances: dict[str, BaseCacheOptimizer] = {}
 
     @classmethod
     def register(
         cls,
         name: str,
-        optimizer_class: Type[BaseCacheOptimizer],
+        optimizer_class: type[BaseCacheOptimizer],
         *,
         override: bool = False,
     ) -> None:
@@ -56,8 +54,7 @@ class CacheOptimizerRegistry:
         """
         if name in cls._optimizers and not override:
             raise ValueError(
-                f"Optimizer '{name}' already registered. "
-                f"Use override=True to replace."
+                f"Optimizer '{name}' already registered. Use override=True to replace."
             )
         cls._optimizers[name] = optimizer_class
         # Clear cached instance if exists
@@ -109,10 +106,7 @@ class CacheOptimizerRegistry:
 
         if key not in cls._optimizers:
             available = list(cls._optimizers.keys())
-            raise KeyError(
-                f"No optimizer registered for '{key}'. "
-                f"Available: {available}"
-            )
+            raise KeyError(f"No optimizer registered for '{key}'. Available: {available}")
 
         # Return cached instance if requested
         cache_key = f"{key}:{id(config)}" if config else key
@@ -165,8 +159,8 @@ def _register_defaults() -> None:
     """Register default optimizers."""
     # Import here to avoid circular imports
     from .anthropic import AnthropicCacheOptimizer
-    from .openai import OpenAICacheOptimizer
     from .google import GoogleCacheOptimizer
+    from .openai import OpenAICacheOptimizer
 
     CacheOptimizerRegistry.register("anthropic", AnthropicCacheOptimizer)
     CacheOptimizerRegistry.register("openai", OpenAICacheOptimizer)
