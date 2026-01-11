@@ -2135,7 +2135,15 @@ class SmartCrusher(Transform):
         error_indices = _detect_error_items_for_preservation(items)
         keep_indices.update(error_indices)
 
-        # 5. Items with high relevance to query context (CRITICAL: preserve needle records)
+        # 5. Items matching query anchors (DETERMINISTIC exact match)
+        # Anchors provide reliable preservation for specific entity lookups (UUIDs, IDs, names)
+        if query_context:
+            anchors = extract_query_anchors(query_context)
+            for i, item in enumerate(items):
+                if item_matches_anchors(item, anchors):
+                    keep_indices.add(i)
+
+        # 6. Items with high relevance to query context (PROBABILISTIC semantic match)
         if query_context:
             item_strs = [json.dumps(item, default=str) for item in items]
             scores = self._scorer.score_batch(item_strs, query_context)
@@ -2143,7 +2151,7 @@ class SmartCrusher(Transform):
                 if score.score >= self._relevance_threshold:
                     keep_indices.add(i)
 
-        # 5b. TOIN preserve_fields: boost items where query matches these fields
+        # 6b. TOIN preserve_fields: boost items where query matches these fields
         # Note: preserve_fields are SHA256[:8] hashes, use helper to match
         if preserve_fields and query_context:
             for i, item in enumerate(items):
@@ -2225,7 +2233,15 @@ class SmartCrusher(Transform):
                 for idx in indices[:2]:
                     keep_indices.add(idx)
 
-        # 5. Items with high relevance to query context (CRITICAL: preserve needle records)
+        # 5. Items matching query anchors (DETERMINISTIC exact match)
+        # Anchors provide reliable preservation for specific entity lookups (UUIDs, IDs, names)
+        if query_context:
+            anchors = extract_query_anchors(query_context)
+            for i, item in enumerate(items):
+                if item_matches_anchors(item, anchors):
+                    keep_indices.add(i)
+
+        # 6. Items with high relevance to query context (PROBABILISTIC semantic match)
         if query_context:
             item_strs = [json.dumps(item, default=str) for item in items]
             scores = self._scorer.score_batch(item_strs, query_context)
@@ -2233,7 +2249,7 @@ class SmartCrusher(Transform):
                 if score.score >= self._relevance_threshold:
                     keep_indices.add(i)
 
-        # 5b. TOIN preserve_fields: boost items where query matches these fields
+        # 6b. TOIN preserve_fields: boost items where query matches these fields
         # Note: preserve_fields are SHA256[:8] hashes, use helper to match
         if preserve_fields and query_context:
             for i, item in enumerate(items):
@@ -2310,7 +2326,16 @@ class SmartCrusher(Transform):
         error_indices = _detect_error_items_for_preservation(items)
         keep_indices.update(error_indices)
 
-        # 3. HIGH-CONFIDENCE relevance matches (potential needles) - ADDITIVE only
+        # 3. Items matching query anchors (DETERMINISTIC exact match) - ADDITIVE
+        # Anchors provide reliable preservation for specific entity lookups (UUIDs, IDs, names)
+        # These are ALWAYS preserved since they represent explicit user intent
+        if query_context:
+            anchors = extract_query_anchors(query_context)
+            for i, item in enumerate(items):
+                if i not in keep_indices and item_matches_anchors(item, anchors):
+                    keep_indices.add(i)
+
+        # 4. HIGH-CONFIDENCE relevance matches (potential needles) - ADDITIVE only
         # Only add items that are NOT already in top N but match the query strongly
         # Use a higher threshold (0.5) since the score field already captures relevance
         if query_context:
@@ -2327,7 +2352,7 @@ class SmartCrusher(Transform):
                     if added_count >= max_relevance_adds:
                         break
 
-        # 3b. TOIN preserve_fields: boost items where query matches these fields
+        # 4b. TOIN preserve_fields: boost items where query matches these fields
         # Note: preserve_fields are SHA256[:8] hashes, use helper to match
         if preserve_fields and query_context:
             for i, item in enumerate(items):
@@ -2411,7 +2436,15 @@ class SmartCrusher(Transform):
                             if 0 <= idx < n:
                                 keep_indices.add(idx)
 
-        # 6. Items with high relevance to query context (CRITICAL: preserve needle records)
+        # 6. Items matching query anchors (DETERMINISTIC exact match)
+        # Anchors provide reliable preservation for specific entity lookups (UUIDs, IDs, names)
+        if query_context:
+            anchors = extract_query_anchors(query_context)
+            for i, item in enumerate(items):
+                if item_matches_anchors(item, anchors):
+                    keep_indices.add(i)
+
+        # 7. Items with high relevance to query context (PROBABILISTIC semantic match)
         if query_context:
             item_strs = [json.dumps(item, default=str) for item in items]
             scores = self._scorer.score_batch(item_strs, query_context)
@@ -2419,7 +2452,7 @@ class SmartCrusher(Transform):
                 if score.score >= self._relevance_threshold:
                     keep_indices.add(i)
 
-        # 6b. TOIN preserve_fields: boost items where query matches these fields
+        # 7b. TOIN preserve_fields: boost items where query matches these fields
         # Note: preserve_fields are SHA256[:8] hashes, use helper to match
         if preserve_fields and query_context:
             for i, item in enumerate(items):
