@@ -4,6 +4,19 @@ This module provides intelligent JSON compression based on statistical analysis
 rather than fixed rules. It analyzes data patterns and applies optimal compression
 strategies to maximize token reduction while preserving important information.
 
+SCOPE: SmartCrusher handles JSON arrays only. Non-JSON content (plain text,
+search results, logs, code, diffs) passes through UNCHANGED.
+
+TEXT COMPRESSION IS OPT-IN: For text-based content, Headroom provides standalone
+utilities that applications can use explicitly:
+- SearchCompressor: For grep/ripgrep output (file:line:content format)
+- LogCompressor: For build/test logs (pytest, npm, cargo output)
+- TextCompressor: For generic plain text with anchor preservation
+
+Applications should decide when and how to use text compression based on their
+specific needs. This design prevents lossy text compression from being applied
+automatically, which could lose important context in coding tasks.
+
 SCHEMA-PRESERVING: Output contains only items from the original array.
 No wrappers, no generated text, no metadata keys. This ensures downstream
 tools and parsers work unchanged.
@@ -1731,8 +1744,11 @@ class SmartCrusher(Transform):
         """
         Apply smart crushing to content.
 
+        Handles both JSON (existing SmartCrusher logic) and plain text content
+        (search results, logs, generic text) using specialized compressors.
+
         Args:
-            content: JSON string to crush.
+            content: Content to crush (JSON or plain text).
             query_context: Context string from user messages for relevance scoring.
             tool_name: Name of the tool that produced this output.
 
@@ -1741,6 +1757,9 @@ class SmartCrusher(Transform):
         """
         parsed, success = safe_json_loads(content)
         if not success:
+            # Not JSON - pass through unchanged
+            # Text compression utilities (SearchCompressor, LogCompressor, TextCompressor)
+            # are available as standalone tools for applications to use explicitly
             return content, False, ""
 
         # Recursively process and crush arrays

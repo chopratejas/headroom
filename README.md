@@ -39,9 +39,10 @@ Headroom is a **smart compression layer** that sits between your app and LLM pro
 
 | Transform | What It Does | Savings |
 |-----------|--------------|---------|
-| **SmartCrusher** | Compresses tool outputs statistically (keeps errors, anomalies, relevant items) | 70-90% |
+| **SmartCrusher** | Compresses JSON tool outputs statistically (keeps errors, anomalies, relevant items) | 70-90% |
 | **CacheAligner** | Stabilizes prefixes so provider caching works | Up to 10x |
 | **RollingWindow** | Manages context within limits without breaking tool calls | Prevents failures |
+| **Text Utilities** | Opt-in compression for search results, build logs, plain text | 50-90% |
 
 **Zero accuracy loss** - we keep what matters: errors, anomalies, relevant items.
 
@@ -372,6 +373,112 @@ except HeadroomError as e:
 # 1. Drop oldest tool outputs first (as atomic units with their calls)
 # 2. Drop oldest conversation turns
 # 3. NEVER drop: system prompt, last N turns, orphaned tool responses
+```
+
+---
+
+## Text Compression Utilities (Opt-In)
+
+For coding tasks, Headroom provides **standalone text compression utilities** that applications can use explicitly. These are **opt-in** - they're not applied automatically, giving you full control over when and how to compress text content.
+
+> **Design Philosophy**: SmartCrusher compresses JSON automatically because it's structure-preserving and safe. Text compression is lossy and context-dependent, so applications should decide when to use it.
+
+### Available Utilities
+
+| Utility | Input Type | Use Case |
+|---------|------------|----------|
+| `SearchCompressor` | grep/ripgrep output | Search results with `file:line:content` format |
+| `LogCompressor` | Build/test logs | pytest, npm, cargo, make output |
+| `TextCompressor` | Generic text | Any plain text with anchor preservation |
+| `detect_content_type` | Any content | Detect content type for routing decisions |
+
+### Example: Compressing Search Results
+
+```python
+from headroom.transforms import SearchCompressor
+
+# Your grep/ripgrep output (could be 1000s of lines)
+search_results = """
+src/utils.py:42:def process_data(items):
+src/utils.py:43:    \"\"\"Process items.\"\"\"
+src/models.py:15:class DataProcessor:
+src/models.py:89:    def process(self, items):
+... hundreds more matches ...
+"""
+
+# Explicitly compress when you decide it's appropriate
+compressor = SearchCompressor()
+result = compressor.compress(search_results, context="find process")
+
+print(f"Compressed {result.original_match_count} matches to {result.compressed_match_count}")
+print(result.compressed)
+```
+
+### Example: Compressing Build Logs
+
+```python
+from headroom.transforms import LogCompressor
+
+# pytest output with 1000s of lines
+build_output = """
+===== test session starts =====
+collected 500 items
+tests/test_foo.py::test_1 PASSED
+... hundreds of passed tests ...
+tests/test_bar.py::test_fail FAILED
+AssertionError: expected 5, got 3
+===== 1 failed, 499 passed =====
+"""
+
+# Compress logs, preserving errors and stack traces
+compressor = LogCompressor()
+result = compressor.compress(build_output)
+
+# Errors, stack traces, and summary are preserved
+print(result.compressed)
+print(f"Compression ratio: {result.compression_ratio:.1%}")
+```
+
+### Example: Content Type Detection
+
+```python
+from headroom.transforms import detect_content_type, ContentType
+
+content = "src/main.py:42:def process():"
+
+detection = detect_content_type(content)
+if detection.content_type == ContentType.SEARCH_RESULTS:
+    # Route to SearchCompressor
+    pass
+elif detection.content_type == ContentType.BUILD_OUTPUT:
+    # Route to LogCompressor
+    pass
+```
+
+### Integration Pattern
+
+```python
+from headroom.transforms import (
+    detect_content_type, ContentType,
+    SearchCompressor, LogCompressor, TextCompressor
+)
+
+def compress_tool_output(content: str, context: str = "") -> str:
+    """Application-level compression with explicit control."""
+    detection = detect_content_type(content)
+
+    if detection.content_type == ContentType.SEARCH_RESULTS:
+        result = SearchCompressor().compress(content, context)
+        return result.compressed
+    elif detection.content_type == ContentType.BUILD_OUTPUT:
+        result = LogCompressor().compress(content)
+        return result.compressed
+    elif detection.content_type == ContentType.PLAIN_TEXT:
+        result = TextCompressor().compress(content, context)
+        return result.compressed
+    else:
+        # JSON or other - let SmartCrusher handle it automatically
+        return content
 ```
 
 ---
