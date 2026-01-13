@@ -46,9 +46,7 @@ _SEARCH_RESULT_PATTERN = re.compile(
     r"^[^\s:]+:\d+:"  # file:line: format (grep -n style)
 )
 
-_DIFF_HEADER_PATTERN = re.compile(
-    r"^(diff --git|--- a/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@)"
-)
+_DIFF_HEADER_PATTERN = re.compile(r"^(diff --git|--- a/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@)")
 
 _DIFF_CHANGE_PATTERN = re.compile(r"^[+-][^+-]")
 
@@ -332,7 +330,6 @@ def is_json_array_of_dicts(content: str) -> bool:
         True if content is a JSON array where all items are dicts.
     """
     result = detect_content_type(content)
-    return (
-        result.content_type == ContentType.JSON_ARRAY
-        and result.metadata.get("is_dict_array", False)
+    return result.content_type == ContentType.JSON_ARRAY and result.metadata.get(
+        "is_dict_array", False
     )

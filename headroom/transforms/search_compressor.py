@@ -20,7 +20,6 @@ Integrates with CCR for reversible compression.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -107,7 +106,7 @@ class SearchCompressor:
         self,
         content: str,
         context: str = "",
-    ) -> "SearchCompressionResult":
+    ) -> SearchCompressionResult:
         """Compress search results.
 
         Args:

@@ -140,9 +140,7 @@ class LogCompressor:
 
     # Level detection patterns
     _LEVEL_PATTERNS = {
-        LogLevel.ERROR: re.compile(
-            r"\b(ERROR|error|Error|FATAL|fatal|Fatal|CRITICAL|critical)\b"
-        ),
+        LogLevel.ERROR: re.compile(r"\b(ERROR|error|Error|FATAL|fatal|Fatal|CRITICAL|critical)\b"),
         LogLevel.FAIL: re.compile(r"\b(FAIL|FAILED|fail|failed|Fail|Failed)\b"),
         LogLevel.WARN: re.compile(r"\b(WARN|WARNING|warn|warning|Warn|Warning)\b"),
         LogLevel.INFO: re.compile(r"\b(INFO|info|Info)\b"),
@@ -178,7 +176,7 @@ class LogCompressor:
         """
         self.config = config or LogCompressorConfig()
 
-    def compress(self, content: str, context: str = "") -> "LogCompressionResult":
+    def compress(self, content: str, context: str = "") -> LogCompressionResult:
         """Compress log output.
 
         Args:
@@ -354,9 +352,7 @@ class LogCompressor:
 
         # Select errors (first, last, highest scoring)
         if errors:
-            selected_errors = self._select_with_first_last(
-                errors, self.config.max_errors
-            )
+            selected_errors = self._select_with_first_last(errors, self.config.max_errors)
             selected.extend(selected_errors)
 
         # Select fails
@@ -371,7 +367,7 @@ class LogCompressor:
             selected.extend(warnings[: self.config.max_warnings])
 
         # Select stack traces
-        for i, stack in enumerate(stack_traces[: self.config.max_stack_traces]):
+        for stack in stack_traces[: self.config.max_stack_traces]:
             selected.extend(stack[: self.config.stack_trace_max_lines])
 
         # Always include summary lines
@@ -393,9 +389,7 @@ class LogCompressor:
 
         return selected
 
-    def _select_with_first_last(
-        self, lines: list[LogLine], max_count: int
-    ) -> list[LogLine]:
+    def _select_with_first_last(self, lines: list[LogLine], max_count: int) -> list[LogLine]:
         """Select lines keeping first and last."""
         if len(lines) <= max_count:
             return lines
@@ -411,7 +405,7 @@ class LogCompressor:
         # Fill remaining with highest scoring
         remaining = max_count - len(selected)
         if remaining > 0:
-            candidates = [l for l in lines if l not in selected]
+            candidates = [line for line in lines if line not in selected]
             candidates = sorted(candidates, key=lambda x: x.score, reverse=True)
             selected.extend(candidates[:remaining])
 
@@ -434,18 +428,14 @@ class LogCompressor:
 
         return deduped
 
-    def _add_context(
-        self, all_lines: list[LogLine], selected: list[LogLine]
-    ) -> list[LogLine]:
+    def _add_context(self, all_lines: list[LogLine], selected: list[LogLine]) -> list[LogLine]:
         """Add context lines around selected lines."""
-        selected_indices = {l.line_number for l in selected}
+        selected_indices = {line.line_number for line in selected}
         context_indices: set[int] = set()
 
         for idx in selected_indices:
             # Add lines before
-            for i in range(
-                max(0, idx - self.config.error_context_lines), idx
-            ):
+            for i in range(max(0, idx - self.config.error_context_lines), idx):
                 context_indices.add(i)
             # Add lines after
             for i in range(
@@ -467,10 +457,10 @@ class LogCompressor:
         """Format selected lines with summary stats."""
         # Count categories
         stats: dict[str, int] = {
-            "errors": sum(1 for l in all_lines if l.level == LogLevel.ERROR),
-            "fails": sum(1 for l in all_lines if l.level == LogLevel.FAIL),
-            "warnings": sum(1 for l in all_lines if l.level == LogLevel.WARN),
-            "info": sum(1 for l in all_lines if l.level == LogLevel.INFO),
+            "errors": sum(1 for line in all_lines if line.level == LogLevel.ERROR),
+            "fails": sum(1 for line in all_lines if line.level == LogLevel.FAIL),
+            "warnings": sum(1 for line in all_lines if line.level == LogLevel.WARN),
+            "info": sum(1 for line in all_lines if line.level == LogLevel.INFO),
             "total": len(all_lines),
             "selected": len(selected),
         }
@@ -497,9 +487,7 @@ class LogCompressor:
 
         return "\n".join(output_lines), stats
 
-    def _store_in_ccr(
-        self, original: str, compressed: str, original_count: int
-    ) -> str | None:
+    def _store_in_ccr(self, original: str, compressed: str, original_count: int) -> str | None:
         """Store original in CCR for later retrieval."""
         try:
             from ..cache.compression_store import get_compression_store

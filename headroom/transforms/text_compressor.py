@@ -64,7 +64,7 @@ class TextCompressor:
         """
         self.config = config or TextCompressorConfig()
 
-    def compress(self, content: str, context: str = "") -> "TextCompressionResult":
+    def compress(self, content: str, context: str = "") -> TextCompressionResult:
         """Compress text content.
 
         Args:
@@ -98,11 +98,7 @@ class TextCompressor:
 
         # Store in CCR if significant compression
         cache_key = None
-        if (
-            self.config.enable_ccr
-            and len(lines) >= self.config.min_lines_for_ccr
-            and ratio < 0.7
-        ):
+        if self.config.enable_ccr and len(lines) >= self.config.min_lines_for_ccr and ratio < 0.7:
             cache_key = self._store_in_ccr(content, compressed, len(lines))
             if cache_key:
                 compressed += f"\n[{len(lines)} lines compressed. hash={cache_key}]"
@@ -116,13 +112,11 @@ class TextCompressor:
             cache_key=cache_key,
         )
 
-    def _score_lines(
-        self, lines: list[str], context: str
-    ) -> list[tuple[int, str, float]]:
+    def _score_lines(self, lines: list[str], context: str) -> list[tuple[int, str, float]]:
         """Score lines by importance."""
         context_lower = context.lower()
         context_words = set(context_lower.split()) if context else set()
-        anchor_keywords = set(k.lower() for k in self.config.anchor_keywords)
+        anchor_keywords = {k.lower() for k in self.config.anchor_keywords}
 
         scored: list[tuple[int, str, float]] = []
 
@@ -179,7 +173,7 @@ class TextCompressor:
         high_score_lines.sort(key=lambda x: x[2], reverse=True)
 
         remaining_slots = self.config.max_total_lines - len(selected_indices)
-        for idx, line, score in high_score_lines[:remaining_slots]:
+        for idx, _line, _score in high_score_lines[:remaining_slots]:
             selected_indices.add(idx)
             remaining_slots -= 1
             if remaining_slots <= 0:
@@ -201,9 +195,7 @@ class TextCompressor:
         selected = sorted(selected_indices)
         return [(i, original_lines[i]) for i in selected]
 
-    def _format_output(
-        self, selected: list[tuple[int, str]], total_lines: int
-    ) -> str:
+    def _format_output(self, selected: list[tuple[int, str]], total_lines: int) -> str:
         """Format selected lines with ellipsis markers."""
         if not selected:
             return f"[{total_lines} lines omitted]"
@@ -227,9 +219,7 @@ class TextCompressor:
 
         return "\n".join(output_lines)
 
-    def _store_in_ccr(
-        self, original: str, compressed: str, original_count: int
-    ) -> str | None:
+    def _store_in_ccr(self, original: str, compressed: str, original_count: int) -> str | None:
         """Store original in CCR for later retrieval."""
         try:
             from ..cache.compression_store import get_compression_store

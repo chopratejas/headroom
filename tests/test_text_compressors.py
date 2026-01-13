@@ -3,11 +3,8 @@
 Tests content detection, search compressor, log compressor, and text compressor.
 """
 
-import pytest
-
 from headroom.transforms import (
     ContentType,
-    DetectionResult,
     LogCompressor,
     LogCompressorConfig,
     SearchCompressor,
@@ -31,7 +28,7 @@ class TestContentDetector:
 
     def test_detect_json_array_non_dict(self):
         """JSON arrays of non-dicts are detected."""
-        content = '[1, 2, 3, 4, 5]'
+        content = "[1, 2, 3, 4, 5]"
         result = detect_content_type(content)
         assert result.content_type == ContentType.JSON_ARRAY
         assert result.metadata.get("is_dict_array") is False
@@ -133,9 +130,7 @@ class TestSearchCompressor:
 
     def test_compress_search_results(self):
         """Search results are compressed."""
-        content = "\n".join(
-            [f"src/file{i}.py:{i * 10}:def function_{i}():" for i in range(100)]
-        )
+        content = "\n".join([f"src/file{i}.py:{i * 10}:def function_{i}():" for i in range(100)])
 
         compressor = SearchCompressor()
         result = compressor.compress(content, context="find function_50")
@@ -146,9 +141,7 @@ class TestSearchCompressor:
 
     def test_keeps_first_and_last(self):
         """First and last matches are preserved."""
-        content = "\n".join(
-            [f"src/file.py:{i}:line {i}" for i in range(1, 101)]
-        )
+        content = "\n".join([f"src/file.py:{i}:line {i}" for i in range(1, 101)])
 
         compressor = SearchCompressor(
             config=SearchCompressorConfig(
@@ -192,17 +185,19 @@ class TestLogCompressor:
         lines = ["=" * 40 + " test session starts " + "=" * 40]
         lines.append("collected 100 items")
         lines.extend([f"tests/test_{i}.py::test_case_{i} PASSED" for i in range(95)])
-        lines.extend([
-            "tests/test_fail.py::test_case_fail FAILED",
-            "",
-            "=" * 40 + " FAILURES " + "=" * 40,
-            "tests/test_fail.py::test_case_fail",
-            "AssertionError: expected True, got False",
-            "",
-            "=" * 40 + " short test summary " + "=" * 40,
-            "FAILED tests/test_fail.py::test_case_fail",
-            "1 failed, 95 passed",
-        ])
+        lines.extend(
+            [
+                "tests/test_fail.py::test_case_fail FAILED",
+                "",
+                "=" * 40 + " FAILURES " + "=" * 40,
+                "tests/test_fail.py::test_case_fail",
+                "AssertionError: expected True, got False",
+                "",
+                "=" * 40 + " short test summary " + "=" * 40,
+                "FAILED tests/test_fail.py::test_case_fail",
+                "1 failed, 95 passed",
+            ]
+        )
         content = "\n".join(lines)
 
         compressor = LogCompressor()
@@ -241,9 +236,7 @@ INFO: Done
         """Small logs pass through unchanged."""
         content = "INFO: Starting\nINFO: Done"
 
-        compressor = LogCompressor(
-            config=LogCompressorConfig(min_lines_for_ccr=100)
-        )
+        compressor = LogCompressor(config=LogCompressorConfig(min_lines_for_ccr=100))
         result = compressor.compress(content)
 
         assert result.compression_ratio == 1.0
@@ -319,18 +312,14 @@ class TestSmartCrusherTextIntegration:
         from headroom.transforms import SmartCrusher, SmartCrusherConfig
 
         # Create search results content
-        search_results = "\n".join(
-            [f"src/file{i}.py:{i}:def function_{i}():" for i in range(100)]
-        )
+        search_results = "\n".join([f"src/file{i}.py:{i}:def function_{i}():" for i in range(100)])
 
         messages = [
             {"role": "user", "content": "Find all function definitions"},
             {"role": "tool", "content": search_results},
         ]
 
-        crusher = SmartCrusher(
-            config=SmartCrusherConfig(min_tokens_to_crush=10)
-        )
+        crusher = SmartCrusher(config=SmartCrusherConfig(min_tokens_to_crush=10))
         tokenizer = self._get_tokenizer()
 
         result = crusher.apply(messages, tokenizer)
@@ -359,9 +348,7 @@ class TestSmartCrusherTextIntegration:
             {"role": "tool", "content": log_content},
         ]
 
-        crusher = SmartCrusher(
-            config=SmartCrusherConfig(min_tokens_to_crush=10)
-        )
+        crusher = SmartCrusher(config=SmartCrusherConfig(min_tokens_to_crush=10))
         tokenizer = self._get_tokenizer()
 
         result = crusher.apply(messages, tokenizer)
@@ -373,9 +360,7 @@ class TestSmartCrusherTextIntegration:
     def test_search_compressor_available_as_standalone(self):
         """SearchCompressor is available for explicit use by applications."""
         # Create search results content
-        search_results = "\n".join(
-            [f"src/file{i}.py:{i}:def function_{i}():" for i in range(100)]
-        )
+        search_results = "\n".join([f"src/file{i}.py:{i}:def function_{i}():" for i in range(100)])
 
         # Application explicitly chooses to compress
         compressor = SearchCompressor()
@@ -407,13 +392,19 @@ class TestSmartCrusherTextIntegration:
 
     def test_smart_crusher_json_still_works(self):
         """SmartCrusher still handles JSON correctly."""
-        from headroom.transforms import SmartCrusher, SmartCrusherConfig
         import json
         import re
 
+        from headroom.transforms import SmartCrusher, SmartCrusherConfig
+
         # Create JSON array content with larger items to trigger compression
         items = [
-            {"id": i, "name": f"Item {i}", "value": i * 10, "description": f"This is item number {i}"}
+            {
+                "id": i,
+                "name": f"Item {i}",
+                "value": i * 10,
+                "description": f"This is item number {i}",
+            }
             for i in range(500)
         ]
         json_content = json.dumps(items)
