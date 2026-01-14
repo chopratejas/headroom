@@ -488,7 +488,7 @@ class TestOptimizeMessages:
         """Basic message optimization."""
         from headroom.integrations import optimize_messages
 
-        with patch("headroom.integrations.langchain.TransformPipeline") as MockPipeline:
+        with patch("headroom.integrations.langchain.chat_model.TransformPipeline") as MockPipeline:
             mock_instance = MagicMock()
             mock_result = MagicMock()
             mock_result.messages = [
@@ -513,7 +513,7 @@ class TestOptimizeMessages:
 
         config = HeadroomConfig(default_mode=HeadroomMode.AUDIT)
 
-        with patch("headroom.integrations.langchain.TransformPipeline") as MockPipeline:
+        with patch("headroom.integrations.langchain.chat_model.TransformPipeline") as MockPipeline:
             mock_instance = MagicMock()
             mock_result = MagicMock()
             mock_result.messages = []
@@ -547,7 +547,7 @@ class TestOptimizeMessages:
             ToolMessage(content="Sunny", tool_call_id="1"),
         ]
 
-        with patch("headroom.integrations.langchain.TransformPipeline") as MockPipeline:
+        with patch("headroom.integrations.langchain.chat_model.TransformPipeline") as MockPipeline:
             mock_instance = MagicMock()
             mock_result = MagicMock()
             mock_result.messages = [

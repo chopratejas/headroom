@@ -10,6 +10,13 @@ Welcome to the Headroom documentation.
 | [SDK Guide](sdk.md) | Python SDK usage |
 | [Proxy Guide](proxy.md) | Proxy server deployment |
 
+## Framework Integrations
+
+| Framework | Description |
+|-----------|-------------|
+| [LangChain](langchain.md) | Chat models, memory, retrievers, agents, streaming |
+| MCP | See [CCR Guide](ccr.md) for tool compression |
+
 ## Core Concepts
 
 | Topic | Description |

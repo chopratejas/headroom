@@ -109,9 +109,10 @@ class CCRMCPServer:
                 Tool(
                     name=CCR_TOOL_NAME,
                     description=(
-                        "Retrieve original uncompressed content that was compressed to save tokens. "
-                        "Use this when you need more data than what's shown in compressed tool results. "
-                        "The hash is provided in compression markers like [N items compressed... hash=abc123]."
+                        "Retrieve original uncompressed content that was compressed "
+                        "to save tokens. Use this when you need more data than what's "
+                        "shown in compressed tool results. The hash is provided in "
+                        "compression markers like [N items compressed... hash=abc123]."
                     ),
                     inputSchema={
                         "type": "object",

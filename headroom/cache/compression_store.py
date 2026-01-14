@@ -292,7 +292,8 @@ class CompressionStore:
                     tool_signature_hash=entry.tool_signature_hash,
                 )
 
-            # CRITICAL: Make a deep copy to return (entry could be modified/evicted after lock release)
+            # CRITICAL: Make a deep copy to return
+            # (entry could be modified/evicted after lock release)
             # The entry contains mutable fields (search_queries list) that must be copied
             result_entry = replace(entry, search_queries=list(entry.search_queries))
 

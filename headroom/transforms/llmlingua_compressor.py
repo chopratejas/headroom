@@ -88,7 +88,8 @@ def _get_llmlingua_compressor(model_name: str, device: str) -> Any:
                 from llmlingua import PromptCompressor
 
                 logger.info(
-                    "Loading LLMLingua-2 model: %s on device: %s (this may take 10-30s on first run)",
+                    "Loading LLMLingua-2 model: %s on device: %s "
+                    "(this may take 10-30s on first run)",
                     model_name,
                     device,
                 )
