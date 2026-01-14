@@ -588,13 +588,19 @@ class NERDetector:
         self._load_error: str | None = None
 
         if not _SPACY_AVAILABLE:
-            self._load_error = "spaCy not installed. Install with: pip install spacy && python -m spacy download en_core_web_sm"
+            self._load_error = (
+                "spaCy not installed. Install with: "
+                "pip install spacy && python -m spacy download en_core_web_sm"
+            )
             return
 
         try:
             self._nlp = spacy.load(config.spacy_model)
         except OSError:
-            self._load_error = f"spaCy model '{config.spacy_model}' not found. Install with: python -m spacy download {config.spacy_model}"
+            self._load_error = (
+                f"spaCy model '{config.spacy_model}' not found. "
+                f"Install with: python -m spacy download {config.spacy_model}"
+            )
 
     @property
     def is_available(self) -> bool:
@@ -704,7 +710,10 @@ class SemanticDetector:
         self._load_error: str | None = None
 
         if not _SENTENCE_TRANSFORMERS_AVAILABLE:
-            self._load_error = "sentence-transformers not installed. Install with: pip install sentence-transformers"
+            self._load_error = (
+                "sentence-transformers not installed. "
+                "Install with: pip install sentence-transformers"
+            )
             return
 
         try:

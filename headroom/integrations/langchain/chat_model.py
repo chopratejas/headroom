@@ -27,9 +27,10 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -48,13 +49,14 @@ try:
     )
     from langchain_core.outputs import ChatGeneration, ChatResult
     from langchain_core.runnables import RunnableLambda
-    from pydantic import Field, PrivateAttr
+    from pydantic import ConfigDict, Field, PrivateAttr
 
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
     BaseChatModel = object
     BaseCallbackHandler = object
+    ConfigDict = lambda **kwargs: {}  # type: ignore[assignment,misc]  # noqa: E731
     Field = lambda **kwargs: None  # type: ignore[assignment]  # noqa: E731
     PrivateAttr = lambda **kwargs: None  # type: ignore[assignment]  # noqa: E731
 
@@ -62,10 +64,12 @@ from headroom import HeadroomConfig, HeadroomMode
 from headroom.providers import OpenAIProvider
 from headroom.transforms import TransformPipeline
 
+from .providers import get_headroom_provider, get_model_name_from_langchain
+
 logger = logging.getLogger(__name__)
 
 
-def _check_langchain_available():
+def _check_langchain_available() -> None:
     """Raise ImportError if LangChain is not installed."""
     if not LANGCHAIN_AVAILABLE:
         raise ImportError(
@@ -133,6 +137,10 @@ class HeadroomChatModel(BaseChatModel):
     wrapped_model: Any = Field(description="The wrapped LangChain chat model")
     headroom_config: Any = Field(default=None, description="Headroom configuration")
     mode: HeadroomMode = Field(default=HeadroomMode.OPTIMIZE, description="Headroom mode")
+    auto_detect_provider: bool = Field(
+        default=True,
+        description="Auto-detect provider from wrapped model (OpenAI, Anthropic, Google)",
+    )
 
     # Private attributes (not serialized)
     _metrics_history: list = PrivateAttr(default_factory=list)
@@ -140,24 +148,27 @@ class HeadroomChatModel(BaseChatModel):
     _pipeline: Any = PrivateAttr(default=None)
     _provider: Any = PrivateAttr(default=None)
 
-    class Config:
-        """Pydantic config for LangChain compatibility."""
-
-        arbitrary_types_allowed = True
+    # Pydantic v2 config for LangChain compatibility
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(
         self,
         wrapped_model: BaseChatModel,
         config: HeadroomConfig | None = None,
         mode: HeadroomMode = HeadroomMode.OPTIMIZE,
-        **kwargs,
-    ):
+        auto_detect_provider: bool = True,
+        **kwargs: Any,
+    ) -> None:
         """Initialize HeadroomChatModel.
 
         Args:
             wrapped_model: Any LangChain BaseChatModel to wrap
             config: HeadroomConfig for optimization settings
             mode: HeadroomMode (AUDIT, OPTIMIZE, or SIMULATE)
+            auto_detect_provider: Auto-detect provider from wrapped model.
+                When True (default), automatically detects if the wrapped model
+                is OpenAI, Anthropic, Google, etc. and uses the appropriate
+                Headroom provider for accurate token counting.
             **kwargs: Additional arguments passed to BaseChatModel
         """
         _check_langchain_available()
@@ -166,6 +177,7 @@ class HeadroomChatModel(BaseChatModel):
             wrapped_model=wrapped_model,
             headroom_config=config or HeadroomConfig(),
             mode=mode,
+            auto_detect_provider=auto_detect_provider,
             **kwargs,
         )
         self._metrics_history = []
@@ -188,9 +200,17 @@ class HeadroomChatModel(BaseChatModel):
 
     @property
     def pipeline(self) -> TransformPipeline:
-        """Lazily initialize TransformPipeline."""
+        """Lazily initialize TransformPipeline.
+
+        When auto_detect_provider is True, automatically detects the provider
+        from the wrapped model's class path (e.g., ChatAnthropic -> AnthropicProvider).
+        """
         if self._pipeline is None:
-            self._provider = OpenAIProvider()
+            if self.auto_detect_provider:
+                self._provider = get_headroom_provider(self.wrapped_model)
+                logger.debug(f"Auto-detected provider: {self._provider.__class__.__name__}")
+            else:
+                self._provider = OpenAIProvider()
             self._pipeline = TransformPipeline(
                 config=self.headroom_config,
                 provider=self._provider,
@@ -290,10 +310,11 @@ class HeadroomChatModel(BaseChatModel):
         # Convert to OpenAI format
         openai_messages = self._convert_messages_to_openai(messages)
 
-        # Get model name and context limit
-        model = getattr(self.wrapped_model, "model_name", None)
-        if model is None:
-            model = getattr(self.wrapped_model, "model", "gpt-4o")
+        # Get model name from wrapped model
+        model = get_model_name_from_langchain(self.wrapped_model)
+
+        # Ensure pipeline is initialized (this also sets up provider)
+        _ = self.pipeline
 
         # Get model context limit from provider
         model_limit = self._provider.get_context_limit(model) if self._provider else 128000
@@ -342,7 +363,7 @@ class HeadroomChatModel(BaseChatModel):
         messages: list[BaseMessage],
         stop: list[str] | None = None,
         run_manager: Any = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> ChatResult:
         """Generate response with Headroom optimization.
 
@@ -371,14 +392,15 @@ class HeadroomChatModel(BaseChatModel):
         messages: list[BaseMessage],
         stop: list[str] | None = None,
         run_manager: Any = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Iterator[ChatGeneration]:
         """Stream response with Headroom optimization."""
         # Optimize messages
         optimized_messages, metrics = self._optimize_messages(messages)
 
         logger.info(
-            f"Headroom optimized (streaming): {metrics.tokens_before} -> {metrics.tokens_after} tokens"
+            f"Headroom optimized (streaming): {metrics.tokens_before} -> "
+            f"{metrics.tokens_after} tokens"
         )
 
         # Stream from wrapped model
@@ -389,13 +411,78 @@ class HeadroomChatModel(BaseChatModel):
             **kwargs,
         )
 
-    def bind_tools(self, tools: Sequence[Any], **kwargs) -> HeadroomChatModel:
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Async generate response with Headroom optimization.
+
+        This enables `await model.ainvoke(messages)` to work correctly.
+        The optimization step runs in a thread executor since it's CPU-bound.
+        """
+        # Run optimization in executor (CPU-bound)
+        loop = asyncio.get_event_loop()
+        optimized_messages, metrics = await loop.run_in_executor(
+            None, self._optimize_messages, messages
+        )
+
+        logger.info(
+            f"Headroom optimized (async): {metrics.tokens_before} -> {metrics.tokens_after} tokens "
+            f"({metrics.savings_percent:.1f}% saved)"
+        )
+
+        # Call wrapped model's async generate
+        result = await self.wrapped_model._agenerate(
+            optimized_messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
+
+        return result
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGeneration]:
+        """Async stream response with Headroom optimization.
+
+        This enables `async for chunk in model.astream(messages)` to work correctly.
+        """
+        # Run optimization in executor (CPU-bound)
+        loop = asyncio.get_event_loop()
+        optimized_messages, metrics = await loop.run_in_executor(
+            None, self._optimize_messages, messages
+        )
+
+        logger.info(
+            f"Headroom optimized (async streaming): {metrics.tokens_before} -> "
+            f"{metrics.tokens_after} tokens"
+        )
+
+        # Async stream from wrapped model
+        async for chunk in self.wrapped_model._astream(
+            optimized_messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        ):
+            yield chunk
+
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> HeadroomChatModel:
         """Bind tools to the wrapped model."""
         new_wrapped = self.wrapped_model.bind_tools(tools, **kwargs)
         return HeadroomChatModel(
             wrapped_model=new_wrapped,
             config=self.headroom_config,
             mode=self.mode,
+            auto_detect_provider=self.auto_detect_provider,
         )
 
     def get_savings_summary(self) -> dict[str, Any]:
@@ -494,7 +581,7 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
         self,
         serialized: dict[str, Any],
         prompts: list[str],
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         """Called when LLM starts processing."""
         self._current_request = {
@@ -511,7 +598,7 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
         self,
         serialized: dict[str, Any],
         messages: list[list[BaseMessage]],
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         """Called when chat model starts processing."""
         # Estimate tokens from messages
@@ -532,7 +619,10 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
 
         # Check token alert
         if self.token_alert_threshold and estimated_tokens > self.token_alert_threshold:
-            alert = f"Token alert: {estimated_tokens} tokens exceeds threshold {self.token_alert_threshold}"
+            alert = (
+                f"Token alert: {estimated_tokens} tokens exceeds "
+                f"threshold {self.token_alert_threshold}"
+            )
             self._alerts.append(alert)
             logger.warning(alert)
 
@@ -542,7 +632,7 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
                 f"Chat model request: ~{estimated_tokens} input tokens",
             )
 
-    def on_llm_end(self, response: Any, **kwargs) -> None:
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         """Called when LLM finishes processing."""
         if self._current_request is None:
             return
@@ -579,7 +669,7 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
 
         self._current_request = None
 
-    def on_llm_error(self, error: Exception, **kwargs) -> None:
+    def on_llm_error(self, error: Exception, **kwargs: Any) -> None:
         """Called when LLM encounters an error."""
         if self._current_request:
             self._current_request["error"] = str(error)
@@ -677,19 +767,19 @@ class HeadroomRunnable:
             )
         return self._pipeline
 
-    def __or__(self, other):
+    def __or__(self, other: Any) -> Any:
         """Support pipe operator for LCEL composition."""
         from langchain_core.runnables import RunnableSequence
 
         return RunnableSequence(first=self.as_runnable(), last=other)
 
-    def __ror__(self, other):
+    def __ror__(self, other: Any) -> Any:
         """Support reverse pipe operator."""
         from langchain_core.runnables import RunnableSequence
 
         return RunnableSequence(first=other, last=self.as_runnable())
 
-    def as_runnable(self):
+    def as_runnable(self) -> RunnableLambda:
         """Convert to LangChain Runnable."""
         return RunnableLambda(self._optimize)
 
