@@ -187,6 +187,98 @@ Some settings can be configured via environment variables:
 | `HEADROOM_LOG_LEVEL` | Logging level | `INFO` |
 | `HEADROOM_STORE_URL` | Database URL | temp directory |
 | `HEADROOM_DEFAULT_MODE` | Default mode | `optimize` |
+| `HEADROOM_MODEL_LIMITS` | Custom model config (JSON string or file path) | - |
+
+---
+
+## Custom Model Configuration
+
+Configure context limits and pricing for new or custom models. Useful when:
+- A new model is released before Headroom is updated
+- You're using fine-tuned or custom models
+- You want to override built-in limits
+
+### Configuration Methods
+
+Settings are resolved in this order (later overrides earlier):
+1. Built-in defaults
+2. `~/.headroom/models.json` config file
+3. `HEADROOM_MODEL_LIMITS` environment variable
+4. SDK constructor arguments
+
+### Config File Format
+
+Create `~/.headroom/models.json`:
+
+```json
+{
+  "anthropic": {
+    "context_limits": {
+      "claude-4-opus-20250301": 200000,
+      "claude-custom-finetune": 128000
+    },
+    "pricing": {
+      "claude-4-opus-20250301": {
+        "input": 15.00,
+        "output": 75.00,
+        "cached_input": 1.50
+      }
+    }
+  },
+  "openai": {
+    "context_limits": {
+      "gpt-5": 256000,
+      "ft:gpt-4o:my-org": 128000
+    },
+    "pricing": {
+      "gpt-5": [5.00, 15.00]
+    }
+  }
+}
+```
+
+### Environment Variable
+
+Set `HEADROOM_MODEL_LIMITS` as a JSON string or file path:
+
+```bash
+# JSON string
+export HEADROOM_MODEL_LIMITS='{"anthropic":{"context_limits":{"claude-new":200000}}}'
+
+# File path
+export HEADROOM_MODEL_LIMITS=/path/to/models.json
+```
+
+### Pattern-Based Inference
+
+Unknown models are automatically inferred from naming patterns:
+
+| Pattern | Inferred Settings |
+|---------|-------------------|
+| `*opus*` | 200K context, Opus-tier pricing |
+| `*sonnet*` | 200K context, Sonnet-tier pricing |
+| `*haiku*` | 200K context, Haiku-tier pricing |
+| `gpt-4o*` | 128K context, GPT-4o pricing |
+| `o1*`, `o3*` | 200K context, reasoning model pricing |
+
+This means new models like `claude-4-sonnet-20251201` will work automatically with Sonnet-tier defaults.
+
+### SDK Override
+
+Override in code for specific models:
+
+```python
+from headroom import HeadroomClient, AnthropicProvider
+
+client = HeadroomClient(
+    original_client=Anthropic(),
+    provider=AnthropicProvider(
+        context_limits={
+            "claude-new-model": 300000,
+        }
+    ),
+)
+```
 
 ## Provider-Specific Settings
 

@@ -19,6 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Custom compression rate: `--llmlingua-rate`
   - Helpful startup hints when llmlingua is available but not enabled
   - Install with: `pip install headroom-ai[llmlingua]`
+- **Code-Aware Compression** (AST-based, syntax-preserving)
+  - `CodeAwareCompressor` transform using tree-sitter for AST parsing
+  - Supports Python, JavaScript, TypeScript, Go, Rust, Java, C, C++
+  - Preserves imports, function signatures, type annotations, error handlers
+  - Compresses function bodies while maintaining structural integrity
+  - Guarantees syntactically valid output (no broken code)
+  - Automatic language detection from code patterns
+  - Memory management: `is_tree_sitter_available()`, `unload_tree_sitter()`
+  - Uses `tree-sitter-language-pack` for broad language support
+  - Install with: `pip install headroom-ai[code]`
+- **ContentRouter** (intelligent compression orchestrator)
+  - Auto-routes content to optimal compressor based on type detection
+  - Source hint support for high-confidence routing (file paths, tool names)
+  - Handles mixed content (e.g., markdown with code blocks)
+  - Strategies: CODE_AWARE, SMART_CRUSHER, SEARCH, LOG, TEXT, LLMLINGUA
+  - Configurable strategy preferences and fallbacks
+  - Routing decision log for transparency and debugging
+- **Custom Model Configuration**
+  - Support for new models: Claude 4.5 (Opus), Claude 4 (Sonnet, Haiku), o3, o3-mini
+  - Pattern-based inference for unknown models (opus/sonnet/haiku tiers)
+  - Custom model config via `HEADROOM_MODEL_LIMITS` environment variable
+  - Config file support: `~/.headroom/models.json`
+  - Graceful fallback for unknown models (no crashes)
+  - Updated pricing data for all current models
 
 ## [0.2.0] - 2025-01-07
 

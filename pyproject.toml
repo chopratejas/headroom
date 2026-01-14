@@ -70,6 +70,10 @@ llmlingua = [
     "torch>=2.0.0",
     "transformers>=4.30.0",
 ]
+# AST-based code compression (tree-sitter)
+code = [
+    "tree-sitter-language-pack>=0.10.0",
+]
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
@@ -82,7 +86,7 @@ dev = [
 ]
 # All optional dependencies
 all = [
-    "headroom-ai[relevance,proxy,reports,llmlingua]",
+    "headroom-ai[relevance,proxy,reports,llmlingua,code]",
 ]
 
 [project.scripts]

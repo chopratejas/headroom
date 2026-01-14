@@ -15,25 +15,41 @@ Usage:
     provider = AnthropicProvider()  # Warning: approximate counting
 """
 
+import json
+import logging
+import os
 import warnings
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from .base import Provider, TokenCounter
 
+logger = logging.getLogger(__name__)
+
 # Warning flags
 _FALLBACK_WARNING_SHOWN = False
+_UNKNOWN_MODEL_WARNINGS: set[str] = set()
 
 
 # Anthropic model context limits
+# All Claude 3+ models have 200K context
 ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
+    # Claude 4.5 (Opus 4.5)
+    "claude-opus-4-5-20251101": 200000,
+    # Claude 4 (Sonnet 4, Haiku 4)
+    "claude-sonnet-4-20250514": 200000,
+    "claude-haiku-4-5-20251001": 200000,
+    # Claude 3.5
     "claude-3-5-sonnet-20241022": 200000,
     "claude-3-5-sonnet-latest": 200000,
     "claude-3-5-haiku-20241022": 200000,
     "claude-3-5-haiku-latest": 200000,
+    # Claude 3
     "claude-3-opus-20240229": 200000,
     "claude-3-opus-latest": 200000,
     "claude-3-sonnet-20240229": 200000,
     "claude-3-haiku-20240307": 200000,
+    # Claude 2
     "claude-2.1": 200000,
     "claude-2.0": 100000,
     "claude-instant-1.2": 100000,
@@ -41,17 +57,120 @@ ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
 
 # Anthropic pricing per 1M tokens
 # NOTE: These are ESTIMATES. Always verify against actual Anthropic billing.
-# Last updated: 2024-12-01
+# Last updated: 2025-01-14
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
+    # Claude 4.5 (Opus tier pricing)
+    "claude-opus-4-5-20251101": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
+    # Claude 4 (Sonnet/Haiku tier pricing)
+    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
+    # Claude 3.5
     "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
     "claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
     "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
     "claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
+    # Claude 3
     "claude-3-opus-20240229": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     "claude-3-opus-latest": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     "claude-3-sonnet-20240229": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
     "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cached_input": 0.03},
 }
+
+# Default limits for pattern-based inference
+# Used when a model isn't in the explicit list but matches a known pattern
+_PATTERN_DEFAULTS = {
+    "opus": {"context": 200000, "pricing": {"input": 15.00, "output": 75.00, "cached_input": 1.50}},
+    "sonnet": {
+        "context": 200000,
+        "pricing": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+    },
+    "haiku": {"context": 200000, "pricing": {"input": 0.80, "output": 4.00, "cached_input": 0.08}},
+}
+
+# Fallback for completely unknown Claude models
+_UNKNOWN_CLAUDE_DEFAULT = {
+    "context": 200000,  # Safe assumption for Claude 3+
+    "pricing": {"input": 3.00, "output": 15.00, "cached_input": 0.30},  # Sonnet-tier pricing
+}
+
+
+def _load_custom_model_config() -> dict[str, Any]:
+    """Load custom model configuration from environment or config file.
+
+    Checks (in order):
+    1. HEADROOM_MODEL_LIMITS environment variable (JSON string or file path)
+    2. ~/.headroom/models.json config file
+
+    Returns:
+        Dict with 'context_limits' and 'pricing' keys.
+    """
+    config: dict[str, Any] = {"context_limits": {}, "pricing": {}}
+
+    # Check environment variable
+    env_config = os.environ.get("HEADROOM_MODEL_LIMITS", "")
+    if env_config:
+        try:
+            # Check if it's a file path
+            if os.path.isfile(env_config):
+                with open(env_config) as f:
+                    loaded = json.load(f)
+            else:
+                # Try to parse as JSON string
+                loaded = json.loads(env_config)
+
+            # Check for anthropic-specific config, fall back to root level
+            anthropic_config = loaded.get("anthropic", loaded)
+            if "context_limits" in anthropic_config:
+                config["context_limits"].update(anthropic_config["context_limits"])
+            if "pricing" in anthropic_config:
+                config["pricing"].update(anthropic_config["pricing"])
+
+            logger.debug(f"Loaded custom model config from HEADROOM_MODEL_LIMITS: {loaded}")
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load HEADROOM_MODEL_LIMITS: {e}")
+
+    # Check config file
+    config_file = Path.home() / ".headroom" / "models.json"
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                loaded = json.load(f)
+
+            # Only load anthropic-specific config
+            anthropic_config = loaded.get("anthropic", loaded)
+            if "context_limits" in anthropic_config:
+                # Don't override env var settings
+                for model, limit in anthropic_config["context_limits"].items():
+                    if model not in config["context_limits"]:
+                        config["context_limits"][model] = limit
+            if "pricing" in anthropic_config:
+                for model, pricing in anthropic_config["pricing"].items():
+                    if model not in config["pricing"]:
+                        config["pricing"][model] = pricing
+
+            logger.debug(f"Loaded custom model config from {config_file}")
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load {config_file}: {e}")
+
+    return config
+
+
+def _infer_model_tier(model: str) -> str | None:
+    """Infer the model tier (opus/sonnet/haiku) from model name.
+
+    Uses pattern matching to handle future model releases.
+    """
+    model_lower = model.lower()
+
+    # Check for tier keywords in model name
+    if "opus" in model_lower:
+        return "opus"
+    elif "sonnet" in model_lower:
+        return "sonnet"
+    elif "haiku" in model_lower:
+        return "haiku"
+
+    return None
 
 
 class AnthropicTokenCounter(TokenCounter):
@@ -260,6 +379,23 @@ class AnthropicProvider(Provider):
     - Tool definitions and structured content
 
     Without a client, falls back to tiktoken approximation (less accurate).
+
+    Custom Model Configuration:
+        You can configure custom models via environment variable or config file:
+
+        1. Environment variable (JSON string):
+           export HEADROOM_MODEL_LIMITS='{"context_limits": {"my-model": 200000}}'
+
+        2. Environment variable (file path):
+           export HEADROOM_MODEL_LIMITS=/path/to/models.json
+
+        3. Config file (~/.headroom/models.json):
+           {
+             "anthropic": {
+               "context_limits": {"my-model": 200000},
+               "pricing": {"my-model": {"input": 3.0, "output": 15.0}}
+             }
+           }
     """
 
     def __init__(
@@ -279,10 +415,20 @@ class AnthropicProvider(Provider):
             provider = AnthropicProvider(client=Anthropic())
         """
         self._client = client
+        self._token_counters: dict[str, AnthropicTokenCounter] = {}
+
+        # Build context limits: defaults -> config file -> env var -> explicit
         self._context_limits = {**ANTHROPIC_CONTEXT_LIMITS}
+        self._pricing = {**ANTHROPIC_PRICING}
+
+        # Load from config file and env var
+        custom_config = _load_custom_model_config()
+        self._context_limits.update(custom_config["context_limits"])
+        self._pricing.update(custom_config["pricing"])
+
+        # Explicit overrides take precedence
         if context_limits:
             self._context_limits.update(context_limits)
-        self._token_counters: dict[str, AnthropicTokenCounter] = {}
 
     @property
     def name(self) -> str:
@@ -302,7 +448,19 @@ class AnthropicProvider(Provider):
         return self._token_counters[model]
 
     def get_context_limit(self, model: str) -> int:
-        """Get context window limit for a model."""
+        """Get context window limit for a model.
+
+        Resolution order:
+        1. Explicit context_limits passed to constructor
+        2. HEADROOM_MODEL_LIMITS environment variable
+        3. ~/.headroom/models.json config file
+        4. Built-in ANTHROPIC_CONTEXT_LIMITS
+        5. Pattern-based inference (opus/sonnet/haiku)
+        6. Default fallback (200K for any Claude model)
+
+        Never raises an exception - uses sensible defaults for unknown models.
+        """
+        # Check explicit and loaded limits
         if model in self._context_limits:
             return self._context_limits[model]
 
@@ -311,16 +469,45 @@ class AnthropicProvider(Provider):
             if model in known_model or known_model in model:
                 return limit
 
-        raise ValueError(f"Unknown Anthropic model: {model}. Configure context_limits explicitly.")
+        # Pattern-based inference for new models
+        tier = _infer_model_tier(model)
+        if tier and tier in _PATTERN_DEFAULTS:
+            limit = cast(int, _PATTERN_DEFAULTS[tier]["context"])
+            self._warn_unknown_model(model, limit, f"inferred from '{tier}' tier")
+            # Cache for future calls
+            self._context_limits[model] = limit
+            return limit
+
+        # Fallback for unknown Claude models
+        if model.startswith("claude"):
+            limit = cast(int, _UNKNOWN_CLAUDE_DEFAULT["context"])
+            self._warn_unknown_model(model, limit, "using default Claude limit")
+            self._context_limits[model] = limit
+            return limit
+
+        # Non-Claude model - use conservative default
+        limit = 128000
+        self._warn_unknown_model(model, limit, "unknown provider, using conservative default")
+        self._context_limits[model] = limit
+        return limit
+
+    def _warn_unknown_model(self, model: str, limit: int, reason: str) -> None:
+        """Warn about unknown model (once per model)."""
+        global _UNKNOWN_MODEL_WARNINGS
+        if model not in _UNKNOWN_MODEL_WARNINGS:
+            _UNKNOWN_MODEL_WARNINGS.add(model)
+            logger.warning(
+                f"Unknown Anthropic model '{model}': {reason} ({limit:,} tokens). "
+                f"To configure explicitly, set HEADROOM_MODEL_LIMITS env var or "
+                f"add to ~/.headroom/models.json"
+            )
 
     def supports_model(self, model: str) -> bool:
         """Check if this provider supports the given model."""
         if model in self._context_limits:
             return True
-        # Check prefix matches
-        return any(
-            model.startswith(prefix) for prefix in ["claude-3", "claude-2", "claude-instant"]
-        )
+        # Check prefix matches - support all Claude models
+        return model.startswith("claude")
 
     def estimate_cost(
         self,
@@ -330,18 +517,7 @@ class AnthropicProvider(Provider):
         cached_tokens: int = 0,
     ) -> float | None:
         """Estimate cost for a request."""
-        pricing = None
-
-        # Find pricing for model
-        if model in ANTHROPIC_PRICING:
-            pricing = ANTHROPIC_PRICING[model]
-        else:
-            # Try partial match
-            for known_model, prices in ANTHROPIC_PRICING.items():
-                if model in known_model or known_model in model:
-                    pricing = prices
-                    break
-
+        pricing = self._get_pricing(model)
         if not pricing:
             return None
 
@@ -354,3 +530,25 @@ class AnthropicProvider(Provider):
         )
 
         return cost
+
+    def _get_pricing(self, model: str) -> dict[str, float] | None:
+        """Get pricing for a model with fallback logic."""
+        # Direct match
+        if model in self._pricing:
+            return self._pricing[model]
+
+        # Partial match
+        for known_model, prices in self._pricing.items():
+            if model in known_model or known_model in model:
+                return prices
+
+        # Pattern-based inference
+        tier = _infer_model_tier(model)
+        if tier and tier in _PATTERN_DEFAULTS:
+            return cast(dict[str, float], _PATTERN_DEFAULTS[tier]["pricing"])
+
+        # Default for unknown Claude models
+        if model.startswith("claude"):
+            return cast(dict[str, float], _UNKNOWN_CLAUDE_DEFAULT["pricing"])
+
+        return None

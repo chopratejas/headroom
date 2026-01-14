@@ -52,8 +52,9 @@ class TestOpenAIModelLimits:
         assert openai_provider.get_context_limit("o1") == 200000
 
     def test_get_context_limit_unknown_model(self, openai_provider):
-        with pytest.raises(ValueError, match="Unknown context limit"):
-            openai_provider.get_context_limit("unknown-model")
+        # Unknown models now get a fallback value instead of raising
+        limit = openai_provider.get_context_limit("unknown-model")
+        assert limit == 128000  # Default fallback
 
     def test_supports_model_known(self, openai_provider):
         assert openai_provider.supports_model("gpt-4o") is True
@@ -92,12 +93,15 @@ class TestOpenAICostEstimation:
         assert cost == pytest.approx(1.875, rel=0.01)
 
     def test_estimate_cost_unknown_model(self, openai_provider):
+        # Unknown models now get fallback pricing (gpt-4o tier)
         cost = openai_provider.estimate_cost(
             input_tokens=1000,
             output_tokens=1000,
             model="unknown-model",
         )
-        assert cost is None
+        # Fallback uses gpt-4o pricing: $2.50/M input + $10/M output
+        # = (1000/1M * 2.50) + (1000/1M * 10.00) = 0.0025 + 0.01 = 0.0125
+        assert cost == pytest.approx(0.0125, rel=0.01)
 
 
 class TestEncodingSelection:
@@ -110,6 +114,7 @@ class TestEncodingSelection:
     def test_versioned_model_prefix_match(self):
         assert _get_encoding_name_for_model("gpt-4o-2024-11-20") == "o200k_base"
 
-    def test_unknown_model_raises(self):
-        with pytest.raises(ValueError):
-            _get_encoding_name_for_model("completely-unknown")
+    def test_unknown_model_uses_fallback(self):
+        # Unknown models now get a fallback encoding instead of raising
+        encoding = _get_encoding_name_for_model("completely-unknown")
+        assert encoding == "o200k_base"  # Default fallback

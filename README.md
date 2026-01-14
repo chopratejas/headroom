@@ -89,6 +89,8 @@ curl http://localhost:8787/stats
 ```bash
 pip install "headroom-ai[proxy]"     # Proxy server (recommended)
 pip install headroom-ai              # SDK only
+pip install "headroom-ai[code]"      # AST-based code compression
+pip install "headroom-ai[llmlingua]" # ML-based compression
 pip install "headroom-ai[all]"       # Everything
 ```
 
@@ -106,6 +108,8 @@ pip install "headroom-ai[all]"       # Everything
 | **CCR** | Reversible compression with automatic retrieval | [CCR Guide](docs/ccr.md) |
 | **Text Utilities** | Opt-in compression for search/logs | [Text Compression](docs/text-compression.md) |
 | **LLMLingua-2** | ML-based 20x compression (opt-in) | [LLMLingua](docs/llmlingua.md) |
+| **Code-Aware** | AST-based code compression (tree-sitter) | [Transforms](docs/transforms.md) |
+| **ContentRouter** | Auto-routes content to optimal compressor | [Transforms](docs/transforms.md) |
 
 ---
 
@@ -118,6 +122,8 @@ pip install "headroom-ai[all]"       # Everything
 | Google | Official API | Context caching |
 | Cohere | Official API | - |
 | Mistral | Official tokenizer | - |
+
+**New models auto-supported** — Unknown models get sensible defaults based on naming patterns (e.g., `claude-opus-*` gets Opus pricing). Custom limits via `~/.headroom/models.json` or `HEADROOM_MODEL_LIMITS` env var.
 
 ---
 

@@ -30,6 +30,26 @@ try:
 except ImportError:
     _LLMLINGUA_AVAILABLE = False
 
+# AST-based code compression (optional dependency)
+from .code_compressor import (
+    CodeAwareCompressor,
+    CodeCompressionResult,
+    CodeCompressorConfig,
+    CodeLanguage,
+    DocstringMode,
+    detect_language,
+    is_tree_sitter_available,
+)
+
+# Content routing (always available, lazy-loads compressors)
+from .content_router import (
+    CompressionStrategy,
+    ContentRouter,
+    ContentRouterConfig,
+    RouterCompressionResult,
+    generate_source_hint,
+)
+
 __all__ = [
     # Base
     "Transform",
@@ -51,6 +71,20 @@ __all__ = [
     "TextCompressor",
     "TextCompressorConfig",
     "TextCompressionResult",
+    # Code-aware compression (AST-based)
+    "CodeAwareCompressor",
+    "CodeCompressorConfig",
+    "CodeCompressionResult",
+    "CodeLanguage",
+    "DocstringMode",
+    "detect_language",
+    "is_tree_sitter_available",
+    # Content routing
+    "ContentRouter",
+    "ContentRouterConfig",
+    "RouterCompressionResult",
+    "CompressionStrategy",
+    "generate_source_hint",
     # Other transforms
     "CacheAligner",
     "RollingWindow",

@@ -1,6 +1,6 @@
 # Transform Reference
 
-Headroom provides three core transforms that work together to optimize LLM context.
+Headroom provides several transforms that work together to optimize LLM context.
 
 ## SmartCrusher
 
@@ -228,6 +228,187 @@ unload_llmlingua_model()
 ```bash
 # Enable in proxy
 headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.3
+```
+
+---
+
+## CodeAwareCompressor (Optional)
+
+AST-based compression for source code using tree-sitter.
+
+### When to Use
+
+| Transform | Best For | Speed | Compression |
+|-----------|----------|-------|-------------|
+| SmartCrusher | JSON arrays | ~1ms | 70-90% |
+| **CodeAwareCompressor** | Source code | ~10-50ms | 40-70% |
+| LLMLinguaCompressor | Any text | 50-200ms | 80-95% |
+
+### Key Benefits
+
+- **Syntax validity guaranteed** — Output always parses correctly
+- **Preserves critical structure** — Imports, signatures, types, error handlers
+- **Multi-language support** — Python, JavaScript, TypeScript, Go, Rust, Java, C, C++
+- **Lightweight** — ~50MB vs ~1GB for LLMLingua
+
+### Installation
+
+```bash
+pip install "headroom-ai[code]"  # Adds tree-sitter-language-pack
+```
+
+### Configuration
+
+```python
+from headroom.transforms import CodeAwareCompressor, CodeCompressorConfig, DocstringMode
+
+config = CodeCompressorConfig(
+    preserve_imports=True,              # Always keep imports
+    preserve_signatures=True,           # Always keep function signatures
+    preserve_type_annotations=True,     # Keep type hints
+    preserve_error_handlers=True,       # Keep try/except blocks
+    preserve_decorators=True,           # Keep decorators
+    docstring_mode=DocstringMode.FIRST_LINE,  # FULL, FIRST_LINE, REMOVE
+    target_compression_rate=0.2,        # Keep 20% of tokens
+    max_body_lines=5,                   # Lines to keep per function body
+    min_tokens_for_compression=100,     # Skip small content
+    language_hint=None,                 # Auto-detect if None
+    fallback_to_llmlingua=True,         # Use LLMLingua for unknown langs
+)
+
+compressor = CodeAwareCompressor(config)
+```
+
+### Example
+
+```python
+from headroom.transforms import CodeAwareCompressor
+
+compressor = CodeAwareCompressor()
+
+code = '''
+import os
+from typing import List
+
+def process_items(items: List[str]) -> List[str]:
+    """Process a list of items."""
+    results = []
+    for item in items:
+        if not item:
+            continue
+        processed = item.strip().lower()
+        results.append(processed)
+    return results
+'''
+
+result = compressor.compress(code, language="python")
+print(result.compressed)
+# import os
+# from typing import List
+#
+# def process_items(items: List[str]) -> List[str]:
+#     """Process a list of items."""
+#     results = []
+#     for item in items:
+#     # ... (5 lines compressed)
+#     pass
+
+print(f"Compression: {result.compression_ratio:.0%}")  # ~55%
+print(f"Syntax valid: {result.syntax_valid}")  # True
+```
+
+### Supported Languages
+
+| Tier | Languages | Support Level |
+|------|-----------|---------------|
+| 1 | Python, JavaScript, TypeScript | Full AST analysis |
+| 2 | Go, Rust, Java, C, C++ | Function body compression |
+
+### Memory Management
+
+```python
+from headroom.transforms import is_tree_sitter_available, unload_tree_sitter
+
+# Check if tree-sitter is installed
+print(is_tree_sitter_available())  # True/False
+
+# Free memory when done (parsers are lazy-loaded)
+unload_tree_sitter()
+```
+
+---
+
+## ContentRouter
+
+Intelligent compression orchestrator that routes content to the optimal compressor.
+
+### How It Works
+
+ContentRouter analyzes content and selects the best compression strategy:
+
+1. **Detect content type** — JSON, code, logs, search results, plain text
+2. **Consider source hints** — File paths, tool names for high-confidence routing
+3. **Route to compressor** — SmartCrusher, CodeAwareCompressor, SearchCompressor, etc.
+4. **Log decisions** — Transparent routing for debugging
+
+### Configuration
+
+```python
+from headroom.transforms import ContentRouter, ContentRouterConfig, CompressionStrategy
+
+config = ContentRouterConfig(
+    min_section_tokens=100,             # Minimum tokens to compress
+    enable_code_aware=True,             # Use CodeAwareCompressor for code
+    enable_search_compression=True,     # Use SearchCompressor for grep output
+    enable_log_compression=True,        # Use LogCompressor for logs
+    default_strategy=CompressionStrategy.TEXT,  # Fallback strategy
+)
+
+router = ContentRouter(config)
+```
+
+### Example
+
+```python
+from headroom.transforms import ContentRouter, generate_source_hint
+
+router = ContentRouter()
+
+# With source hint for high-confidence routing
+hint = generate_source_hint(tool_name="grep", file_path="src/auth.py")
+result = router.compress(content, source_hint=hint)
+
+print(result.strategy)  # CompressionStrategy.SEARCH or CODE_AWARE
+print(result.routing_log)  # List of routing decisions
+```
+
+### Compression Strategies
+
+| Strategy | Used For | Compressor |
+|----------|----------|------------|
+| CODE_AWARE | Source code | CodeAwareCompressor |
+| SMART_CRUSHER | JSON arrays | SmartCrusher |
+| SEARCH | Grep/find output | SearchCompressor |
+| LOG | Log files | LogCompressor |
+| TEXT | Plain text | TextCompressor |
+| LLMLINGUA | Any (max compression) | LLMLinguaCompressor |
+| PASSTHROUGH | Small content | None |
+
+### Source Hints
+
+Use source hints for accurate routing:
+
+```python
+from headroom.transforms import generate_source_hint
+
+# From tool invocation
+hint = generate_source_hint(tool_name="Read", file_path="main.py")
+
+# From file extension
+hint = generate_source_hint(file_path="components/Button.tsx")
+
+# From explicit tool
+hint = generate_source_hint(tool_name="Grep")  # Routes to SEARCH
 ```
 
 ---
