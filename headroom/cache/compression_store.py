@@ -302,6 +302,43 @@ class CompressionStore:
 
         return result_entry
 
+    def get_metadata(
+        self,
+        hash_key: str,
+    ) -> dict[str, Any] | None:
+        """Get metadata about a stored entry without retrieving full content.
+
+        Useful for context tracking to know what was compressed without
+        fetching the entire original content.
+
+        Args:
+            hash_key: Hash key returned by store().
+
+        Returns:
+            Dict with metadata if found and not expired, None otherwise.
+        """
+        with self._lock:
+            entry = self._store.get(hash_key)
+
+            if entry is None:
+                return None
+
+            if entry.is_expired():
+                del self._store[hash_key]
+                self._stale_heap_entries += 1
+                return None
+
+            return {
+                "hash": entry.hash,
+                "tool_name": entry.tool_name,
+                "original_item_count": entry.original_item_count,
+                "compressed_item_count": entry.compressed_item_count,
+                "query_context": entry.query_context,
+                "compressed_content": entry.compressed_content,
+                "created_at": entry.created_at,
+                "ttl": entry.ttl,
+            }
+
     def search(
         self,
         hash_key: str,

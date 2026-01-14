@@ -677,13 +677,180 @@ if self.config.use_feedback_hints and tool_name:
 
 ---
 
+### CCR Phase 5: Response Handler (Automatic Tool Call Handling)
+
+**Location:** `headroom/ccr/response_handler.py`
+
+**The Problem:** When the proxy injects the `headroom_retrieve` tool, the LLM might call it. But who handles that tool call? Without response handling, the tool call would go back to the client unhandled.
+
+**The Solution:** The Response Handler intercepts LLM responses, detects CCR tool calls, executes retrievals automatically, and continues the conversation until the LLM produces a final response.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  RESPONSE HANDLER FLOW                                           │
+│                                                                   │
+│  1. LLM Response arrives                                         │
+│     └─ Contains: tool_use(headroom_retrieve, hash=abc123)       │
+│                                                                   │
+│  2. Handler detects CCR tool call                                │
+│     └─ Extracts hash and optional query                         │
+│                                                                   │
+│  3. Handler executes retrieval                                   │
+│     └─ Full retrieval: store.retrieve(hash)                     │
+│     └─ Search: store.search(hash, query)                        │
+│                                                                   │
+│  4. Handler continues conversation                               │
+│     └─ Adds tool result to messages                             │
+│     └─ Makes another API call                                   │
+│                                                                   │
+│  5. Repeat until no CCR tool calls                              │
+│     └─ Max 3 rounds (configurable)                              │
+│                                                                   │
+│  6. Return final response to client                             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Key Classes:**
+
+```python
+@dataclass
+class CCRToolCall:
+    tool_call_id: str      # For matching response
+    hash_key: str          # CCR hash to retrieve
+    query: str | None      # Optional search query
+
+@dataclass
+class CCRToolResult:
+    tool_call_id: str
+    content: str           # Retrieved data as JSON
+    success: bool
+    items_retrieved: int
+    was_search: bool       # True if search, False if full retrieval
+
+class CCRResponseHandler:
+    async def handle_response(
+        self,
+        response: dict,           # Initial LLM response
+        messages: list,           # Conversation history
+        tools: list,              # Tool definitions
+        api_call_fn: Callable,    # Function to make API calls
+        provider: str,            # "anthropic" or "openai"
+    ) -> dict:
+        """Handle CCR tool calls until final response."""
+```
+
+**Streaming Support:**
+
+The handler also supports streaming responses via `StreamingCCRHandler`:
+
+```python
+class StreamingCCRBuffer:
+    """Buffers streaming chunks to detect CCR tool calls."""
+    chunks: list[bytes]
+    detected_ccr: bool
+
+class StreamingCCRHandler:
+    """Handles CCR in streaming responses."""
+    async def process_stream(self, stream, messages, tools, api_call_fn):
+        """Yields chunks, switching to buffered mode if CCR detected."""
+```
+
+---
+
+### CCR Phase 6: Context Tracker (Multi-Turn Awareness)
+
+**Location:** `headroom/ccr/context_tracker.py`
+
+**The Problem:** In multi-turn conversations, earlier compressed data might become relevant later. Without tracking, the LLM has "context amnesia" - it can't reference data that was compressed in turn 1 when answering a question in turn 5.
+
+**The Solution:** The Context Tracker maintains awareness of all compressed content across the conversation and can proactively expand relevant data when a new query might need it.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  CONTEXT TRACKER FLOW                                            │
+│                                                                   │
+│  Turn 1: Search returns 100 files → compressed to 10            │
+│          Tracker stores: hash=abc123, sample="auth.py, db.py"   │
+│                                                                   │
+│  Turn 5: User asks "What about the authentication middleware?"  │
+│          Tracker analyzes query:                                 │
+│          - "authentication" matches "auth.py" in sample         │
+│          - Relevance score: 0.7 (above threshold)               │
+│                                                                   │
+│  Proactive Expansion:                                           │
+│          - Retrieves abc123 before LLM responds                 │
+│          - Adds expanded context to request                     │
+│                                                                   │
+│  Result: LLM sees full file list, can answer accurately         │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Key Classes:**
+
+```python
+@dataclass
+class CompressedContext:
+    hash_key: str              # CCR hash
+    turn_number: int           # When compression happened
+    timestamp: float           # For age-based filtering
+    tool_name: str | None      # Which tool was compressed
+    original_item_count: int
+    compressed_item_count: int
+    query_context: str         # User query at compression time
+    sample_content: str        # Preview for relevance matching
+
+@dataclass
+class ExpansionRecommendation:
+    hash_key: str
+    reason: str                # Human-readable explanation
+    relevance_score: float     # 0-1, higher = more relevant
+    expand_full: bool          # True = full retrieval
+    search_query: str | None   # If expand_full=False
+
+class ContextTracker:
+    def track_compression(self, hash_key, turn_number, ...):
+        """Track a compression event."""
+
+    def analyze_query(self, query: str) -> list[ExpansionRecommendation]:
+        """Find relevant compressed contexts for a query."""
+
+    def execute_expansions(self, recommendations) -> list[dict]:
+        """Execute recommended expansions."""
+```
+
+**Relevance Calculation:**
+
+The tracker uses simple but effective heuristics:
+
+1. **Keyword overlap with sample content** - Extract keywords from query, match against compressed content preview
+2. **Keyword overlap with original query** - Match against the query that triggered compression
+3. **Tool name relevance** - File operations more likely to need expansion for "file", "where", "find" queries
+4. **Age discount** - Older contexts get lower scores
+
+**Configuration:**
+
+```python
+@dataclass
+class ContextTrackerConfig:
+    enabled: bool = True
+    max_tracked_contexts: int = 100      # LRU eviction
+    relevance_threshold: float = 0.3     # Min score to recommend
+    max_context_age_seconds: float = 300 # 5 minutes
+    proactive_expansion: bool = True
+    max_proactive_expansions: int = 2    # Per query
+```
+
+---
+
 ### Why CCR is a Moat
 
 1. **Reversible**: No permanent information loss. Worst case = retrieve everything.
 2. **Transparent**: LLM knows it can ask for more data.
-3. **Feedback Loop**: Learn from actual needs, not guesses.
-4. **Network Effect**: Retrieval patterns across users improve compression for everyone.
-5. **Zero-Risk**: If compression fails, instant fallback to original data.
+3. **Automatic**: Response Handler executes retrievals without client intervention.
+4. **Context-Aware**: Context Tracker prevents multi-turn amnesia.
+5. **Feedback Loop**: Learn from actual needs, not guesses.
+6. **Network Effect**: Retrieval patterns across users improve compression for everyone.
+7. **Zero-Risk**: If compression fails, instant fallback to original data.
 
 ---
 
@@ -712,13 +879,20 @@ headroom/
 │   ├── rolling_window.py    # Token limit enforcement
 │   └── llmlingua_compressor.py  # ML-based compression (opt-in)
 │
-├── cache/               # CCR Architecture
+├── cache/               # CCR Architecture - Caching & Storage
 │   ├── compression_store.py    # Phase 1: Store original content
 │   ├── compression_feedback.py # Phase 4: Learn from retrievals
 │   ├── anthropic.py     # Anthropic cache optimizer
 │   ├── openai.py        # OpenAI cache optimizer
 │   ├── google.py        # Google cache optimizer
 │   └── dynamic_detector.py # Dynamic content detection
+│
+├── ccr/                 # CCR Architecture - Tool Injection & Response Handling
+│   ├── __init__.py             # CCR module exports
+│   ├── tool_injection.py       # Phase 3: Inject retrieval tool
+│   ├── response_handler.py     # Phase 5: Handle CCR tool calls
+│   ├── context_tracker.py      # Phase 6: Multi-turn context tracking
+│   └── mcp_server.py           # MCP server for retrieval tool
 │
 ├── relevance/           # Relevance scoring for compression
 │   ├── bm25.py          # BM25 keyword scorer

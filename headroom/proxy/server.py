@@ -35,7 +35,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 
@@ -54,7 +54,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom.cache.compression_feedback import get_compression_feedback
 from headroom.cache.compression_store import get_compression_store
-from headroom.ccr import CCR_TOOL_NAME, CCRToolInjector, parse_tool_call
+from headroom.ccr import (
+    CCR_TOOL_NAME,
+    CCRResponseHandler,
+    CCRToolInjector,
+    ContextTracker,
+    ContextTrackerConfig,
+    ResponseHandlerConfig,
+    parse_tool_call,
+)
 from headroom.config import CacheAlignerConfig, RollingWindowConfig, SmartCrusherConfig
 from headroom.providers import AnthropicProvider, OpenAIProvider
 from headroom.telemetry import get_telemetry_collector
@@ -154,6 +162,15 @@ class ProxyConfig:
     # CCR Tool Injection
     ccr_inject_tool: bool = True  # Inject headroom_retrieve tool when compression occurs
     ccr_inject_system_instructions: bool = False  # Add instructions to system message
+
+    # CCR Response Handling (intercept and handle CCR tool calls automatically)
+    ccr_handle_responses: bool = True  # Handle headroom_retrieve calls in responses
+    ccr_max_retrieval_rounds: int = 3  # Max rounds of retrieval before returning
+
+    # CCR Context Tracking (track compressed content across turns)
+    ccr_context_tracking: bool = True  # Track compressed contexts for proactive expansion
+    ccr_proactive_expansion: bool = True  # Proactively expand based on query relevance
+    ccr_max_proactive_expansions: int = 2  # Max contexts to proactively expand per turn
 
     # LLMLingua ML-based compression (opt-in)
     llmlingua_enabled: bool = False  # Enable LLMLingua-2 for ML-based compression
@@ -740,6 +757,34 @@ class HeadroomProxy:
             inject_system_instructions=config.ccr_inject_system_instructions,
         )
 
+        # CCR Response Handler (handles CCR tool calls automatically)
+        self.ccr_response_handler = (
+            CCRResponseHandler(
+                ResponseHandlerConfig(
+                    enabled=True,
+                    max_retrieval_rounds=config.ccr_max_retrieval_rounds,
+                )
+            )
+            if config.ccr_handle_responses
+            else None
+        )
+
+        # CCR Context Tracker (tracks compressed content across turns)
+        self.ccr_context_tracker = (
+            ContextTracker(
+                ContextTrackerConfig(
+                    enabled=True,
+                    proactive_expansion=config.ccr_proactive_expansion,
+                    max_proactive_expansions=config.ccr_max_proactive_expansions,
+                )
+            )
+            if config.ccr_context_tracking
+            else None
+        )
+
+        # Turn counter for context tracking
+        self._turn_counter = 0
+
     def _setup_llmlingua(self, config: ProxyConfig, transforms: list) -> str:
         """Set up LLMLingua compression if enabled.
 
@@ -798,6 +843,21 @@ class HeadroomProxy:
                 "LLMLingua: available but not enabled. "
                 "Enable with --llmlingua for ML-based compression (3-5x better on text/logs)"
             )
+
+        # CCR status
+        ccr_features = []
+        if self.config.ccr_inject_tool:
+            ccr_features.append("tool_injection")
+        if self.config.ccr_handle_responses:
+            ccr_features.append("response_handling")
+        if self.config.ccr_context_tracking:
+            ccr_features.append("context_tracking")
+        if self.config.ccr_proactive_expansion:
+            ccr_features.append("proactive_expansion")
+        if ccr_features:
+            logger.info(f"CCR (Compress-Cache-Retrieve): ENABLED ({', '.join(ccr_features)})")
+        else:
+            logger.info("CCR: DISABLED")
 
     async def shutdown(self):
         """Cleanup async resources."""
@@ -1017,6 +1077,65 @@ class HeadroomProxy:
                         f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
                     )
 
+                # Track compression in context tracker for multi-turn awareness
+                if self.ccr_context_tracker:
+                    self._turn_counter += 1
+                    for hash_key in injector.detected_hashes:
+                        # Get compression metadata from store
+                        store = get_compression_store()
+                        entry = store.get_metadata(hash_key)
+                        if entry:
+                            self.ccr_context_tracker.track_compression(
+                                hash_key=hash_key,
+                                turn_number=self._turn_counter,
+                                tool_name=entry.get("tool_name"),
+                                original_count=entry.get("original_item_count", 0),
+                                compressed_count=entry.get("compressed_item_count", 0),
+                                query_context=entry.get("query_context", ""),
+                                sample_content=entry.get("compressed_content", "")[:500],
+                            )
+
+        # CCR Proactive Expansion: Check if current query needs expanded context
+        if self.ccr_context_tracker and self.config.ccr_proactive_expansion:
+            # Extract user query from messages
+            user_query = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        user_query = content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                user_query = block.get("text", "")
+                                break
+                    break
+
+            if user_query:
+                recommendations = self.ccr_context_tracker.analyze_query(
+                    user_query, self._turn_counter
+                )
+                if recommendations:
+                    expansions = self.ccr_context_tracker.execute_expansions(recommendations)
+                    if expansions:
+                        # Add expanded context to the system message or as additional context
+                        expansion_text = self.ccr_context_tracker.format_expansions_for_context(
+                            expansions
+                        )
+                        logger.info(
+                            f"[{request_id}] CCR: Proactively expanded {len(expansions)} context(s) "
+                            f"based on query relevance"
+                        )
+                        # Append to the last user message
+                        if optimized_messages and optimized_messages[-1].get("role") == "user":
+                            last_msg = optimized_messages[-1]
+                            content = last_msg.get("content", "")
+                            if isinstance(content, str):
+                                optimized_messages[-1] = {
+                                    **last_msg,
+                                    "content": content + "\n\n" + expansion_text,
+                                }
+
         # Update body
         body["messages"] = optimized_messages
         if tools is not None:
@@ -1043,16 +1162,67 @@ class HeadroomProxy:
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
+
+                # Parse response for CCR handling
+                resp_json = None
+                try:
+                    resp_json = response.json()
+                except Exception:
+                    pass
+
+                # CCR Response Handling: Handle headroom_retrieve tool calls automatically
+                if (
+                    self.ccr_response_handler
+                    and resp_json
+                    and response.status_code == 200
+                    and self.ccr_response_handler.has_ccr_tool_calls(resp_json, "anthropic")
+                ):
+                    logger.info(f"[{request_id}] CCR: Detected retrieval tool call, handling...")
+
+                    # Create API call function for continuation
+                    async def api_call_fn(
+                        msgs: list[dict], tls: list[dict] | None
+                    ) -> dict[str, Any]:
+                        continuation_body = {
+                            **body,
+                            "messages": msgs,
+                        }
+                        if tls is not None:
+                            continuation_body["tools"] = tls
+                        cont_response = await self._retry_request(
+                            "POST", url, headers, continuation_body
+                        )
+                        result: dict[str, Any] = cont_response.json()
+                        return result
+
+                    # Handle CCR tool calls
+                    try:
+                        final_resp_json = await self.ccr_response_handler.handle_response(
+                            resp_json,
+                            optimized_messages,
+                            tools,
+                            api_call_fn,
+                            provider="anthropic",
+                        )
+                        # Update response content with final response
+                        resp_json = final_resp_json
+                        response = httpx.Response(
+                            status_code=200,
+                            content=json.dumps(final_resp_json).encode(),
+                            headers=dict(response.headers),
+                        )
+                        logger.info(f"[{request_id}] CCR: Retrieval handled successfully")
+                    except Exception as e:
+                        logger.warning(f"[{request_id}] CCR: Response handling failed: {e}")
+                        # Continue with original response
+
                 total_latency = (time.time() - start_time) * 1000
 
                 # Parse response for output tokens
                 output_tokens = 0
-                try:
-                    resp_json = response.json()
+                if resp_json:
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
-                except Exception:
-                    pass
 
                 # Calculate cost
                 cost_usd = None

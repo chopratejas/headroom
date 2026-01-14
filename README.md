@@ -25,45 +25,30 @@
 
 ---
 
-## Why Headroom?
+## What It Does
 
-AI coding agents and tool-using applications generate **massive contexts**:
+Headroom is a **smart compression proxy** for LLM applications:
 
-- Tool outputs with 1000s of search results, log entries, API responses
-- Long conversation histories that hit token limits
-- System prompts with dynamic dates that break provider caching
+- **Compresses tool outputs** — 1000 search results → 15 items (keeps errors, anomalies, relevant items)
+- **Enables provider caching** — Stabilizes prefixes so cache hits actually happen
+- **Manages context windows** — Prevents token limit failures without breaking tool calls
+- **Reversible compression** — LLM can retrieve original data if needed ([CCR architecture](docs/ccr.md))
 
-**Result**: You pay for tokens you don't need, and cache hits are rare.
-
-Headroom is a **smart compression layer** that sits between your app and LLM providers:
-
-| Transform | What It Does | Savings |
-|-----------|--------------|---------|
-| **SmartCrusher** | Compresses JSON tool outputs statistically (keeps errors, anomalies, relevant items) | 70-90% |
-| **CacheAligner** | Stabilizes prefixes so provider caching works | Up to 10x |
-| **RollingWindow** | Manages context within limits without breaking tool calls | Prevents failures |
-| **Text Utilities** | Opt-in compression for search results, build logs, plain text | 50-90% |
-
-**Zero accuracy loss** - we keep what matters: errors, anomalies, relevant items.
+**Zero code changes required** — point your existing tools at the proxy.
 
 ---
 
-## 5-Minute Quickstart
-
-### Option 1: Proxy Server (Recommended)
-
-Works with **any** OpenAI-compatible client without code changes:
+## 30-Second Quickstart
 
 ```bash
 # Install
 pip install "headroom-ai[proxy]"
 
-# Start the proxy
+# Start proxy
 headroom proxy --port 8787
 
-# Verify it's running
+# Verify
 curl http://localhost:8787/health
-# Expected: {"status": "healthy", ...}
 ```
 
 **Use with your tools:**
@@ -73,92 +58,18 @@ curl http://localhost:8787/health
 ANTHROPIC_BASE_URL=http://localhost:8787 claude
 
 # Cursor / Continue / any OpenAI client
-OPENAI_BASE_URL=http://localhost:8787/v1 your-app
+OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 
-# Python OpenAI SDK
+# Python scripts
 export OPENAI_BASE_URL=http://localhost:8787/v1
 python your_script.py
 ```
 
-### Option 2: Python SDK
-
-Wrap your existing client for fine-grained control:
-
-```bash
-pip install headroom-ai openai
-```
-
-```python
-from headroom import HeadroomClient, OpenAIProvider
-from openai import OpenAI
-
-# Create wrapped client
-client = HeadroomClient(
-    original_client=OpenAI(),
-    provider=OpenAIProvider(),
-    default_mode="optimize",  # or "audit" to observe only
-)
-
-# Use exactly like the original client
-response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[
-        {"role": "user", "content": "Hello!"},
-    ],
-)
-
-print(response.choices[0].message.content)
-
-# Check what happened
-stats = client.get_stats()
-print(f"Tokens saved this session: {stats['session']['tokens_saved_total']}")
-```
-
-**With tool outputs (where real savings happen):**
-
-```python
-import json
-
-# Conversation with large tool output
-messages = [
-    {"role": "user", "content": "Search for Python tutorials"},
-    {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [{
-            "id": "call_123",
-            "type": "function",
-            "function": {"name": "search", "arguments": '{"q": "python"}'},
-        }],
-    },
-    {
-        "role": "tool",
-        "tool_call_id": "call_123",
-        "content": json.dumps({
-            "results": [{"title": f"Tutorial {i}", "score": 100-i} for i in range(500)]
-        }),
-    },
-    {"role": "user", "content": "What are the top 3?"},
-]
-
-# Headroom compresses 500 results to ~15, keeping highest-scoring items
-response = client.chat.completions.create(model="gpt-4o-mini", messages=messages)
-print(f"Tokens saved: {client.get_stats()['session']['tokens_saved_total']}")
-# Typical output: "Tokens saved: 3500"
-```
-
-### Option 3: LangChain Integration (Coming Soon)
-
-```python
-# Coming soon - use proxy server for now
-# OPENAI_BASE_URL=http://localhost:8787/v1 python your_langchain_app.py
-```
+That's it. You're saving tokens.
 
 ---
 
 ## Verify It's Working
-
-### Check Proxy Stats
 
 ```bash
 curl http://localhost:8787/stats
@@ -166,40 +77,9 @@ curl http://localhost:8787/stats
 
 ```json
 {
-  "requests": {"total": 42, "cached": 5, "rate_limited": 0, "failed": 0},
-  "tokens": {"input": 50000, "output": 8000, "saved": 12500, "savings_percent": 25.0},
-  "cost": {"total_cost_usd": 0.15, "total_savings_usd": 0.04},
-  "cache": {"entries": 10, "total_hits": 5}
+  "tokens": {"saved": 12500, "savings_percent": 25.0},
+  "cost": {"total_savings_usd": 0.04}
 }
-```
-
-### Check SDK Stats
-
-```python
-# Quick session stats (no database query)
-stats = client.get_stats()
-print(stats)
-# {
-#   "session": {"requests_total": 10, "tokens_saved_total": 5000, ...},
-#   "config": {"mode": "optimize", "provider": "openai", ...},
-#   "transforms": {"smart_crusher_enabled": True, ...}
-# }
-
-# Validate setup is correct
-result = client.validate_setup()
-if not result["valid"]:
-    print("Setup issues:", result)
-```
-
-### Enable Logging
-
-```python
-import logging
-logging.basicConfig(level=logging.INFO)
-
-# Now you'll see:
-# INFO:headroom.transforms.pipeline:Pipeline complete: 45000 -> 4500 tokens (saved 40500, 90.0% reduction)
-# INFO:headroom.transforms.smart_crusher:SmartCrusher applied top_n strategy: kept 15 of 1000 items
 ```
 
 ---
@@ -207,602 +87,92 @@ logging.basicConfig(level=logging.INFO)
 ## Installation
 
 ```bash
-# Core only (minimal dependencies: tiktoken, pydantic)
-pip install headroom-ai
-
-# With semantic relevance scoring (adds sentence-transformers)
-pip install "headroom-ai[relevance]"
-
-# With proxy server (adds fastapi, uvicorn)
-pip install "headroom-ai[proxy]"
-
-# With HTML reports (adds jinja2)
-pip install "headroom-ai[reports]"
-
-# Everything
-pip install "headroom-ai[all]"
+pip install "headroom-ai[proxy]"     # Proxy server (recommended)
+pip install headroom-ai              # SDK only
+pip install "headroom-ai[all]"       # Everything
 ```
 
 **Requirements**: Python 3.10+
 
 ---
 
-## Configuration
+## Features
 
-### SDK Configuration
-
-```python
-from headroom import HeadroomClient, OpenAIProvider
-from openai import OpenAI
-
-# Full configuration example
-client = HeadroomClient(
-    original_client=OpenAI(),
-    provider=OpenAIProvider(),
-    default_mode="optimize",              # "audit" (observe only) or "optimize" (apply transforms)
-    enable_cache_optimizer=True,          # Enable provider-specific cache optimization
-    enable_semantic_cache=False,          # Enable query-level semantic caching
-    model_context_limits={                # Override default context limits
-        "gpt-4o": 128000,
-        "gpt-4o-mini": 128000,
-    },
-    # store_url defaults to temp directory; override with absolute path if needed:
-    # store_url="sqlite:////absolute/path/to/headroom.db",
-)
-```
-
-### Proxy Configuration
-
-```bash
-# Via command line
-headroom proxy \
-  --port 8787 \
-  --budget 10.00 \
-  --log-file headroom.jsonl
-
-# Disable optimization (passthrough mode)
-headroom proxy --no-optimize
-
-# Disable semantic caching
-headroom proxy --no-cache
-
-# See all options
-headroom proxy --help
-```
-
-### Per-Request Overrides
-
-```python
-# Override mode for specific requests
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[...],
-    headroom_mode="audit",              # Just observe, don't optimize
-    headroom_output_buffer_tokens=8000, # Reserve more for output
-    headroom_keep_turns=5,              # Keep last 5 turns
-)
-```
+| Feature | Description | Docs |
+|---------|-------------|------|
+| **SmartCrusher** | Compresses JSON tool outputs statistically | [Transforms](docs/transforms.md) |
+| **CacheAligner** | Stabilizes prefixes for provider caching | [Transforms](docs/transforms.md) |
+| **RollingWindow** | Manages context limits without breaking tools | [Transforms](docs/transforms.md) |
+| **CCR** | Reversible compression with automatic retrieval | [CCR Guide](docs/ccr.md) |
+| **Text Utilities** | Opt-in compression for search/logs | [Text Compression](docs/text-compression.md) |
+| **LLMLingua-2** | ML-based 20x compression (opt-in) | [LLMLingua](docs/llmlingua.md) |
 
 ---
 
-## Modes
-
-| Mode | Behavior | Use Case |
-|------|----------|----------|
-| `audit` | Observes and logs, no modifications | Production monitoring, baseline measurement |
-| `optimize` | Applies safe, deterministic transforms | Production optimization |
-| `simulate` | Returns plan without API call | Testing, cost estimation |
-
-```python
-# Simulate to see what would happen
-plan = client.chat.completions.simulate(
-    model="gpt-4o",
-    messages=large_conversation,
-)
-print(f"Would save {plan.tokens_saved} tokens")
-print(f"Transforms: {plan.transforms}")
-print(f"Estimated savings: {plan.estimated_savings}")
-```
-
----
-
-## Error Handling
-
-Headroom provides explicit exceptions for debugging:
-
-```python
-from headroom import (
-    HeadroomClient,
-    HeadroomError,        # Base class - catch all Headroom errors
-    ConfigurationError,   # Invalid configuration
-    ProviderError,        # Provider issues (unknown model, etc.)
-    StorageError,         # Database/storage failures
-    CompressionError,     # Compression failures (rare - we fail safe)
-    ValidationError,      # Setup validation failures
-)
-
-try:
-    client = HeadroomClient(...)
-    response = client.chat.completions.create(...)
-except ConfigurationError as e:
-    print(f"Config issue: {e}")
-    print(f"Details: {e.details}")  # Additional context
-except StorageError as e:
-    print(f"Storage issue: {e}")
-    # Headroom continues to work, just without metrics persistence
-except HeadroomError as e:
-    print(f"Headroom error: {e}")
-```
-
-**Safety guarantee**: If compression fails, the original content passes through unchanged. Your LLM calls never fail due to Headroom.
-
----
-
-## How It Works
-
-### SmartCrusher: Statistical Compression
-
-```python
-# Before: 50KB tool response with 1000 items
-{"results": [{"id": 1, "status": "ok", ...}, ... 1000 items ...]}
-
-# After: ~2KB with important items preserved
-# Headroom keeps:
-# - First 3 items (context)
-# - Last 2 items (recency)
-# - All error items (status != "ok")
-# - Statistical anomalies (values > 2 std dev from mean)
-# - Items matching user's query (BM25/embedding similarity)
-```
-
-### CacheAligner: Prefix Stabilization
-
-```python
-# Before: Cache miss every day due to changing date
-"You are helpful. Today is January 7, 2025."
-
-# After: Stable prefix (cache hit!) + dynamic context moved to end
-"You are helpful."
-# Dynamic content: "Current date: January 7, 2025"
-```
-
-### RollingWindow: Context Management
-
-```python
-# When context exceeds limit:
-# 1. Drop oldest tool outputs first (as atomic units with their calls)
-# 2. Drop oldest conversation turns
-# 3. NEVER drop: system prompt, last N turns, orphaned tool responses
-```
-
----
-
-## Text Compression Utilities (Opt-In)
-
-For coding tasks, Headroom provides **standalone text compression utilities** that applications can use explicitly. These are **opt-in** - they're not applied automatically, giving you full control over when and how to compress text content.
-
-> **Design Philosophy**: SmartCrusher compresses JSON automatically because it's structure-preserving and safe. Text compression is lossy and context-dependent, so applications should decide when to use it.
-
-### Available Utilities
-
-| Utility | Input Type | Use Case |
-|---------|------------|----------|
-| `SearchCompressor` | grep/ripgrep output | Search results with `file:line:content` format |
-| `LogCompressor` | Build/test logs | pytest, npm, cargo, make output |
-| `TextCompressor` | Generic text | Any plain text with anchor preservation |
-| `detect_content_type` | Any content | Detect content type for routing decisions |
-
-### Example: Compressing Search Results
-
-```python
-from headroom.transforms import SearchCompressor
-
-# Your grep/ripgrep output (could be 1000s of lines)
-search_results = """
-src/utils.py:42:def process_data(items):
-src/utils.py:43:    \"\"\"Process items.\"\"\"
-src/models.py:15:class DataProcessor:
-src/models.py:89:    def process(self, items):
-... hundreds more matches ...
-"""
-
-# Explicitly compress when you decide it's appropriate
-compressor = SearchCompressor()
-result = compressor.compress(search_results, context="find process")
-
-print(f"Compressed {result.original_match_count} matches to {result.compressed_match_count}")
-print(result.compressed)
-```
-
-### Example: Compressing Build Logs
-
-```python
-from headroom.transforms import LogCompressor
-
-# pytest output with 1000s of lines
-build_output = """
-===== test session starts =====
-collected 500 items
-tests/test_foo.py::test_1 PASSED
-... hundreds of passed tests ...
-tests/test_bar.py::test_fail FAILED
-AssertionError: expected 5, got 3
-===== 1 failed, 499 passed =====
-"""
-
-# Compress logs, preserving errors and stack traces
-compressor = LogCompressor()
-result = compressor.compress(build_output)
-
-# Errors, stack traces, and summary are preserved
-print(result.compressed)
-print(f"Compression ratio: {result.compression_ratio:.1%}")
-```
-
-### Example: Content Type Detection
-
-```python
-from headroom.transforms import detect_content_type, ContentType
-
-content = "src/main.py:42:def process():"
-
-detection = detect_content_type(content)
-if detection.content_type == ContentType.SEARCH_RESULTS:
-    # Route to SearchCompressor
-    pass
-elif detection.content_type == ContentType.BUILD_OUTPUT:
-    # Route to LogCompressor
-    pass
-```
-
-### Integration Pattern
-
-```python
-from headroom.transforms import (
-    detect_content_type, ContentType,
-    SearchCompressor, LogCompressor, TextCompressor
-)
-
-def compress_tool_output(content: str, context: str = "") -> str:
-    """Application-level compression with explicit control."""
-    detection = detect_content_type(content)
-
-    if detection.content_type == ContentType.SEARCH_RESULTS:
-        result = SearchCompressor().compress(content, context)
-        return result.compressed
-    elif detection.content_type == ContentType.BUILD_OUTPUT:
-        result = LogCompressor().compress(content)
-        return result.compressed
-    elif detection.content_type == ContentType.PLAIN_TEXT:
-        result = TextCompressor().compress(content, context)
-        return result.compressed
-    else:
-        # JSON or other - let SmartCrusher handle it automatically
-        return content
-```
-
----
-
-## ML-Based Compression with LLMLingua-2 (Optional)
-
-For even more aggressive compression, Headroom integrates with **LLMLingua-2**, Microsoft's BERT-based token classifier trained via GPT-4 distillation. It achieves **up to 20x compression** while preserving semantic meaning.
-
-### When to Use LLMLingua-2
-
-| Approach | Best For | Compression | Speed |
-|----------|----------|-------------|-------|
-| **SmartCrusher** | JSON tool outputs | 70-90% | ~1ms |
-| **Text Utilities** | Search/logs | 50-90% | ~1ms |
-| **LLMLingua-2** | Any text, max compression | 80-95% | ~50-200ms |
-
-LLMLingua-2 is ideal when you need maximum compression and can tolerate slightly higher latency (e.g., compressing large tool outputs before storage, offline processing).
-
-### Installation
-
-```bash
-# Adds ~2GB of model weights
-pip install "headroom-ai[llmlingua]"
-```
-
-### Basic Usage
-
-```python
-from headroom.transforms import LLMLinguaCompressor
-
-# Create compressor (model loaded lazily on first use)
-compressor = LLMLinguaCompressor()
-
-# Compress any text
-long_output = "The function processUserData takes a user object and validates..."
-result = compressor.compress(long_output)
-
-print(f"Before: {result.original_tokens} tokens")
-print(f"After: {result.compressed_tokens} tokens")
-print(f"Saved: {result.savings_percentage:.1f}%")
-print(result.compressed)
-```
-
-### Content-Aware Compression
-
-LLMLingua-2 automatically adjusts compression based on content type:
-
-```python
-from headroom.transforms import LLMLinguaCompressor, LLMLinguaConfig
-
-# Conservative for code (keep 40% of tokens)
-config = LLMLinguaConfig(
-    code_compression_rate=0.4,    # More conservative
-    json_compression_rate=0.35,   # Moderate
-    text_compression_rate=0.25,   # Aggressive
-)
-
-compressor = LLMLinguaCompressor(config)
-
-# Auto-detects content type
-code_result = compressor.compress("def calculate(x): return x * 2")
-text_result = compressor.compress("This is a verbose explanation...")
-```
-
-### Memory Management
-
-The model uses ~1GB RAM. Unload it when done:
-
-```python
-from headroom.transforms import (
-    LLMLinguaCompressor,
-    unload_llmlingua_model,
-    is_llmlingua_model_loaded,
-)
-
-compressor = LLMLinguaCompressor()
-result = compressor.compress(content)  # Model loaded here
-
-# Check if loaded
-print(is_llmlingua_model_loaded())  # True
-
-# Free memory when done
-unload_llmlingua_model()  # Frees ~1GB
-print(is_llmlingua_model_loaded())  # False
-
-# Next compression will reload automatically
-```
-
-### Use in Pipeline
-
-```python
-from headroom.transforms import TransformPipeline, LLMLinguaCompressor, SmartCrusher
-
-# Combine with other transforms
-pipeline = TransformPipeline([
-    SmartCrusher(),        # First: compress JSON
-    LLMLinguaCompressor(), # Then: ML compression on remaining text
-])
-
-result = pipeline.apply(messages, tokenizer)
-```
-
-### Device Configuration
-
-```python
-from headroom.transforms import LLMLinguaConfig, LLMLinguaCompressor
-
-# Force CPU (slower but works everywhere)
-config = LLMLinguaConfig(device="cpu")
-
-# Force GPU (faster but needs CUDA)
-config = LLMLinguaConfig(device="cuda")
-
-# Auto-detect (default): uses CUDA > MPS > CPU
-config = LLMLinguaConfig(device="auto")
-
-compressor = LLMLinguaCompressor(config)
-```
-
-### Proxy Integration (Opt-In)
-
-Enable LLMLingua in the proxy server for automatic ML compression of all requests:
-
-```bash
-# Enable LLMLingua in proxy (requires: pip install headroom-ai[llmlingua,proxy])
-headroom proxy --llmlingua
-
-# With custom settings
-headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.4
-
-# The proxy shows LLMLingua status at startup:
-#   LLMLingua: ENABLED  (device=cuda, rate=0.4)
-#
-# If llmlingua is installed but not enabled, you'll see a helpful hint:
-#   LLMLingua: available (enable with --llmlingua for ML compression)
-```
-
-**Why opt-in?** LLMLingua adds ~2GB dependencies and 10-30s cold start. The default proxy is lightweight (~50MB) with <5ms overhead. Enable LLMLingua when you need maximum compression and can accept the tradeoffs.
-
----
-
-## Metrics & Monitoring
-
-### Prometheus Metrics (Proxy)
-
-```bash
-curl http://localhost:8787/metrics
-```
-
-```
-# HELP headroom_requests_total Total requests processed
-headroom_requests_total{mode="optimize"} 1234
-
-# HELP headroom_tokens_saved_total Total tokens saved
-headroom_tokens_saved_total 5678900
-
-# HELP headroom_compression_ratio Compression ratio histogram
-headroom_compression_ratio_bucket{le="0.5"} 890
-```
-
-### Query Stored Metrics (SDK)
-
-```python
-from datetime import datetime, timedelta
-
-# Get recent metrics
-metrics = client.get_metrics(
-    start_time=datetime.utcnow() - timedelta(hours=1),
-    limit=100,
-)
-
-for m in metrics:
-    print(f"{m.timestamp}: {m.tokens_input_before} -> {m.tokens_input_after}")
-
-# Get summary statistics
-summary = client.get_summary()
-print(f"Total requests: {summary['total_requests']}")
-print(f"Total tokens saved: {summary['total_tokens_saved']}")
-```
-
----
-
-## Troubleshooting
-
-### "Proxy won't start"
-
-```bash
-# Check if port is in use
-lsof -i :8787
-
-# Try a different port
-headroom proxy --port 8788
-
-# Check logs
-headroom proxy --log-level debug
-```
-
-### "No token savings"
-
-```python
-# 1. Verify mode is "optimize"
-stats = client.get_stats()
-print(stats["config"]["mode"])  # Should be "optimize"
-
-# 2. Check if transforms are enabled
-print(stats["transforms"])  # smart_crusher_enabled should be True
-
-# 3. Enable logging to see what's happening
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-# 4. Use simulate to see what WOULD happen
-plan = client.chat.completions.simulate(model="gpt-4o", messages=msgs)
-print(f"Transforms that would apply: {plan.transforms}")
-```
-
-### "High latency"
-
-```python
-# Headroom adds ~1-5ms overhead. If you see more:
-
-# 1. Check if embedding scorer is enabled (slower but better relevance)
-# Switch to BM25 for faster scoring:
-config.smart_crusher.relevance.tier = "bm25"
-
-# 2. Disable transforms you don't need
-config.cache_aligner.enabled = False  # If you don't need cache alignment
-
-# 3. Increase min_tokens_to_crush to skip small payloads
-config.smart_crusher.min_tokens_to_crush = 500
-```
-
-### "Compression too aggressive"
-
-```python
-# Keep more items
-config.smart_crusher.max_items_after_crush = 50  # Default is 15
-
-# Or disable compression for specific tools
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[...],
-    headroom_tool_profiles={
-        "important_tool": {"skip_compression": True}
-    }
-)
-```
-
----
-
-## Supported Providers
-
-| Provider | Token Counting | Cache Optimization | Status |
-|----------|----------------|-------------------|--------|
-| OpenAI | tiktoken (exact) | Automatic prefix caching | Full |
-| Anthropic | Official API | cache_control blocks | Full |
-| Google | Official API | Context caching | Full |
-| Cohere | Official API | - | Full |
-| Mistral | Official tokenizer | - | Full |
-| LiteLLM | Via underlying provider | - | Full |
-
----
-
-## Safety Guarantees
-
-Headroom follows strict safety rules:
-
-1. **Never removes human content** - User/assistant messages are never compressed
-2. **Never breaks tool ordering** - Tool calls and responses stay paired as atomic units
-3. **Parse failures are no-ops** - Malformed content passes through unchanged
-4. **Preserves recency** - Last N turns are always kept
-5. **Errors surface, don't hide** - Explicit exceptions with context
+## Providers
+
+| Provider | Token Counting | Cache Optimization |
+|----------|----------------|-------------------|
+| OpenAI | tiktoken (exact) | Automatic prefix caching |
+| Anthropic | Official API | cache_control blocks |
+| Google | Official API | Context caching |
+| Cohere | Official API | - |
+| Mistral | Official tokenizer | - |
 
 ---
 
 ## Performance
 
-| Scenario | Before | After | Savings | Overhead |
-|----------|--------|-------|---------|----------|
-| Search results (1000 items) | 45,000 tokens | 4,500 tokens | 90% | ~2ms |
-| Log analysis (500 entries) | 22,000 tokens | 3,300 tokens | 85% | ~1ms |
-| API response (nested JSON) | 15,000 tokens | 2,250 tokens | 85% | ~1ms |
-| Long conversation (50 turns) | 80,000 tokens | 32,000 tokens | 60% | ~3ms |
+| Scenario | Before | After | Savings |
+|----------|--------|-------|---------|
+| Search results (1000 items) | 45,000 tokens | 4,500 tokens | 90% |
+| Log analysis (500 entries) | 22,000 tokens | 3,300 tokens | 85% |
+| Long conversation (50 turns) | 80,000 tokens | 32,000 tokens | 60% |
+
+Overhead: ~1-5ms per request.
+
+---
+
+## Safety
+
+- **Never removes human content** — User/assistant messages are never compressed
+- **Never breaks tool ordering** — Tool calls and responses stay paired
+- **Parse failures are no-ops** — Malformed content passes through unchanged
+- **Compression is reversible** — LLM can retrieve original data via CCR
 
 ---
 
 ## Documentation
 
-- **[Quickstart Guide](docs/quickstart.md)** - Complete working examples
-- **[Proxy Documentation](docs/proxy.md)** - Production deployment
-- **[Transform Reference](docs/transforms.md)** - How each transform works
-- **[API Reference](docs/api.md)** - Complete API documentation
-- **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
-- **[Architecture](docs/ARCHITECTURE.md)** - How Headroom works internally
+| Guide | Description |
+|-------|-------------|
+| [SDK Guide](docs/sdk.md) | Wrap your client for fine-grained control |
+| [Proxy Guide](docs/proxy.md) | Production deployment |
+| [Configuration](docs/configuration.md) | All configuration options |
+| [CCR Guide](docs/ccr.md) | Reversible compression architecture |
+| [Metrics](docs/metrics.md) | Monitoring and observability |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues |
+| [Architecture](docs/ARCHITECTURE.md) | How it works internally |
 
 ---
 
 ## Examples
 
-See the [`examples/`](examples/) directory for complete, runnable examples:
+See [`examples/`](examples/) for runnable code:
 
-- `basic_usage.py` - Simple SDK usage
-- `proxy_integration.py` - Using the proxy with different clients
-- `custom_compression.py` - Advanced compression configuration
-- `metrics_dashboard.py` - Building a metrics dashboard
+- `basic_usage.py` — Simple SDK usage
+- `proxy_integration.py` — Using with different clients
+- `ccr_demo.py` — CCR architecture demonstration
 
 ---
 
 ## Contributing
 
-We welcome contributions!
-
 ```bash
-# Development setup
 git clone https://github.com/chopratejas/headroom.git
 cd headroom
 pip install -e ".[dev]"
-
-# Run tests
 pytest
-
-# Run linting
-ruff check .
-mypy headroom
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
@@ -811,7 +181,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 ---
 
