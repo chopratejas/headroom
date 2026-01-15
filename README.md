@@ -23,18 +23,31 @@
   </a>
 </p>
 
+
 ---
 
-## What It Does
+## Why Headroom?
 
-Headroom is a **smart compression layer** for LLM applications:
+- **Zero code changes** - works as a transparent proxy
+- **50-90% cost savings** - verified on real workloads
+- **Reversible compression** - LLM retrieves original data via CCR
+- **Content-aware** - code, logs, JSON each handled optimally
+- **Provider caching** - automatic prefix optimization for cache hits
+- **Persistent memory** - remember across conversations with zero-latency extraction
+- **Framework native** - LangChain, MCP, agents supported
 
-- **Compresses tool outputs** — 1000 search results → 15 items (keeps errors, anomalies, relevant items)
-- **Enables provider caching** — Stabilizes prefixes so cache hits actually happen
-- **Manages context windows** — Prevents token limit failures without breaking tool calls
-- **Reversible compression** — LLM can retrieve original data if needed ([CCR architecture](docs/ccr.md))
+---
 
-Works as a **proxy** (zero code changes) or **SDK** (fine-grained control).
+## Headroom vs Alternatives
+
+| Approach | Token Reduction | Accuracy | Reversible | Latency |
+|----------|-----------------|----------|------------|---------|
+| **Headroom** | 50-90% | No loss | Yes (CCR) | ~1-5ms |
+| Truncation | Variable | Data loss | No | ~0ms |
+| Summarization | 60-80% | Lossy | No | ~500ms+ |
+| No optimization | 0% | Full | N/A | 0ms |
+
+**Headroom wins** because it intelligently selects relevant content while keeping a retrieval path to the original data.
 
 ---
 
@@ -86,52 +99,57 @@ See the full [LangChain Integration Guide](docs/langchain.md) for memory, retrie
 | **MCP** | Tool output compression for Claude | [Guide](docs/ccr.md) |
 | **Any OpenAI Client** | Proxy server | [Guide](docs/proxy.md) |
 
-### LangChain Highlights
+---
 
-```python
-from headroom.integrations import (
-    HeadroomChatModel,           # Wrap any chat model
-    HeadroomChatMessageHistory,  # Auto-compress conversation history
-    HeadroomDocumentCompressor,  # Filter retrieved documents
-    wrap_tools_with_headroom,    # Compress agent tool outputs
-)
+## Features
 
-# Memory that auto-compresses when over 4K tokens
-memory = ConversationBufferMemory(
-    chat_memory=HeadroomChatMessageHistory(base_history)
-)
-
-# Retriever that keeps only relevant docs
-retriever = ContextualCompressionRetriever(
-    base_compressor=HeadroomDocumentCompressor(max_documents=10),
-    base_retriever=vectorstore.as_retriever(search_kwargs={"k": 50}),
-)
-
-# Agent tools with automatic output compression
-tools = wrap_tools_with_headroom([search_tool, database_tool])
-```
+| Feature | Description | Docs |
+|---------|-------------|------|
+| **Memory** | Persistent memory across conversations (zero-latency inline extraction) | [Memory](docs/memory.md) |
+| **SmartCrusher** | Compresses JSON tool outputs statistically | [Transforms](docs/transforms.md) |
+| **CacheAligner** | Stabilizes prefixes for provider caching | [Transforms](docs/transforms.md) |
+| **RollingWindow** | Manages context limits without breaking tools | [Transforms](docs/transforms.md) |
+| **CCR** | Reversible compression with automatic retrieval | [CCR Guide](docs/ccr.md) |
+| **LangChain** | Memory, retrievers, agents, streaming | [LangChain](docs/langchain.md) |
+| **Text Utilities** | Opt-in compression for search/logs | [Text Compression](docs/text-compression.md) |
+| **LLMLingua-2** | ML-based 20x compression (opt-in) | [LLMLingua](docs/llmlingua.md) |
+| **Code-Aware** | AST-based code compression (tree-sitter) | [Transforms](docs/transforms.md) |
 
 ---
 
-## Verify It's Working
+## Performance
 
-```bash
-curl http://localhost:8787/stats
-```
+| Scenario | Before | After | Savings |
+|----------|--------|-------|---------|
+| Search results (1000 items) | 45,000 tokens | 4,500 tokens | 90% |
+| Log analysis (500 entries) | 22,000 tokens | 3,300 tokens | 85% |
+| Long conversation (50 turns) | 80,000 tokens | 32,000 tokens | 60% |
+| Agent with tools (10 calls) | 100,000 tokens | 15,000 tokens | 85% |
 
-```json
-{
-  "tokens": {"saved": 12500, "savings_percent": 25.0},
-  "cost": {"total_savings_usd": 0.04}
-}
-```
+**Overhead**: ~1-5ms per request
 
-Or in Python:
+---
 
-```python
-print(llm.get_metrics())
-# {'tokens_saved': 12500, 'savings_percent': 45.2}
-```
+## Providers
+
+| Provider | Token Counting | Cache Optimization |
+|----------|----------------|-------------------|
+| OpenAI | tiktoken (exact) | Automatic prefix caching |
+| Anthropic | Official API | cache_control blocks |
+| Google | Official API | Context caching |
+| Cohere | Official API | - |
+| Mistral | Official tokenizer | - |
+
+New models auto-supported via naming pattern detection.
+
+---
+
+## Safety Guarantees
+
+- **Never removes human content** - user/assistant messages preserved
+- **Never breaks tool ordering** - tool calls and responses stay paired
+- **Parse failures are no-ops** - malformed content passes through unchanged
+- **Compression is reversible** - LLM retrieves original data via CCR
 
 ---
 
@@ -150,80 +168,24 @@ pip install "headroom-ai[all]"       # Everything
 
 ---
 
-## Features
-
-| Feature | Description | Docs |
-|---------|-------------|------|
-| **SmartCrusher** | Compresses JSON tool outputs statistically | [Transforms](docs/transforms.md) |
-| **CacheAligner** | Stabilizes prefixes for provider caching | [Transforms](docs/transforms.md) |
-| **RollingWindow** | Manages context limits without breaking tools | [Transforms](docs/transforms.md) |
-| **CCR** | Reversible compression with automatic retrieval | [CCR Guide](docs/ccr.md) |
-| **LangChain** | Memory, retrievers, agents, streaming | [LangChain](docs/langchain.md) |
-| **Text Utilities** | Opt-in compression for search/logs | [Text Compression](docs/text-compression.md) |
-| **LLMLingua-2** | ML-based 20x compression (opt-in) | [LLMLingua](docs/llmlingua.md) |
-| **Code-Aware** | AST-based code compression (tree-sitter) | [Transforms](docs/transforms.md) |
-
----
-
-## Providers
-
-| Provider | Token Counting | Cache Optimization |
-|----------|----------------|-------------------|
-| OpenAI | tiktoken (exact) | Automatic prefix caching |
-| Anthropic | Official API | cache_control blocks |
-| Google | Official API | Context caching |
-| Cohere | Official API | - |
-| Mistral | Official tokenizer | - |
-
-**New models auto-supported** — Unknown models get sensible defaults based on naming patterns.
-
----
-
-## Performance
-
-| Scenario | Before | After | Savings |
-|----------|--------|-------|---------|
-| Search results (1000 items) | 45,000 tokens | 4,500 tokens | 90% |
-| Log analysis (500 entries) | 22,000 tokens | 3,300 tokens | 85% |
-| Long conversation (50 turns) | 80,000 tokens | 32,000 tokens | 60% |
-| Agent with tools (10 calls) | 100,000 tokens | 15,000 tokens | 85% |
-
-Overhead: ~1-5ms per request.
-
----
-
-## Safety
-
-- **Never removes human content** — User/assistant messages are never compressed
-- **Never breaks tool ordering** — Tool calls and responses stay paired
-- **Parse failures are no-ops** — Malformed content passes through unchanged
-- **Compression is reversible** — LLM can retrieve original data via CCR
-
----
-
 ## Documentation
 
 | Guide | Description |
 |-------|-------------|
+| [Memory Guide](docs/memory.md) | Persistent memory for LLMs |
 | [LangChain Integration](docs/langchain.md) | Full LangChain support |
-| [SDK Guide](docs/sdk.md) | Wrap your client for fine-grained control |
+| [SDK Guide](docs/sdk.md) | Fine-grained control |
 | [Proxy Guide](docs/proxy.md) | Production deployment |
-| [Configuration](docs/configuration.md) | All configuration options |
-| [CCR Guide](docs/ccr.md) | Reversible compression architecture |
-| [Metrics](docs/metrics.md) | Monitoring and observability |
+| [Configuration](docs/configuration.md) | All options |
+| [CCR Guide](docs/ccr.md) | Reversible compression |
+| [Metrics](docs/metrics.md) | Monitoring |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues |
 
 ---
 
-## Examples
+## Who's Using Headroom?
 
-See [`examples/`](examples/) for runnable code:
-
-- `basic_usage.py` — Simple SDK usage
-- `proxy_integration.py` — Using with different clients
-- `langchain_agent.py` — LangChain ReAct agent with Headroom
-- `rag_pipeline.py` — RAG with document compression
-- `ccr_demo.py` — CCR architecture demonstration
+> Add your project here! [Open a PR](https://github.com/chopratejas/headroom/pulls) or [start a discussion](https://github.com/chopratejas/headroom/discussions).
 
 ---
 
@@ -242,7 +204,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 - see [LICENSE](LICENSE).
 
 ---
 

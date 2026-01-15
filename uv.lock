@@ -385,7 +385,9 @@ name = "headroom-ai"
 version = "0.2.3"
 source = { editable = "." }
 dependencies = [
+    { name = "openai" },
     { name = "pydantic" },
+    { name = "sentence-transformers" },
     { name = "tiktoken" },
 ]
 
@@ -444,12 +446,14 @@ requires-dist = [
     { name = "llmlingua", marker = "extra == 'llmlingua'", specifier = ">=0.2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "numpy", marker = "extra == 'relevance'", specifier = ">=1.24.0" },
+    { name = "openai", specifier = ">=2.14.0" },
     { name = "openai", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "sentence-transformers", specifier = ">=5.2.0" },
     { name = "sentence-transformers", marker = "extra == 'relevance'", specifier = ">=2.2.0" },
     { name = "tiktoken", specifier = ">=0.5.0" },
     { name = "torch", marker = "extra == 'llmlingua'", specifier = ">=2.0.0" },

@@ -60,6 +60,17 @@ class BaseTokenizer(ABC):
         """Count tokens in a text string. Must be implemented by subclasses."""
         pass
 
+    def count_message(self, message: dict[str, Any]) -> int:
+        """Count tokens in a single message.
+
+        Args:
+            message: A message dict with 'role' and 'content'.
+
+        Returns:
+            Token count for this message.
+        """
+        return self.count_messages([message]) - self.REPLY_OVERHEAD
+
     def count_messages(self, messages: list[dict[str, Any]]) -> int:
         """Count tokens in a list of chat messages.
 

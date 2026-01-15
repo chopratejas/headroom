@@ -112,6 +112,9 @@ from .exceptions import (
     TransformError,
     ValidationError,
 )
+
+# Memory module - simple, LLM-driven memory
+from .memory import Memory, SQLiteMemoryStore, with_memory
 from .providers import AnthropicProvider, OpenAIProvider, Provider, TokenCounter
 from .relevance import (
     BM25Scorer,
@@ -202,4 +205,8 @@ __all__ = [
     "count_tokens_text",
     "count_tokens_messages",
     "generate_report",
+    # Memory - simple, LLM-driven memory
+    "with_memory",
+    "Memory",
+    "SQLiteMemoryStore",
 ]

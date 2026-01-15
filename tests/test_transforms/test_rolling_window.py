@@ -755,16 +755,8 @@ class TestShouldApply:
 
 
 class TestConvenienceFunction:
-    """Tests for the apply_rolling_window convenience function.
+    """Tests for the apply_rolling_window convenience function."""
 
-    NOTE: The apply_rolling_window convenience function in rolling_window.py
-    has a bug where Tokenizer() is called without a token_counter argument.
-    These tests are skipped until that bug is fixed.
-    """
-
-    @pytest.mark.skip(
-        reason="Bug in source: apply_rolling_window calls Tokenizer() without token_counter"
-    )
     def test_convenience_function(self, long_conversation):
         """The convenience function should work correctly."""
         from headroom.transforms.rolling_window import apply_rolling_window
@@ -780,9 +772,6 @@ class TestConvenienceFunction:
         assert len(messages) < len(long_conversation)
         assert len(transforms) > 0
 
-    @pytest.mark.skip(
-        reason="Bug in source: apply_rolling_window calls Tokenizer() without token_counter"
-    )
     def test_convenience_function_with_config(self, long_conversation):
         """The convenience function should accept a config."""
         from headroom.transforms.rolling_window import apply_rolling_window
