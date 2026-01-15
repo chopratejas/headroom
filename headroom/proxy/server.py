@@ -1018,9 +1018,14 @@ class HeadroomProxy:
                     cached=True,
                 )
 
+                # Remove compression headers from cached response
+                response_headers = dict(cached.response_headers)
+                response_headers.pop("content-encoding", None)
+                response_headers.pop("content-length", None)
+
                 return Response(
                     content=cached.response_body,
-                    headers=cached.response_headers,
+                    headers=response_headers,
                     media_type="application/json",
                 )
 
@@ -1297,10 +1302,15 @@ class HeadroomProxy:
                         f"(saved {tokens_saved:,} tokens)"
                     )
 
+                # Remove compression headers since httpx already decompressed the response
+                response_headers = dict(response.headers)
+                response_headers.pop("content-encoding", None)
+                response_headers.pop("content-length", None)  # Length changed after decompression
+
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
-                    headers=dict(response.headers),
+                    headers=response_headers,
                 )
 
         except Exception as e:
@@ -1411,7 +1421,13 @@ class HeadroomProxy:
                     latency_ms=(time.time() - start_time) * 1000,
                     cached=True,
                 )
-                return Response(content=cached.response_body, headers=cached.response_headers)
+
+                # Remove compression headers from cached response
+                response_headers = dict(cached.response_headers)
+                response_headers.pop("content-encoding", None)
+                response_headers.pop("content-length", None)
+
+                return Response(content=cached.response_body, headers=response_headers)
 
         # Token counting
         tokenizer = get_tokenizer(model)
@@ -1535,10 +1551,15 @@ class HeadroomProxy:
                         f"(saved {tokens_saved:,} tokens)"
                     )
 
+                # Remove compression headers since httpx already decompressed the response
+                response_headers = dict(response.headers)
+                response_headers.pop("content-encoding", None)
+                response_headers.pop("content-length", None)  # Length changed after decompression
+
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
-                    headers=dict(response.headers),
+                    headers=response_headers,
                 )
         except Exception as e:
             self.metrics.record_failed()
@@ -1561,10 +1582,15 @@ class HeadroomProxy:
             content=body,
         )
 
+        # Remove compression headers since httpx already decompressed the response
+        response_headers = dict(response.headers)
+        response_headers.pop("content-encoding", None)
+        response_headers.pop("content-length", None)  # Length changed after decompression
+
         return Response(
             content=response.content,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=response_headers,
         )
 
 
