@@ -10,8 +10,6 @@ import json
 
 import pytest
 
-from headroom.proxy.server import ProxyConfig
-
 
 @pytest.fixture
 def mock_anthropic_response_with_compression_headers():
