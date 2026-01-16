@@ -430,6 +430,11 @@ class LLMLinguaCompressor(Transform):
             role = message.get("role", "")
             content = message.get("content", "")
 
+            # Skip non-string content (multimodal messages with images)
+            if not isinstance(content, str):
+                transformed_messages.append(message)
+                continue
+
             # Compress tool results (highest value compression)
             if role == "tool" and content:
                 result = self.compress(content, context=context, content_type="json")

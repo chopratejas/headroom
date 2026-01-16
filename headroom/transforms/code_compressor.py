@@ -1201,7 +1201,8 @@ class CodeAwareCompressor(Transform):
         for message in messages:
             content = message.get("content", "")
 
-            if not content:
+            # Skip empty or non-string content (multimodal messages with images)
+            if not content or not isinstance(content, str):
                 transformed_messages.append(message)
                 continue
 
@@ -1266,7 +1267,8 @@ class CodeAwareCompressor(Transform):
 
         for message in messages:
             content = message.get("content", "")
-            if content:
+            # Only check string content (skip multimodal)
+            if content and isinstance(content, str):
                 detection = detect_content_type(content)
                 if detection.content_type == ContentType.SOURCE_CODE:
                     return True
