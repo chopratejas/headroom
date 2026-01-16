@@ -903,8 +903,8 @@ class ContentRouter(Transform):
         context = kwargs.get("context", "")
         source_hints = kwargs.get("source_hints", {})  # message_id -> hint
 
-        transformed_messages = []
-        transforms_applied = []
+        transformed_messages: list[dict[str, Any]] = []
+        transforms_applied: list[str] = []
         warnings: list[str] = []
 
         # Check for analysis intent in the most recent user message
