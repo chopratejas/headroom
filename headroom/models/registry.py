@@ -1,15 +1,19 @@
 """Model registry with capabilities database.
 
 Centralized database of LLM models with their capabilities, context limits,
-pricing, and provider information. Supports dynamic registration of custom
-models and automatic provider detection.
+and provider information. Supports dynamic registration of custom models
+and automatic provider detection.
+
+Pricing is fetched dynamically from LiteLLM's community-maintained database.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from typing import Any
+
+from headroom.pricing.litellm_pricing import estimate_cost as litellm_estimate_cost
+from headroom.pricing.litellm_pricing import get_model_pricing
 
 
 @dataclass(frozen=True)
@@ -26,12 +30,12 @@ class ModelInfo:
         supports_streaming: Whether model supports streaming responses.
         supports_json_mode: Whether model supports JSON output mode.
         tokenizer_backend: Tokenizer backend to use.
-        input_cost_per_1m: Cost per 1M input tokens in USD.
-        output_cost_per_1m: Cost per 1M output tokens in USD.
-        cached_input_cost_per_1m: Cost per 1M cached input tokens.
-        pricing_date: Date pricing was last updated.
         aliases: Alternative names for the model.
         notes: Additional notes about the model.
+
+    Note:
+        Pricing is fetched dynamically from LiteLLM's database.
+        Use ModelRegistry.estimate_cost() to get current pricing.
     """
 
     name: str
@@ -43,10 +47,6 @@ class ModelInfo:
     supports_streaming: bool = True
     supports_json_mode: bool = True
     tokenizer_backend: str | None = None
-    input_cost_per_1m: float | None = None
-    output_cost_per_1m: float | None = None
-    cached_input_cost_per_1m: float | None = None
-    pricing_date: date | None = None
     aliases: tuple[str, ...] = ()
     notes: str = ""
 
@@ -57,7 +57,10 @@ _MODELS: dict[str, ModelInfo] = {}
 
 
 def _register_builtin_models() -> None:
-    """Register built-in models."""
+    """Register built-in models.
+
+    Note: Pricing is fetched dynamically from LiteLLM's database.
+    """
 
     # ============================================================
     # OpenAI Models
@@ -73,10 +76,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=2.50,
-        output_cost_per_1m=10.00,
-        cached_input_cost_per_1m=1.25,
-        pricing_date=date(2025, 1, 6),
         aliases=("gpt-4o-2024-11-20", "gpt-4o-2024-08-06", "gpt-4o-2024-05-13"),
         notes="Latest GPT-4o with vision and tools",
     )
@@ -90,10 +89,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=0.15,
-        output_cost_per_1m=0.60,
-        cached_input_cost_per_1m=0.075,
-        pricing_date=date(2025, 1, 6),
         aliases=("gpt-4o-mini-2024-07-18",),
         notes="Cost-effective GPT-4o variant",
     )
@@ -108,10 +103,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=15.00,
-        output_cost_per_1m=60.00,
-        cached_input_cost_per_1m=7.50,
-        pricing_date=date(2025, 1, 6),
         notes="Full reasoning model with extended thinking",
     )
 
@@ -124,10 +115,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=1.10,
-        output_cost_per_1m=4.40,
-        cached_input_cost_per_1m=0.55,
-        pricing_date=date(2025, 1, 6),
         notes="Fast reasoning model",
     )
 
@@ -140,10 +127,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=1.10,
-        output_cost_per_1m=4.40,
-        cached_input_cost_per_1m=0.55,
-        pricing_date=date(2025, 1, 6),
         notes="Latest reasoning model",
     )
 
@@ -157,10 +140,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=10.00,
-        output_cost_per_1m=30.00,
-        cached_input_cost_per_1m=5.00,
-        pricing_date=date(2025, 1, 6),
         aliases=("gpt-4-turbo-preview", "gpt-4-turbo-2024-04-09"),
         notes="GPT-4 Turbo with vision",
     )
@@ -175,9 +154,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=30.00,
-        output_cost_per_1m=60.00,
-        pricing_date=date(2025, 1, 6),
         aliases=("gpt-4-0613",),
         notes="Original GPT-4",
     )
@@ -191,9 +167,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=60.00,
-        output_cost_per_1m=120.00,
-        pricing_date=date(2025, 1, 6),
         notes="Extended context GPT-4",
     )
 
@@ -207,10 +180,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="tiktoken",
-        input_cost_per_1m=0.50,
-        output_cost_per_1m=1.50,
-        cached_input_cost_per_1m=0.25,
-        pricing_date=date(2025, 1, 6),
         aliases=("gpt-3.5-turbo-0125", "gpt-3.5-turbo-1106"),
         notes="Fast and cost-effective",
     )
@@ -228,10 +197,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="anthropic",
-        input_cost_per_1m=3.00,
-        output_cost_per_1m=15.00,
-        cached_input_cost_per_1m=0.30,
-        pricing_date=date(2025, 1, 6),
         aliases=("claude-3-5-sonnet-latest", "claude-sonnet-4-20250514"),
         notes="Claude 3.5 Sonnet - Best balance of speed and capability",
     )
@@ -245,10 +210,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="anthropic",
-        input_cost_per_1m=0.80,
-        output_cost_per_1m=4.00,
-        cached_input_cost_per_1m=0.08,
-        pricing_date=date(2025, 1, 6),
         aliases=("claude-3-5-haiku-latest",),
         notes="Claude 3.5 Haiku - Fast and cost-effective",
     )
@@ -262,10 +223,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="anthropic",
-        input_cost_per_1m=15.00,
-        output_cost_per_1m=75.00,
-        cached_input_cost_per_1m=1.50,
-        pricing_date=date(2025, 1, 6),
         aliases=("claude-3-opus-latest",),
         notes="Claude 3 Opus - Most capable",
     )
@@ -279,10 +236,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="anthropic",
-        input_cost_per_1m=0.25,
-        output_cost_per_1m=1.25,
-        cached_input_cost_per_1m=0.03,
-        pricing_date=date(2025, 1, 6),
         notes="Claude 3 Haiku - Legacy fast model",
     )
 
@@ -299,9 +252,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="google",
-        input_cost_per_1m=0.10,
-        output_cost_per_1m=0.40,
-        pricing_date=date(2025, 1, 6),
         aliases=("gemini-2.0-flash-exp",),
         notes="Gemini 2.0 Flash - Fast multimodal",
     )
@@ -315,9 +265,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="google",
-        input_cost_per_1m=1.25,
-        output_cost_per_1m=5.00,
-        pricing_date=date(2025, 1, 6),
         aliases=("gemini-1.5-pro-latest",),
         notes="Gemini 1.5 Pro - 2M context window",
     )
@@ -331,9 +278,6 @@ def _register_builtin_models() -> None:
         supports_vision=True,
         supports_streaming=True,
         tokenizer_backend="google",
-        input_cost_per_1m=0.075,
-        output_cost_per_1m=0.30,
-        pricing_date=date(2025, 1, 6),
         aliases=("gemini-1.5-flash-latest",),
         notes="Gemini 1.5 Flash - Cost-effective",
     )
@@ -407,9 +351,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="huggingface",
-        input_cost_per_1m=2.00,
-        output_cost_per_1m=6.00,
-        pricing_date=date(2025, 1, 6),
         aliases=("mistral-large-latest",),
         notes="Mistral Large - Best capability",
     )
@@ -423,9 +364,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="huggingface",
-        input_cost_per_1m=0.20,
-        output_cost_per_1m=0.60,
-        pricing_date=date(2025, 1, 6),
         aliases=("mistral-small-latest",),
         notes="Mistral Small - Cost-effective",
     )
@@ -469,9 +407,6 @@ def _register_builtin_models() -> None:
         supports_vision=False,
         supports_streaming=True,
         tokenizer_backend="huggingface",
-        input_cost_per_1m=0.14,
-        output_cost_per_1m=0.28,
-        pricing_date=date(2025, 1, 6),
         notes="DeepSeek V3 - High performance, low cost",
     )
 
@@ -673,31 +608,34 @@ class ModelRegistry:
         output_tokens: int,
         cached_tokens: int = 0,
     ) -> float | None:
-        """Estimate API cost for a model.
+        """Estimate API cost for a model using LiteLLM's pricing database.
 
         Args:
             model: Model name.
             input_tokens: Number of input tokens.
             output_tokens: Number of output tokens.
-            cached_tokens: Number of cached input tokens.
+            cached_tokens: Number of cached input tokens (not currently used).
 
         Returns:
             Estimated cost in USD, or None if pricing unknown.
         """
-        info = cls.get(model)
-        if not info or info.input_cost_per_1m is None:
+        # Use LiteLLM's pricing database
+        return litellm_estimate_cost(model, input_tokens, output_tokens)
+
+    @classmethod
+    def get_pricing(cls, model: str) -> tuple[float, float] | None:
+        """Get pricing for a model from LiteLLM's database.
+
+        Args:
+            model: Model name.
+
+        Returns:
+            Tuple of (input_cost_per_1m, output_cost_per_1m) or None if not found.
+        """
+        pricing = get_model_pricing(model)
+        if pricing is None:
             return None
-
-        input_cost = (input_tokens / 1_000_000) * info.input_cost_per_1m
-        output_cost = (output_tokens / 1_000_000) * (info.output_cost_per_1m or 0)
-
-        if cached_tokens and info.cached_input_cost_per_1m:
-            # Adjust for cached tokens
-            regular_input = input_tokens - cached_tokens
-            cached_cost = (cached_tokens / 1_000_000) * info.cached_input_cost_per_1m
-            input_cost = (regular_input / 1_000_000) * info.input_cost_per_1m + cached_cost
-
-        return input_cost + output_cost
+        return (pricing.input_cost_per_1m, pricing.output_cost_per_1m)
 
 
 # Convenience functions

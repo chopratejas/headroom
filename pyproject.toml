@@ -48,6 +48,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "openai>=2.14.0",
     "sentence-transformers>=5.2.0",
+    "litellm>=1.0.0",
 ]
 
 [project.optional-dependencies]

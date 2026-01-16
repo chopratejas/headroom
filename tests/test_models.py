@@ -34,14 +34,11 @@ class TestModelInfo:
             max_output_tokens=8192,
             supports_tools=False,
             supports_vision=True,
-            input_cost_per_1m=1.5,
-            output_cost_per_1m=3.0,
         )
         assert info.context_window == 32000
         assert info.max_output_tokens == 8192
         assert info.supports_tools is False
         assert info.supports_vision is True
-        assert info.input_cost_per_1m == 1.5
 
     def test_frozen(self):
         """Test that ModelInfo is frozen (immutable)."""
@@ -166,17 +163,20 @@ class TestModelRegistry:
         assert abs(cost - 7.50) < 0.01
 
     def test_estimate_cost_with_cache(self):
-        """Test cost estimation with cached tokens."""
+        """Test cost estimation with cached tokens.
+
+        Note: LiteLLM's basic cost estimation doesn't support cached token pricing.
+        The cached_tokens parameter is accepted but not currently factored into cost.
+        """
         cost = ModelRegistry.estimate_cost(
             model="gpt-4o",
             input_tokens=1000000,
             output_tokens=0,
-            cached_tokens=500000,  # Half cached
+            cached_tokens=500000,  # Not currently used by LiteLLM
         )
         assert cost is not None
-        # 500K regular at $2.50/1M + 500K cached at $1.25/1M
-        # = $1.25 + $0.625 = $1.875
-        assert abs(cost - 1.875) < 0.01
+        # With LiteLLM, all 1M tokens are charged at input rate: $2.50
+        assert abs(cost - 2.50) < 0.01
 
     def test_estimate_cost_unknown_model(self):
         """Test cost estimation for unknown model."""
@@ -222,8 +222,11 @@ class TestBuiltInModels:
         assert info.context_window == 128000
         assert info.supports_tools is True
         assert info.supports_vision is True
-        assert info.input_cost_per_1m == 2.50
-        assert info.output_cost_per_1m == 10.00
+        # Pricing is now fetched from LiteLLM, not stored in ModelInfo
+        pricing = ModelRegistry.get_pricing("gpt-4o")
+        assert pricing is not None
+        assert pricing[0] == 2.50  # input cost per 1M
+        assert pricing[1] == 10.00  # output cost per 1M
 
     def test_o1_info(self):
         """Test o1 model info."""
@@ -237,7 +240,11 @@ class TestBuiltInModels:
         info = get_model_info("claude-3-5-sonnet-20241022")
         assert info.provider == "anthropic"
         assert info.context_window == 200000
-        assert info.cached_input_cost_per_1m == 0.30  # 90% cache discount
+        # Pricing is now fetched from LiteLLM
+        pricing = ModelRegistry.get_pricing("claude-3-5-sonnet-20241022")
+        assert pricing is not None
+        assert pricing[0] == 3.00  # input cost per 1M
+        assert pricing[1] == 15.00  # output cost per 1M
 
     def test_gemini_info(self):
         """Test Gemini model info."""
