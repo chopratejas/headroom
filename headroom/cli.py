@@ -53,6 +53,12 @@ def cmd_proxy(args: argparse.Namespace) -> int:
         rate_limit_enabled=not args.no_rate_limit,
         log_file=args.log_file,
         budget_limit_usd=args.budget,
+        # LLMLingua: ON by default (use --no-llmlingua to disable)
+        llmlingua_enabled=not args.no_llmlingua,
+        llmlingua_device=args.llmlingua_device,
+        llmlingua_target_rate=args.llmlingua_rate,
+        # Code-aware: ON by default (use --no-code-aware to disable)
+        code_aware_enabled=not args.no_code_aware,
     )
 
     print(f"""
@@ -169,6 +175,30 @@ Documentation: https://github.com/headroom-sdk/headroom
         "--budget",
         type=float,
         help="Daily budget limit in USD",
+    )
+    # LLMLingua ML-based compression (ON by default if installed)
+    proxy_parser.add_argument(
+        "--no-llmlingua",
+        action="store_true",
+        help="Disable LLMLingua-2 ML-based compression",
+    )
+    proxy_parser.add_argument(
+        "--llmlingua-device",
+        choices=["auto", "cuda", "cpu", "mps"],
+        default="auto",
+        help="Device for LLMLingua model (default: auto)",
+    )
+    proxy_parser.add_argument(
+        "--llmlingua-rate",
+        type=float,
+        default=0.3,
+        help="LLMLingua compression rate 0.0-1.0 (default: 0.3 = keep 30%%)",
+    )
+    # Code-aware compression (ON by default if installed)
+    proxy_parser.add_argument(
+        "--no-code-aware",
+        action="store_true",
+        help="Disable AST-based code compression",
     )
     proxy_parser.set_defaults(func=cmd_proxy)
 

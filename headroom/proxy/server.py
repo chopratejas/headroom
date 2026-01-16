@@ -70,9 +70,12 @@ from headroom.tokenizers import get_tokenizer
 from headroom.transforms import (
     _LLMLINGUA_AVAILABLE,
     CacheAligner,
+    CodeAwareCompressor,
+    CodeCompressorConfig,
     RollingWindow,
     SmartCrusher,
     TransformPipeline,
+    is_tree_sitter_available,
 )
 
 # Conditionally import LLMLingua if available
@@ -172,10 +175,13 @@ class ProxyConfig:
     ccr_proactive_expansion: bool = True  # Proactively expand based on query relevance
     ccr_max_proactive_expansions: int = 2  # Max contexts to proactively expand per turn
 
-    # LLMLingua ML-based compression (opt-in)
-    llmlingua_enabled: bool = False  # Enable LLMLingua-2 for ML-based compression
+    # LLMLingua ML-based compression (ON by default if installed)
+    llmlingua_enabled: bool = True  # Enable LLMLingua-2 for ML-based compression
     llmlingua_device: str = "auto"  # Device: 'auto', 'cuda', 'cpu', 'mps'
     llmlingua_target_rate: float = 0.3  # Target compression rate (0.3 = keep 30%)
+
+    # Code-aware compression (ON by default if installed)
+    code_aware_enabled: bool = True  # Enable AST-based code compression
 
     # Caching
     cache_enabled: bool = True
@@ -691,6 +697,9 @@ class HeadroomProxy:
         # Add LLMLingua if enabled and available
         self._llmlingua_status = self._setup_llmlingua(config, transforms)
 
+        # Add CodeAware if enabled and available
+        self._code_aware_status = self._setup_code_aware(config, transforms)
+
         self.anthropic_pipeline = TransformPipeline(
             transforms=transforms,
             provider=self.anthropic_provider,
@@ -817,6 +826,38 @@ class HeadroomProxy:
                 return "available"  # Available but not enabled - hint to user
             return "disabled"
 
+    def _setup_code_aware(self, config: ProxyConfig, transforms: list) -> str:
+        """Set up code-aware compression if enabled.
+
+        Args:
+            config: Proxy configuration
+            transforms: Transform list to append to
+
+        Returns:
+            Status string for logging: 'enabled', 'disabled', 'available', 'unavailable'
+        """
+        if config.code_aware_enabled:
+            if is_tree_sitter_available():
+                code_config = CodeCompressorConfig(
+                    preserve_imports=True,
+                    preserve_signatures=True,
+                    preserve_type_annotations=True,
+                    preserve_error_handlers=True,
+                )
+                # Insert before RollingWindow (which should be last)
+                transforms.insert(-1, CodeAwareCompressor(code_config))
+                return "enabled"
+            else:
+                logger.warning(
+                    "Code-aware compression requested but tree-sitter not installed. "
+                    "Install with: pip install headroom-ai[code]"
+                )
+                return "unavailable"
+        else:
+            if is_tree_sitter_available():
+                return "available"  # Available but not enabled
+            return "disabled"
+
     async def startup(self):
         """Initialize async resources."""
         self.http_client = httpx.AsyncClient(
@@ -839,10 +880,17 @@ class HeadroomProxy:
                 f"rate={self.config.llmlingua_target_rate})"
             )
         elif self._llmlingua_status == "available":
-            logger.info(
-                "LLMLingua: available but not enabled. "
-                "Enable with --llmlingua for ML-based compression (3-5x better on text/logs)"
-            )
+            logger.info("LLMLingua: available but disabled (use without --no-llmlingua)")
+        elif self._llmlingua_status == "unavailable":
+            logger.info("LLMLingua: not installed (pip install headroom-ai[llmlingua])")
+
+        # Code-aware status
+        if self._code_aware_status == "enabled":
+            logger.info("Code-Aware: ENABLED (AST-based compression)")
+        elif self._code_aware_status == "available":
+            logger.info("Code-Aware: available but disabled (use without --no-code-aware)")
+        elif self._code_aware_status == "unavailable":
+            logger.info("Code-Aware: not installed (pip install headroom-ai[code])")
 
         # CCR status
         ccr_features = []
@@ -2084,10 +2132,23 @@ def _get_llmlingua_banner_status(config: ProxyConfig) -> str:
                 f"ENABLED  (device={config.llmlingua_device}, rate={config.llmlingua_target_rate})"
             )
         else:
-            return "REQUESTED but not installed (pip install headroom-ai[llmlingua])"
+            return "NOT INSTALLED (pip install headroom-ai[llmlingua])"
     else:
         if _LLMLINGUA_AVAILABLE:
-            return "available (enable with --llmlingua for ML compression)"
+            return "DISABLED (remove --no-llmlingua to enable)"
+        return "DISABLED"
+
+
+def _get_code_aware_banner_status(config: ProxyConfig) -> str:
+    """Get code-aware compression status line for banner."""
+    if config.code_aware_enabled:
+        if is_tree_sitter_available():
+            return "ENABLED  (AST-based)"
+        else:
+            return "NOT INSTALLED (pip install headroom-ai[code])"
+    else:
+        if is_tree_sitter_available():
+            return "DISABLED (remove --no-code-aware to enable)"
         return "DISABLED"
 
 
@@ -2101,6 +2162,7 @@ def run_server(config: ProxyConfig | None = None):
     app = create_app(config)
 
     llmlingua_status = _get_llmlingua_banner_status(config)
+    code_aware_status = _get_code_aware_banner_status(config)
 
     print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -2116,6 +2178,7 @@ def run_server(config: ProxyConfig | None = None):
 ║    Retry:           {"ENABLED " if config.retry_enabled else "DISABLED"}   (max {config.retry_max_attempts} attempts)                       ║
 ║    Cost Tracking:   {"ENABLED " if config.cost_tracking_enabled else "DISABLED"}   (budget: {"$" + str(config.budget_limit_usd) + "/" + config.budget_period if config.budget_limit_usd else "unlimited"})          ║
 ║    LLMLingua:       {llmlingua_status:<52}║
+║    Code-Aware:      {code_aware_status:<52}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  USAGE:                                                              ║
 ║    Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude     ║
