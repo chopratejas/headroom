@@ -10,6 +10,11 @@ LangChain (pip install headroom[langchain]):
     - StreamingMetricsTracker: Token counting during streaming
     - HeadroomLangSmithCallbackHandler: LangSmith trace enrichment
 
+Agno (pip install agno):
+    - HeadroomAgnoModel: Drop-in wrapper for any Agno model
+    - HeadroomPreHook/HeadroomPostHook: Agent-level hooks for tracking
+    - create_headroom_hooks: Convenience function to create hook pairs
+
 MCP (Model Context Protocol):
     - HeadroomMCPCompressor: Compress MCP tool results
     - compress_tool_result: Simple function for tool compression
@@ -19,6 +24,11 @@ Example:
     from headroom.integrations import HeadroomChatModel
     # or explicitly:
     from headroom.integrations.langchain import HeadroomChatModel
+
+    # Agno integration
+    from headroom.integrations.agno import HeadroomAgnoModel
+    # or explicitly:
+    from headroom.integrations.agno import HeadroomAgnoModel
 
     # MCP integration
     from headroom.integrations import compress_tool_result
@@ -75,6 +85,24 @@ from .mcp import (
     create_headroom_mcp_proxy,
 )
 
+# Re-export from agno subpackage (optional dependency)
+try:
+    from .agno import (
+        HeadroomAgnoModel,
+        HeadroomPostHook,
+        HeadroomPreHook,
+        agno_available,
+        create_headroom_hooks,
+        get_model_name_from_agno,
+    )
+    from .agno import OptimizationMetrics as AgnoOptimizationMetrics
+    from .agno import get_headroom_provider as get_agno_provider
+    from .agno import optimize_messages as optimize_agno_messages
+
+    _AGNO_AVAILABLE = True
+except ImportError:
+    _AGNO_AVAILABLE = False
+
 __all__ = [
     # LangChain Core
     "HeadroomChatModel",
@@ -118,4 +146,14 @@ __all__ = [
     "compress_tool_result_with_metrics",
     "create_headroom_mcp_proxy",
     "DEFAULT_MCP_PROFILES",
+    # Agno
+    "HeadroomAgnoModel",
+    "HeadroomPreHook",
+    "HeadroomPostHook",
+    "agno_available",
+    "create_headroom_hooks",
+    "get_agno_provider",
+    "get_model_name_from_agno",
+    "AgnoOptimizationMetrics",
+    "optimize_agno_messages",
 ]
