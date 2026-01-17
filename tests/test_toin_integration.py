@@ -170,6 +170,20 @@ class TestTOINIntegration:
             fresh_store.retrieve(entry.hash, query="find all items")
 
         # Step 4: Verify TOIN learned from retrievals
+        pattern = fresh_toin._patterns.get(signature.structure_hash)
+        assert pattern is not None, "Pattern should exist after retrievals"
+
+        # CRITICAL: Verify field-level learning actually happened
+        # This assertion would have caught the bug where compression_store
+        # wasn't passing retrieved_items to TOIN
+        assert len(pattern.field_semantics) > 0, (
+            "TOIN should learn field semantics from retrieved items. "
+            "If this fails, the production code path (CompressionStore -> TOIN) is broken."
+        )
+
+        # Verify retrieval stats were updated
+        assert pattern.total_retrievals >= 1, "Should have recorded retrievals"
+
         recommendation = fresh_toin.get_recommendation(signature, "find all items")
 
         # After many retrievals, TOIN should recommend more items

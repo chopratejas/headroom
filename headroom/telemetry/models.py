@@ -368,6 +368,308 @@ class ToolSignature:
 
 
 @dataclass
+class FieldSemantics:
+    """Learned semantics for a field based on retrieval patterns.
+
+    This is the evolution of TOIN - we learn WHAT fields mean
+    from HOW users retrieve them. No hardcoded patterns, no assumptions.
+
+    Learning process:
+    1. User retrieves items where field X has value Y
+    2. TOIN records: field_hash, value_hash, retrieval context
+    3. After N retrievals, TOIN infers: "This field behaves like an error indicator"
+    4. SmartCrusher uses this learned signal (O(1) lookup, zero latency)
+
+    Privacy: All field names and values are hashed (SHA256[:8]).
+    """
+
+    field_hash: str  # SHA256[:8] of field name
+
+    # Inferred semantic type (learned from retrieval patterns, NOT hardcoded)
+    # These are behavioral categories, not syntactic patterns:
+    # - "identifier": Users query by exact value (e.g., "show me item X")
+    # - "error_indicator": Users retrieve when value != most common value
+    # - "score": Users retrieve top-N by this field
+    # - "status": Low cardinality, specific values trigger retrieval
+    # - "temporal": Users query by time ranges
+    # - "content": Users do text search on this field
+    inferred_type: Literal[
+        "unknown",  # Not enough data yet
+        "identifier",  # High uniqueness, exact-match queries
+        "error_indicator",  # Retrieved when value != default
+        "score",  # Top-N / sorted queries
+        "status",  # Categorical, certain values matter
+        "temporal",  # Range queries
+        "content",  # Text search queries
+    ] = "unknown"
+
+    confidence: float = 0.0  # 0.0 = no data, 1.0 = high confidence
+
+    # Value patterns (all hashed for privacy)
+    # important_value_hashes: values that triggered retrieval
+    # default_value_hash: most common value (probably NOT important)
+    important_value_hashes: list[str] = field(default_factory=list)
+    default_value_hash: str | None = None
+    value_retrieval_frequency: dict[str, int] = field(default_factory=dict)  # value_hash -> count
+
+    # Value statistics (for inferring type)
+    total_unique_values_seen: int = 0
+    total_values_seen: int = 0
+    most_common_value_frequency: float = 0.0  # Fraction of items with most common value
+
+    # Query patterns (anonymized)
+    # Tracks HOW users query this field (equals, not-equals, greater-than, etc.)
+    query_operator_frequency: dict[str, int] = field(default_factory=dict)  # operator -> count
+
+    # Learning metadata
+    retrieval_count: int = 0
+    compression_count: int = 0  # How many times we've seen this field in compression
+    last_updated: float = 0.0
+
+    # Bounds for memory management
+    MAX_IMPORTANT_VALUES: int = 50
+    MAX_VALUE_FREQUENCY_ENTRIES: int = 100
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "field_hash": self.field_hash,
+            "inferred_type": self.inferred_type,
+            "confidence": self.confidence,
+            "important_value_hashes": self.important_value_hashes[:self.MAX_IMPORTANT_VALUES],
+            "default_value_hash": self.default_value_hash,
+            "value_retrieval_frequency": dict(
+                sorted(
+                    self.value_retrieval_frequency.items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[: self.MAX_VALUE_FREQUENCY_ENTRIES]
+            ),
+            "total_unique_values_seen": self.total_unique_values_seen,
+            "total_values_seen": self.total_values_seen,
+            "most_common_value_frequency": self.most_common_value_frequency,
+            "query_operator_frequency": self.query_operator_frequency,
+            "retrieval_count": self.retrieval_count,
+            "compression_count": self.compression_count,
+            "last_updated": self.last_updated,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FieldSemantics:
+        """Create from dictionary."""
+        # Filter to valid fields only
+        valid_fields = {
+            "field_hash",
+            "inferred_type",
+            "confidence",
+            "important_value_hashes",
+            "default_value_hash",
+            "value_retrieval_frequency",
+            "total_unique_values_seen",
+            "total_values_seen",
+            "most_common_value_frequency",
+            "query_operator_frequency",
+            "retrieval_count",
+            "compression_count",
+            "last_updated",
+        }
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
+
+    def record_retrieval_value(self, value_hash: str, operator: str = "=") -> None:
+        """Record that a value was retrieved for this field.
+
+        Args:
+            value_hash: SHA256[:8] hash of the retrieved value.
+            operator: Query operator used ("=", "!=", ">", "<", "contains", etc.)
+        """
+        import time
+
+        self.retrieval_count += 1
+        self.last_updated = time.time()
+
+        # Track value frequency
+        self.value_retrieval_frequency[value_hash] = (
+            self.value_retrieval_frequency.get(value_hash, 0) + 1
+        )
+
+        # Bound the frequency dict
+        if len(self.value_retrieval_frequency) > self.MAX_VALUE_FREQUENCY_ENTRIES:
+            sorted_items = sorted(
+                self.value_retrieval_frequency.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )[: self.MAX_VALUE_FREQUENCY_ENTRIES]
+            self.value_retrieval_frequency = dict(sorted_items)
+
+        # Track important values (values that get retrieved)
+        if value_hash not in self.important_value_hashes:
+            self.important_value_hashes.append(value_hash)
+            if len(self.important_value_hashes) > self.MAX_IMPORTANT_VALUES:
+                # Keep most frequently retrieved values
+                self.important_value_hashes = sorted(
+                    self.important_value_hashes,
+                    key=lambda v: self.value_retrieval_frequency.get(v, 0),
+                    reverse=True,
+                )[: self.MAX_IMPORTANT_VALUES]
+
+        # Track query operators
+        self.query_operator_frequency[operator] = (
+            self.query_operator_frequency.get(operator, 0) + 1
+        )
+
+    def record_compression_stats(
+        self,
+        unique_values: int,
+        total_values: int,
+        most_common_value_hash: str | None,
+        most_common_frequency: float,
+    ) -> None:
+        """Record statistics from compression for type inference.
+
+        Args:
+            unique_values: Number of unique values seen for this field.
+            total_values: Total number of items with this field.
+            most_common_value_hash: Hash of the most common value.
+            most_common_frequency: Fraction of items with the most common value.
+        """
+        import time
+
+        self.compression_count += 1
+        self.last_updated = time.time()
+
+        # Update rolling statistics
+        n = self.compression_count
+        self.total_unique_values_seen = int(
+            (self.total_unique_values_seen * (n - 1) + unique_values) / n
+        )
+        self.total_values_seen = int(
+            (self.total_values_seen * (n - 1) + total_values) / n
+        )
+        self.most_common_value_frequency = (
+            self.most_common_value_frequency * (n - 1) + most_common_frequency
+        ) / n
+
+        # Track default value (most common)
+        if most_common_value_hash and most_common_frequency > 0.5:
+            self.default_value_hash = most_common_value_hash
+
+    def infer_type(self) -> None:
+        """Infer semantic type from accumulated statistics.
+
+        This is the learning algorithm - purely data-driven, no hardcoded patterns.
+        """
+        # Need minimum data to infer
+        min_retrievals = 3
+        min_compressions = 2
+
+        if self.retrieval_count < min_retrievals or self.compression_count < min_compressions:
+            self.inferred_type = "unknown"
+            self.confidence = 0.0
+            return
+
+        # Calculate metrics
+        uniqueness_ratio = (
+            self.total_unique_values_seen / max(1, self.total_values_seen)
+        )
+        has_dominant_default = self.most_common_value_frequency > 0.7
+        retrieval_diversity = len(self.value_retrieval_frequency) / max(1, self.retrieval_count)
+
+        # Check query operator patterns
+        total_ops = sum(self.query_operator_frequency.values())
+        equals_ratio = self.query_operator_frequency.get("=", 0) / max(1, total_ops)
+        range_ratio = (
+            self.query_operator_frequency.get(">", 0)
+            + self.query_operator_frequency.get("<", 0)
+            + self.query_operator_frequency.get(">=", 0)
+            + self.query_operator_frequency.get("<=", 0)
+        ) / max(1, total_ops)
+        contains_ratio = self.query_operator_frequency.get("contains", 0) / max(1, total_ops)
+
+        # Inference logic (data-driven, no field name patterns)
+        inferred = "unknown"
+        confidence = 0.0
+
+        # IDENTIFIER: High uniqueness + exact match queries
+        if uniqueness_ratio > 0.8 and equals_ratio > 0.7:
+            inferred = "identifier"
+            confidence = min(0.9, uniqueness_ratio * equals_ratio)
+
+        # ERROR_INDICATOR: Has dominant default + retrievals are for non-default values
+        elif has_dominant_default and self.default_value_hash:
+            # Check if retrieved values are different from default
+            default_retrieval_count = self.value_retrieval_frequency.get(
+                self.default_value_hash, 0
+            )
+            non_default_retrieval_ratio = 1 - (
+                default_retrieval_count / max(1, self.retrieval_count)
+            )
+            if non_default_retrieval_ratio > 0.7:
+                inferred = "error_indicator"
+                confidence = min(0.9, non_default_retrieval_ratio * self.most_common_value_frequency)
+
+        # STATUS: Low uniqueness + specific values retrieved
+        elif uniqueness_ratio < 0.2 and retrieval_diversity < 0.5:
+            inferred = "status"
+            confidence = min(0.85, (1 - uniqueness_ratio) * (1 - retrieval_diversity))
+
+        # SCORE: Range queries or sorted access patterns
+        elif range_ratio > 0.5:
+            inferred = "score"
+            confidence = min(0.85, range_ratio)
+
+        # TEMPORAL: Range queries + high uniqueness (likely timestamps)
+        elif range_ratio > 0.3 and uniqueness_ratio > 0.7:
+            inferred = "temporal"
+            confidence = min(0.8, range_ratio * uniqueness_ratio)
+
+        # CONTENT: Contains/text search queries
+        elif contains_ratio > 0.5:
+            inferred = "content"
+            confidence = min(0.85, contains_ratio)
+
+        # Apply minimum confidence threshold
+        if confidence < 0.3:
+            inferred = "unknown"
+            confidence = 0.0
+
+        self.inferred_type = inferred
+        self.confidence = confidence
+
+    def is_value_important(self, value_hash: str) -> bool:
+        """Check if a specific value is considered important.
+
+        A value is important if:
+        1. It's in the important_value_hashes list (has been retrieved)
+        2. It's NOT the default value (for error_indicator type)
+
+        Args:
+            value_hash: SHA256[:8] hash of the value to check.
+
+        Returns:
+            True if this value should be preserved during compression.
+        """
+        # If we don't have enough data, be conservative
+        if self.confidence < 0.3:
+            return False
+
+        # For error_indicator: non-default values are important
+        if self.inferred_type == "error_indicator":
+            if self.default_value_hash and value_hash != self.default_value_hash:
+                return True
+
+        # For any type: values that have been retrieved are important
+        if value_hash in self.important_value_hashes:
+            return True
+
+        # For status: check if this value has been retrieved
+        if self.inferred_type == "status":
+            return value_hash in self.value_retrieval_frequency
+
+        return False
+
+
+@dataclass
 class CompressionEvent:
     """Record of a single compression decision (anonymized).
 

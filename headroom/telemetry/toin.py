@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from .models import ToolSignature
+from .models import FieldSemantics, ToolSignature
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,11 @@ class ToolPattern:
     skip_compression_recommended: bool = False
     preserve_fields: list[str] = field(default_factory=list)
 
+    # === Field-Level Semantics (TOIN Evolution) ===
+    # Learned semantic types for each field based on retrieval patterns
+    # This enables zero-latency signal detection without hardcoded patterns
+    field_semantics: dict[str, FieldSemantics] = field(default_factory=dict)
+
     # === Confidence ===
     sample_size: int = 0
     user_count: int = 0  # Number of unique users (anonymized)
@@ -163,6 +168,10 @@ class ToolPattern:
             "optimal_max_items": self.optimal_max_items,
             "skip_compression_recommended": self.skip_compression_recommended,
             "preserve_fields": self.preserve_fields,
+            # Field-level semantics (TOIN Evolution)
+            "field_semantics": {
+                k: v.to_dict() for k, v in self.field_semantics.items()
+            },
             "sample_size": self.sample_size,
             "user_count": self.user_count,
             "confidence": self.confidence,
@@ -226,6 +235,13 @@ class ToolPattern:
         if pattern.user_count > len(pattern._seen_instance_hashes):
             pattern._tracking_truncated = True
 
+        # Load field semantics (TOIN Evolution)
+        field_semantics_data = data.get("field_semantics", {})
+        if field_semantics_data:
+            pattern.field_semantics = {
+                k: FieldSemantics.from_dict(v) for k, v in field_semantics_data.items()
+            }
+
         return pattern
 
 
@@ -256,6 +272,11 @@ class CompressionHint:
     # Source of recommendation
     source: Literal["network", "local", "default"] = "default"
     based_on_samples: int = 0
+
+    # === TOIN Evolution: Learned Field Semantics ===
+    # These enable zero-latency signal detection in SmartCrusher.
+    # field_hash -> FieldSemantics (learned semantic type, important values, etc.)
+    field_semantics: dict[str, FieldSemantics] = field(default_factory=dict)
 
 
 @dataclass
@@ -375,11 +396,15 @@ class ToolIntelligenceNetwork:
         compressed_tokens: int,
         strategy: str,
         query_context: str | None = None,
+        items: list[dict[str, Any]] | None = None,
     ) -> None:
         """Record a compression event.
 
         Called after SmartCrusher compresses data. Updates the pattern
         for this tool type.
+
+        TOIN Evolution: When items are provided, we capture field statistics
+        for learning semantic types (uniqueness, default values, etc.).
 
         Args:
             tool_signature: Signature of the tool output structure.
@@ -389,6 +414,7 @@ class ToolIntelligenceNetwork:
             compressed_tokens: Compressed token count.
             strategy: Compression strategy used.
             query_context: Optional user query that triggered this tool call.
+            items: Optional list of items being compressed for field-level learning.
         """
         # HIGH FIX: Check enabled FIRST to avoid computing structure_hash if disabled
         # This saves CPU when TOIN is turned off
@@ -518,12 +544,92 @@ class ToolIntelligenceNetwork:
             if pattern.total_compressions % 10 == 0:
                 self._update_recommendations(pattern)
 
+            # === TOIN Evolution: Field Statistics for Semantic Learning ===
+            # Capture field-level statistics to learn default values and uniqueness
+            if items:
+                self._update_field_statistics(pattern, items)
+
             pattern.last_updated = time.time()
             pattern.confidence = self._calculate_confidence(pattern)
             self._dirty = True
 
         # Auto-save if needed (outside lock)
         self._maybe_auto_save()
+
+    def _update_field_statistics(
+        self,
+        pattern: ToolPattern,
+        items: list[dict[str, Any]],
+    ) -> None:
+        """Update field statistics from compression items.
+
+        Captures uniqueness, default values, and value distribution for
+        learning field semantic types.
+
+        Args:
+            pattern: ToolPattern to update.
+            items: Items being compressed.
+        """
+        if not items:
+            return
+
+        # Analyze field statistics (sample up to 100 items to limit CPU)
+        sample_items = items[:100] if len(items) > 100 else items
+
+        # Collect values for each field
+        field_values: dict[str, list[str]] = {}  # field_hash -> list of value_hashes
+
+        for item in sample_items:
+            if not isinstance(item, dict):
+                continue
+
+            for field_name, value in item.items():
+                field_hash = self._hash_field_name(field_name)
+                value_hash = self._hash_value(value)
+
+                if field_hash not in field_values:
+                    field_values[field_hash] = []
+                field_values[field_hash].append(value_hash)
+
+        # Update FieldSemantics with statistics
+        for field_hash, values in field_values.items():
+            if not values:
+                continue
+
+            # Get or create FieldSemantics
+            if field_hash not in pattern.field_semantics:
+                pattern.field_semantics[field_hash] = FieldSemantics(field_hash=field_hash)
+
+            field_sem = pattern.field_semantics[field_hash]
+
+            # Calculate statistics
+            unique_values = len(set(values))
+            total_values = len(values)
+
+            # Find most common value
+            from collections import Counter
+
+            value_counts = Counter(values)
+            most_common_value, most_common_count = value_counts.most_common(1)[0]
+            most_common_frequency = most_common_count / total_values if total_values > 0 else 0.0
+
+            # Record compression stats
+            field_sem.record_compression_stats(
+                unique_values=unique_values,
+                total_values=total_values,
+                most_common_value_hash=most_common_value,
+                most_common_frequency=most_common_frequency,
+            )
+
+        # Bound field_semantics to prevent unbounded growth (max 100 fields)
+        if len(pattern.field_semantics) > 100:
+            # Keep fields with highest activity (retrieval + compression count)
+            sorted_fields = sorted(
+                pattern.field_semantics.items(),
+                key=lambda x: x[1].retrieval_count + x[1].compression_count,
+                reverse=True,
+            )[:100]
+            pattern.field_semantics = dict(sorted_fields)
 
     def record_retrieval(
         self,
@@ -532,11 +638,15 @@ class ToolIntelligenceNetwork:
         query: str | None = None,
         query_fields: list[str] | None = None,
         strategy: str | None = None,
+        retrieved_items: list[dict[str, Any]] | None = None,
     ) -> None:
         """Record a retrieval event.
 
         Called when LLM retrieves compressed content. This is the key
         feedback signal - it means compression was too aggressive.
+
+        TOIN Evolution: When retrieved_items are provided, we learn field
+        semantics from the values. This enables zero-latency signal detection.
 
         Args:
             tool_signature_hash: Hash of the tool signature.
@@ -544,6 +654,7 @@ class ToolIntelligenceNetwork:
             query: Optional search query (will be anonymized).
             query_fields: Fields mentioned in query (will be hashed).
             strategy: Compression strategy that was used (for success rate tracking).
+            retrieved_items: Optional list of retrieved items for field-level learning.
         """
         if not self._config.enabled:
             return
@@ -635,6 +746,49 @@ class ToolIntelligenceNetwork:
                             key=lambda p: pattern.query_pattern_frequency.get(p, 0),
                             reverse=True,
                         )[: self._config.max_query_patterns]
+
+            # === TOIN Evolution: Field-Level Semantic Learning ===
+            # Learn from retrieved items to build zero-latency signal detection
+            if retrieved_items:
+                # Extract query operator from query string (for learning)
+                query_operator = self._extract_query_operator(query) if query else "="
+
+                for item in retrieved_items:
+                    if not isinstance(item, dict):
+                        continue
+
+                    for field_name, value in item.items():
+                        field_hash = self._hash_field_name(field_name)
+
+                        # Get or create FieldSemantics for this field
+                        if field_hash not in pattern.field_semantics:
+                            pattern.field_semantics[field_hash] = FieldSemantics(
+                                field_hash=field_hash
+                            )
+
+                        field_sem = pattern.field_semantics[field_hash]
+
+                        # Hash the value for privacy
+                        value_hash = self._hash_value(value)
+
+                        # Record this retrieval
+                        field_sem.record_retrieval_value(value_hash, query_operator)
+
+                # Periodically infer types (every 5 retrievals to save CPU)
+                if pattern.total_retrievals % 5 == 0:
+                    for field_sem in pattern.field_semantics.values():
+                        if field_sem.retrieval_count >= 3:  # Need minimum data
+                            field_sem.infer_type()
+
+                # Bound field_semantics to prevent unbounded growth (max 100 fields)
+                if len(pattern.field_semantics) > 100:
+                    # Keep fields with highest retrieval counts
+                    sorted_fields = sorted(
+                        pattern.field_semantics.items(),
+                        key=lambda x: x[1].retrieval_count,
+                        reverse=True,
+                    )[:100]
+                    pattern.field_semantics = dict(sorted_fields)
 
             # Update recommendations based on new retrieval data
             self._update_recommendations(pattern)
@@ -850,6 +1004,16 @@ class ToolIntelligenceNetwork:
                                 hint.reason += " (query uses fields from retrieval pattern)"
                                 break
 
+        # === TOIN Evolution: Include learned field semantics ===
+        # Copy field_semantics with sufficient confidence for SmartCrusher to use
+        # Only include fields with confidence >= 0.3 to reduce noise
+        if pattern.field_semantics:
+            hint.field_semantics = {
+                field_hash: field_sem
+                for field_hash, field_sem in pattern.field_semantics.items()
+                if field_sem.confidence >= 0.3 or field_sem.retrieval_count >= 3
+            }
+
         return hint
 
     def _find_best_strategy(self, pattern: ToolPattern) -> str | None:
@@ -947,6 +1111,62 @@ class ToolIntelligenceNetwork:
             return None
 
         return pattern
+
+    def _hash_value(self, value: Any) -> str:
+        """Hash a value for privacy-preserving storage.
+
+        Handles all types by converting to a canonical string representation.
+        """
+        if value is None:
+            canonical = "null"
+        elif isinstance(value, bool):
+            canonical = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            canonical = str(value)
+        elif isinstance(value, str):
+            canonical = value
+        elif isinstance(value, (list, dict)):
+            # For complex types, use JSON serialization
+            try:
+                canonical = json.dumps(value, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                canonical = str(value)
+        else:
+            canonical = str(value)
+
+        return hashlib.sha256(canonical.encode()).hexdigest()[:8]
+
+    def _extract_query_operator(self, query: str) -> str:
+        """Extract the dominant query operator from a search query.
+
+        Used for learning field semantic types from query patterns.
+
+        Returns:
+            Query operator: "=", "!=", ">", "<", ">=", "<=", "contains", or "="
+        """
+        if not query:
+            return "="
+
+        query_lower = query.lower()
+
+        # Check for inequality operators
+        if "!=" in query or " not " in query_lower or " ne " in query_lower:
+            return "!="
+        if ">=" in query or " gte " in query_lower:
+            return ">="
+        if "<=" in query or " lte " in query_lower:
+            return "<="
+        if ">" in query or " gt " in query_lower:
+            return ">"
+        if "<" in query or " lt " in query_lower:
+            return "<"
+
+        # Check for text search operators
+        if " like " in query_lower or " contains " in query_lower or "*" in query:
+            return "contains"
+
+        # Default to equality
+        return "="
 
     def get_stats(self) -> dict[str, Any]:
         """Get overall TOIN statistics."""

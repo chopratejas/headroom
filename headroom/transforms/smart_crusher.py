@@ -57,6 +57,7 @@ from ..cache.compression_store import CompressionStore, get_compression_store
 from ..config import CCRConfig, RelevanceScorerConfig, TransformResult
 from ..relevance import RelevanceScorer, create_scorer
 from ..telemetry import TelemetryCollector, ToolSignature, get_telemetry_collector
+from ..telemetry.models import FieldSemantics
 from ..telemetry.toin import ToolIntelligenceNetwork, get_toin
 from ..tokenizer import Tokenizer
 from ..utils import (
@@ -614,6 +615,81 @@ def _detect_error_items_for_preservation(items: list[dict]) -> list[int]:
                 break
 
     return error_indices
+
+
+def _detect_items_by_learned_semantics(
+    items: list[dict],
+    field_semantics: dict[str, FieldSemantics],
+) -> list[int]:
+    """Detect items with important values based on learned field semantics.
+
+    This is the TOIN Evolution integration - uses learned field semantic types
+    to identify items that should be preserved during compression.
+
+    Key insight: Instead of hardcoded patterns, we learn from user behavior
+    which field values are actually important (e.g., error indicators, rare
+    status values, identifiers that get queried).
+
+    Args:
+        items: List of items to analyze.
+        field_semantics: Learned field semantics from TOIN (field_hash -> FieldSemantics).
+
+    Returns:
+        List of indices for items containing important values.
+    """
+    if not field_semantics or not items:
+        return []
+
+    important_indices: list[int] = []
+
+    # Build a quick lookup for field_hash -> FieldSemantics
+    # Pre-filter to fields with sufficient confidence
+    confident_semantics = {
+        fh: fs for fh, fs in field_semantics.items()
+        if fs.confidence >= 0.3 and fs.inferred_type != "unknown"
+    }
+
+    if not confident_semantics:
+        return []
+
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+
+        for field_name, value in item.items():
+            # Hash the field name to match TOIN's format
+            field_hash = hashlib.sha256(field_name.encode()).hexdigest()[:8]
+
+            if field_hash not in confident_semantics:
+                continue
+
+            field_sem = confident_semantics[field_hash]
+
+            # Hash the value to check importance
+            if value is None:
+                value_canonical = "null"
+            elif isinstance(value, bool):
+                value_canonical = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                value_canonical = str(value)
+            elif isinstance(value, str):
+                value_canonical = value
+            elif isinstance(value, (list, dict)):
+                try:
+                    value_canonical = json.dumps(value, sort_keys=True, default=str)
+                except (TypeError, ValueError):
+                    value_canonical = str(value)
+            else:
+                value_canonical = str(value)
+
+            value_hash = hashlib.sha256(value_canonical.encode()).hexdigest()[:8]
+
+            # Check if this value is important based on learned semantics
+            if field_sem.is_value_important(value_hash):
+                important_indices.append(i)
+                break  # Only need to mark item once
+
+    return important_indices
 
 
 @dataclass
@@ -1484,6 +1560,7 @@ class SmartCrusher(Transform):
         n: int,
         analysis: ArrayAnalysis | None = None,
         max_items: int | None = None,
+        field_semantics: dict[str, FieldSemantics] | None = None,
     ) -> set[int]:
         """Prioritize indices when we exceed max_items, ALWAYS keeping critical items.
 
@@ -1491,11 +1568,13 @@ class SmartCrusher(Transform):
         1. ALL error items (non-negotiable) - items with error keywords
         2. ALL structural outliers (non-negotiable) - items with rare fields/status values
         3. ALL numeric anomalies (non-negotiable) - e.g., unusual values like 999999
-        4. First 3 items (context)
-        5. Last 2 items (context)
-        6. Other important items by index order
+        4. ALL items with important values (learned) - TOIN field semantics
+        5. First 3 items (context)
+        6. Last 2 items (context)
+        7. Other important items by index order
 
-        Uses BOTH keyword detection (for preservation guarantee) AND statistical detection.
+        Uses BOTH keyword detection (for preservation guarantee) AND statistical detection,
+        PLUS learned field semantics from TOIN for zero-latency signal detection.
 
         HIGH FIX: Note that this function may return MORE items than effective_max
         when critical items (errors, outliers, anomalies) exceed the limit. This is
@@ -1508,6 +1587,7 @@ class SmartCrusher(Transform):
             n: Total number of items.
             analysis: Optional analysis results for anomaly detection.
             max_items: Thread-safe max items limit (defaults to config value).
+            field_semantics: Optional learned field semantics from TOIN.
 
         Returns:
             Set of indices to keep (may exceed max_items if critical items require it).
@@ -1517,6 +1597,9 @@ class SmartCrusher(Transform):
 
         if len(keep_indices) <= effective_max:
             return keep_indices
+
+        # Use provided field_semantics or fall back to instance variable (set by crush())
+        effective_field_semantics = field_semantics or getattr(self, "_current_field_semantics", None)
 
         # Identify error items using KEYWORD detection (preservation guarantee)
         # This ensures ALL error items are kept, regardless of frequency
@@ -1540,22 +1623,31 @@ class SmartCrusher(Transform):
                                 if abs(val - stats.mean_val) > threshold:
                                     anomaly_indices.add(i)
 
+        # === TOIN Evolution: Identify items with important values (learned) ===
+        # Uses learned field semantics for zero-latency signal detection
+        learned_important_indices: set[int] = set()
+        if effective_field_semantics:
+            learned_important_indices = set(
+                _detect_items_by_learned_semantics(items, effective_field_semantics)
+            )
+
         # Start with all critical items (these are non-negotiable)
         # Error items are ALWAYS preserved (quality guarantee)
-        prioritized = error_indices | outlier_indices | anomaly_indices
+        prioritized = error_indices | outlier_indices | anomaly_indices | learned_important_indices
 
         # HIGH FIX: Log warning if critical items alone exceed the limit
         # This helps diagnose why compression may be less effective than expected
         critical_count = len(prioritized)
         if critical_count > effective_max:
             logger.warning(
-                "Critical items (%d) exceed max_items (%d): errors=%d outliers=%d anomalies=%d. "
+                "Critical items (%d) exceed max_items (%d): errors=%d outliers=%d anomalies=%d learned=%d. "
                 "Quality guarantee takes precedence - keeping all critical items.",
                 critical_count,
                 effective_max,
                 len(error_indices),
                 len(outlier_indices),
                 len(anomaly_indices),
+                len(learned_important_indices),
             )
 
         # Add first/last items if we have room
@@ -1929,6 +2021,11 @@ class SmartCrusher(Transform):
             if toin_hint.compression_level != "moderate":
                 toin_compression_level = toin_hint.compression_level
 
+        # === TOIN Evolution: Extract field semantics for signal detection ===
+        # Store temporarily on instance for use in _prioritize_indices
+        # This enables learned signal detection without changing all method signatures
+        self._current_field_semantics = toin_hint.field_semantics if toin_hint.field_semantics else None
+
         # Local feedback hints (if TOIN didn't apply)
         if not toin_hint_applied and self.config.use_feedback_hints and tool_name:
             feedback = self._get_feedback()
@@ -2059,6 +2156,7 @@ class SmartCrusher(Transform):
                     compressed_tokens=compressed_tokens,
                     strategy=analysis.recommended_strategy.value,
                     query_context=query_context,
+                    items=items,  # Pass items for field-level semantic learning
                 )
             except Exception:
                 # TOIN should never break compression
@@ -2075,9 +2173,13 @@ class SmartCrusher(Transform):
             elif hints_applied:
                 strategy_info += f"(feedback:{effective_max_items})"
 
+            # Clean up temporary instance variable
+            self._current_field_semantics = None
             return result, strategy_info, ccr_hash
 
         except Exception:
+            # Clean up temporary instance variable
+            self._current_field_semantics = None
             # Re-raise any exceptions (removed finally block since we no longer mutate config)
             raise
 

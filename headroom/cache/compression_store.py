@@ -684,7 +684,10 @@ class CompressionStore:
             self._pending_feedback_events = []
 
             # Gather entry data while holding lock to avoid race conditions
-            event_data: list[tuple[RetrievalEvent, str | None, str | None, str | None]] = []
+            # Tuple: (event, tool_name, sig_hash, strategy, compressed_content)
+            event_data: list[
+                tuple[RetrievalEvent, str | None, str | None, str | None, str | None]
+            ] = []
             for event in events:
                 entry = self._store.get(event.hash)
                 if entry:
@@ -696,10 +699,11 @@ class CompressionStore:
                             entry.tool_name,
                             entry.tool_signature_hash,  # The correct hash!
                             entry.compression_strategy,
+                            entry.compressed_content,  # For TOIN field-level learning
                         )
                     )
                 else:
-                    event_data.append((event, None, None, None))
+                    event_data.append((event, None, None, None, None))
 
         # Process outside lock
         if event_data:
@@ -707,7 +711,7 @@ class CompressionStore:
             telemetry = get_telemetry_collector()
             toin = get_toin()
 
-            for event, _tool_name, sig_hash, strategy in event_data:
+            for event, _tool_name, sig_hash, strategy, compressed_content in event_data:
                 # Notify feedback system (pass strategy for success rate tracking)
                 feedback.record_retrieval(event, strategy=strategy)
 
@@ -729,6 +733,30 @@ class CompressionStore:
                     # Telemetry should never break the feedback loop
                     logger.debug("Telemetry record_retrieval failed", exc_info=True)
 
+                # Parse compressed content to extract items for TOIN field-level learning
+                retrieved_items: list[dict[str, Any]] | None = None
+                if compressed_content:
+                    try:
+                        parsed = json.loads(compressed_content)
+                        # Handle both direct arrays and wrapped arrays
+                        if isinstance(parsed, list):
+                            # Filter to dicts only (field learning needs dict items)
+                            retrieved_items = [
+                                item for item in parsed if isinstance(item, dict)
+                            ]
+                        elif isinstance(parsed, dict):
+                            # Check for common wrapper patterns: {"items": [...], "results": [...]}
+                            for key in ("items", "results", "data", "records"):
+                                if key in parsed and isinstance(parsed[key], list):
+                                    retrieved_items = [
+                                        item for item in parsed[key]
+                                        if isinstance(item, dict)
+                                    ]
+                                    break
+                    except (json.JSONDecodeError, TypeError):
+                        # Invalid JSON - skip field learning for this retrieval
+                        pass
+
                 # Notify TOIN for cross-user learning
                 try:
                     if sig_hash is not None:
@@ -738,6 +766,7 @@ class CompressionStore:
                             query=event.query,
                             query_fields=query_fields,
                             strategy=strategy,  # Pass strategy for success rate tracking
+                            retrieved_items=retrieved_items,  # For field-level learning
                         )
                 except Exception:
                     # TOIN should never break the feedback loop
