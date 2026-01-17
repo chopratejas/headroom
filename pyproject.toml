@@ -77,6 +77,10 @@ llmlingua = [
 code = [
     "tree-sitter-language-pack>=0.10.0",
 ]
+# Agno agent framework integration
+agno = [
+    "agno>=1.0.0",
+]
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
