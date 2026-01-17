@@ -32,7 +32,7 @@ import os
 import random
 import sys
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -44,7 +44,7 @@ try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Request, Response
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import PlainTextResponse, StreamingResponse
+    from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
     FASTAPI_AVAILABLE = True
 except ImportError:
@@ -85,10 +85,21 @@ from headroom.transforms import (
 if _LLMLINGUA_AVAILABLE:
     from headroom.transforms import LLMLinguaCompressor, LLMLinguaConfig
 
+# Try to import LiteLLM for pricing
+try:
+    import litellm
+
+    LITELLM_AVAILABLE = True
+except ImportError:
+    LITELLM_AVAILABLE = False
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("headroom.proxy")
+
+# Maximum request body size (10MB)
+MAX_REQUEST_BODY_SIZE = 10 * 1024 * 1024
 
 
 # =============================================================================
@@ -230,13 +241,17 @@ class ProxyConfig:
 
 
 class SemanticCache:
-    """Simple semantic cache based on message content hash."""
+    """Simple semantic cache based on message content hash.
+
+    Uses OrderedDict for O(1) LRU eviction instead of list with O(n) pop(0).
+    """
 
     def __init__(self, max_entries: int = 1000, ttl_seconds: int = 3600):
         self.max_entries = max_entries
         self.ttl_seconds = ttl_seconds
-        self._cache: dict[str, CacheEntry] = {}
-        self._access_order: list[str] = []
+        # OrderedDict maintains insertion order and supports O(1) move_to_end/popitem
+        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._lock = asyncio.Lock()
 
     def _compute_key(self, messages: list[dict], model: str) -> str:
         """Compute cache key from messages and model."""
@@ -250,25 +265,27 @@ class SemanticCache:
         )
         return hashlib.sha256(normalized.encode()).hexdigest()[:32]
 
-    def get(self, messages: list[dict], model: str) -> CacheEntry | None:
+    async def get(self, messages: list[dict], model: str) -> CacheEntry | None:
         """Get cached response if exists and not expired."""
         key = self._compute_key(messages, model)
-        entry = self._cache.get(key)
+        async with self._lock:
+            entry = self._cache.get(key)
 
-        if entry is None:
-            return None
+            if entry is None:
+                return None
 
-        # Check expiration
-        age = (datetime.now() - entry.created_at).total_seconds()
-        if age > entry.ttl_seconds:
-            del self._cache[key]
-            self._access_order.remove(key)
-            return None
+            # Check expiration
+            age = (datetime.now() - entry.created_at).total_seconds()
+            if age > entry.ttl_seconds:
+                del self._cache[key]
+                return None
 
-        entry.hit_count += 1
-        return entry
+            entry.hit_count += 1
+            # Move to end for LRU (O(1) operation)
+            self._cache.move_to_end(key)
+            return entry
 
-    def set(
+    async def set(
         self,
         messages: list[dict],
         model: str,
@@ -279,34 +296,38 @@ class SemanticCache:
         """Cache a response."""
         key = self._compute_key(messages, model)
 
-        # Evict if at capacity (LRU)
-        while len(self._cache) >= self.max_entries and self._access_order:
-            oldest_key = self._access_order.pop(0)
-            self._cache.pop(oldest_key, None)
+        async with self._lock:
+            # If key already exists, remove it first to update position
+            if key in self._cache:
+                del self._cache[key]
 
-        self._cache[key] = CacheEntry(
-            response_body=response_body,
-            response_headers=response_headers,
-            created_at=datetime.now(),
-            ttl_seconds=self.ttl_seconds,
-            tokens_saved_per_hit=tokens_saved,
-        )
-        self._access_order.append(key)
+            # Evict oldest entries if at capacity (LRU) - O(1) with popitem
+            while len(self._cache) >= self.max_entries:
+                self._cache.popitem(last=False)  # Remove oldest (first) entry
 
-    def stats(self) -> dict:
+            self._cache[key] = CacheEntry(
+                response_body=response_body,
+                response_headers=response_headers,
+                created_at=datetime.now(),
+                ttl_seconds=self.ttl_seconds,
+                tokens_saved_per_hit=tokens_saved,
+            )
+
+    async def stats(self) -> dict:
         """Get cache statistics."""
-        total_hits = sum(e.hit_count for e in self._cache.values())
-        return {
-            "entries": len(self._cache),
-            "max_entries": self.max_entries,
-            "total_hits": total_hits,
-            "ttl_seconds": self.ttl_seconds,
-        }
+        async with self._lock:
+            total_hits = sum(e.hit_count for e in self._cache.values())
+            return {
+                "entries": len(self._cache),
+                "max_entries": self.max_entries,
+                "total_hits": total_hits,
+                "ttl_seconds": self.ttl_seconds,
+            }
 
-    def clear(self):
+    async def clear(self):
         """Clear all cache entries."""
-        self._cache.clear()
-        self._access_order.clear()
+        async with self._lock:
+            self._cache.clear()
 
 
 # =============================================================================
@@ -332,6 +353,7 @@ class TokenBucketRateLimiter:
         self._token_buckets: dict[str, RateLimitState] = defaultdict(
             lambda: RateLimitState(tokens=tokens_per_minute, last_update=time.time())
         )
+        self._lock = asyncio.Lock()
 
     def _refill(self, state: RateLimitState, rate_per_minute: float) -> float:
         """Refill bucket based on elapsed time."""
@@ -342,37 +364,40 @@ class TokenBucketRateLimiter:
         state.last_update = now
         return state.tokens
 
-    def check_request(self, key: str = "default") -> tuple[bool, float]:
+    async def check_request(self, key: str = "default") -> tuple[bool, float]:
         """Check if request is allowed. Returns (allowed, wait_seconds)."""
-        state = self._request_buckets[key]
-        available = self._refill(state, self.requests_per_minute)
+        async with self._lock:
+            state = self._request_buckets[key]
+            available = self._refill(state, self.requests_per_minute)
 
-        if available >= 1:
-            state.tokens -= 1
-            return True, 0
+            if available >= 1:
+                state.tokens -= 1
+                return True, 0
 
-        wait_seconds = (1 - available) * (60.0 / self.requests_per_minute)
-        return False, wait_seconds
+            wait_seconds = (1 - available) * (60.0 / self.requests_per_minute)
+            return False, wait_seconds
 
-    def check_tokens(self, key: str, token_count: int) -> tuple[bool, float]:
+    async def check_tokens(self, key: str, token_count: int) -> tuple[bool, float]:
         """Check if token usage is allowed."""
-        state = self._token_buckets[key]
-        available = self._refill(state, self.tokens_per_minute)
+        async with self._lock:
+            state = self._token_buckets[key]
+            available = self._refill(state, self.tokens_per_minute)
 
-        if available >= token_count:
-            state.tokens -= token_count
-            return True, 0
+            if available >= token_count:
+                state.tokens -= token_count
+                return True, 0
 
-        wait_seconds = (token_count - available) * (60.0 / self.tokens_per_minute)
-        return False, wait_seconds
+            wait_seconds = (token_count - available) * (60.0 / self.tokens_per_minute)
+            return False, wait_seconds
 
-    def stats(self) -> dict:
+    async def stats(self) -> dict:
         """Get rate limiter statistics."""
-        return {
-            "requests_per_minute": self.requests_per_minute,
-            "tokens_per_minute": self.tokens_per_minute,
-            "active_keys": len(self._request_buckets),
-        }
+        async with self._lock:
+            return {
+                "requests_per_minute": self.requests_per_minute,
+                "tokens_per_minute": self.tokens_per_minute,
+                "active_keys": len(self._request_buckets),
+            }
 
 
 # =============================================================================
@@ -381,8 +406,14 @@ class TokenBucketRateLimiter:
 
 
 class CostTracker:
-    """Track costs and enforce budgets."""
+    """Track costs and enforce budgets.
 
+    Cost history is automatically pruned to prevent unbounded memory growth:
+    - Entries older than 24 hours are removed
+    - Maximum of 100,000 entries are kept
+    """
+
+    # Fallback pricing - LiteLLM is preferred source
     # Pricing per 1M tokens (input, output, cached_input)
     PRICING = {
         # Anthropic
@@ -400,14 +431,18 @@ class CostTracker:
         "gpt-4-turbo": (10.00, 30.00, 5.00),
     }
 
+    MAX_COST_ENTRIES = 100_000
+    COST_RETENTION_HOURS = 24
+
     def __init__(self, budget_limit_usd: float | None = None, budget_period: str = "daily"):
         self.budget_limit_usd = budget_limit_usd
         self.budget_period = budget_period
 
-        # Cost tracking
-        self._costs: list[tuple[datetime, float]] = []
+        # Cost tracking - using deque for efficient left-side removal
+        self._costs: deque[tuple[datetime, float]] = deque(maxlen=self.MAX_COST_ENTRIES)
         self._total_cost_usd: float = 0
         self._total_savings_usd: float = 0
+        self._last_prune_time: datetime = datetime.now()
 
     def _get_pricing(self, model: str) -> tuple[float, float, float] | None:
         """Get pricing for model."""
@@ -425,6 +460,20 @@ class CostTracker:
         cached_tokens: int = 0,
     ) -> float | None:
         """Estimate cost in USD."""
+        # Try LiteLLM first
+        if LITELLM_AVAILABLE:
+            try:
+                cost = litellm.completion_cost(
+                    model=model,
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                )
+                if cost is not None and cost > 0:
+                    return float(cost)
+            except Exception:
+                pass
+
+        # Fall back to hardcoded pricing
         pricing = self._get_pricing(model)
         if pricing is None:
             return None
@@ -439,10 +488,31 @@ class CostTracker:
         )
         return cost
 
+    def _prune_old_costs(self):
+        """Remove cost entries older than retention period.
+
+        Called periodically (every 5 minutes) to prevent unbounded memory growth.
+        The deque maxlen provides a hard cap, but time-based pruning keeps
+        memory usage proportional to actual traffic patterns.
+        """
+        now = datetime.now()
+        # Only prune every 5 minutes to avoid overhead
+        if (now - self._last_prune_time).total_seconds() < 300:
+            return
+
+        self._last_prune_time = now
+        cutoff = now - timedelta(hours=self.COST_RETENTION_HOURS)
+
+        # Remove entries from the left (oldest) while they're older than cutoff
+        while self._costs and self._costs[0][0] < cutoff:
+            self._costs.popleft()
+
     def record_cost(self, cost_usd: float):
-        """Record a cost."""
+        """Record a cost. Periodically prunes old entries."""
         self._costs.append((datetime.now(), cost_usd))
         self._total_cost_usd += cost_usd
+        # Periodically prune old costs to prevent memory growth
+        self._prune_old_costs()
 
     def record_savings(self, savings_usd: float):
         """Record savings from optimization."""
@@ -510,7 +580,9 @@ class PrometheusMetrics:
         self.cost_total_usd = 0.0
         self.savings_total_usd = 0.0
 
-    def record_request(
+        self._lock = asyncio.Lock()
+
+    async def record_request(
         self,
         provider: str,
         model: str,
@@ -523,96 +595,100 @@ class PrometheusMetrics:
         savings_usd: float = 0,
     ):
         """Record metrics for a request."""
-        self.requests_total += 1
-        self.requests_by_provider[provider] += 1
-        self.requests_by_model[model] += 1
+        async with self._lock:
+            self.requests_total += 1
+            self.requests_by_provider[provider] += 1
+            self.requests_by_model[model] += 1
 
-        if cached:
-            self.requests_cached += 1
+            if cached:
+                self.requests_cached += 1
 
-        self.tokens_input_total += input_tokens
-        self.tokens_output_total += output_tokens
-        self.tokens_saved_total += tokens_saved
+            self.tokens_input_total += input_tokens
+            self.tokens_output_total += output_tokens
+            self.tokens_saved_total += tokens_saved
 
-        self.latency_sum_ms += latency_ms
-        self.latency_count += 1
+            self.latency_sum_ms += latency_ms
+            self.latency_count += 1
 
-        self.cost_total_usd += cost_usd
-        self.savings_total_usd += savings_usd
+            self.cost_total_usd += cost_usd
+            self.savings_total_usd += savings_usd
 
-    def record_rate_limited(self):
-        self.requests_rate_limited += 1
+    async def record_rate_limited(self):
+        async with self._lock:
+            self.requests_rate_limited += 1
 
-    def record_failed(self):
-        self.requests_failed += 1
+    async def record_failed(self):
+        async with self._lock:
+            self.requests_failed += 1
 
-    def export(self) -> str:
+    async def export(self) -> str:
         """Export metrics in Prometheus format."""
-        lines = [
-            "# HELP headroom_requests_total Total number of requests",
-            "# TYPE headroom_requests_total counter",
-            f"headroom_requests_total {self.requests_total}",
-            "",
-            "# HELP headroom_requests_cached_total Cached request count",
-            "# TYPE headroom_requests_cached_total counter",
-            f"headroom_requests_cached_total {self.requests_cached}",
-            "",
-            "# HELP headroom_requests_rate_limited_total Rate limited requests",
-            "# TYPE headroom_requests_rate_limited_total counter",
-            f"headroom_requests_rate_limited_total {self.requests_rate_limited}",
-            "",
-            "# HELP headroom_requests_failed_total Failed requests",
-            "# TYPE headroom_requests_failed_total counter",
-            f"headroom_requests_failed_total {self.requests_failed}",
-            "",
-            "# HELP headroom_tokens_input_total Total input tokens",
-            "# TYPE headroom_tokens_input_total counter",
-            f"headroom_tokens_input_total {self.tokens_input_total}",
-            "",
-            "# HELP headroom_tokens_output_total Total output tokens",
-            "# TYPE headroom_tokens_output_total counter",
-            f"headroom_tokens_output_total {self.tokens_output_total}",
-            "",
-            "# HELP headroom_tokens_saved_total Tokens saved by optimization",
-            "# TYPE headroom_tokens_saved_total counter",
-            f"headroom_tokens_saved_total {self.tokens_saved_total}",
-            "",
-            "# HELP headroom_latency_ms_sum Sum of request latencies",
-            "# TYPE headroom_latency_ms_sum counter",
-            f"headroom_latency_ms_sum {self.latency_sum_ms:.2f}",
-            "",
-            "# HELP headroom_cost_usd_total Total cost in USD",
-            "# TYPE headroom_cost_usd_total counter",
-            f"headroom_cost_usd_total {self.cost_total_usd:.6f}",
-            "",
-            "# HELP headroom_savings_usd_total Total savings in USD",
-            "# TYPE headroom_savings_usd_total counter",
-            f"headroom_savings_usd_total {self.savings_total_usd:.6f}",
-        ]
-
-        # Per-provider metrics
-        lines.extend(
-            [
+        async with self._lock:
+            lines = [
+                "# HELP headroom_requests_total Total number of requests",
+                "# TYPE headroom_requests_total counter",
+                f"headroom_requests_total {self.requests_total}",
                 "",
-                "# HELP headroom_requests_by_provider Requests by provider",
-                "# TYPE headroom_requests_by_provider counter",
-            ]
-        )
-        for provider, count in self.requests_by_provider.items():
-            lines.append(f'headroom_requests_by_provider{{provider="{provider}"}} {count}')
-
-        # Per-model metrics
-        lines.extend(
-            [
+                "# HELP headroom_requests_cached_total Cached request count",
+                "# TYPE headroom_requests_cached_total counter",
+                f"headroom_requests_cached_total {self.requests_cached}",
                 "",
-                "# HELP headroom_requests_by_model Requests by model",
-                "# TYPE headroom_requests_by_model counter",
+                "# HELP headroom_requests_rate_limited_total Rate limited requests",
+                "# TYPE headroom_requests_rate_limited_total counter",
+                f"headroom_requests_rate_limited_total {self.requests_rate_limited}",
+                "",
+                "# HELP headroom_requests_failed_total Failed requests",
+                "# TYPE headroom_requests_failed_total counter",
+                f"headroom_requests_failed_total {self.requests_failed}",
+                "",
+                "# HELP headroom_tokens_input_total Total input tokens",
+                "# TYPE headroom_tokens_input_total counter",
+                f"headroom_tokens_input_total {self.tokens_input_total}",
+                "",
+                "# HELP headroom_tokens_output_total Total output tokens",
+                "# TYPE headroom_tokens_output_total counter",
+                f"headroom_tokens_output_total {self.tokens_output_total}",
+                "",
+                "# HELP headroom_tokens_saved_total Tokens saved by optimization",
+                "# TYPE headroom_tokens_saved_total counter",
+                f"headroom_tokens_saved_total {self.tokens_saved_total}",
+                "",
+                "# HELP headroom_latency_ms_sum Sum of request latencies",
+                "# TYPE headroom_latency_ms_sum counter",
+                f"headroom_latency_ms_sum {self.latency_sum_ms:.2f}",
+                "",
+                "# HELP headroom_cost_usd_total Total cost in USD",
+                "# TYPE headroom_cost_usd_total counter",
+                f"headroom_cost_usd_total {self.cost_total_usd:.6f}",
+                "",
+                "# HELP headroom_savings_usd_total Total savings in USD",
+                "# TYPE headroom_savings_usd_total counter",
+                f"headroom_savings_usd_total {self.savings_total_usd:.6f}",
             ]
-        )
-        for model, count in self.requests_by_model.items():
-            lines.append(f'headroom_requests_by_model{{model="{model}"}} {count}')
 
-        return "\n".join(lines)
+            # Per-provider metrics
+            lines.extend(
+                [
+                    "",
+                    "# HELP headroom_requests_by_provider Requests by provider",
+                    "# TYPE headroom_requests_by_provider counter",
+                ]
+            )
+            for provider, count in self.requests_by_provider.items():
+                lines.append(f'headroom_requests_by_provider{{provider="{provider}"}} {count}')
+
+            # Per-model metrics
+            lines.extend(
+                [
+                    "",
+                    "# HELP headroom_requests_by_model Requests by model",
+                    "# TYPE headroom_requests_by_model counter",
+                ]
+            )
+            for model, count in self.requests_by_model.items():
+                lines.append(f'headroom_requests_by_model{{model="{model}"}} {count}')
+
+            return "\n".join(lines)
 
 
 # =============================================================================
@@ -621,18 +697,24 @@ class PrometheusMetrics:
 
 
 class RequestLogger:
-    """Log requests to JSONL file."""
+    """Log requests to JSONL file.
+
+    Uses a deque with max 10,000 entries to prevent unbounded memory growth.
+    """
+
+    MAX_LOG_ENTRIES = 10_000
 
     def __init__(self, log_file: str | None = None, log_full_messages: bool = False):
         self.log_file = Path(log_file) if log_file else None
         self.log_full_messages = log_full_messages
-        self._logs: list[RequestLog] = []
+        # Use deque with maxlen for automatic FIFO eviction
+        self._logs: deque[RequestLog] = deque(maxlen=self.MAX_LOG_ENTRIES)
 
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, entry: RequestLog):
-        """Log a request."""
+        """Log a request. Oldest entries are automatically removed when limit reached."""
         self._logs.append(entry)
 
         if self.log_file:
@@ -645,7 +727,8 @@ class RequestLogger:
 
     def get_recent(self, n: int = 100) -> list[dict]:
         """Get recent log entries."""
-        entries = self._logs[-n:]
+        # Convert deque to list for slicing (deque doesn't support slicing)
+        entries = list(self._logs)[-n:]
         return [
             {
                 k: v
@@ -783,6 +866,7 @@ class HeadroomProxy:
 
         # Request counter for IDs
         self._request_counter = 0
+        self._request_counter_lock = asyncio.Lock()
 
         # CCR tool injectors (one per provider)
         self.anthropic_tool_injector = CCRToolInjector(
@@ -984,10 +1068,11 @@ class HeadroomProxy:
             logger.info(f"Avg latency:           {avg_latency:.0f}ms")
         logger.info("=" * 70)
 
-    def _next_request_id(self) -> str:
+    async def _next_request_id(self) -> str:
         """Generate unique request ID."""
-        self._request_counter += 1
-        return f"hr_{int(time.time())}_{self._request_counter:06d}"
+        async with self._request_counter_lock:
+            self._request_counter += 1
+            return f"hr_{int(time.time())}_{self._request_counter:06d}"
 
     def _extract_tags(self, headers: dict) -> dict[str, str]:
         """Extract Headroom tags from headers."""
@@ -1057,10 +1142,36 @@ class HeadroomProxy:
     ) -> Response | StreamingResponse:
         """Handle Anthropic /v1/messages endpoint."""
         start_time = time.time()
-        request_id = self._next_request_id()
+        request_id = await self._next_request_id()
+
+        # Check request body size
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "request_too_large",
+                        "message": f"Request body too large. Maximum size is {MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB",
+                    },
+                },
+            )
 
         # Parse request
-        body = await request.json()
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": f"Invalid JSON in request body: {e!s}",
+                    },
+                },
+            )
         model = body.get("model", "unknown")
         messages = body.get("messages", [])
         stream = body.get("stream", False)
@@ -1074,9 +1185,9 @@ class HeadroomProxy:
         # Rate limiting
         if self.rate_limiter:
             rate_key = headers.get("x-api-key", "default")[:16]
-            allowed, wait_seconds = self.rate_limiter.check_request(rate_key)
+            allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
             if not allowed:
-                self.metrics.record_rate_limited()
+                await self.metrics.record_rate_limited()
                 raise HTTPException(
                     status_code=429,
                     detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
@@ -1095,12 +1206,12 @@ class HeadroomProxy:
         # Check cache (non-streaming only)
         cache_hit = False
         if self.cache and not stream:
-            cached = self.cache.get(messages, model)
+            cached = await self.cache.get(messages, model)
             if cached:
                 cache_hit = True
                 optimization_latency = (time.time() - start_time) * 1000
 
-                self.metrics.record_request(
+                await self.metrics.record_request(
                     provider="anthropic",
                     model=model,
                     input_tokens=0,
@@ -1383,7 +1494,7 @@ class HeadroomProxy:
 
                 # Cache response
                 if self.cache and response.status_code == 200:
-                    self.cache.set(
+                    await self.cache.set(
                         messages,
                         model,
                         response.content,
@@ -1392,7 +1503,7 @@ class HeadroomProxy:
                     )
 
                 # Record metrics
-                self.metrics.record_request(
+                await self.metrics.record_request(
                     provider="anthropic",
                     model=model,
                     input_tokens=optimized_tokens,
@@ -1451,8 +1562,9 @@ class HeadroomProxy:
                 )
 
         except Exception as e:
-            self.metrics.record_failed()
-            logger.error(f"[{request_id}] Request failed: {e}")
+            await self.metrics.record_failed()
+            # Log full error details internally for debugging
+            logger.error(f"[{request_id}] Request failed: {type(e).__name__}: {e}")
 
             # Try fallback if enabled
             if self.config.fallback_enabled and self.config.fallback_provider == "openai":
@@ -1460,7 +1572,17 @@ class HeadroomProxy:
                 # Convert to OpenAI format and retry
                 # (simplified - would need message format conversion)
 
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            # Return sanitized error message to client (don't expose internal details)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "An error occurred while processing your request. Please try again.",
+                    },
+                },
+            )
 
     async def _stream_response(
         self,
@@ -1477,27 +1599,30 @@ class HeadroomProxy:
         tags: dict[str, str],
         optimization_latency: float,
     ) -> StreamingResponse:
-        """Stream response with metrics tracking."""
+        """Stream response with metrics tracking.
+
+        Calculates output size incrementally to avoid accumulating all chunks in memory.
+        """
         start_time = time.time()
 
         async def generate():
-            output_chunks = []
+            # Track total bytes incrementally instead of accumulating chunks
+            total_bytes = 0
             try:
                 async with self.http_client.stream(
                     "POST", url, json=body, headers=headers
                 ) as response:
                     async for chunk in response.aiter_bytes():
-                        output_chunks.append(chunk)
+                        total_bytes += len(chunk)
                         yield chunk
             finally:
                 # Record metrics after stream completes
                 total_latency = (time.time() - start_time) * 1000
 
-                # Estimate output tokens from chunks (rough)
-                total_output = b"".join(output_chunks)
-                output_tokens = len(total_output) // 4  # Rough estimate
+                # Estimate output tokens from total bytes (rough estimate: ~4 bytes per token)
+                output_tokens = total_bytes // 4
 
-                self.metrics.record_request(
+                await self.metrics.record_request(
                     provider=provider,
                     model=model,
                     input_tokens=optimized_tokens,
@@ -1522,9 +1647,36 @@ class HeadroomProxy:
     ) -> Response | StreamingResponse:
         """Handle OpenAI /v1/chat/completions endpoint."""
         start_time = time.time()
-        request_id = self._next_request_id()
+        request_id = await self._next_request_id()
 
-        body = await request.json()
+        # Check request body size
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": {
+                        "message": f"Request body too large. Maximum size is {MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB",
+                        "type": "invalid_request_error",
+                        "code": "request_too_large",
+                    }
+                },
+            )
+
+        # Parse request
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": f"Invalid JSON in request body: {e!s}",
+                        "type": "invalid_request_error",
+                        "code": "invalid_json",
+                    }
+                },
+            )
         model = body.get("model", "unknown")
         messages = body.get("messages", [])
         stream = body.get("stream", False)
@@ -1537,9 +1689,9 @@ class HeadroomProxy:
         # Rate limiting
         if self.rate_limiter:
             rate_key = headers.get("authorization", "default")[:20]
-            allowed, wait_seconds = self.rate_limiter.check_request(rate_key)
+            allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
             if not allowed:
-                self.metrics.record_rate_limited()
+                await self.metrics.record_rate_limited()
                 raise HTTPException(
                     status_code=429,
                     detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
@@ -1547,9 +1699,9 @@ class HeadroomProxy:
 
         # Check cache
         if self.cache and not stream:
-            cached = self.cache.get(messages, model)
+            cached = await self.cache.get(messages, model)
             if cached:
-                self.metrics.record_request(
+                await self.metrics.record_request(
                     provider="openai",
                     model=model,
                     input_tokens=0,
@@ -1666,12 +1818,12 @@ class HeadroomProxy:
 
                 # Cache
                 if self.cache and response.status_code == 200:
-                    self.cache.set(
+                    await self.cache.set(
                         messages, model, response.content, dict(response.headers), tokens_saved
                     )
 
                 # Metrics
-                self.metrics.record_request(
+                await self.metrics.record_request(
                     provider="openai",
                     model=model,
                     input_tokens=optimized_tokens,
@@ -1699,8 +1851,20 @@ class HeadroomProxy:
                     headers=response_headers,
                 )
         except Exception as e:
-            self.metrics.record_failed()
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            await self.metrics.record_failed()
+            # Log full error details internally for debugging
+            logger.error(f"[{request_id}] OpenAI request failed: {type(e).__name__}: {e}")
+            # Return sanitized error message to client (don't expose internal details)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "error": {
+                        "message": "An error occurred while processing your request. Please try again.",
+                        "type": "server_error",
+                        "code": "proxy_error",
+                    }
+                },
+            )
 
     async def handle_passthrough(self, request: Request, base_url: str) -> Response:
         """Pass through request unchanged."""
@@ -1803,8 +1967,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 ),
             },
             "cost": proxy.cost_tracker.stats() if proxy.cost_tracker else None,
-            "cache": proxy.cache.stats() if proxy.cache else None,
-            "rate_limiter": proxy.rate_limiter.stats() if proxy.rate_limiter else None,
+            "cache": await proxy.cache.stats() if proxy.cache else None,
+            "rate_limiter": await proxy.rate_limiter.stats() if proxy.rate_limiter else None,
             "recent_requests": proxy.logger.get_recent(10) if proxy.logger else [],
         }
 
@@ -1812,7 +1976,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def metrics():
         """Prometheus metrics endpoint."""
         return PlainTextResponse(
-            proxy.metrics.export(),
+            await proxy.metrics.export(),
             media_type="text/plain; version=0.0.4",
         )
 
@@ -1820,7 +1984,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def clear_cache():
         """Clear the response cache."""
         if proxy.cache:
-            proxy.cache.clear()
+            await proxy.cache.clear()
             return {"status": "cleared"}
         return {"status": "cache disabled"}
 

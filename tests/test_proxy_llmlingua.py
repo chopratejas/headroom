@@ -38,12 +38,14 @@ def base_config():
         cache_enabled=False,
         rate_limit_enabled=False,
         cost_tracking_enabled=False,
+        llmlingua_enabled=False,  # Explicitly disable for base config
+        smart_routing=False,  # Use legacy mode for these tests
     )
 
 
 @pytest.fixture
 def llmlingua_config():
-    """Config with LLMLingua enabled."""
+    """Config with LLMLingua enabled (legacy mode for explicit status testing)."""
     return ProxyConfig(
         optimize=True,
         cache_enabled=False,
@@ -52,6 +54,7 @@ def llmlingua_config():
         llmlingua_enabled=True,
         llmlingua_device="cpu",
         llmlingua_target_rate=0.4,
+        smart_routing=False,  # Use legacy mode for explicit status testing
     )
 
 
@@ -71,11 +74,12 @@ def client(base_config):
 class TestProxyConfigLLMLingua:
     """Tests for LLMLingua settings in ProxyConfig."""
 
-    def test_default_llmlingua_disabled(self):
-        """LLMLingua is disabled by default."""
+    def test_default_llmlingua_enabled(self):
+        """LLMLingua is enabled by default (with smart routing)."""
         config = ProxyConfig()
 
-        assert config.llmlingua_enabled is False
+        # LLMLingua is now enabled by default with smart routing
+        assert config.llmlingua_enabled is True
         assert config.llmlingua_device == "auto"
         assert config.llmlingua_target_rate == 0.3
 
@@ -145,6 +149,7 @@ class TestLLMLinguaSetup:
             optimize=False,
             cache_enabled=False,
             rate_limit_enabled=False,
+            smart_routing=False,  # Use legacy mode for explicit status testing
         )
 
         with patch("headroom.proxy.server._LLMLINGUA_AVAILABLE", False):
@@ -192,7 +197,7 @@ class TestBannerStatus:
 
     def test_banner_disabled_when_not_available(self):
         """Banner shows DISABLED when llmlingua not available and not enabled."""
-        config = ProxyConfig(llmlingua_enabled=False)
+        config = ProxyConfig(llmlingua_enabled=False, smart_routing=False)
 
         with patch("headroom.proxy.server._LLMLINGUA_AVAILABLE", False):
             status = _get_llmlingua_banner_status(config)
@@ -200,12 +205,13 @@ class TestBannerStatus:
 
     def test_banner_available_hint_when_installed(self):
         """Banner shows availability hint when installed but not enabled."""
-        config = ProxyConfig(llmlingua_enabled=False)
+        config = ProxyConfig(llmlingua_enabled=False, smart_routing=False)
 
         with patch("headroom.proxy.server._LLMLINGUA_AVAILABLE", True):
             status = _get_llmlingua_banner_status(config)
-            assert "available" in status
-            assert "--llmlingua" in status
+            # Now shows DISABLED with hint to enable
+            assert "DISABLED" in status
+            assert "--no-llmlingua" in status  # Hint to remove the flag to enable
 
     def test_banner_enabled_when_active(self):
         """Banner shows ENABLED with config when active."""
@@ -223,11 +229,11 @@ class TestBannerStatus:
 
     def test_banner_shows_install_hint_when_requested_but_missing(self):
         """Banner shows install hint when enabled but not installed."""
-        config = ProxyConfig(llmlingua_enabled=True)
+        config = ProxyConfig(llmlingua_enabled=True, smart_routing=False)
 
         with patch("headroom.proxy.server._LLMLINGUA_AVAILABLE", False):
             status = _get_llmlingua_banner_status(config)
-            assert "not installed" in status
+            assert "NOT INSTALLED" in status
             assert "pip install" in status
 
 
@@ -343,6 +349,7 @@ class TestDevExMessages:
             optimize=False,
             cache_enabled=False,
             rate_limit_enabled=False,
+            smart_routing=False,  # Use legacy mode for explicit status testing
         )
 
         with caplog.at_level(logging.WARNING):
@@ -376,6 +383,7 @@ class TestIntegrationWithActualLLMLingua:
             optimize=True,
             cache_enabled=False,
             rate_limit_enabled=False,
+            smart_routing=False,  # Use legacy mode for explicit status testing
         )
 
         # Should not raise
@@ -429,12 +437,14 @@ class TestEdgeCases:
             optimize=False,
             cache_enabled=False,
             rate_limit_enabled=False,
+            smart_routing=False,  # Use legacy mode for explicit status testing
         )
         config_disabled = ProxyConfig(
             llmlingua_enabled=False,
             optimize=False,
             cache_enabled=False,
             rate_limit_enabled=False,
+            smart_routing=False,  # Use legacy mode for explicit status testing
         )
 
         with patch("headroom.proxy.server._LLMLINGUA_AVAILABLE", True):

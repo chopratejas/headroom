@@ -25,6 +25,13 @@ from headroom.tokenizers import EstimatingTokenCounter
 
 from .base import Provider, TokenCounter
 
+try:
+    import litellm
+
+    LITELLM_AVAILABLE = True
+except ImportError:
+    LITELLM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # Warning flags
@@ -55,6 +62,7 @@ _CONTEXT_LIMITS: dict[str, int] = {
     "embed-multilingual-light-v3.0": 512,
 }
 
+# Fallback pricing - LiteLLM is preferred source
 # Pricing per 1M tokens (input, output)
 _PRICING: dict[str, tuple[float, float]] = {
     "command-a-03-2025": (2.50, 10.00),
@@ -250,7 +258,28 @@ class CohereProvider(Provider):
         return CohereTokenCounter(model, client=self._client)
 
     def get_context_limit(self, model: str) -> int:
-        """Get context limit for a Cohere model."""
+        """Get context limit for a Cohere model.
+
+        Tries LiteLLM first (with and without 'cohere/' prefix),
+        then falls back to built-in limits.
+        """
+        # Try LiteLLM first
+        if LITELLM_AVAILABLE:
+            for model_variant in [f"cohere/{model}", model]:
+                try:
+                    info = litellm.get_model_info(model_variant)
+                    if info and "max_input_tokens" in info:
+                        result = info["max_input_tokens"]
+                        if result is not None:
+                            return result
+                    if info and "max_tokens" in info:
+                        result = info["max_tokens"]
+                        if result is not None:
+                            return result
+                except Exception:
+                    pass
+
+        # Fallback to built-in limits
         model_lower = model.lower()
 
         # Direct match
@@ -282,6 +311,9 @@ class CohereProvider(Provider):
     ) -> float | None:
         """Estimate cost for Cohere API call.
 
+        Tries LiteLLM first (with and without 'cohere/' prefix),
+        then falls back to built-in pricing.
+
         Args:
             input_tokens: Number of input tokens.
             output_tokens: Number of output tokens.
@@ -291,6 +323,23 @@ class CohereProvider(Provider):
         Returns:
             Estimated cost in USD, or None if pricing unknown.
         """
+        # Try LiteLLM first
+        if LITELLM_AVAILABLE:
+            for model_variant in [f"cohere/{model}", model]:
+                try:
+                    cost = litellm.completion_cost(
+                        model=model_variant,
+                        prompt="",
+                        completion="",
+                        prompt_tokens=input_tokens,
+                        completion_tokens=output_tokens,
+                    )
+                    if cost is not None:
+                        return cost
+                except Exception:
+                    pass
+
+        # Fallback to built-in pricing
         model_lower = model.lower()
 
         # Find pricing

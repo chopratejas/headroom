@@ -29,6 +29,17 @@ from headroom.tokenizers import EstimatingTokenCounter
 
 from .base import Provider, TokenCounter
 
+# Check if litellm is available for pricing/context limit lookups
+try:
+    import litellm
+    from litellm import get_model_info as litellm_get_model_info
+
+    LITELLM_AVAILABLE = True
+except ImportError:
+    LITELLM_AVAILABLE = False
+    litellm = None  # type: ignore[assignment]
+    litellm_get_model_info = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Warning flags
@@ -54,6 +65,7 @@ _CONTEXT_LIMITS: dict[str, int] = {
     "gemini-pro": 32768,
 }
 
+# Fallback pricing - LiteLLM is preferred source
 # Pricing per 1M tokens (input, output)
 # Note: Google has different pricing tiers based on context length
 _PRICING: dict[str, tuple[float, float]] = {
@@ -284,10 +296,30 @@ class GoogleProvider(Provider):
     def get_context_limit(self, model: str) -> int:
         """Get context limit for a Gemini model.
 
+        Tries LiteLLM first for up-to-date limits, falls back to hardcoded values.
         Note: Gemini 1.5 Pro has 2M token context!
         """
         model_lower = model.lower()
 
+        # Try LiteLLM first for up-to-date context limits
+        if LITELLM_AVAILABLE and litellm_get_model_info is not None:
+            # Try different model name formats that LiteLLM might recognize
+            model_variants = [
+                f"gemini/{model_lower}",  # gemini/gemini-1.5-pro
+                model_lower,  # gemini-1.5-pro
+            ]
+            for variant in model_variants:
+                try:
+                    info = litellm_get_model_info(variant)
+                    if info:
+                        if "max_input_tokens" in info and info["max_input_tokens"]:
+                            return info["max_input_tokens"]
+                        if "max_tokens" in info and info["max_tokens"]:
+                            return info["max_tokens"]
+                except Exception:
+                    continue
+
+        # Fallback to hardcoded limits
         # Direct match
         if model_lower in _CONTEXT_LIMITS:
             return _CONTEXT_LIMITS[model_lower]
@@ -317,6 +349,8 @@ class GoogleProvider(Provider):
     ) -> float | None:
         """Estimate cost for Gemini API call.
 
+        Tries LiteLLM first for up-to-date pricing, falls back to hardcoded values.
+
         Note: Google has tiered pricing based on context length.
         This uses the standard pricing (up to 128K context).
         For >128K context, actual costs may be higher.
@@ -332,7 +366,28 @@ class GoogleProvider(Provider):
         """
         model_lower = model.lower()
 
-        # Find pricing
+        # Try LiteLLM first for up-to-date pricing
+        if LITELLM_AVAILABLE and litellm is not None:
+            # Try different model name formats that LiteLLM might recognize
+            model_variants = [
+                f"gemini/{model_lower}",  # gemini/gemini-1.5-pro
+                model_lower,  # gemini-1.5-pro
+            ]
+            for variant in model_variants:
+                try:
+                    cost = litellm.completion_cost(
+                        model=variant,
+                        prompt="",
+                        completion="",
+                        prompt_tokens=input_tokens,
+                        completion_tokens=output_tokens,
+                    )
+                    if cost is not None:
+                        return cost
+                except Exception:
+                    continue
+
+        # Fallback to hardcoded pricing
         input_price, output_price = None, None
         for model_prefix, (inp, outp) in _PRICING.items():
             if model_lower.startswith(model_prefix):
