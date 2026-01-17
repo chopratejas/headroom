@@ -15,6 +15,7 @@ Welcome to the Headroom documentation.
 | Framework | Description |
 |-----------|-------------|
 | [LangChain](langchain.md) | Chat models, memory, retrievers, agents, streaming |
+| [Agno](agno.md) | Model wrapper, hooks, multi-provider support |
 | MCP | See [CCR Guide](ccr.md) for tool compression |
 
 ## Core Concepts

@@ -34,7 +34,7 @@
 - **Content-aware** - code, logs, JSON each handled optimally
 - **Provider caching** - automatic prefix optimization for cache hits
 - **Persistent memory** - remember across conversations with zero-latency extraction
-- **Framework native** - LangChain, MCP, agents supported
+- **Framework native** - LangChain, Agno, MCP, agents supported
 
 ---
 
@@ -89,6 +89,30 @@ response = llm.invoke("Hello!")
 
 See the full [LangChain Integration Guide](docs/langchain.md) for memory, retrievers, agents, and more.
 
+### Option 3: Agno Integration
+
+```bash
+pip install "headroom-ai[agno]"
+```
+
+```python
+from agno.agent import Agent
+from agno.models.openai import OpenAIChat
+from headroom.integrations.agno import HeadroomAgnoModel
+
+# Wrap your model - that's it!
+model = HeadroomAgnoModel(OpenAIChat(id="gpt-4o"))
+agent = Agent(model=model)
+
+# Use exactly like before
+response = agent.run("Hello!")
+
+# Check savings
+print(f"Tokens saved: {model.total_tokens_saved}")
+```
+
+See the full [Agno Integration Guide](docs/agno.md) for hooks, multi-provider support, and more.
+
 ---
 
 ## Framework Integrations
@@ -96,6 +120,7 @@ See the full [LangChain Integration Guide](docs/langchain.md) for memory, retrie
 | Framework | Integration | Docs |
 |-----------|-------------|------|
 | **LangChain** | `HeadroomChatModel`, memory, retrievers, agents | [Guide](docs/langchain.md) |
+| **Agno** | `HeadroomAgnoModel`, hooks, multi-provider | [Guide](docs/agno.md) |
 | **MCP** | Tool output compression for Claude | [Guide](docs/ccr.md) |
 | **Any OpenAI Client** | Proxy server | [Guide](docs/proxy.md) |
 
@@ -112,6 +137,7 @@ See the full [LangChain Integration Guide](docs/langchain.md) for memory, retrie
 | **RollingWindow** | Manages context limits without breaking tools | [Transforms](docs/transforms.md) |
 | **CCR** | Reversible compression with automatic retrieval | [CCR Guide](docs/ccr.md) |
 | **LangChain** | Memory, retrievers, agents, streaming | [LangChain](docs/langchain.md) |
+| **Agno** | Agent framework integration with hooks | [Agno](docs/agno.md) |
 | **Text Utilities** | Opt-in compression for search/logs | [Text Compression](docs/text-compression.md) |
 | **LLMLingua-2** | ML-based 20x compression (opt-in) | [LLMLingua](docs/llmlingua.md) |
 | **Code-Aware** | AST-based code compression (tree-sitter) | [Transforms](docs/transforms.md) |
@@ -160,6 +186,7 @@ New models auto-supported via naming pattern detection.
 pip install headroom-ai              # SDK only
 pip install "headroom-ai[proxy]"     # Proxy server
 pip install "headroom-ai[langchain]" # LangChain integration
+pip install "headroom-ai[agno]"      # Agno agent framework
 pip install "headroom-ai[code]"      # AST-based code compression
 pip install "headroom-ai[llmlingua]" # ML-based compression
 pip install "headroom-ai[all]"       # Everything
@@ -176,6 +203,7 @@ pip install "headroom-ai[all]"       # Everything
 | [Memory Guide](docs/memory.md) | Persistent memory for LLMs |
 | [Compression Guide](docs/compression.md) | Universal compression with ML detection |
 | [LangChain Integration](docs/langchain.md) | Full LangChain support |
+| [Agno Integration](docs/agno.md) | Full Agno agent framework support |
 | [SDK Guide](docs/sdk.md) | Fine-grained control |
 | [Proxy Guide](docs/proxy.md) | Production deployment |
 | [Configuration](docs/configuration.md) | All options |
