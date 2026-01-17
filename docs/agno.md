@@ -316,6 +316,54 @@ model = HeadroomAgnoModel(
 
 ---
 
+## Feature Coverage
+
+### What's Optimized
+
+HeadroomAgnoModel optimizes messages at the LLM call boundary. This covers:
+
+| Feature | Optimized | Notes |
+|---------|-----------|-------|
+| **User/Assistant Messages** | ✅ Yes | Full message history compressed |
+| **Tool Calls** | ✅ Yes | Tool call arguments optimized |
+| **Tool Results** | ✅ Yes | JSON responses compressed 70-90% via SmartCrusher |
+| **System Prompts** | ✅ Yes | Included in message optimization |
+| **Streaming Responses** | ✅ Yes | Both sync and async |
+| **Multi-turn Conversations** | ✅ Yes | Full history available for optimization |
+
+### Known Limitations
+
+The integration operates at the model layer, not the agent layer. Some Agno features operate outside this boundary:
+
+| Agno Feature | Status | Explanation |
+|--------------|--------|-------------|
+| **Agent Memory** | ⚠️ Partial | Memory content is optimized when it enters messages, but the persistent memory store itself is not compressed. If you're storing large amounts of data in agent memory, consider summarizing before storage. |
+| **Knowledge Bases** | ⚠️ Partial | KB retrieval happens before messages reach the model. Retrieved context is optimized as part of the message, but we can't influence KB retrieval itself. |
+| **Agent Teams** | ❌ Not supported | Each agent's model is wrapped independently. No cross-agent optimization or team-level coordination. |
+| **Tool Definitions** | ⚠️ Not deduplicated | Tool schemas are sent with every request. Future versions may deduplicate repeated tool definitions. |
+| **Structured Outputs** | ✅ Supported | `response_model` works normally; optimization doesn't affect output parsing. |
+| **Reasoning Models** | ✅ Supported | Extended thinking works; we don't compress reasoning traces. |
+
+### Best Practices for Maximum Savings
+
+1. **Tool-heavy agents see the biggest wins** — Tool results (JSON, logs, search results) compress 70-90%
+2. **Long conversations benefit from RollingWindow** — Configure context limits to avoid hitting provider maximums
+3. **Wrap at the model level, not agent level** — This ensures all LLM calls go through optimization
+4. **Use hooks for observability** — Track token usage patterns to identify optimization opportunities
+
+### Future Improvements
+
+We're tracking these potential enhancements:
+
+- **Memory optimization hooks** — Compress data before it enters agent memory
+- **Knowledge base integration** — Optimize retrieved context at the KB layer
+- **Tool schema deduplication** — Cache and reference repeated tool definitions
+- **Team-level optimization** — Shared context compression across agent teams
+
+Contributions welcome! See [CONTRIBUTING.md](https://github.com/chopratejas/headroom/blob/main/CONTRIBUTING.md).
+
+---
+
 ## Configuration Reference
 
 ### HeadroomAgnoModel
