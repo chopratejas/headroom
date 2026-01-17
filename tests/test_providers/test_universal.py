@@ -185,12 +185,14 @@ class TestGoogleProvider:
     def test_get_context_limit_gemini_2(self, provider):
         """Test context limit for Gemini 2.0."""
         limit = provider.get_context_limit("gemini-2.0-flash")
-        assert limit == 1000000  # 1M tokens
+        # LiteLLM returns 1048576 (2^20), fallback returns 1000000
+        assert limit in (1000000, 1048576)  # ~1M tokens
 
     def test_get_context_limit_gemini_1_5_pro(self, provider):
         """Test context limit for Gemini 1.5 Pro (2M!)."""
         limit = provider.get_context_limit("gemini-1.5-pro")
-        assert limit == 2000000  # 2M tokens!
+        # LiteLLM returns 2097152 (2^21), fallback returns 2000000
+        assert limit in (2000000, 2097152)  # ~2M tokens!
 
     def test_estimate_cost(self, provider):
         """Test cost estimation."""

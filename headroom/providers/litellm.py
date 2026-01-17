@@ -22,6 +22,7 @@ Requires: pip install litellm
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from headroom.tokenizers import EstimatingTokenCounter
@@ -40,10 +41,10 @@ try:
     LITELLM_AVAILABLE = True
 except ImportError:
     LITELLM_AVAILABLE = False
-    litellm = None
-    litellm_token_counter = None
-    litellm_model_cost = None
-    litellm_get_model_info = None
+    litellm = None  # type: ignore[assignment]
+    litellm_token_counter = None  # type: ignore[assignment]
+    litellm_model_cost = None  # type: ignore[assignment]
+    litellm_get_model_info = None  # type: ignore[assignment]
 
 
 def is_litellm_available() -> bool:
@@ -184,11 +185,14 @@ class LiteLLMProvider(Provider):
     def get_context_limit(self, model: str) -> int:
         """Get context limit using LiteLLM's model info."""
         try:
-            info = litellm_get_model_info(model)
-            if info and "max_input_tokens" in info:
-                return info["max_input_tokens"]
-            if info and "max_tokens" in info:
-                return info["max_tokens"]
+            if litellm_get_model_info is not None:
+                info = litellm_get_model_info(model)
+                if info and "max_input_tokens" in info:
+                    result = info["max_input_tokens"]
+                    return result if result is not None else 128000
+                if info and "max_tokens" in info:
+                    result = info["max_tokens"]
+                    return result if result is not None else 128000
         except Exception as e:
             logger.debug(f"LiteLLM get_model_info failed for {model}: {e}")
 
@@ -198,9 +202,12 @@ class LiteLLMProvider(Provider):
     def get_output_buffer(self, model: str, default: int = 4000) -> int:
         """Get recommended output buffer."""
         try:
-            info = litellm_get_model_info(model)
-            if info and "max_output_tokens" in info:
-                return min(info["max_output_tokens"], default)
+            if litellm_get_model_info is not None:
+                info = litellm_get_model_info(model)
+                if info and "max_output_tokens" in info:
+                    max_output = info["max_output_tokens"]
+                    if max_output is not None:
+                        return min(max_output, default)
         except Exception:
             pass
         return default

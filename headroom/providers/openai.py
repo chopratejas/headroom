@@ -34,6 +34,13 @@ try:
 except ImportError:
     TIKTOKEN_AVAILABLE = False
 
+try:
+    import litellm
+
+    LITELLM_AVAILABLE = True
+except ImportError:
+    LITELLM_AVAILABLE = False
+
 
 # OpenAI model to tiktoken encoding mappings
 _MODEL_ENCODINGS: dict[str, str] = {
@@ -78,6 +85,7 @@ _CONTEXT_LIMITS: dict[str, int] = {
     "o3-mini": 200000,
 }
 
+# Fallback pricing - LiteLLM is preferred source
 # OpenAI pricing per 1M tokens (input, output)
 # NOTE: These are ESTIMATES. Always verify against actual OpenAI billing.
 # Last updated: 2025-01-14
@@ -404,15 +412,32 @@ class OpenAIProvider(Provider):
         """Get context limit for an OpenAI model.
 
         Resolution order:
-        1. Explicit context_limits passed to constructor
-        2. HEADROOM_MODEL_LIMITS environment variable
-        3. ~/.headroom/models.json config file
-        4. Built-in _CONTEXT_LIMITS
-        5. Pattern-based inference (gpt-4o, gpt-4, etc.)
-        6. Default fallback (128K)
+        1. LiteLLM (if available, most up-to-date)
+        2. Explicit context_limits passed to constructor
+        3. HEADROOM_MODEL_LIMITS environment variable
+        4. ~/.headroom/models.json config file
+        5. Built-in _CONTEXT_LIMITS
+        6. Pattern-based inference (gpt-4o, gpt-4, etc.)
+        7. Default fallback (128K)
 
         Never raises an exception - uses sensible defaults for unknown models.
         """
+        # Try LiteLLM first
+        if LITELLM_AVAILABLE:
+            try:
+                info = litellm.get_model_info(model)
+                if info and "max_input_tokens" in info:
+                    max_tokens = info["max_input_tokens"]
+                    if max_tokens is not None:
+                        return int(max_tokens)
+            except Exception:
+                pass
+
+        # Fall back to hardcoded
+        return self._get_context_limit_manual(model)
+
+    def _get_context_limit_manual(self, model: str) -> int:
+        """Get context limit using hardcoded values (fallback)."""
         if model in self._context_limits:
             return self._context_limits[model]
 
@@ -469,6 +494,31 @@ class OpenAIProvider(Provider):
         Returns:
             Estimated cost in USD, or None if pricing unknown.
         """
+        # Try LiteLLM first (most up-to-date pricing)
+        if LITELLM_AVAILABLE:
+            try:
+                # LiteLLM uses per-token pricing, returns total cost
+                cost = litellm.completion_cost(
+                    model=model,
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                )
+                if cost is not None and cost > 0:
+                    return float(cost)
+            except Exception:
+                pass  # Fall through to manual pricing
+
+        # Fall back to hardcoded pricing
+        return self._estimate_cost_manual(input_tokens, output_tokens, model, cached_tokens)
+
+    def _estimate_cost_manual(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        model: str,
+        cached_tokens: int = 0,
+    ) -> float | None:
+        """Estimate cost using hardcoded pricing (fallback)."""
         # Check for stale pricing and warn once
         staleness_warning = _check_pricing_staleness()
         if staleness_warning:

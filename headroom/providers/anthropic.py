@@ -24,6 +24,17 @@ from typing import Any, cast
 
 from .base import Provider, TokenCounter
 
+# Check if LiteLLM is available for pricing and context limits
+try:
+    import litellm
+    from litellm import get_model_info as litellm_get_model_info
+
+    LITELLM_AVAILABLE = True
+except ImportError:
+    LITELLM_AVAILABLE = False
+    litellm = None  # type: ignore[assignment]
+    litellm_get_model_info = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Warning flags
@@ -55,7 +66,7 @@ ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
     "claude-instant-1.2": 100000,
 }
 
-# Anthropic pricing per 1M tokens
+# Fallback pricing - LiteLLM is preferred source
 # NOTE: These are ESTIMATES. Always verify against actual Anthropic billing.
 # Last updated: 2025-01-14
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
@@ -454,9 +465,10 @@ class AnthropicProvider(Provider):
         1. Explicit context_limits passed to constructor
         2. HEADROOM_MODEL_LIMITS environment variable
         3. ~/.headroom/models.json config file
-        4. Built-in ANTHROPIC_CONTEXT_LIMITS
-        5. Pattern-based inference (opus/sonnet/haiku)
-        6. Default fallback (200K for any Claude model)
+        4. LiteLLM model info (if available)
+        5. Built-in ANTHROPIC_CONTEXT_LIMITS
+        6. Pattern-based inference (opus/sonnet/haiku)
+        7. Default fallback (200K for any Claude model)
 
         Never raises an exception - uses sensible defaults for unknown models.
         """
@@ -468,6 +480,22 @@ class AnthropicProvider(Provider):
         for known_model, limit in self._context_limits.items():
             if model in known_model or known_model in model:
                 return limit
+
+        # Try LiteLLM for context limit
+        if LITELLM_AVAILABLE and litellm_get_model_info is not None:
+            try:
+                info = litellm_get_model_info(model)
+                if info:
+                    if "max_input_tokens" in info and info["max_input_tokens"] is not None:
+                        limit = info["max_input_tokens"]
+                        self._context_limits[model] = limit
+                        return limit
+                    if "max_tokens" in info and info["max_tokens"] is not None:
+                        limit = info["max_tokens"]
+                        self._context_limits[model] = limit
+                        return limit
+            except Exception as e:
+                logger.debug(f"LiteLLM get_model_info failed for {model}: {e}")
 
         # Pattern-based inference for new models
         tier = _infer_model_tier(model)
@@ -516,7 +544,46 @@ class AnthropicProvider(Provider):
         model: str,
         cached_tokens: int = 0,
     ) -> float | None:
-        """Estimate cost for a request."""
+        """Estimate cost for a request.
+
+        Tries LiteLLM first for up-to-date pricing, falls back to manual pricing.
+        """
+        # Try LiteLLM first for cost estimation
+        if LITELLM_AVAILABLE and litellm is not None:
+            try:
+                cost = litellm.completion_cost(
+                    model=model,
+                    prompt="",
+                    completion="",
+                    prompt_tokens=input_tokens - cached_tokens,
+                    completion_tokens=output_tokens,
+                )
+                # Add cached token cost if applicable
+                if cached_tokens > 0:
+                    try:
+                        # Get cached input pricing from LiteLLM model info
+                        info = (
+                            litellm_get_model_info(model)
+                            if litellm_get_model_info is not None
+                            else None
+                        )
+                        if info and "input_cost_per_token" in info:
+                            # LiteLLM typically applies 90% discount for cached tokens
+                            cached_cost = cached_tokens * info["input_cost_per_token"] * 0.1
+                            cost += cached_cost
+                    except Exception:
+                        # Fall back to manual cached pricing
+                        pricing = self._get_pricing(model)
+                        if pricing:
+                            cached_cost = (cached_tokens / 1_000_000) * pricing.get(
+                                "cached_input", pricing["input"]
+                            )
+                            cost += cached_cost
+                return cost
+            except Exception as e:
+                logger.debug(f"LiteLLM cost estimation failed for {model}: {e}")
+
+        # Fall back to manual pricing
         pricing = self._get_pricing(model)
         if not pricing:
             return None
