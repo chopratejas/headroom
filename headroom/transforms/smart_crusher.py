@@ -645,7 +645,8 @@ def _detect_items_by_learned_semantics(
     # Build a quick lookup for field_hash -> FieldSemantics
     # Pre-filter to fields with sufficient confidence
     confident_semantics = {
-        fh: fs for fh, fs in field_semantics.items()
+        fh: fs
+        for fh, fs in field_semantics.items()
         if fs.confidence >= 0.3 and fs.inferred_type != "unknown"
     }
 
@@ -1599,7 +1600,9 @@ class SmartCrusher(Transform):
             return keep_indices
 
         # Use provided field_semantics or fall back to instance variable (set by crush())
-        effective_field_semantics = field_semantics or getattr(self, "_current_field_semantics", None)
+        effective_field_semantics = field_semantics or getattr(
+            self, "_current_field_semantics", None
+        )
 
         # Identify error items using KEYWORD detection (preservation guarantee)
         # This ensures ALL error items are kept, regardless of frequency
@@ -2024,7 +2027,9 @@ class SmartCrusher(Transform):
         # === TOIN Evolution: Extract field semantics for signal detection ===
         # Store temporarily on instance for use in _prioritize_indices
         # This enables learned signal detection without changing all method signatures
-        self._current_field_semantics = toin_hint.field_semantics if toin_hint.field_semantics else None
+        self._current_field_semantics = (
+            toin_hint.field_semantics if toin_hint.field_semantics else None
+        )
 
         # Local feedback hints (if TOIN didn't apply)
         if not toin_hint_applied and self.config.use_feedback_hints and tool_name:

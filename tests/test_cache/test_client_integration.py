@@ -388,9 +388,9 @@ class TestCacheOptimizerInvocation:
         headroom_meta = result.headroom
 
         # Check that cache optimizer was reported
-        assert headroom_meta.cache_optimizer_used is not None or \
-            any("cache_optimizer" in t for t in (headroom_meta.transforms_applied or [])), \
-            "Cache optimizer usage should be reported in metadata"
+        assert headroom_meta.cache_optimizer_used is not None or any(
+            "cache_optimizer" in t for t in (headroom_meta.transforms_applied or [])
+        ), "Cache optimizer usage should be reported in metadata"
 
     @patch("headroom.storage.sqlite.SQLiteStorage.save")
     def test_optimizer_not_called_in_audit_mode(self, mock_save, temp_db):
@@ -430,9 +430,7 @@ class TestCacheOptimizerInvocation:
         )
 
         # Optimizer should NOT be called in AUDIT mode
-        assert not spy_optimize.called, (
-            "Cache optimizer should NOT be called in AUDIT mode"
-        )
+        assert not spy_optimize.called, "Cache optimizer should NOT be called in AUDIT mode"
 
 
 class TestSemanticCacheIntegration:
@@ -444,9 +442,7 @@ class TestSemanticCacheIntegration:
     """
 
     @patch("headroom.storage.sqlite.SQLiteStorage.save")
-    def test_semantic_cache_hit_returns_cached_response_without_api_call(
-        self, mock_save, temp_db
-    ):
+    def test_semantic_cache_hit_returns_cached_response_without_api_call(self, mock_save, temp_db):
         """CRITICAL: Verify semantic cache hit returns cached response without API call.
 
         This test catches the gap where semantic cache is enabled but cached
@@ -565,8 +561,7 @@ class TestSessionStatsTracking:
         after_requests = after_stats["session"]["requests_total"]
 
         assert after_requests == initial_requests + 1, (
-            f"requests_total should increment. "
-            f"Before: {initial_requests}, After: {after_requests}"
+            f"requests_total should increment. Before: {initial_requests}, After: {after_requests}"
         )
         assert after_stats["session"]["requests_audit"] >= 1, (
             "requests_audit should be at least 1 after AUDIT mode request"

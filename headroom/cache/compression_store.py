@@ -741,16 +741,13 @@ class CompressionStore:
                         # Handle both direct arrays and wrapped arrays
                         if isinstance(parsed, list):
                             # Filter to dicts only (field learning needs dict items)
-                            retrieved_items = [
-                                item for item in parsed if isinstance(item, dict)
-                            ]
+                            retrieved_items = [item for item in parsed if isinstance(item, dict)]
                         elif isinstance(parsed, dict):
                             # Check for common wrapper patterns: {"items": [...], "results": [...]}
                             for key in ("items", "results", "data", "records"):
                                 if key in parsed and isinstance(parsed[key], list):
                                     retrieved_items = [
-                                        item for item in parsed[key]
-                                        if isinstance(item, dict)
+                                        item for item in parsed[key] if isinstance(item, dict)
                                     ]
                                     break
                     except (json.JSONDecodeError, TypeError):

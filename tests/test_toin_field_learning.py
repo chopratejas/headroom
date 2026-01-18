@@ -245,7 +245,9 @@ class TestFieldSemanticsLearning:
 
         # VERIFY
         assert fs.is_value_important(pending_hash), "Retrieved value should be important"
-        assert not fs.is_value_important(unknown_hash), "Never-retrieved value should NOT be important"
+        assert not fs.is_value_important(unknown_hash), (
+            "Never-retrieved value should NOT be important"
+        )
 
 
 class TestTOINFieldLearningIntegration:
@@ -275,8 +277,7 @@ class TestTOINFieldLearningIntegration:
         pattern = toin._patterns.get(sig.structure_hash)
         assert pattern is not None, "Pattern should exist"
         assert len(pattern.field_semantics) > 0, (
-            f"field_semantics should be populated after retrieval. "
-            f"Got: {pattern.field_semantics}"
+            f"field_semantics should be populated after retrieval. Got: {pattern.field_semantics}"
         )
 
         # Check that field hashes match expected fields
@@ -327,7 +328,9 @@ class TestTOINFieldLearningIntegration:
 
         status_sem = pattern.field_semantics[status_hash]
         # The type should be inferred (not unknown) after enough data
-        assert status_sem.retrieval_count >= 6, f"Should have 6+ retrievals, got {status_sem.retrieval_count}"
+        assert status_sem.retrieval_count >= 6, (
+            f"Should have 6+ retrievals, got {status_sem.retrieval_count}"
+        )
 
     def test_get_recommendation_includes_field_semantics(self):
         """PROVES: get_recommendation returns learned field_semantics."""
@@ -513,9 +516,10 @@ class TestEndToEndFieldLearning:
             # Error value should be tracked
             error_hash = _hash_value("error")
             failed_hash = _hash_value("failed")
-            assert error_hash in status_sem.important_value_hashes or \
-                   failed_hash in status_sem.important_value_hashes, \
-                   "Error/failed values should be marked as important"
+            assert (
+                error_hash in status_sem.important_value_hashes
+                or failed_hash in status_sem.important_value_hashes
+            ), "Error/failed values should be marked as important"
 
     def test_recommendation_hint_includes_learned_semantics(self):
         """PROVES: TOIN recommendation includes learned field semantics for SmartCrusher."""
@@ -549,8 +553,7 @@ class TestEndToEndFieldLearning:
         # VERIFY
         assert hint is not None
         assert len(hint.field_semantics) > 0, (
-            f"Recommendation should include field_semantics. "
-            f"Got: {hint.field_semantics}"
+            f"Recommendation should include field_semantics. Got: {hint.field_semantics}"
         )
         assert status_hash in hint.field_semantics
 

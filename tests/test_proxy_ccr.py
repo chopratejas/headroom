@@ -386,7 +386,9 @@ class TestEndToEndTOINIntegration:
             yield client
         reset_compression_store()
 
-    def test_pipeline_compresses_tool_output_and_records_toin(self, fresh_toin, client_with_optimization):
+    def test_pipeline_compresses_tool_output_and_records_toin(
+        self, fresh_toin, client_with_optimization
+    ):
         """CRITICAL: Verify SmartCrusher compression records events in TOIN.
 
         This tests the production code path:
@@ -467,8 +469,7 @@ class TestEndToEndTOINIntegration:
 
         # Verify SmartCrusher was invoked (transform name starts with smart_crush)
         smart_crush_applied = any(
-            t.startswith("smart_crush") or t.startswith("smart:")
-            for t in result.transforms_applied
+            t.startswith("smart_crush") or t.startswith("smart:") for t in result.transforms_applied
         )
         assert smart_crush_applied, (
             f"SmartCrusher should be in transforms: {result.transforms_applied}"

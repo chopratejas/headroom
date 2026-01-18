@@ -169,9 +169,7 @@ class ToolPattern:
             "skip_compression_recommended": self.skip_compression_recommended,
             "preserve_fields": self.preserve_fields,
             # Field-level semantics (TOIN Evolution)
-            "field_semantics": {
-                k: v.to_dict() for k, v in self.field_semantics.items()
-            },
+            "field_semantics": {k: v.to_dict() for k, v in self.field_semantics.items()},
             "sample_size": self.sample_size,
             "user_count": self.user_count,
             "confidence": self.confidence,

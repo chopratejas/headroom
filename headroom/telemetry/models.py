@@ -436,7 +436,7 @@ class FieldSemantics:
             "field_hash": self.field_hash,
             "inferred_type": self.inferred_type,
             "confidence": self.confidence,
-            "important_value_hashes": self.important_value_hashes[:self.MAX_IMPORTANT_VALUES],
+            "important_value_hashes": self.important_value_hashes[: self.MAX_IMPORTANT_VALUES],
             "default_value_hash": self.default_value_hash,
             "value_retrieval_frequency": dict(
                 sorted(
@@ -514,9 +514,7 @@ class FieldSemantics:
                 )[: self.MAX_IMPORTANT_VALUES]
 
         # Track query operators
-        self.query_operator_frequency[operator] = (
-            self.query_operator_frequency.get(operator, 0) + 1
-        )
+        self.query_operator_frequency[operator] = self.query_operator_frequency.get(operator, 0) + 1
 
     def record_compression_stats(
         self,
@@ -543,9 +541,7 @@ class FieldSemantics:
         self.total_unique_values_seen = int(
             (self.total_unique_values_seen * (n - 1) + unique_values) / n
         )
-        self.total_values_seen = int(
-            (self.total_values_seen * (n - 1) + total_values) / n
-        )
+        self.total_values_seen = int((self.total_values_seen * (n - 1) + total_values) / n)
         self.most_common_value_frequency = (
             self.most_common_value_frequency * (n - 1) + most_common_frequency
         ) / n
@@ -569,9 +565,7 @@ class FieldSemantics:
             return
 
         # Calculate metrics
-        uniqueness_ratio = (
-            self.total_unique_values_seen / max(1, self.total_values_seen)
-        )
+        uniqueness_ratio = self.total_unique_values_seen / max(1, self.total_values_seen)
         has_dominant_default = self.most_common_value_frequency > 0.7
         retrieval_diversity = len(self.value_retrieval_frequency) / max(1, self.retrieval_count)
 
@@ -598,15 +592,15 @@ class FieldSemantics:
         # ERROR_INDICATOR: Has dominant default + retrievals are for non-default values
         elif has_dominant_default and self.default_value_hash:
             # Check if retrieved values are different from default
-            default_retrieval_count = self.value_retrieval_frequency.get(
-                self.default_value_hash, 0
-            )
+            default_retrieval_count = self.value_retrieval_frequency.get(self.default_value_hash, 0)
             non_default_retrieval_ratio = 1 - (
                 default_retrieval_count / max(1, self.retrieval_count)
             )
             if non_default_retrieval_ratio > 0.7:
                 inferred = "error_indicator"
-                confidence = min(0.9, non_default_retrieval_ratio * self.most_common_value_frequency)
+                confidence = min(
+                    0.9, non_default_retrieval_ratio * self.most_common_value_frequency
+                )
 
         # STATUS: Low uniqueness + specific values retrieved
         elif uniqueness_ratio < 0.2 and retrieval_diversity < 0.5:
