@@ -1947,26 +1947,89 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     @app.get("/stats")
     async def stats():
+        """Get comprehensive proxy statistics.
+
+        This is the main stats endpoint - it aggregates data from all subsystems:
+        - Request metrics (total, cached, failed, by model/provider)
+        - Token usage and savings
+        - Cost tracking
+        - Compression (CCR) statistics
+        - Telemetry/TOIN (data flywheel) statistics
+        - Cache and rate limiter stats
+        """
         m = proxy.metrics
+
+        # Calculate average latency
+        avg_latency_ms = round(m.latency_sum_ms / m.latency_count, 2) if m.latency_count > 0 else 0
+
+        # Get compression store stats
+        store = get_compression_store()
+        compression_stats = store.get_stats()
+
+        # Get telemetry/TOIN stats
+        telemetry = get_telemetry_collector()
+        telemetry_stats = telemetry.get_stats()
+
+        # Get feedback loop stats
+        feedback = get_compression_feedback()
+        feedback_stats = feedback.get_stats()
+
+        # Calculate total tokens before compression
+        total_tokens_before = m.tokens_input_total + m.tokens_saved_total
+
         return {
             "requests": {
                 "total": m.requests_total,
                 "cached": m.requests_cached,
                 "rate_limited": m.requests_rate_limited,
                 "failed": m.requests_failed,
+                "by_provider": dict(m.requests_by_provider),
+                "by_model": dict(m.requests_by_model),
             },
             "tokens": {
                 "input": m.tokens_input_total,
                 "output": m.tokens_output_total,
                 "saved": m.tokens_saved_total,
+                "total_before_compression": total_tokens_before,
                 "savings_percent": round(
-                    (m.tokens_saved_total / (m.tokens_input_total + m.tokens_saved_total) * 100)
-                    if m.tokens_input_total > 0
+                    (m.tokens_saved_total / total_tokens_before * 100)
+                    if total_tokens_before > 0
                     else 0,
                     2,
                 ),
             },
+            "latency": {
+                "average_ms": avg_latency_ms,
+                "total_requests": m.latency_count,
+            },
             "cost": proxy.cost_tracker.stats() if proxy.cost_tracker else None,
+            "compression": {
+                "ccr_entries": compression_stats.get("entry_count", 0),
+                "ccr_max_entries": compression_stats.get("max_entries", 0),
+                "original_tokens_cached": compression_stats.get("total_original_tokens", 0),
+                "compressed_tokens_cached": compression_stats.get("total_compressed_tokens", 0),
+                "ccr_retrievals": compression_stats.get("total_retrievals", 0),
+            },
+            "telemetry": {
+                "enabled": telemetry_stats.get("enabled", False),
+                "total_compressions": telemetry_stats.get("total_compressions", 0),
+                "total_retrievals": telemetry_stats.get("total_retrievals", 0),
+                "global_retrieval_rate": round(telemetry_stats.get("global_retrieval_rate", 0), 4),
+                "tool_signatures_tracked": telemetry_stats.get("tool_signatures_tracked", 0),
+                "avg_compression_ratio": round(telemetry_stats.get("avg_compression_ratio", 0), 4),
+                "avg_token_reduction": round(telemetry_stats.get("avg_token_reduction", 0), 4),
+            },
+            "feedback_loop": {
+                "tools_tracked": feedback_stats.get("tools_tracked", 0),
+                "total_compressions": feedback_stats.get("total_compressions", 0),
+                "total_retrievals": feedback_stats.get("total_retrievals", 0),
+                "global_retrieval_rate": round(feedback_stats.get("global_retrieval_rate", 0), 4),
+                "tools_with_high_retrieval": sum(
+                    1
+                    for p in feedback_stats.get("tool_patterns", {}).values()
+                    if p.get("retrieval_rate", 0) > 0.3
+                ),
+            },
             "cache": await proxy.cache.stats() if proxy.cache else None,
             "rate_limiter": await proxy.rate_limiter.stats() if proxy.rate_limiter else None,
             "recent_requests": proxy.logger.get_recent(10) if proxy.logger else [],
