@@ -11,6 +11,17 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+# Type alias for field semantic types
+FieldSemanticType = Literal[
+    "unknown",
+    "identifier",
+    "error_indicator",
+    "score",
+    "status",
+    "temporal",
+    "content",
+]
+
 
 @dataclass
 class FieldDistribution:
@@ -393,15 +404,7 @@ class FieldSemantics:
     # - "status": Low cardinality, specific values trigger retrieval
     # - "temporal": Users query by time ranges
     # - "content": Users do text search on this field
-    inferred_type: Literal[
-        "unknown",  # Not enough data yet
-        "identifier",  # High uniqueness, exact-match queries
-        "error_indicator",  # Retrieved when value != default
-        "score",  # Top-N / sorted queries
-        "status",  # Categorical, certain values matter
-        "temporal",  # Range queries
-        "content",  # Text search queries
-    ] = "unknown"
+    inferred_type: FieldSemanticType = "unknown"
 
     confidence: float = 0.0  # 0.0 = no data, 1.0 = high confidence
 
@@ -581,7 +584,7 @@ class FieldSemantics:
         contains_ratio = self.query_operator_frequency.get("contains", 0) / max(1, total_ops)
 
         # Inference logic (data-driven, no field name patterns)
-        inferred = "unknown"
+        inferred: FieldSemanticType = "unknown"
         confidence = 0.0
 
         # IDENTIFIER: High uniqueness + exact match queries

@@ -615,3 +615,316 @@ class TestIntegrationWithRealHeadroom:
 
         # Should compress (rolling window, etc.)
         assert metrics["tokens_before"] >= metrics["tokens_after"]
+
+
+# ============================================================================
+# Real Ollama Integration Tests (no mocks, actual LLM calls)
+# ============================================================================
+
+
+def _ollama_available() -> bool:
+    """Check if Ollama is running and has a model available."""
+    import socket
+
+    # First check if ollama Python package is installed
+    try:
+        import ollama  # noqa: F401
+    except ImportError:
+        return False
+
+    try:
+        # Check if Ollama server is running on default port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(("localhost", 11434))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+def _langchain_ollama_available() -> bool:
+    """Check if langchain-ollama package is installed."""
+    try:
+        from langchain_ollama import ChatOllama  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _get_ollama_model() -> str | None:
+    """Get an available Ollama model for testing."""
+    if not _ollama_available():
+        return None
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+
+        # Parse output to find a model
+        lines = result.stdout.strip().split("\n")
+        if len(lines) < 2:  # Header + at least one model
+            return None
+
+        # Get first model name (skip header)
+        for line in lines[1:]:
+            parts = line.split()
+            if parts:
+                model_name = parts[0]
+                # Prefer small models for faster tests
+                if any(
+                    small in model_name.lower() for small in ["tiny", "phi", "qwen", "gemma:2b"]
+                ):
+                    return model_name
+        # Fallback to first available model
+        first_model_line = lines[1].split()
+        return first_model_line[0] if first_model_line else None
+    except Exception:
+        return None
+
+
+@pytest.mark.skipif(
+    not (_ollama_available() and _langchain_ollama_available()),
+    reason="Ollama not running or langchain-ollama not installed",
+)
+class TestOllamaIntegration:
+    """Integration tests using real Ollama models with LangChain.
+
+    These tests require Ollama to be installed and running locally.
+    They are skipped in CI unless Ollama is set up.
+
+    To run these tests locally:
+        1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+        2. Pull a small model: ollama pull llama2
+        3. Run tests: pytest tests/test_integrations/langchain/test_chat_model.py -v -k ollama
+    """
+
+    @pytest.fixture
+    def ollama_model_name(self):
+        """Get an available Ollama model."""
+        model = _get_ollama_model()
+        if not model:
+            pytest.skip("No Ollama models available")
+        return model
+
+    def test_headroom_chat_model_with_ollama(self, ollama_model_name):
+        """Test HeadroomChatModel wrapping real ChatOllama model."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        # Create real Ollama model (no API key needed)
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+
+        assert headroom_model.wrapped_model is base_model
+        assert isinstance(headroom_model, HeadroomChatModel)
+
+    def test_invoke_with_ollama(self, ollama_model_name):
+        """Actually invoke an LLM call with Ollama - full end-to-end test."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+
+        messages = [
+            SystemMessage(content="You are a helpful assistant. Be very brief."),
+            HumanMessage(content="What is 2+2? Answer with just the number."),
+        ]
+
+        # This makes a real LLM call
+        result = headroom_model.invoke(messages)
+
+        assert result is not None
+        assert result.content is not None
+        assert len(result.content) > 0
+
+    def test_generate_with_ollama(self, ollama_model_name):
+        """Test _generate method with real Ollama model."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+
+        messages = [
+            HumanMessage(content="Say 'hello' and nothing else."),
+        ]
+
+        result = headroom_model._generate(messages)
+
+        assert result is not None
+        assert len(result.generations) > 0
+        assert result.generations[0].message.content is not None
+
+    def test_optimization_tracked_with_ollama(self, ollama_model_name):
+        """Test that optimization metrics are tracked with real calls."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+
+        # Make a call with some messages
+        messages = [
+            SystemMessage(content="You are helpful."),
+            HumanMessage(content="Hi"),
+        ]
+
+        headroom_model.invoke(messages)
+
+        # Metrics should be tracked
+        assert len(headroom_model._metrics_history) >= 1
+
+    def test_multiple_turns_with_ollama(self, ollama_model_name):
+        """Test multi-turn conversation with real Ollama."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+
+        # First turn
+        messages = [
+            SystemMessage(content="You are a helpful assistant. Be brief."),
+            HumanMessage(content="My name is Alice."),
+        ]
+        response1 = headroom_model.invoke(messages)
+
+        # Second turn - add previous exchange
+        messages.append(AIMessage(content=response1.content))
+        messages.append(HumanMessage(content="What is my name?"))
+
+        response2 = headroom_model.invoke(messages)
+
+        assert response2 is not None
+        assert response2.content is not None
+        # Model should remember the name from context
+        assert len(response2.content) > 0
+
+    def test_headroom_optimization_reduces_tokens(self, ollama_model_name):
+        """Test that Headroom optimization actually reduces token count."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model, mode=HeadroomMode.OPTIMIZE)
+
+        # Create a conversation with repetitive content that should be compressed
+        messages = [SystemMessage(content="You are a helpful assistant.")]
+        for i in range(20):
+            messages.append(HumanMessage(content=f"Question {i}: What is {i} + {i}?"))
+            messages.append(AIMessage(content=f"The answer to {i} + {i} is {i + i}."))
+        messages.append(HumanMessage(content="What was question 5?"))
+
+        # This should trigger compression
+        headroom_model.invoke(messages)
+
+        # Check that some optimization was tracked
+        if headroom_model._metrics_history:
+            metrics = headroom_model._metrics_history[-1]
+            # With a large conversation, we expect some savings
+            assert metrics.tokens_before >= metrics.tokens_after
+
+    def test_callback_handler_with_ollama(self, ollama_model_name):
+        """Test HeadroomCallbackHandler with real Ollama calls."""
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomCallbackHandler, HeadroomChatModel
+
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+        handler = HeadroomCallbackHandler()
+
+        messages = [
+            HumanMessage(content="Say 'test' and nothing else."),
+        ]
+
+        # Invoke with callback
+        headroom_model.invoke(messages, config={"callbacks": [handler]})
+
+        # Handler should have tracked the request
+        assert handler.total_requests >= 1
+
+
+@pytest.mark.skipif(
+    not (_ollama_available() and _langchain_ollama_available()),
+    reason="Ollama not running or langchain-ollama not installed",
+)
+class TestRealLangChainIntegration:
+    """Real integration tests that validate LangChain components work together.
+
+    These use real Ollama but focus on LangChain-specific functionality.
+    """
+
+    @pytest.fixture
+    def ollama_model_name(self):
+        """Get an available Ollama model."""
+        model = _get_ollama_model()
+        if not model:
+            pytest.skip("No Ollama models available")
+        return model
+
+    def test_lcel_chain_with_headroom(self, ollama_model_name):
+        """Test LCEL chain composition with HeadroomChatModel."""
+        from langchain_core.output_parsers import StrOutputParser
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_ollama import ChatOllama
+
+        from headroom.integrations import HeadroomChatModel
+
+        # Create chain: prompt -> headroom model -> output parser
+        base_model = ChatOllama(model=ollama_model_name)
+        headroom_model = HeadroomChatModel(base_model)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "You are a helpful assistant. Be very brief."),
+                ("human", "{input}"),
+            ]
+        )
+
+        chain = prompt | headroom_model | StrOutputParser()
+
+        # Invoke the chain
+        result = chain.invoke({"input": "What is 1+1? Just the number."})
+
+        assert result is not None
+        assert len(result) > 0
+
+    def test_optimize_messages_standalone_with_ollama_types(self, ollama_model_name):
+        """Test standalone optimize_messages function with real message types."""
+        from headroom.integrations import optimize_messages
+
+        # Use real LangChain message types
+        messages = [
+            SystemMessage(content="You are a math tutor."),
+            HumanMessage(content="What is calculus?"),
+            AIMessage(content="Calculus is the mathematical study of continuous change."),
+            HumanMessage(content="Can you give me an example?"),
+        ]
+
+        optimized, metrics = optimize_messages(messages)
+
+        # Should return valid LangChain messages
+        assert len(optimized) >= 1
+        assert all(
+            isinstance(m, (SystemMessage, HumanMessage, AIMessage, ToolMessage)) for m in optimized
+        )
+        assert "tokens_before" in metrics
+        assert "tokens_after" in metrics

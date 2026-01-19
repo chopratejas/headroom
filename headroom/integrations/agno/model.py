@@ -11,7 +11,7 @@ import logging
 import threading
 import warnings
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -63,9 +63,11 @@ class OptimizationMetrics:
     model: str
 
 
-class HeadroomAgnoModel:
+@dataclass
+class HeadroomAgnoModel(Model):  # type: ignore[misc]
     """Agno model wrapper that applies Headroom optimizations.
 
+    Extends agno.models.base.Model to be fully compatible with Agno Agent.
     Wraps any Agno Model and automatically optimizes the context
     before each API call. Works with OpenAIChat, Claude, Gemini, and
     other Agno model types.
@@ -77,7 +79,7 @@ class HeadroomAgnoModel:
 
         # Basic usage
         model = OpenAIChat(id="gpt-4o")
-        optimized = HeadroomAgnoModel(model)
+        optimized = HeadroomAgnoModel(wrapped_model=model)
 
         # Use with agent
         agent = Agent(model=optimized)
@@ -89,7 +91,7 @@ class HeadroomAgnoModel:
         # With custom config
         from headroom import HeadroomConfig, HeadroomMode
         config = HeadroomConfig(default_mode=HeadroomMode.OPTIMIZE)
-        optimized = HeadroomAgnoModel(model, config=config)
+        optimized = HeadroomAgnoModel(wrapped_model=model, headroom_config=config)
 
     Attributes:
         wrapped_model: The underlying Agno model
@@ -97,59 +99,77 @@ class HeadroomAgnoModel:
         metrics_history: List of OptimizationMetrics from recent calls
     """
 
-    def __init__(
-        self,
-        wrapped_model: Any,
-        config: HeadroomConfig | None = None,
-        mode: HeadroomMode | None = None,
-        auto_detect_provider: bool = True,
-    ) -> None:
-        """Initialize HeadroomAgnoModel.
+    # Required by Model base class - we'll derive from wrapped model
+    id: str = field(default="headroom-wrapper")
 
-        Args:
-            wrapped_model: Any Agno Model to wrap (OpenAIChat, Claude, etc.)
-            config: HeadroomConfig for optimization settings. Use
-                config.default_mode to set the optimization mode.
-            mode: Deprecated. Use config.default_mode instead.
-            auto_detect_provider: Auto-detect provider from wrapped model.
-                When True (default), automatically detects if the wrapped model
-                is OpenAI, Anthropic, Google, etc. and uses the appropriate
-                Headroom provider for accurate token counting.
-        """
+    # HeadroomAgnoModel specific fields
+    wrapped_model: Any = field(default=None)
+    headroom_config: HeadroomConfig | None = field(default=None)
+    headroom_mode: HeadroomMode | None = field(default=None)
+    auto_detect_provider: bool = field(default=True)
+
+    # Internal state (not part of dataclass comparison)
+    _metrics_history: list[OptimizationMetrics] = field(
+        default_factory=list, repr=False, compare=False
+    )
+    _total_tokens_saved: int = field(default=0, repr=False, compare=False)
+    _pipeline: TransformPipeline | None = field(default=None, repr=False, compare=False)
+    _headroom_provider: Any = field(default=None, repr=False, compare=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    _initialized: bool = field(default=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Initialize HeadroomAgnoModel after dataclass construction."""
         _check_agno_available()
 
-        if wrapped_model is None:
+        if self.wrapped_model is None:
             raise ValueError("wrapped_model cannot be None")
 
-        if mode is not None:
+        # Set id from wrapped model
+        if hasattr(self.wrapped_model, "id"):
+            self.id = f"headroom:{self.wrapped_model.id}"
+
+        # Set name and provider from wrapped model for compatibility
+        if self.name is None and hasattr(self.wrapped_model, "name"):
+            self.name = self.wrapped_model.name
+        if self.provider is None and hasattr(self.wrapped_model, "provider"):
+            self.provider = self.wrapped_model.provider
+
+        # Initialize config
+        if self.headroom_config is None:
+            self.headroom_config = HeadroomConfig()
+
+        # Handle deprecated mode parameter
+        if self.headroom_mode is not None:
             warnings.warn(
-                "The 'mode' parameter is deprecated. Use HeadroomConfig(default_mode=...) instead.",
+                "The 'headroom_mode' parameter is deprecated. Use HeadroomConfig(default_mode=...) instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
 
-        self.wrapped_model = wrapped_model
-        self.config = config or HeadroomConfig()
-        self.mode = mode or HeadroomMode.OPTIMIZE  # Kept for backwards compatibility
-        self.auto_detect_provider = auto_detect_provider
+        self._initialized = True
 
-        self._metrics_history: list[OptimizationMetrics] = []
-        self._total_tokens_saved: int = 0
-        self._pipeline: TransformPipeline | None = None
-        self._provider: Any = None
-        self._lock = threading.Lock()  # Thread safety for metrics
+        # Call parent __post_init__ if it exists
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
 
-    # Forward all attribute access to wrapped model for compatibility
+    # Forward attribute access to wrapped model for compatibility
     def __getattr__(self, name: str) -> Any:
         """Forward attribute access to wrapped model."""
-        if name.startswith("_") or name in (
+        # Avoid infinite recursion during initialization
+        if name.startswith("_") or not self.__dict__.get("_initialized", False):
+            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+        if name in (
             "wrapped_model",
-            "config",
-            "mode",
+            "headroom_config",
+            "headroom_mode",
             "auto_detect_provider",
             "pipeline",
             "total_tokens_saved",
             "metrics_history",
+            "id",
+            "name",
+            "provider",
         ):
             raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
         return getattr(self.wrapped_model, name)
@@ -162,13 +182,15 @@ class HeadroomAgnoModel:
                 # Double-check after acquiring lock
                 if self._pipeline is None:
                     if self.auto_detect_provider:
-                        self._provider = get_headroom_provider(self.wrapped_model)
-                        logger.debug(f"Auto-detected provider: {self._provider.__class__.__name__}")
+                        self._headroom_provider = get_headroom_provider(self.wrapped_model)
+                        logger.debug(
+                            f"Auto-detected provider: {self._headroom_provider.__class__.__name__}"
+                        )
                     else:
-                        self._provider = OpenAIProvider()
+                        self._headroom_provider = OpenAIProvider()
                     self._pipeline = TransformPipeline(
-                        config=self.config,
-                        provider=self._provider,
+                        config=self.headroom_config,
+                        provider=self._headroom_provider,
                     )
         return self._pipeline
 
@@ -249,7 +271,9 @@ class HeadroomAgnoModel:
         _ = self.pipeline
 
         # Get model context limit
-        model_limit = self._provider.get_context_limit(model) if self._provider else 128000
+        model_limit = (
+            self._headroom_provider.get_context_limit(model) if self._headroom_provider else 128000
+        )
 
         try:
             # Apply Headroom transforms via pipeline
@@ -311,7 +335,7 @@ class HeadroomAgnoModel:
 
         return optimized_messages, metrics
 
-    def response(self, messages: list[Any], **kwargs: Any) -> Any:
+    def response(self, messages: list[Any], **kwargs: Any) -> Any:  # type: ignore[override]
         """Generate response with Headroom optimization.
 
         This is the core method that Agno agents call.
@@ -327,7 +351,7 @@ class HeadroomAgnoModel:
         # Call wrapped model with optimized messages
         return self.wrapped_model.response(optimized_messages, **kwargs)
 
-    def response_stream(self, messages: list[Any], **kwargs: Any) -> Iterator[Any]:
+    def response_stream(self, messages: list[Any], **kwargs: Any) -> Iterator[Any]:  # type: ignore[override]
         """Stream response with Headroom optimization."""
         # Optimize messages
         optimized_messages, metrics = self._optimize_messages(messages)
@@ -340,7 +364,7 @@ class HeadroomAgnoModel:
         # Stream from wrapped model
         yield from self.wrapped_model.response_stream(optimized_messages, **kwargs)
 
-    async def aresponse(self, messages: list[Any], **kwargs: Any) -> Any:
+    async def aresponse(self, messages: list[Any], **kwargs: Any) -> Any:  # type: ignore[override]
         """Async generate response with Headroom optimization."""
         # Run optimization in executor (CPU-bound)
         loop = asyncio.get_running_loop()
@@ -362,7 +386,7 @@ class HeadroomAgnoModel:
                 None, lambda: self.wrapped_model.response(optimized_messages, **kwargs)
             )
 
-    async def aresponse_stream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[Any]:
+    async def aresponse_stream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[Any]:  # type: ignore[override]
         """Async stream response with Headroom optimization."""
         # Run optimization in executor (CPU-bound)
         loop = asyncio.get_running_loop()
@@ -416,6 +440,111 @@ class HeadroomAgnoModel:
         with self._lock:
             self._metrics_history = []
             self._total_tokens_saved = 0
+
+    # =========================================================================
+    # Abstract method implementations required by agno.models.base.Model
+    # These delegate to the wrapped model after applying Headroom optimization
+    # =========================================================================
+
+    def invoke(self, messages: list[Any], **kwargs: Any) -> Any:
+        """Invoke the wrapped model with optimized messages.
+
+        This is required by agno.models.base.Model abstract interface.
+        """
+        # Optimize messages before invoking
+        optimized_messages, metrics = self._optimize_messages(messages)
+
+        logger.info(
+            f"Headroom optimized (invoke): {metrics.tokens_before} -> {metrics.tokens_after} tokens "
+            f"({metrics.savings_percent:.1f}% saved)"
+        )
+
+        # Delegate to wrapped model
+        return self.wrapped_model.invoke(optimized_messages, **kwargs)
+
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+        """Async invoke the wrapped model with optimized messages.
+
+        This is required by agno.models.base.Model abstract interface.
+        """
+        # Run optimization in executor (CPU-bound)
+        loop = asyncio.get_running_loop()
+        optimized_messages, metrics = await loop.run_in_executor(
+            None, self._optimize_messages, messages
+        )
+
+        logger.info(
+            f"Headroom optimized (ainvoke): {metrics.tokens_before} -> {metrics.tokens_after} tokens "
+            f"({metrics.savings_percent:.1f}% saved)"
+        )
+
+        # Delegate to wrapped model
+        if hasattr(self.wrapped_model, "ainvoke"):
+            return await self.wrapped_model.ainvoke(optimized_messages, **kwargs)
+        else:
+            # Fallback to sync in executor
+            return await loop.run_in_executor(
+                None, lambda: self.wrapped_model.invoke(optimized_messages, **kwargs)
+            )
+
+    def invoke_stream(self, messages: list[Any], **kwargs: Any) -> Iterator[Any]:
+        """Stream invoke the wrapped model with optimized messages.
+
+        This is required by agno.models.base.Model abstract interface.
+        """
+        # Optimize messages before streaming
+        optimized_messages, metrics = self._optimize_messages(messages)
+
+        logger.info(
+            f"Headroom optimized (invoke_stream): {metrics.tokens_before} -> {metrics.tokens_after} tokens "
+            f"({metrics.savings_percent:.1f}% saved)"
+        )
+
+        # Delegate to wrapped model
+        yield from self.wrapped_model.invoke_stream(optimized_messages, **kwargs)
+
+    async def ainvoke_stream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[Any]:
+        """Async stream invoke the wrapped model with optimized messages.
+
+        This is required by agno.models.base.Model abstract interface.
+        """
+        # Run optimization in executor (CPU-bound)
+        loop = asyncio.get_running_loop()
+        optimized_messages, metrics = await loop.run_in_executor(
+            None, self._optimize_messages, messages
+        )
+
+        logger.info(
+            f"Headroom optimized (ainvoke_stream): {metrics.tokens_before} -> {metrics.tokens_after} tokens "
+            f"({metrics.savings_percent:.1f}% saved)"
+        )
+
+        # Delegate to wrapped model
+        if hasattr(self.wrapped_model, "ainvoke_stream"):
+            async for chunk in self.wrapped_model.ainvoke_stream(optimized_messages, **kwargs):
+                yield chunk
+        else:
+            # Fallback: wrap sync streaming
+            def _sync_stream() -> list[Any]:
+                return list(self.wrapped_model.invoke_stream(optimized_messages, **kwargs))
+
+            chunks = await loop.run_in_executor(None, _sync_stream)
+            for chunk in chunks:
+                yield chunk
+
+    def _parse_provider_response(self, response: Any, **kwargs: Any) -> Any:
+        """Parse provider response - delegates to wrapped model.
+
+        This is required by agno.models.base.Model abstract interface.
+        """
+        return self.wrapped_model._parse_provider_response(response, **kwargs)
+
+    def _parse_provider_response_delta(self, response: Any) -> Any:
+        """Parse streaming response delta - delegates to wrapped model.
+
+        This is required by agno.models.base.Model abstract interface.
+        """
+        return self.wrapped_model._parse_provider_response_delta(response)
 
 
 def optimize_messages(

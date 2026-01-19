@@ -781,12 +781,12 @@ class ToolIntelligenceNetwork:
                 # Bound field_semantics to prevent unbounded growth (max 100 fields)
                 if len(pattern.field_semantics) > 100:
                     # Keep fields with highest retrieval counts
-                    sorted_fields = sorted(
+                    sorted_semantics = sorted(
                         pattern.field_semantics.items(),
                         key=lambda x: x[1].retrieval_count,
                         reverse=True,
                     )[:100]
-                    pattern.field_semantics = dict(sorted_fields)
+                    pattern.field_semantics = dict(sorted_semantics)
 
             # Update recommendations based on new retrieval data
             self._update_recommendations(pattern)

@@ -118,10 +118,10 @@ class TestHeadroomAgnoModel:
         """Initialize with default config."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         assert model.wrapped_model is mock_agno_model
-        assert model.mode == HeadroomMode.OPTIMIZE
+        assert model.headroom_config is not None
         assert model._metrics_history == []
         assert model._total_tokens_saved == 0
 
@@ -131,19 +131,19 @@ class TestHeadroomAgnoModel:
 
         config = HeadroomConfig(default_mode=HeadroomMode.AUDIT)
         model = HeadroomAgnoModel(
-            mock_agno_model,
-            config=config,
-            mode=HeadroomMode.SIMULATE,
+            wrapped_model=mock_agno_model,
+            headroom_config=config,
+            headroom_mode=HeadroomMode.SIMULATE,
         )
 
-        assert model.config is config
-        assert model.mode == HeadroomMode.SIMULATE
+        assert model.headroom_config is config
+        assert model.headroom_mode == HeadroomMode.SIMULATE
 
     def test_init_auto_detect_provider(self, mock_agno_model):
         """Auto-detect provider from wrapped model."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model, auto_detect_provider=True)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model, auto_detect_provider=True)
 
         assert model.auto_detect_provider is True
 
@@ -152,7 +152,7 @@ class TestHeadroomAgnoModel:
         from headroom.integrations.agno import HeadroomAgnoModel
 
         mock_agno_model.custom_attribute = "test_value"
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         assert model.custom_attribute == "test_value"
 
@@ -160,7 +160,7 @@ class TestHeadroomAgnoModel:
         """Own properties should not be forwarded."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # These should work without forwarding to wrapped model
         assert model.total_tokens_saved == 0
@@ -170,7 +170,7 @@ class TestHeadroomAgnoModel:
         """Convert Agno messages to OpenAI format."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # Test with dict messages (already OpenAI format)
         openai_msgs = model._convert_messages_to_openai(sample_messages)
@@ -200,7 +200,7 @@ class TestHeadroomAgnoModel:
 
         messages = [system_msg, user_msg]
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
         openai_msgs = model._convert_messages_to_openai(messages)
 
         assert len(openai_msgs) == 2
@@ -227,7 +227,7 @@ class TestHeadroomAgnoModel:
 
         messages = [assistant_msg, tool_msg]
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
         openai_msgs = model._convert_messages_to_openai(messages)
 
         assert len(openai_msgs) == 2
@@ -240,10 +240,10 @@ class TestHeadroomAgnoModel:
         from headroom.integrations.agno import HeadroomAgnoModel
         from headroom.providers import OpenAIProvider
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # Initialize provider and pipeline for mocking
-        model._provider = OpenAIProvider()
+        model._headroom_provider = OpenAIProvider()
         _ = model.pipeline  # Force lazy init
 
         # Mock the pipeline apply method
@@ -272,8 +272,8 @@ class TestHeadroomAgnoModel:
         from headroom.integrations.agno import HeadroomAgnoModel
         from headroom.providers import OpenAIProvider
 
-        model = HeadroomAgnoModel(mock_agno_model)
-        model._provider = OpenAIProvider()
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+        model._headroom_provider = OpenAIProvider()
         _ = model.pipeline
 
         with patch.object(model._pipeline, "apply") as mock_apply:
@@ -294,7 +294,7 @@ class TestHeadroomAgnoModel:
         """Metrics history is limited to 100 entries."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # Add 150 fake metrics
         for _i in range(150):
@@ -309,7 +309,7 @@ class TestHeadroomAgnoModel:
         """get_savings_summary with no history."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
         summary = model.get_savings_summary()
 
         assert summary["total_requests"] == 0
@@ -321,7 +321,7 @@ class TestHeadroomAgnoModel:
         from headroom.integrations.agno import HeadroomAgnoModel
         from headroom.integrations.agno.model import OptimizationMetrics
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # Add fake metrics
         model._metrics_history = [
@@ -359,7 +359,7 @@ class TestHeadroomAgnoModel:
         from headroom.integrations.agno import HeadroomAgnoModel
         from headroom.integrations.agno.model import OptimizationMetrics
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # Add fake metrics
         model._metrics_history = [
@@ -563,7 +563,7 @@ class TestIntegrationWithRealHeadroom:
         """Test HeadroomAgnoModel with real Headroom optimization."""
         from headroom.integrations.agno import HeadroomAgnoModel
 
-        model = HeadroomAgnoModel(mock_agno_model)
+        model = HeadroomAgnoModel(wrapped_model=mock_agno_model)
 
         # Call response - this will apply real optimization
         model.response(sample_messages)
@@ -573,3 +573,360 @@ class TestIntegrationWithRealHeadroom:
         metrics = model.metrics_history[0]
         assert metrics.tokens_before >= 0
         assert metrics.tokens_after >= 0
+
+
+class TestRealAgnoIntegration:
+    """REAL integration tests with actual Agno components.
+
+    These tests verify that HeadroomAgnoModel:
+    1. Is a proper subclass of agno.models.base.Model
+    2. Passes Agno's get_model() validation
+    3. Can be used with Agno Agent
+    4. Works with real Agno model types (not MagicMock)
+
+    NO MOCKS for Agno components - only for external APIs.
+    """
+
+    def test_is_subclass_of_agno_model(self):
+        """HeadroomAgnoModel must be a subclass of agno.models.base.Model."""
+        from agno.models.base import Model
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        assert issubclass(HeadroomAgnoModel, Model)
+
+    def test_passes_agno_get_model_validation(self):
+        """HeadroomAgnoModel must pass Agno's get_model() validation."""
+        from agno.models.openai import OpenAIChat
+        from agno.models.utils import get_model
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Create a real OpenAIChat model (doesn't need API key for instantiation)
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # This should NOT raise "Model must be a Model instance, string, or None"
+        result = get_model(headroom_model)
+
+        assert result is headroom_model
+        assert isinstance(result, HeadroomAgnoModel)
+
+    def test_agent_accepts_headroom_model(self):
+        """Agno Agent must accept HeadroomAgnoModel as model parameter."""
+        from agno.agent import Agent
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Create wrapped model
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # This should NOT raise any validation errors
+        agent = Agent(model=headroom_model, markdown=False)
+
+        assert agent.model is headroom_model
+        assert agent.model.wrapped_model is base_model
+
+    def test_model_id_reflects_wrapped_model(self):
+        """HeadroomAgnoModel id should reflect the wrapped model."""
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o-mini")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        assert "gpt-4o-mini" in headroom_model.id
+        assert headroom_model.id.startswith("headroom:")
+
+    def test_headroom_model_has_required_abstract_methods(self):
+        """HeadroomAgnoModel must implement all required abstract methods."""
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Verify required methods exist and are callable
+        assert hasattr(headroom_model, "invoke")
+        assert callable(headroom_model.invoke)
+
+        assert hasattr(headroom_model, "ainvoke")
+        assert callable(headroom_model.ainvoke)
+
+        assert hasattr(headroom_model, "invoke_stream")
+        assert callable(headroom_model.invoke_stream)
+
+        assert hasattr(headroom_model, "ainvoke_stream")
+        assert callable(headroom_model.ainvoke_stream)
+
+        assert hasattr(headroom_model, "_parse_provider_response")
+        assert callable(headroom_model._parse_provider_response)
+
+        assert hasattr(headroom_model, "_parse_provider_response_delta")
+        assert callable(headroom_model._parse_provider_response_delta)
+
+    def test_isinstance_check_passes(self):
+        """isinstance check with agno.models.base.Model must pass."""
+        from agno.models.base import Model
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # This is the exact check that get_model() uses
+        assert isinstance(headroom_model, Model)
+
+    def test_model_with_custom_headroom_config(self):
+        """Test with custom Headroom configuration."""
+        from agno.agent import Agent
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        config = HeadroomConfig(default_mode=HeadroomMode.AUDIT)
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(
+            wrapped_model=base_model,
+            headroom_config=config,
+        )
+
+        agent = Agent(model=headroom_model, markdown=False)
+
+        assert agent.model.headroom_config is config
+        assert agent.model.headroom_config.default_mode == HeadroomMode.AUDIT
+
+    def test_response_method_delegates_to_wrapped(self):
+        """Test that response() method works with real Agno model structure."""
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # We can't actually call the response method without an API key, but we can verify
+        # the method signature matches what Agno expects
+        import inspect
+
+        sig = inspect.signature(headroom_model.response)
+        params = list(sig.parameters.keys())
+
+        assert "messages" in params
+
+    def test_optimization_tracked_across_calls(self):
+        """Test that optimization metrics are tracked properly."""
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o")
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Initially no metrics
+        assert headroom_model.total_tokens_saved == 0
+        assert len(headroom_model.metrics_history) == 0
+
+        # Simulate optimization (without actual API call)
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        # Use the internal optimize method to test
+        optimized, metrics = headroom_model._optimize_messages(messages)
+
+        # Should have tracked metrics
+        assert len(headroom_model.metrics_history) == 1
+        assert headroom_model.total_tokens_saved >= 0
+
+
+def _ollama_available() -> bool:
+    """Check if Ollama is running and has a model available."""
+    import socket
+
+    # First check if ollama Python package is installed
+    try:
+        import ollama  # noqa: F401
+    except ImportError:
+        return False
+
+    try:
+        # Check if Ollama server is running on default port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(("localhost", 11434))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+def _get_ollama_model() -> str | None:
+    """Get an available Ollama model for testing."""
+    if not _ollama_available():
+        return None
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+
+        # Parse output to find a model
+        lines = result.stdout.strip().split("\n")
+        if len(lines) < 2:  # Header + at least one model
+            return None
+
+        # Get first model name (skip header)
+        for line in lines[1:]:
+            parts = line.split()
+            if parts:
+                model_name = parts[0]
+                # Prefer small models for faster tests
+                if any(
+                    small in model_name.lower() for small in ["tiny", "phi", "qwen", "gemma:2b"]
+                ):
+                    return model_name
+        # Fallback to first available model
+        first_model_line = lines[1].split()
+        return first_model_line[0] if first_model_line else None
+    except Exception:
+        return None
+
+
+@pytest.mark.skipif(not _ollama_available(), reason="Ollama not running")
+class TestOllamaIntegration:
+    """Integration tests using real Ollama models.
+
+    These tests require Ollama to be installed and running locally.
+    They are skipped in CI unless Ollama is set up.
+
+    To run these tests locally:
+        1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+        2. Pull a small model: ollama pull tinyllama
+        3. Run tests: pytest tests/test_integrations/agno/test_model.py -v -k ollama
+    """
+
+    @pytest.fixture
+    def ollama_model_name(self):
+        """Get an available Ollama model."""
+        model = _get_ollama_model()
+        if not model:
+            pytest.skip("No Ollama models available")
+        return model
+
+    def test_agent_with_ollama_model(self, ollama_model_name):
+        """Test Agent with HeadroomAgnoModel wrapping real Ollama model."""
+        from agno.agent import Agent
+        from agno.models.ollama import Ollama
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Create wrapped Ollama model (real, local, no API key needed)
+        base_model = Ollama(id=ollama_model_name)
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Create agent - this validates HeadroomAgnoModel works with Agent
+        agent = Agent(model=headroom_model, markdown=False)
+
+        assert agent.model is headroom_model
+        assert isinstance(agent.model, HeadroomAgnoModel)
+
+    def test_agent_run_with_ollama(self, ollama_model_name):
+        """Actually run an agent with Ollama - full end-to-end test."""
+        from agno.agent import Agent
+        from agno.models.ollama import Ollama
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Create wrapped Ollama model
+        base_model = Ollama(id=ollama_model_name)
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Create and run agent
+        agent = Agent(model=headroom_model, markdown=False)
+
+        # Actually run the agent - this tests the full pipeline
+        response = agent.run("Say 'hello' and nothing else.")
+
+        # Verify we got a response
+        assert response is not None
+        assert response.content is not None
+        assert len(response.content) > 0
+
+        # Verify Headroom optimization was applied
+        assert len(headroom_model.metrics_history) >= 1
+
+    def test_agent_with_system_prompt_and_ollama(self, ollama_model_name):
+        """Test agent with system prompt using Ollama."""
+        from agno.agent import Agent
+        from agno.models.ollama import Ollama
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = Ollama(id=ollama_model_name)
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Agent with system prompt - tests system message optimization
+        agent = Agent(
+            model=headroom_model,
+            description="You are a helpful assistant that always responds with exactly one word.",
+            markdown=False,
+        )
+
+        response = agent.run("What is 2+2?")
+
+        assert response is not None
+        assert response.content is not None
+
+        # Headroom should have processed the system prompt
+        assert headroom_model.total_tokens_saved >= 0
+
+    def test_multiple_turns_with_ollama(self, ollama_model_name):
+        """Test multi-turn conversation with Ollama."""
+        from agno.agent import Agent
+        from agno.models.ollama import Ollama
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = Ollama(id=ollama_model_name)
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        agent = Agent(model=headroom_model, markdown=False)
+
+        # Multiple turns
+        agent.run("My name is Alice.")
+        agent.run("What is my name?")
+
+        # Should have tracked multiple optimization passes
+        assert len(headroom_model.metrics_history) >= 2
+
+    def test_headroom_optimization_reduces_tokens(self, ollama_model_name, large_conversation):
+        """Test that Headroom actually reduces tokens on large conversations."""
+        from agno.models.ollama import Ollama
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = Ollama(id=ollama_model_name)
+        headroom_model = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Optimize the large conversation
+        optimized, metrics = headroom_model._optimize_messages(large_conversation)
+
+        # Large conversations should see compression
+        assert metrics.tokens_before > 0
+        # With a 100+ message conversation, we should see some savings
+        # (at minimum from whitespace normalization)
+        assert metrics.tokens_after <= metrics.tokens_before
