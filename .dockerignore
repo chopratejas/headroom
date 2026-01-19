@@ -1,0 +1,15 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+.mypy_cache
+.ruff_cache
+tests/
+docs/
+CHANGELOG.md
+LICENSE
+NOTICE
+.env
+*.log
