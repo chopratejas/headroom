@@ -232,17 +232,14 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
                 result.append({"role": "user", "content": content})
         return result
 
-    def _convert_messages_from_openai(
-        self, messages: list[dict[str, Any]], original_messages: list[Any]
-    ) -> list[Any]:
-        """Convert OpenAI format messages back to Agno Message objects.
+    def _ensure_message_objects(self, messages: list[Any]) -> list[Any]:
+        """Ensure all messages are Agno Message objects (not dicts).
 
-        The Agno base model's response() method expects Message objects,
-        not dicts, because it calls .log() on them internally.
+        Agno's base Model methods call _log_messages() which requires
+        Message objects with a .log() method.
 
         Args:
-            messages: The optimized messages in OpenAI dict format
-            original_messages: The original Agno Message objects (for reference)
+            messages: List of messages (may be dicts or Message objects)
 
         Returns:
             List of Agno Message objects
@@ -252,8 +249,7 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         result = []
         for msg in messages:
             if isinstance(msg, dict):
-                # Convert dict back to Agno Message
-                # Handle the basic fields that Headroom might have modified
+                # Convert dict to Agno Message
                 try:
                     result.append(AgnoMessage.from_dict(msg))
                 except Exception:
@@ -270,6 +266,24 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
                 # Already a Message object, keep as-is
                 result.append(msg)
         return result
+
+    def _convert_messages_from_openai(
+        self, messages: list[dict[str, Any]], original_messages: list[Any]
+    ) -> list[Any]:
+        """Convert OpenAI format messages back to Agno Message objects.
+
+        The Agno base model's response() method expects Message objects,
+        not dicts, because it calls .log() on them internally.
+
+        Args:
+            messages: The optimized messages in OpenAI dict format
+            original_messages: The original Agno Message objects (for reference)
+
+        Returns:
+            List of Agno Message objects
+        """
+        # Reuse the ensure method which handles the conversion
+        return self._ensure_message_objects(messages)
 
     def _optimize_messages(self, messages: list[Any]) -> tuple[list[Any], OptimizationMetrics]:
         """Apply Headroom optimization to messages.
@@ -375,7 +389,9 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
 
         This ensures tool outputs are compressed on subsequent API calls.
         """
-        # Don't optimize here - let the tool loop in Model.response() call invoke(),
+        # Ensure messages are Message objects (Agno's _log_messages requires .log() method)
+        messages = self._ensure_message_objects(messages)
+        # Let the tool loop in Model.response() call invoke(),
         # which will optimize messages for EACH API call (including tool results)
         return super().response(messages, **kwargs)
 
@@ -385,6 +401,8 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         Like response(), delegates to inherited Model.response_stream() which
         calls self.invoke_stream() for each API call.
         """
+        # Ensure messages are Message objects (Agno's _log_messages requires .log() method)
+        messages = self._ensure_message_objects(messages)
         # Let the inherited streaming method handle the tool loop
         yield from super().response_stream(messages, **kwargs)
 
@@ -394,6 +412,8 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         Delegates to inherited Model.aresponse() which calls self.ainvoke()
         for each API call, ensuring tool outputs are optimized.
         """
+        # Ensure messages are Message objects (Agno's _log_messages requires .log() method)
+        messages = self._ensure_message_objects(messages)
         # Let the inherited async method handle the tool loop
         return await super().aresponse(messages, **kwargs)
 
@@ -403,6 +423,8 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         Delegates to inherited Model.aresponse_stream() which calls self.ainvoke_stream()
         for each API call, ensuring tool outputs are optimized.
         """
+        # Ensure messages are Message objects (Agno's _log_messages requires .log() method)
+        messages = self._ensure_message_objects(messages)
         # Let the inherited async streaming method handle the tool loop
         async for chunk in super().aresponse_stream(messages, **kwargs):
             yield chunk

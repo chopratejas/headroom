@@ -9,10 +9,12 @@ All importance signals are derived from:
 2. TOIN-learned patterns (field_semantics, retrieval_rate)
 3. Embedding similarity (optional)
 
-Strategy Selection:
+Strategy Selection (in order of preference):
 - NONE: Under budget, no action needed
 - COMPRESS_FIRST: When <compress_threshold over budget, try deeper compression
   of tool outputs using ContentRouter before dropping messages
+- SUMMARIZE: When <summarize_threshold over budget and summarization_enabled,
+  create anchored summaries of older messages (requires summarize_fn callback)
 - DROP_BY_SCORE: When significantly over budget, drop lowest-scored messages
 """
 
@@ -32,6 +34,7 @@ from .scoring import MessageScore, MessageScorer
 if TYPE_CHECKING:
     from ..telemetry.toin import ToolIntelligenceNetwork
     from .content_router import ContentRouter
+    from .progressive_summarizer import ProgressiveSummarizer, SummarizeFn
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,7 @@ class ContextStrategy(Enum):
 
     NONE = "none"  # Under budget, do nothing
     COMPRESS_FIRST = "compress"  # Try deeper compression first
+    SUMMARIZE = "summarize"  # Create anchored summaries of older messages
     DROP_BY_SCORE = "drop_scored"  # Drop lowest-scored messages
     HYBRID = "hybrid"  # Combination of strategies
 
@@ -72,6 +76,7 @@ class IntelligentContextManager(Transform):
         self,
         config: IntelligentContextConfig | None = None,
         toin: ToolIntelligenceNetwork | None = None,
+        summarize_fn: SummarizeFn | None = None,
     ):
         """
         Initialize intelligent context manager.
@@ -79,11 +84,15 @@ class IntelligentContextManager(Transform):
         Args:
             config: Configuration for context management.
             toin: Optional TOIN instance for learned patterns.
+            summarize_fn: Optional callback for summarization.
+                If provided and summarization_enabled=True, enables SUMMARIZE strategy.
+                Signature: (messages: list[dict], context: str) -> str
         """
         from ..config import IntelligentContextConfig
 
         self.config = config or IntelligentContextConfig()
         self.toin = toin
+        self._summarize_fn = summarize_fn
 
         # Initialize scorer with TOIN if available
         self.scorer = MessageScorer(
@@ -94,6 +103,9 @@ class IntelligentContextManager(Transform):
 
         # Lazy-loaded content router for COMPRESS_FIRST strategy
         self._content_router: ContentRouter | None = None
+
+        # Lazy-loaded progressive summarizer for SUMMARIZE strategy
+        self._progressive_summarizer: ProgressiveSummarizer | None = None
 
     def should_apply(
         self,
@@ -187,16 +199,61 @@ class IntelligentContextManager(Transform):
                     warnings=warnings,
                 )
 
-            # Still over budget, fall through to DROP_BY_SCORE
+            # Still over budget, fall through to SUMMARIZE or DROP_BY_SCORE
             logger.debug(
                 "IntelligentContextManager: COMPRESS_FIRST saved %d tokens but still "
+                "over budget (%d > %d), checking next strategy",
+                tokens_saved,
+                current_tokens,
+                available,
+            )
+            # Check if we should try summarization next
+            over_ratio = (current_tokens - available) / available
+            if self.config.summarization_enabled and over_ratio < self.config.summarize_threshold:
+                strategy = ContextStrategy.SUMMARIZE
+            else:
+                strategy = ContextStrategy.DROP_BY_SCORE
+            # Need to recalculate protected indices after compression
+            protected = self._get_protected_indices(result_messages)
+
+        # ========== SUMMARIZE STRATEGY ==========
+        # Create anchored summaries of older messages
+        if strategy == ContextStrategy.SUMMARIZE:
+            result_messages, summarize_transforms, tokens_saved = self._apply_summarize(
+                result_messages, tokenizer, protected, available
+            )
+            transforms_applied.extend(summarize_transforms)
+
+            # Recheck token count after summarization
+            current_tokens = tokenizer.count_messages(result_messages)
+
+            # If now under budget, we're done!
+            if current_tokens <= available:
+                logger.info(
+                    "IntelligentContextManager: SUMMARIZE succeeded, saved %d tokens: %d -> %d",
+                    tokens_saved,
+                    tokens_before,
+                    current_tokens,
+                )
+                return TransformResult(
+                    messages=result_messages,
+                    tokens_before=tokens_before,
+                    tokens_after=current_tokens,
+                    transforms_applied=transforms_applied,
+                    markers_inserted=markers_inserted,
+                    warnings=warnings,
+                )
+
+            # Still over budget, fall through to DROP_BY_SCORE
+            logger.debug(
+                "IntelligentContextManager: SUMMARIZE saved %d tokens but still "
                 "over budget (%d > %d), proceeding to DROP_BY_SCORE",
                 tokens_saved,
                 current_tokens,
                 available,
             )
             strategy = ContextStrategy.DROP_BY_SCORE
-            # Need to recalculate protected indices after compression
+            # Need to recalculate protected indices after summarization
             protected = self._get_protected_indices(result_messages)
 
         # ========== DROP_BY_SCORE STRATEGY ==========
@@ -301,15 +358,28 @@ class IntelligentContextManager(Transform):
         )
 
     def _select_strategy(self, current_tokens: int, available: int) -> ContextStrategy:
-        """Select strategy based on how much over budget we are."""
+        """Select strategy based on how much over budget we are.
+
+        Strategy selection order:
+        1. NONE: Under budget
+        2. COMPRESS_FIRST: < compress_threshold (default 10%) over budget
+        3. SUMMARIZE: < summarize_threshold (default 25%) over budget AND enabled
+        4. DROP_BY_SCORE: >= summarize_threshold over budget
+        """
         if current_tokens <= available:
             return ContextStrategy.NONE
 
         over_ratio = (current_tokens - available) / available
 
+        # Tier 1: Try compression first for small overages
         if over_ratio < self.config.compress_threshold:
             return ContextStrategy.COMPRESS_FIRST
 
+        # Tier 2: Try summarization for moderate overages (if enabled)
+        if self.config.summarization_enabled and over_ratio < self.config.summarize_threshold:
+            return ContextStrategy.SUMMARIZE
+
+        # Tier 3: Drop by score for large overages
         return ContextStrategy.DROP_BY_SCORE
 
     def _get_content_router(self) -> ContentRouter | None:
@@ -684,3 +754,74 @@ class IntelligentContextManager(Transform):
             )
 
         return scores
+
+    def _get_progressive_summarizer(self) -> ProgressiveSummarizer | None:
+        """Get or create progressive summarizer for SUMMARIZE strategy (lazy load)."""
+        if self._progressive_summarizer is None:
+            try:
+                from .progressive_summarizer import ProgressiveSummarizer
+
+                self._progressive_summarizer = ProgressiveSummarizer(
+                    summarize_fn=self._summarize_fn,
+                    max_summary_tokens=self.config.summary_max_tokens,
+                    min_messages_to_summarize=3,
+                    store_for_retrieval=True,
+                )
+            except ImportError:
+                logger.debug("ProgressiveSummarizer not available for SUMMARIZE")
+        return self._progressive_summarizer
+
+    def _apply_summarize(
+        self,
+        messages: list[dict[str, Any]],
+        tokenizer: Tokenizer,
+        protected: set[int],
+        target_tokens: int,
+    ) -> tuple[list[dict[str, Any]], list[str], int]:
+        """Apply progressive summarization to older messages.
+
+        This is the SUMMARIZE strategy: create anchored summaries of older
+        messages to reduce token count while maintaining retrievability.
+
+        Args:
+            messages: List of messages to summarize.
+            tokenizer: Tokenizer for counting.
+            protected: Set of protected message indices.
+            target_tokens: Target token budget.
+
+        Returns:
+            Tuple of (summarized_messages, transforms_applied, tokens_saved).
+        """
+        summarizer = self._get_progressive_summarizer()
+        if summarizer is None:
+            return messages, [], 0
+
+        # Get recent messages for context
+        context_messages = []
+        for i in sorted(protected):
+            if i < len(messages):
+                context_messages.append(messages[i])
+
+        try:
+            result = summarizer.summarize_messages(
+                messages=messages,
+                tokenizer=tokenizer,
+                protected_indices=protected,
+                target_tokens=target_tokens,
+                context_messages=context_messages[-5:],  # Last 5 for context
+            )
+
+            tokens_saved = result.tokens_before - result.tokens_after
+
+            if tokens_saved > 0:
+                logger.info(
+                    "SUMMARIZE: created %d summaries, saved %d tokens",
+                    len(result.summaries_created),
+                    tokens_saved,
+                )
+
+            return result.messages, result.transforms_applied, tokens_saved
+
+        except Exception as e:
+            logger.warning("SUMMARIZE: summarization failed: %s", e)
+            return messages, [], 0

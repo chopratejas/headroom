@@ -29,6 +29,8 @@ pytestmark = pytest.mark.skipif(not AGNO_AVAILABLE, reason="Agno not installed")
 @pytest.fixture
 def mock_agno_model():
     """Create a mock Agno model (OpenAIChat-like)."""
+    from agno.models.response import ModelResponse
+
     mock = MagicMock()
     mock.__class__.__name__ = "OpenAIChat"
     mock.__class__.__module__ = "agno.models.openai"
@@ -46,11 +48,44 @@ def mock_agno_model():
 
     mock.response = MagicMock(side_effect=mock_response)
 
+    # Mock invoke method (returns ModelResponse for Agno's response() loop)
+    def mock_invoke(messages, **kwargs):
+        from agno.models.metrics import Metrics
+
+        # Create a proper ModelResponse that Agno's response() can process
+        return ModelResponse(
+            role="assistant",
+            content="Hello! I'm a mock response.",
+            response_usage=Metrics(
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+            ),
+        )
+
+    mock.invoke = MagicMock(side_effect=mock_invoke)
+
     # Mock streaming response
     def mock_stream(messages, **kwargs):
         yield MagicMock(content="Streaming...")
 
     mock.response_stream = MagicMock(side_effect=mock_stream)
+
+    # Mock invoke_stream for streaming
+    def mock_invoke_stream(messages, **kwargs):
+        from agno.models.metrics import Metrics
+
+        yield ModelResponse(
+            role="assistant",
+            content="Streaming...",
+            response_usage=Metrics(
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+            ),
+        )
+
+    mock.invoke_stream = MagicMock(side_effect=mock_invoke_stream)
 
     return mock
 

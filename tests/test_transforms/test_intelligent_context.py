@@ -1279,3 +1279,540 @@ class TestCompressFirstEdgeCases:
         # The recent messages should be protected
         # With 6 messages and keep_last_turns=5, most should be protected
         assert len(protected) > 0
+
+
+# ==============================================================================
+# SUMMARIZE STRATEGY TESTS
+# ==============================================================================
+
+
+class TestSummarizeStrategySelection:
+    """Tests for SUMMARIZE strategy selection logic."""
+
+    def test_summarize_strategy_selected_when_enabled(self, tokenizer: Tokenizer):
+        """SUMMARIZE should be selected when enabled and in threshold range."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Hello " * 100},
+            {"role": "assistant", "content": "Response " * 100},
+            {"role": "user", "content": "More " * 100},
+            {"role": "assistant", "content": "More response " * 100},
+            {"role": "user", "content": "Final"},
+        ]
+
+        config = IntelligentContextConfig(
+            summarization_enabled=True,
+            compress_threshold=0.05,  # 5% triggers COMPRESS_FIRST
+            summarize_threshold=0.30,  # 30% is threshold for DROP_BY_SCORE
+            keep_last_turns=1,
+        )
+        manager = IntelligentContextManager(config=config)
+
+        tokens = tokenizer.count_messages(messages)
+        # Set limit so we're ~15% over (between compress and summarize thresholds)
+        available = int(tokens / 1.15)
+
+        strategy = manager._select_strategy(tokens, available)
+        assert strategy == ContextStrategy.SUMMARIZE
+
+    def test_summarize_not_selected_when_disabled(self, tokenizer: Tokenizer):
+        """SUMMARIZE should not be selected when disabled."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Hello " * 100},
+            {"role": "assistant", "content": "Response " * 100},
+            {"role": "user", "content": "Final"},
+        ]
+
+        config = IntelligentContextConfig(
+            summarization_enabled=False,  # Disabled
+            compress_threshold=0.05,
+            summarize_threshold=0.30,
+        )
+        manager = IntelligentContextManager(config=config)
+
+        tokens = tokenizer.count_messages(messages)
+        available = int(tokens / 1.15)  # 15% over
+
+        strategy = manager._select_strategy(tokens, available)
+        # Should skip SUMMARIZE and go to DROP_BY_SCORE
+        assert strategy == ContextStrategy.DROP_BY_SCORE
+
+    def test_drop_strategy_when_over_summarize_threshold(self, tokenizer: Tokenizer):
+        """DROP_BY_SCORE when over summarize_threshold even if enabled."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Hello " * 100},
+            {"role": "assistant", "content": "Response " * 100},
+        ]
+
+        config = IntelligentContextConfig(
+            summarization_enabled=True,
+            compress_threshold=0.05,
+            summarize_threshold=0.20,
+        )
+        manager = IntelligentContextManager(config=config)
+
+        tokens = tokenizer.count_messages(messages)
+        available = int(tokens / 1.50)  # 50% over - way over threshold
+
+        strategy = manager._select_strategy(tokens, available)
+        assert strategy == ContextStrategy.DROP_BY_SCORE
+
+
+class TestSummarizeStrategy:
+    """Tests for SUMMARIZE strategy execution."""
+
+    def test_summarize_reduces_tokens(self, tokenizer: Tokenizer):
+        """SUMMARIZE should reduce token count."""
+        # Create conversation with many messages to summarize
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+        ]
+
+        # Add many user/assistant turns
+        for i in range(10):
+            messages.append({"role": "user", "content": f"Question {i}: " + "explain this " * 20})
+            messages.append(
+                {"role": "assistant", "content": f"Answer {i}: " + "here is my response " * 30}
+            )
+
+        messages.append({"role": "user", "content": "Final question"})
+        messages.append({"role": "assistant", "content": "Final answer"})
+
+        config = IntelligentContextConfig(
+            summarization_enabled=True,
+            compress_threshold=0.05,  # Low, so we skip COMPRESS_FIRST
+            summarize_threshold=0.30,
+            keep_last_turns=2,  # Protect last 2 turns
+        )
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(messages)
+        # Set limit to trigger SUMMARIZE (15% over)
+        target_limit = int(tokens_before / 1.15)
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should have reduced tokens
+        assert result.tokens_after < result.tokens_before
+
+    def test_summarize_with_custom_summarizer(self, tokenizer: Tokenizer):
+        """SUMMARIZE should use custom summarizer callback."""
+        summarizer_called = []
+
+        def custom_summarizer(messages: list[dict], context: str = "") -> str:
+            summarizer_called.append(len(messages))
+            return f"[Summary of {len(messages)} messages]"
+
+        messages = [
+            {"role": "system", "content": "System"},
+        ]
+        for i in range(8):
+            messages.append({"role": "user", "content": f"Question {i} " * 30})
+            messages.append({"role": "assistant", "content": f"Answer {i} " * 30})
+        messages.append({"role": "user", "content": "Final"})
+
+        config = IntelligentContextConfig(
+            summarization_enabled=True,
+            compress_threshold=0.05,
+            summarize_threshold=0.30,
+            keep_last_turns=1,
+        )
+        manager = IntelligentContextManager(
+            config=config,
+            summarize_fn=custom_summarizer,
+        )
+
+        tokens_before = tokenizer.count_messages(messages)
+        target_limit = int(tokens_before / 1.15)
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Summarizer should have been called
+        assert len(summarizer_called) > 0
+        # Should have reduced tokens
+        assert result.tokens_after < result.tokens_before
+
+    def test_summarize_fallback_to_drop_when_not_enough(self, tokenizer: Tokenizer):
+        """SUMMARIZE should fall back to DROP_BY_SCORE when not enough."""
+
+        # Custom summarizer that doesn't save much
+        def ineffective_summarizer(messages: list[dict], context: str = "") -> str:
+            # Return almost as long as original
+            return "This is a very long summary " * 50
+
+        messages = [
+            {"role": "system", "content": "System"},
+        ]
+        for i in range(6):
+            messages.append({"role": "user", "content": f"Q{i} " * 20})
+            messages.append({"role": "assistant", "content": f"A{i} " * 20})
+        messages.append({"role": "user", "content": "Final"})
+
+        config = IntelligentContextConfig(
+            summarization_enabled=True,
+            compress_threshold=0.05,
+            summarize_threshold=0.30,
+            keep_last_turns=1,
+        )
+        manager = IntelligentContextManager(
+            config=config,
+            summarize_fn=ineffective_summarizer,
+        )
+
+        tokens_before = tokenizer.count_messages(messages)
+        # Very aggressive limit
+        target_limit = int(tokens_before / 2.0)
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should still reduce tokens (via DROP_BY_SCORE fallback)
+        assert result.tokens_after < result.tokens_before
+
+    def test_summarize_preserves_protected_messages(self, tokenizer: Tokenizer):
+        """SUMMARIZE should never summarize protected messages."""
+        messages = [
+            {"role": "system", "content": "Important system prompt " * 20},
+            {"role": "user", "content": "Old question " * 30},
+            {"role": "assistant", "content": "Old answer " * 30},
+            {"role": "user", "content": "Recent question " * 30},
+            {"role": "assistant", "content": "Recent answer " * 30},
+            {"role": "user", "content": "Final question"},
+        ]
+
+        config = IntelligentContextConfig(
+            summarization_enabled=True,
+            compress_threshold=0.05,
+            summarize_threshold=0.30,
+            keep_system=True,
+            keep_last_turns=2,  # Protect last 2 user turns
+        )
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(messages)
+        target_limit = int(tokens_before / 1.15)
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # System message should still be present
+        system_messages = [m for m in result.messages if m.get("role") == "system"]
+        assert len(system_messages) >= 1
+        assert "Important system prompt" in system_messages[0].get("content", "")
+
+
+class TestProgressiveSummarizer:
+    """Tests for ProgressiveSummarizer component."""
+
+    def test_extractive_summarizer_default(self, tokenizer: Tokenizer):
+        """Default extractive summarizer should work."""
+        from headroom.transforms.progressive_summarizer import (
+            extractive_summarizer,
+        )
+
+        messages = [
+            {"role": "user", "content": "Question 1 " * 20},
+            {"role": "assistant", "content": "Answer 1 " * 30},
+            {"role": "user", "content": "Question 2 " * 20},
+            {"role": "assistant", "content": "Answer 2 " * 30},
+        ]
+
+        # Test extractive summarizer directly
+        summary = extractive_summarizer(messages)
+        assert "[Summary of" in summary
+        assert "4 messages" in summary
+
+    def test_progressive_summarizer_groups_messages(self, tokenizer: Tokenizer):
+        """ProgressiveSummarizer should identify message groups correctly."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(
+            min_messages_to_summarize=2,
+            store_for_retrieval=False,
+        )
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Q1 " * 30},
+            {"role": "assistant", "content": "A1 " * 30},
+            {"role": "user", "content": "Q2 " * 30},
+            {"role": "assistant", "content": "A2 " * 30},
+            {"role": "user", "content": "Final"},
+        ]
+
+        # Protect only system (0) and final (5)
+        protected = {0, 5}
+
+        groups = summarizer._find_summarization_candidates(messages, protected)
+
+        # Should find the middle messages as a group
+        assert len(groups) >= 1
+        # Group should include indices 1-4
+        found_middle_group = any(start <= 1 and end >= 4 for start, end in groups)
+        assert found_middle_group
+
+    def test_progressive_summarizer_respects_min_messages(self, tokenizer: Tokenizer):
+        """ProgressiveSummarizer should respect min_messages_to_summarize."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(
+            min_messages_to_summarize=5,  # High threshold
+            store_for_retrieval=False,
+        )
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+            {"role": "user", "content": "Final"},
+        ]
+
+        protected = {0, 3}
+
+        groups = summarizer._find_summarization_candidates(messages, protected)
+
+        # Should not find any groups (only 2 unprotected messages)
+        assert len(groups) == 0
+
+    def test_progressive_summarizer_summarizes_messages(self, tokenizer: Tokenizer):
+        """ProgressiveSummarizer should create summaries correctly."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(
+            min_messages_to_summarize=3,
+            store_for_retrieval=False,
+        )
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Q1 " * 50},
+            {"role": "assistant", "content": "A1 " * 50},
+            {"role": "user", "content": "Q2 " * 50},
+            {"role": "assistant", "content": "A2 " * 50},
+            {"role": "user", "content": "Final question"},
+        ]
+
+        protected = {0, 5}  # System and final
+
+        result = summarizer.summarize_messages(
+            messages=messages,
+            tokenizer=tokenizer,
+            protected_indices=protected,
+        )
+
+        # Should have reduced message count
+        assert len(result.messages) < len(messages)
+        # Should have created summaries
+        assert len(result.summaries_created) > 0
+        # Should have saved tokens
+        assert result.tokens_after < result.tokens_before
+
+
+class TestAnchoredSummary:
+    """Tests for AnchoredSummary data structure."""
+
+    def test_anchored_summary_compression_ratio(self):
+        """AnchoredSummary should calculate compression ratio correctly."""
+        from headroom.transforms.progressive_summarizer import AnchoredSummary
+
+        summary = AnchoredSummary(
+            summary_text="Summary",
+            start_index=0,
+            end_index=5,
+            original_message_count=6,
+            original_tokens=1000,
+            summary_tokens=100,
+        )
+
+        assert summary.compression_ratio == 0.1
+        assert summary.tokens_saved == 900
+
+    def test_anchored_summary_zero_original_tokens(self):
+        """AnchoredSummary should handle zero original tokens."""
+        from headroom.transforms.progressive_summarizer import AnchoredSummary
+
+        summary = AnchoredSummary(
+            summary_text="Summary",
+            start_index=0,
+            end_index=0,
+            original_message_count=1,
+            original_tokens=0,
+            summary_tokens=10,
+        )
+
+        assert summary.compression_ratio == 1.0
+        assert summary.tokens_saved == 0
+
+
+class TestSummarizeEdgeCases:
+    """Edge case tests for SUMMARIZE strategy."""
+
+    def test_summarize_empty_messages(self, tokenizer: Tokenizer):
+        """SUMMARIZE should handle empty messages list."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(store_for_retrieval=False)
+
+        result = summarizer.summarize_messages(
+            messages=[],
+            tokenizer=tokenizer,
+            protected_indices=set(),
+        )
+
+        assert result.messages == []
+        assert len(result.summaries_created) == 0
+
+    def test_summarize_all_protected(self, tokenizer: Tokenizer):
+        """SUMMARIZE should handle when all messages are protected."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(store_for_retrieval=False)
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "Answer"},
+        ]
+
+        result = summarizer.summarize_messages(
+            messages=messages,
+            tokenizer=tokenizer,
+            protected_indices={0, 1, 2},  # All protected
+        )
+
+        # Should return unchanged messages
+        assert len(result.messages) == len(messages)
+        assert len(result.summaries_created) == 0
+
+    def test_summarize_with_tool_messages(self, tokenizer: Tokenizer):
+        """SUMMARIZE should handle tool messages."""
+        import json
+
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(
+            min_messages_to_summarize=3,
+            store_for_retrieval=False,
+        )
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Search for data " * 20},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps([{"id": i, "data": f"result_{i}"} for i in range(20)]),
+            },
+            {"role": "assistant", "content": "Here are the results " * 20},
+            {"role": "user", "content": "Final"},
+        ]
+
+        protected = {0, 5}
+
+        result = summarizer.summarize_messages(
+            messages=messages,
+            tokenizer=tokenizer,
+            protected_indices=protected,
+        )
+
+        # Should complete without error
+        assert result.messages is not None
+        # Protected messages should be preserved
+        assert result.messages[0].get("role") == "system"
+
+    def test_summarize_skips_small_token_groups(self, tokenizer: Tokenizer):
+        """SUMMARIZE should skip groups with few tokens."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        summarizer = ProgressiveSummarizer(
+            min_messages_to_summarize=3,
+            store_for_retrieval=False,
+        )
+
+        # Very short messages
+        messages = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+            {"role": "user", "content": "Q2"},
+            {"role": "assistant", "content": "A2"},
+            {"role": "user", "content": "F"},
+        ]
+
+        protected = {0, 5}
+
+        result = summarizer.summarize_messages(
+            messages=messages,
+            tokenizer=tokenizer,
+            protected_indices=protected,
+        )
+
+        # Should not create summaries (groups too small token-wise)
+        # The summarizer checks for group_tokens < 100
+        assert len(result.summaries_created) == 0
+
+    def test_summarize_callback_exception_handled(self, tokenizer: Tokenizer):
+        """SUMMARIZE should handle callback exceptions gracefully."""
+        from headroom.transforms.progressive_summarizer import ProgressiveSummarizer
+
+        def failing_summarizer(messages: list[dict], context: str = "") -> str:
+            raise ValueError("Summarization failed!")
+
+        summarizer = ProgressiveSummarizer(
+            summarize_fn=failing_summarizer,
+            min_messages_to_summarize=3,
+            store_for_retrieval=False,
+        )
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Q " * 50},
+            {"role": "assistant", "content": "A " * 50},
+            {"role": "user", "content": "Q2 " * 50},
+            {"role": "assistant", "content": "A2 " * 50},
+            {"role": "user", "content": "Final"},
+        ]
+
+        protected = {0, 5}
+
+        # Should not raise, should return original messages
+        result = summarizer.summarize_messages(
+            messages=messages,
+            tokenizer=tokenizer,
+            protected_indices=protected,
+        )
+
+        assert result.messages is not None
+        # No summaries created due to exception
+        assert len(result.summaries_created) == 0
