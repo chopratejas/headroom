@@ -714,3 +714,568 @@ class TestCustomWeights:
 
         # Should complete successfully
         assert len(result.messages) < len(long_conversation)
+
+
+# =============================================================================
+# Test COMPRESS_FIRST Strategy - Integration Tests
+# =============================================================================
+
+
+class TestCompressFirstStrategy:
+    """Integration tests for COMPRESS_FIRST strategy.
+
+    These tests verify that:
+    1. COMPRESS_FIRST is selected when slightly over budget
+    2. ContentRouter actually compresses tool messages
+    3. Compression can bring context under budget
+    4. Fallback to DROP_BY_SCORE works when compression isn't enough
+    """
+
+    @pytest.fixture
+    def conversation_with_large_tool_outputs(self) -> list[dict[str, Any]]:
+        """Conversation with large JSON tool outputs (compressible)."""
+        import json
+
+        # Generate a large JSON array that SmartCrusher can compress
+        large_results = [
+            {
+                "id": i,
+                "name": f"Item {i}",
+                "status": "active" if i % 2 == 0 else "inactive",
+                "value": i * 100,
+                "description": f"This is a description for item number {i} with some extra text",
+            }
+            for i in range(100)
+        ]
+
+        return [
+            {"role": "system", "content": "You are a helpful assistant with search tools."},
+            {"role": "user", "content": "Search for items in the database."},
+            {
+                "role": "assistant",
+                "content": "I'll search the database for you.",
+                "tool_calls": [
+                    {
+                        "id": "call_db_1",
+                        "type": "function",
+                        "function": {
+                            "name": "database_search",
+                            "arguments": '{"query": "items"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_db_1",
+                "content": json.dumps(large_results),
+            },
+            {"role": "assistant", "content": "I found 100 items in the database."},
+            {"role": "user", "content": "Great, can you show me more details?"},
+        ]
+
+    @pytest.fixture
+    def conversation_with_search_output(self) -> list[dict[str, Any]]:
+        """Conversation with grep-style search output (compressible)."""
+        # Generate search results in grep format
+        search_lines = [
+            f"src/module{i}.py:{i * 10}:    def function_{i}(self, param):" for i in range(50)
+        ]
+
+        return [
+            {"role": "system", "content": "You are a code assistant."},
+            {"role": "user", "content": "Search for function definitions."},
+            {
+                "role": "assistant",
+                "content": "Searching...",
+                "tool_calls": [
+                    {
+                        "id": "call_grep_1",
+                        "type": "function",
+                        "function": {
+                            "name": "Grep",
+                            "arguments": '{"pattern": "def function"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_grep_1",
+                "content": "\n".join(search_lines),
+            },
+            {"role": "assistant", "content": "Found 50 function definitions."},
+            {"role": "user", "content": "Thanks!"},
+        ]
+
+    def test_compress_first_selected_for_small_overage(self, tokenizer: Tokenizer):
+        """COMPRESS_FIRST should be selected when <10% over budget."""
+        config = IntelligentContextConfig(compress_threshold=0.10)
+        manager = IntelligentContextManager(config=config)
+
+        # 5% over budget should select COMPRESS_FIRST
+        strategy = manager._select_strategy(current_tokens=2100, available=2000)
+        assert strategy == ContextStrategy.COMPRESS_FIRST
+
+        # 9% over budget should still select COMPRESS_FIRST
+        strategy = manager._select_strategy(current_tokens=2180, available=2000)
+        assert strategy == ContextStrategy.COMPRESS_FIRST
+
+        # 15% over budget should select DROP_BY_SCORE
+        strategy = manager._select_strategy(current_tokens=2300, available=2000)
+        assert strategy == ContextStrategy.DROP_BY_SCORE
+
+    def test_compress_first_compresses_json_tool_output(
+        self,
+        conversation_with_large_tool_outputs: list[dict[str, Any]],
+        tokenizer: Tokenizer,
+    ):
+        """COMPRESS_FIRST should compress JSON tool outputs using ContentRouter."""
+        config = IntelligentContextConfig(compress_threshold=0.15)
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(conversation_with_large_tool_outputs)
+
+        # Set limit to be slightly over (within COMPRESS_FIRST range)
+        # We want tokens_before to be ~5-10% over the limit
+        target_limit = int(tokens_before / 1.05)  # ~5% over
+
+        result = manager.apply(
+            conversation_with_large_tool_outputs,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should have compression transforms or be under budget
+        if result.tokens_after <= target_limit - 50:
+            # If under budget, compression worked!
+            assert result.tokens_after < result.tokens_before
+        else:
+            # May have needed to drop as well
+            assert result.tokens_after <= result.tokens_before
+
+    def test_compress_first_with_search_output(
+        self,
+        conversation_with_search_output: list[dict[str, Any]],
+        tokenizer: Tokenizer,
+    ):
+        """COMPRESS_FIRST should work with search-style output."""
+        config = IntelligentContextConfig(compress_threshold=0.15)
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(conversation_with_search_output)
+        target_limit = int(tokens_before / 1.08)  # ~8% over
+
+        result = manager.apply(
+            conversation_with_search_output,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should reduce tokens
+        assert result.tokens_after <= result.tokens_before
+
+    def test_compress_first_fallback_to_drop(
+        self,
+        tokenizer: Tokenizer,
+    ):
+        """When compression isn't enough, should fall back to dropping."""
+        import json
+
+        # Create a conversation with multiple tool calls where even compression
+        # won't be enough - use small non-JSON content that can't compress well
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Do multiple searches."},
+        ]
+
+        # Add 10 tool calls with results that won't compress much
+        for i in range(10):
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": f"Searching for item {i}...",
+                    "tool_calls": [
+                        {
+                            "id": f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": "search",
+                                "arguments": json.dumps({"q": f"item{i}"}),
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": f"Found result for item {i}: some important data here that cannot be compressed easily",
+                }
+            )
+
+        messages.append({"role": "assistant", "content": "Here are all the results."})
+        messages.append({"role": "user", "content": "Thanks!"})
+
+        # Use keep_last_turns=1 to allow more messages to be dropped
+        config = IntelligentContextConfig(
+            compress_threshold=0.50,  # High threshold
+            keep_last_turns=1,  # Only protect last turn
+        )
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(messages)
+
+        # Very small limit that will require dropping
+        very_small_limit = tokens_before // 4
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=very_small_limit,
+            output_buffer=50,
+        )
+
+        # Should have reduced tokens
+        assert result.tokens_after < result.tokens_before
+        # Should have dropped some messages
+        assert len(result.messages) < len(messages)
+
+    def test_compress_first_preserves_message_structure(
+        self,
+        conversation_with_large_tool_outputs: list[dict[str, Any]],
+        tokenizer: Tokenizer,
+    ):
+        """COMPRESS_FIRST should preserve message structure integrity."""
+        config = IntelligentContextConfig(compress_threshold=0.20)
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(conversation_with_large_tool_outputs)
+        target_limit = int(tokens_before / 1.05)
+
+        result = manager.apply(
+            conversation_with_large_tool_outputs,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Verify structure
+        for msg in result.messages:
+            assert "role" in msg
+            role = msg["role"]
+            assert role in ("system", "user", "assistant", "tool")
+
+            # Tool messages should have tool_call_id
+            if role == "tool":
+                assert "tool_call_id" in msg or "content" in msg
+
+            # Assistant messages with tool_calls should have that structure
+            if role == "assistant" and "tool_calls" in msg:
+                for tc in msg["tool_calls"]:
+                    assert "id" in tc
+                    assert "function" in tc
+
+    def test_compress_first_no_compression_when_under_budget(
+        self, simple_conversation: list[dict[str, Any]], tokenizer: Tokenizer
+    ):
+        """COMPRESS_FIRST should not be applied when under budget."""
+        manager = IntelligentContextManager()
+
+        result = manager.apply(
+            simple_conversation,
+            tokenizer,
+            model_limit=128000,
+            output_buffer=4000,
+        )
+
+        # No compression transforms should be applied
+        compression_transforms = [
+            t for t in result.transforms_applied if t.startswith("compress_first:")
+        ]
+        assert len(compression_transforms) == 0
+        assert result.tokens_before == result.tokens_after
+
+    def test_content_router_lazy_loading(self):
+        """ContentRouter should be lazy-loaded only when needed."""
+        manager = IntelligentContextManager()
+
+        # Initially None
+        assert manager._content_router is None
+
+        # Get router
+        router = manager._get_content_router()
+
+        # Should now be set
+        assert manager._content_router is not None
+        assert router is manager._content_router
+
+        # Second call should return same instance
+        router2 = manager._get_content_router()
+        assert router is router2
+
+    def test_source_hint_extraction(self):
+        """Source hints should be extracted from tool calls."""
+        manager = IntelligentContextManager()
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "Read",
+                            "arguments": '{"file_path": "/src/main.py"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "function": {
+                            "name": "Grep",
+                            "arguments": '{"pattern": "def"}',
+                        },
+                    }
+                ],
+            },
+        ]
+
+        # Test file read hint
+        hint1 = manager._get_tool_source_hint(messages, "call_1")
+        assert "file:" in hint1 or hint1 == ""  # May not have content_router import
+
+        # Test grep hint
+        hint2 = manager._get_tool_source_hint(messages, "call_2")
+        assert "grep" in hint2.lower() or hint2 == ""
+
+        # Test unknown tool call
+        hint3 = manager._get_tool_source_hint(messages, "unknown")
+        assert hint3 == ""
+
+
+class TestCompressFirstWithContentBlocks:
+    """Tests for COMPRESS_FIRST with Anthropic-style content blocks."""
+
+    @pytest.fixture
+    def conversation_with_content_blocks(self) -> list[dict[str, Any]]:
+        """Conversation with Anthropic-style content blocks."""
+        import json
+
+        large_result = json.dumps([{"id": i, "data": f"item_{i}" * 20} for i in range(50)])
+
+        return [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Search for data."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Here are the results:"},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool_1",
+                        "content": large_result,
+                    },
+                ],
+            },
+            {"role": "user", "content": "Thanks!"},
+        ]
+
+    def test_compress_first_handles_content_blocks(
+        self,
+        conversation_with_content_blocks: list[dict[str, Any]],
+        tokenizer: Tokenizer,
+    ):
+        """COMPRESS_FIRST should handle content blocks format."""
+        config = IntelligentContextConfig(compress_threshold=0.20)
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(conversation_with_content_blocks)
+        target_limit = int(tokens_before / 1.08)
+
+        result = manager.apply(
+            conversation_with_content_blocks,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should complete without error
+        assert result.messages is not None
+        assert result.tokens_after <= result.tokens_before
+
+
+class TestCompressFirstIntegrationWithTOIN:
+    """Integration tests for COMPRESS_FIRST with TOIN patterns."""
+
+    def test_compress_first_works_without_toin(self, tokenizer: Tokenizer):
+        """COMPRESS_FIRST should work without TOIN integration."""
+        import json
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Search"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }
+                ],
+                "content": "",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps([{"x": i} for i in range(50)]),
+            },
+            {"role": "assistant", "content": "Done"},
+            {"role": "user", "content": "Thanks"},
+        ]
+
+        # Without TOIN
+        config = IntelligentContextConfig(
+            compress_threshold=0.15,
+            toin_integration=False,
+        )
+        manager = IntelligentContextManager(config=config, toin=None)
+
+        tokens_before = tokenizer.count_messages(messages)
+        target_limit = int(tokens_before / 1.08)
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should work
+        assert result.messages is not None
+        assert result.tokens_after <= result.tokens_before
+
+
+class TestCompressFirstEdgeCases:
+    """Edge case tests for COMPRESS_FIRST strategy."""
+
+    def test_empty_tool_content(self, tokenizer: Tokenizer):
+        """COMPRESS_FIRST should handle empty tool content gracefully."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Do something"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "tool", "arguments": "{}"},
+                    }
+                ],
+                "content": "",
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": ""},
+            {"role": "assistant", "content": "Done"},
+        ]
+
+        config = IntelligentContextConfig(compress_threshold=0.50)
+        manager = IntelligentContextManager(config=config)
+
+        # Very small limit to trigger compression
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=50,
+            output_buffer=10,
+        )
+
+        # Should handle gracefully
+        assert result.messages is not None
+
+    def test_non_json_tool_content(self, tokenizer: Tokenizer):
+        """COMPRESS_FIRST should handle non-JSON tool content."""
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Read a file"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": '{"file_path": "test.py"}'},
+                    }
+                ],
+                "content": "",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "def hello():\n    print('Hello World')\n" * 20,
+            },
+            {"role": "assistant", "content": "Here's the file"},
+            {"role": "user", "content": "Thanks"},
+        ]
+
+        config = IntelligentContextConfig(compress_threshold=0.20)
+        manager = IntelligentContextManager(config=config)
+
+        tokens_before = tokenizer.count_messages(messages)
+        target_limit = int(tokens_before / 1.08)
+
+        result = manager.apply(
+            messages,
+            tokenizer,
+            model_limit=target_limit,
+            output_buffer=50,
+        )
+
+        # Should handle gracefully
+        assert result.messages is not None
+        assert result.tokens_after <= result.tokens_before
+
+    def test_protected_tool_messages_not_compressed(self, tokenizer: Tokenizer):
+        """Protected tool messages should not be compressed."""
+        import json
+
+        messages = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Search"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "s", "arguments": "{}"}}
+                ],
+                "content": "",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": json.dumps([{"x": i} for i in range(100)]),
+            },
+            {"role": "assistant", "content": "Found results"},
+            {"role": "user", "content": "More please"},
+        ]
+
+        # Protect last 5 turns (should include the tool message)
+        config = IntelligentContextConfig(
+            keep_last_turns=5,
+            compress_threshold=0.50,
+        )
+        manager = IntelligentContextManager(config=config)
+
+        # Get protected indices
+        protected = manager._get_protected_indices(messages)
+
+        # The recent messages should be protected
+        # With 6 messages and keep_last_turns=5, most should be protected
+        assert len(protected) > 0

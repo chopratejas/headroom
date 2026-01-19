@@ -8,6 +8,12 @@ All importance signals are derived from:
 1. Computed metrics (recency, density, references)
 2. TOIN-learned patterns (field_semantics, retrieval_rate)
 3. Embedding similarity (optional)
+
+Strategy Selection:
+- NONE: Under budget, no action needed
+- COMPRESS_FIRST: When <compress_threshold over budget, try deeper compression
+  of tool outputs using ContentRouter before dropping messages
+- DROP_BY_SCORE: When significantly over budget, drop lowest-scored messages
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from .scoring import MessageScore, MessageScorer
 
 if TYPE_CHECKING:
     from ..telemetry.toin import ToolIntelligenceNetwork
+    from .content_router import ContentRouter
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +91,9 @@ class IntelligentContextManager(Transform):
             toin=toin,
             recency_decay_rate=self.config.recency_decay_rate,
         )
+
+        # Lazy-loaded content router for COMPRESS_FIRST strategy
+        self._content_router: ContentRouter | None = None
 
     def should_apply(
         self,
@@ -145,8 +155,52 @@ class IntelligentContextManager(Transform):
         strategy = self._select_strategy(current_tokens, available)
         logger.debug(f"IntelligentContextManager: selected strategy {strategy.value}")
 
-        # Get protected indices and tool units
+        # Get protected indices
         protected = self._get_protected_indices(result_messages)
+
+        # ========== COMPRESS_FIRST STRATEGY ==========
+        # Try to compress tool messages before dropping anything
+        if strategy == ContextStrategy.COMPRESS_FIRST:
+            result_messages, compress_transforms, tokens_saved = self._apply_compress_first(
+                result_messages, tokenizer, protected
+            )
+            transforms_applied.extend(compress_transforms)
+
+            # Recheck token count after compression
+            current_tokens = tokenizer.count_messages(result_messages)
+
+            # If now under budget, we're done!
+            if current_tokens <= available:
+                logger.info(
+                    "IntelligentContextManager: COMPRESS_FIRST succeeded, "
+                    "saved %d tokens: %d -> %d",
+                    tokens_saved,
+                    tokens_before,
+                    current_tokens,
+                )
+                return TransformResult(
+                    messages=result_messages,
+                    tokens_before=tokens_before,
+                    tokens_after=current_tokens,
+                    transforms_applied=transforms_applied,
+                    markers_inserted=markers_inserted,
+                    warnings=warnings,
+                )
+
+            # Still over budget, fall through to DROP_BY_SCORE
+            logger.debug(
+                "IntelligentContextManager: COMPRESS_FIRST saved %d tokens but still "
+                "over budget (%d > %d), proceeding to DROP_BY_SCORE",
+                tokens_saved,
+                current_tokens,
+                available,
+            )
+            strategy = ContextStrategy.DROP_BY_SCORE
+            # Need to recalculate protected indices after compression
+            protected = self._get_protected_indices(result_messages)
+
+        # ========== DROP_BY_SCORE STRATEGY ==========
+        # Get tool units for atomic dropping
         tool_units = find_tool_units(result_messages)
         tool_unit_indices = self._get_tool_unit_indices(tool_units)
 
@@ -257,6 +311,223 @@ class IntelligentContextManager(Transform):
             return ContextStrategy.COMPRESS_FIRST
 
         return ContextStrategy.DROP_BY_SCORE
+
+    def _get_content_router(self) -> ContentRouter | None:
+        """Get or create content router for COMPRESS_FIRST strategy (lazy load)."""
+        if self._content_router is None:
+            try:
+                from .content_router import ContentRouter, ContentRouterConfig
+
+                # Configure for aggressive compression in COMPRESS_FIRST context
+                router_config = ContentRouterConfig(
+                    enable_code_aware=True,
+                    enable_llmlingua=True,
+                    enable_smart_crusher=True,
+                    enable_search_compressor=True,
+                    enable_log_compressor=True,
+                    skip_user_messages=True,
+                    protect_recent_code=0,  # Don't protect in COMPRESS_FIRST
+                    protect_analysis_context=False,  # We're over budget
+                    min_section_tokens=20,
+                    ccr_enabled=True,
+                )
+                self._content_router = ContentRouter(config=router_config)
+            except ImportError:
+                logger.debug("ContentRouter not available for COMPRESS_FIRST")
+        return self._content_router
+
+    def _apply_compress_first(
+        self,
+        messages: list[dict[str, Any]],
+        tokenizer: Tokenizer,
+        protected: set[int],
+    ) -> tuple[list[dict[str, Any]], list[str], int]:
+        """Apply deeper compression to tool messages using ContentRouter.
+
+        This is the COMPRESS_FIRST strategy: try to compress tool outputs
+        more aggressively before falling back to dropping messages.
+
+        Args:
+            messages: List of messages to compress.
+            tokenizer: Tokenizer for counting.
+            protected: Set of protected message indices.
+
+        Returns:
+            Tuple of (compressed_messages, transforms_applied, tokens_saved).
+        """
+        router = self._get_content_router()
+        if router is None:
+            return messages, [], 0
+
+        compressed_messages = deep_copy_messages(messages)
+        transforms_applied: list[str] = []
+        total_tokens_saved = 0
+
+        for i, msg in enumerate(compressed_messages):
+            # Skip protected messages
+            if i in protected:
+                continue
+
+            role = msg.get("role")
+            content = msg.get("content")
+
+            # Focus on tool messages (highest compression potential)
+            if role == "tool" and isinstance(content, str) and len(content) > 100:
+                try:
+                    # Get source hint from tool call context
+                    tool_call_id = msg.get("tool_call_id", "")
+                    source_hint = self._get_tool_source_hint(messages, tool_call_id)
+
+                    # Compress using ContentRouter
+                    result = router.compress(
+                        content,
+                        source_hint=source_hint,
+                        context="",  # No specific context in compress-first mode
+                    )
+
+                    # Check if compression was effective
+                    if result.compression_ratio < 0.9:  # At least 10% savings
+                        tokens_before = tokenizer.count_text(content)
+                        tokens_after = tokenizer.count_text(result.compressed)
+                        tokens_saved = tokens_before - tokens_after
+
+                        if tokens_saved > 0:
+                            compressed_messages[i] = {
+                                **msg,
+                                "content": result.compressed,
+                            }
+                            transforms_applied.append(
+                                f"compress_first:{result.strategy_used.value}:{i}"
+                            )
+                            total_tokens_saved += tokens_saved
+                            logger.debug(
+                                "COMPRESS_FIRST: message %d compressed %d→%d tokens (%s)",
+                                i,
+                                tokens_before,
+                                tokens_after,
+                                result.strategy_used.value,
+                            )
+                except Exception as e:
+                    logger.debug("COMPRESS_FIRST: compression failed for message %d: %s", i, e)
+                    continue
+
+            # Also try to compress assistant messages with tool results in content blocks
+            elif role == "assistant" and isinstance(content, list):
+                compressed_blocks, block_transforms, block_saved = self._compress_content_blocks(
+                    content, router, tokenizer
+                )
+                if block_saved > 0:
+                    compressed_messages[i] = {**msg, "content": compressed_blocks}
+                    transforms_applied.extend(block_transforms)
+                    total_tokens_saved += block_saved
+
+        if total_tokens_saved > 0:
+            logger.info(
+                "COMPRESS_FIRST: saved %d tokens across %d compressions",
+                total_tokens_saved,
+                len(transforms_applied),
+            )
+
+        return compressed_messages, transforms_applied, total_tokens_saved
+
+    def _get_tool_source_hint(self, messages: list[dict[str, Any]], tool_call_id: str) -> str:
+        """Extract source hint from the tool call that produced this result.
+
+        Args:
+            messages: List of all messages.
+            tool_call_id: The ID of the tool call to find.
+
+        Returns:
+            Source hint string (e.g., "tool:grep", "file:main.py").
+        """
+        if not tool_call_id:
+            return ""
+
+        # Find the assistant message with this tool call
+        for msg in messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls", []):
+                    if tc.get("id") == tool_call_id:
+                        func = tc.get("function", {})
+                        tool_name = func.get("name", "")
+
+                        # Import here to avoid circular imports
+                        try:
+                            import json
+
+                            from .content_router import generate_source_hint
+
+                            args_str = func.get("arguments", "{}")
+                            try:
+                                args = (
+                                    json.loads(args_str) if isinstance(args_str, str) else args_str
+                                )
+                            except json.JSONDecodeError:
+                                args = {}
+
+                            return generate_source_hint(tool_name, args)
+                        except ImportError:
+                            return f"tool:{tool_name}" if tool_name else ""
+        return ""
+
+    def _compress_content_blocks(
+        self,
+        content_blocks: list[Any],
+        router: ContentRouter,
+        tokenizer: Tokenizer,
+    ) -> tuple[list[Any], list[str], int]:
+        """Compress content blocks (Anthropic format) using ContentRouter.
+
+        Args:
+            content_blocks: List of content blocks.
+            router: ContentRouter instance.
+            tokenizer: Tokenizer for counting.
+
+        Returns:
+            Tuple of (compressed_blocks, transforms_applied, tokens_saved).
+        """
+        compressed_blocks: list[Any] = []
+        transforms_applied: list[str] = []
+        total_saved = 0
+
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                compressed_blocks.append(block)
+                continue
+
+            block_type = block.get("type")
+
+            # Handle tool_result blocks
+            if block_type == "tool_result":
+                tool_content = block.get("content", "")
+
+                if isinstance(tool_content, str) and len(tool_content) > 200:
+                    try:
+                        result = router.compress(tool_content, context="")
+
+                        if result.compression_ratio < 0.9:
+                            tokens_before = tokenizer.count_text(tool_content)
+                            tokens_after = tokenizer.count_text(result.compressed)
+                            saved = tokens_before - tokens_after
+
+                            if saved > 0:
+                                compressed_blocks.append(
+                                    {
+                                        **block,
+                                        "content": result.compressed,
+                                    }
+                                )
+                                transforms_applied.append(
+                                    f"compress_first:block:{result.strategy_used.value}"
+                                )
+                                total_saved += saved
+                                continue
+                    except Exception:
+                        pass
+
+            compressed_blocks.append(block)
+
+        return compressed_blocks, transforms_applied, total_saved
 
     def _get_protected_indices(self, messages: list[dict[str, Any]]) -> set[int]:
         """Get indices that should never be dropped."""
