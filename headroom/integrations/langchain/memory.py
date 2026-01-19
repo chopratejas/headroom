@@ -132,7 +132,7 @@ class HeadroomChatMessageHistory(BaseChatMessageHistory):
         self._total_tokens_saved = 0
 
     @property
-    def messages(self) -> list[BaseMessage]:
+    def messages(self) -> list[BaseMessage]:  # type: ignore[override]
         """Get messages, applying compression if over threshold.
 
         Returns:
@@ -171,19 +171,19 @@ class HeadroomChatMessageHistory(BaseChatMessageHistory):
         """
         self._base.add_message(message)
 
-    def add_user_message(self, message: str) -> None:
+    def add_user_message(self, message: HumanMessage | str) -> None:
         """Add a user message to the history.
 
         Args:
-            message: The user message content.
+            message: The user message (string or HumanMessage).
         """
         self._base.add_user_message(message)
 
-    def add_ai_message(self, message: str) -> None:
+    def add_ai_message(self, message: AIMessage | str) -> None:
         """Add an AI message to the history.
 
         Args:
-            message: The AI message content.
+            message: The AI message (string or AIMessage).
         """
         self._base.add_ai_message(message)
 

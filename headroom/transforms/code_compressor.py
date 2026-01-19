@@ -98,7 +98,7 @@ def _get_parser(language: str) -> Any:
             try:
                 from tree_sitter_language_pack import get_parser
 
-                parser = get_parser(language)
+                parser = get_parser(language)  # type: ignore[arg-type]
                 _tree_sitter_languages[language] = parser
                 logger.debug("Loaded tree-sitter parser for %s", language)
             except Exception as e:
