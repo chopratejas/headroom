@@ -10,6 +10,7 @@ Tests cover:
 import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -379,7 +380,7 @@ class TestHeadroomCallbackHandler:
         handler = HeadroomCallbackHandler()
         handler._current_request = {"start_time": datetime.now()}
 
-        handler.on_llm_error(ValueError("Test error"))
+        handler.on_llm_error(ValueError("Test error"), run_id=uuid4())
 
         assert handler.total_requests == 1
         assert "error" in handler.requests[0]
