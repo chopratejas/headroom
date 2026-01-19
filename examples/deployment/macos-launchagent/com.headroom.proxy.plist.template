@@ -14,7 +14,7 @@
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>
-        <string>${HEADROOM_PROXY_PORT}</string>
+        <string>__PORT__</string>
     </array>
 
     <!-- Environment Variables -->
