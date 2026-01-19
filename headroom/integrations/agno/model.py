@@ -101,6 +101,8 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
 
     # Required by Model base class - we'll derive from wrapped model
     id: str = field(default="headroom-wrapper")
+    name: str | None = field(default=None)
+    provider: str | None = field(default=None)
 
     # HeadroomAgnoModel specific fields
     wrapped_model: Any = field(default=None)
