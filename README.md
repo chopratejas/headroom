@@ -77,6 +77,40 @@ Run it yourself: `python examples/needle_in_haystack_test.py`
 
 ---
 
+## Multi-Tool Agent Test: Real Function Calling
+
+**The setup:** An Agno agent with 4 tools (GitHub Issues, ArXiv Papers, Code Search, Database Logs) investigating a memory leak. Total tool output: 62,323 chars (~15,580 tokens).
+
+```python
+from agno.agent import Agent
+from agno.models.anthropic import Claude
+from headroom.integrations.agno import HeadroomAgnoModel
+
+# Wrap your model - that's it!
+base_model = Claude(id="claude-sonnet-4-20250514")
+model = HeadroomAgnoModel(wrapped_model=base_model)
+
+agent = Agent(model=model, tools=[search_github, search_arxiv, search_code, query_db])
+response = agent.run("Investigate the memory leak and recommend a fix")
+```
+
+**Results with Claude Sonnet:**
+
+|  | Baseline | Headroom |
+|--|----------|----------|
+| Tokens sent to API | 15,662 | 6,100 |
+| API requests | 2 | 2 |
+| Tool calls | 4 | 4 |
+| Duration | 26.5s | 27.0s |
+
+**76.3% fewer tokens. Same comprehensive answer.**
+
+Both found: Issue #42 (memory leak), the `cleanup_worker()` fix, OutOfMemoryError logs (7.8GB/8GB, 847 threads), and relevant research papers.
+
+Run it yourself: `python examples/multi_tool_agent_test.py`
+
+---
+
 ## How It Works
 
 Headroom doesn't summarize or truncate blindly. It uses **statistical analysis**:

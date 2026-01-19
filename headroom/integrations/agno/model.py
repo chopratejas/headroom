@@ -232,15 +232,44 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
                 result.append({"role": "user", "content": content})
         return result
 
-    def _convert_messages_from_openai(self, messages: list[dict[str, Any]]) -> list[Any]:
-        """Convert OpenAI format messages back to Agno format.
+    def _convert_messages_from_openai(
+        self, messages: list[dict[str, Any]], original_messages: list[Any]
+    ) -> list[Any]:
+        """Convert OpenAI format messages back to Agno Message objects.
 
-        Note: Agno typically accepts OpenAI-format dicts directly,
-        so we may not need full conversion.
+        The Agno base model's response() method expects Message objects,
+        not dicts, because it calls .log() on them internally.
+
+        Args:
+            messages: The optimized messages in OpenAI dict format
+            original_messages: The original Agno Message objects (for reference)
+
+        Returns:
+            List of Agno Message objects
         """
-        # Agno models generally accept OpenAI-format messages
-        # Return as-is for compatibility
-        return messages
+        from agno.models.message import Message as AgnoMessage
+
+        result = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                # Convert dict back to Agno Message
+                # Handle the basic fields that Headroom might have modified
+                try:
+                    result.append(AgnoMessage.from_dict(msg))
+                except Exception:
+                    # If from_dict fails, create a simple Message
+                    result.append(
+                        AgnoMessage(
+                            role=msg.get("role", "user"),
+                            content=msg.get("content"),
+                            tool_calls=msg.get("tool_calls"),
+                            tool_call_id=msg.get("tool_call_id"),
+                        )
+                    )
+            else:
+                # Already a Message object, keep as-is
+                result.append(msg)
+        return result
 
     def _optimize_messages(self, messages: list[Any]) -> tuple[list[Any], OptimizationMetrics]:
         """Apply Headroom optimization to messages.
@@ -332,88 +361,51 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
             if len(self._metrics_history) > 100:
                 self._metrics_history = self._metrics_history[-100:]
 
-        # Convert back (Agno accepts OpenAI format)
-        optimized_messages = self._convert_messages_from_openai(optimized)
+        # Convert back to Agno Message objects (required for base model's .log() calls)
+        optimized_messages = self._convert_messages_from_openai(optimized, messages)
 
         return optimized_messages, metrics
 
     def response(self, messages: list[Any], **kwargs: Any) -> Any:  # type: ignore[override]
         """Generate response with Headroom optimization.
 
-        This is the core method that Agno agents call.
+        This method lets the inherited Model.response() handle the tool loop,
+        which will call self.invoke() for each API call. Our invoke() override
+        applies Headroom optimization before delegating to wrapped_model.invoke().
+
+        This ensures tool outputs are compressed on subsequent API calls.
         """
-        # Optimize messages
-        optimized_messages, metrics = self._optimize_messages(messages)
-
-        logger.info(
-            f"Headroom optimized: {metrics.tokens_before} -> {metrics.tokens_after} tokens "
-            f"({metrics.savings_percent:.1f}% saved)"
-        )
-
-        # Call wrapped model with optimized messages
-        return self.wrapped_model.response(optimized_messages, **kwargs)
+        # Don't optimize here - let the tool loop in Model.response() call invoke(),
+        # which will optimize messages for EACH API call (including tool results)
+        return super().response(messages, **kwargs)
 
     def response_stream(self, messages: list[Any], **kwargs: Any) -> Iterator[Any]:  # type: ignore[override]
-        """Stream response with Headroom optimization."""
-        # Optimize messages
-        optimized_messages, metrics = self._optimize_messages(messages)
+        """Stream response with Headroom optimization.
 
-        logger.info(
-            f"Headroom optimized (streaming): {metrics.tokens_before} -> "
-            f"{metrics.tokens_after} tokens"
-        )
-
-        # Stream from wrapped model
-        yield from self.wrapped_model.response_stream(optimized_messages, **kwargs)
+        Like response(), delegates to inherited Model.response_stream() which
+        calls self.invoke_stream() for each API call.
+        """
+        # Let the inherited streaming method handle the tool loop
+        yield from super().response_stream(messages, **kwargs)
 
     async def aresponse(self, messages: list[Any], **kwargs: Any) -> Any:  # type: ignore[override]
-        """Async generate response with Headroom optimization."""
-        # Run optimization in executor (CPU-bound)
-        loop = asyncio.get_running_loop()
-        optimized_messages, metrics = await loop.run_in_executor(
-            None, self._optimize_messages, messages
-        )
+        """Async generate response with Headroom optimization.
 
-        logger.info(
-            f"Headroom optimized (async): {metrics.tokens_before} -> {metrics.tokens_after} tokens "
-            f"({metrics.savings_percent:.1f}% saved)"
-        )
-
-        # Call wrapped model's async method
-        if hasattr(self.wrapped_model, "aresponse"):
-            return await self.wrapped_model.aresponse(optimized_messages, **kwargs)
-        else:
-            # Fallback to sync in executor (non-blocking)
-            return await loop.run_in_executor(
-                None, lambda: self.wrapped_model.response(optimized_messages, **kwargs)
-            )
+        Delegates to inherited Model.aresponse() which calls self.ainvoke()
+        for each API call, ensuring tool outputs are optimized.
+        """
+        # Let the inherited async method handle the tool loop
+        return await super().aresponse(messages, **kwargs)
 
     async def aresponse_stream(self, messages: list[Any], **kwargs: Any) -> AsyncIterator[Any]:  # type: ignore[override]
-        """Async stream response with Headroom optimization."""
-        # Run optimization in executor (CPU-bound)
-        loop = asyncio.get_running_loop()
-        optimized_messages, metrics = await loop.run_in_executor(
-            None, self._optimize_messages, messages
-        )
+        """Async stream response with Headroom optimization.
 
-        logger.info(
-            f"Headroom optimized (async streaming): {metrics.tokens_before} -> "
-            f"{metrics.tokens_after} tokens"
-        )
-
-        # Async stream from wrapped model
-        if hasattr(self.wrapped_model, "aresponse_stream"):
-            async for chunk in self.wrapped_model.aresponse_stream(optimized_messages, **kwargs):
-                yield chunk
-        else:
-            # Fallback: wrap sync streaming in async iterator (non-blocking)
-            # Run the entire sync iteration in executor to avoid blocking event loop
-            def _sync_stream() -> list[Any]:
-                return list(self.wrapped_model.response_stream(optimized_messages, **kwargs))
-
-            chunks = await loop.run_in_executor(None, _sync_stream)
-            for chunk in chunks:
-                yield chunk
+        Delegates to inherited Model.aresponse_stream() which calls self.ainvoke_stream()
+        for each API call, ensuring tool outputs are optimized.
+        """
+        # Let the inherited async streaming method handle the tool loop
+        async for chunk in super().aresponse_stream(messages, **kwargs):
+            yield chunk
 
     def get_savings_summary(self) -> dict[str, Any]:
         """Get summary of token savings."""
