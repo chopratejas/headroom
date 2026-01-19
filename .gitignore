@@ -166,3 +166,6 @@ pyrightconfig.json
 *~
 \#*\#
 .\#*
+
+# Local development configuration
+CLAUDE.md

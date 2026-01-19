@@ -36,6 +36,12 @@ Welcome to the Headroom documentation.
 | [Metrics](metrics.md) | Monitoring and observability |
 | [Errors](errors.md) | Error handling |
 
+## Deployment & Operations
+
+| Guide | Description |
+|-------|-------------|
+| [macOS Deployment](macos-deployment.md) | Run proxy as background service on macOS |
+
 ## Reference
 
 | Topic | Description |
