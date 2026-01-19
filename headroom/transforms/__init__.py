@@ -3,9 +3,11 @@
 from .base import Transform
 from .cache_aligner import CacheAligner
 from .content_detector import ContentType, DetectionResult, detect_content_type
+from .intelligent_context import ContextStrategy, IntelligentContextManager
 from .log_compressor import LogCompressionResult, LogCompressor, LogCompressorConfig
 from .pipeline import TransformPipeline
 from .rolling_window import RollingWindow
+from .scoring import EmbeddingProvider, MessageScore, MessageScorer
 from .search_compressor import (
     SearchCompressionResult,
     SearchCompressor,
@@ -88,6 +90,12 @@ __all__ = [
     # Other transforms
     "CacheAligner",
     "RollingWindow",
+    # Intelligent context management
+    "IntelligentContextManager",
+    "ContextStrategy",
+    "MessageScorer",
+    "MessageScore",
+    "EmbeddingProvider",
     # ML-based compression (optional)
     "_LLMLINGUA_AVAILABLE",
 ]

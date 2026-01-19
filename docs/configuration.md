@@ -178,6 +178,66 @@ config = RollingWindowConfig(
 )
 ```
 
+## Intelligent Context Manager Configuration
+
+For semantic-aware context management with importance scoring:
+
+```python
+from headroom.config import IntelligentContextConfig, ScoringWeights
+
+# Customize scoring weights (must sum to 1.0, or will be normalized)
+weights = ScoringWeights(
+    recency=0.20,              # Newer messages score higher
+    semantic_similarity=0.20,  # Similarity to recent context
+    toin_importance=0.25,      # TOIN-learned retrieval patterns
+    error_indicator=0.15,      # TOIN-learned error field types
+    forward_reference=0.15,    # Messages referenced by later messages
+    token_density=0.05,        # Information density
+)
+
+config = IntelligentContextConfig(
+    # Enable/disable the manager
+    enabled=True,
+
+    # Protection settings
+    keep_system=True,           # Never drop system messages
+    keep_last_turns=2,          # Protect last N user turns
+
+    # Token budget
+    output_buffer_tokens=4000,  # Reserve for model output
+
+    # Scoring settings
+    use_importance_scoring=True,    # Use semantic scoring (vs position-only)
+    scoring_weights=weights,        # Custom weights
+    toin_integration=True,          # Use TOIN patterns if available
+    recency_decay_rate=0.1,         # Exponential decay lambda
+
+    # Strategy thresholds
+    compress_threshold=0.1,     # Try compression first if <10% over budget
+)
+```
+
+### Scoring Weights
+
+The `ScoringWeights` class controls how messages are scored:
+
+| Weight | Default | Description |
+|--------|---------|-------------|
+| `recency` | 0.20 | Exponential decay from conversation end |
+| `semantic_similarity` | 0.20 | Embedding cosine similarity to recent context |
+| `toin_importance` | 0.25 | TOIN retrieval_rate (high retrieval = important) |
+| `error_indicator` | 0.15 | TOIN field_semantics error detection |
+| `forward_reference` | 0.15 | Count of later messages referencing this one |
+| `token_density` | 0.05 | Unique tokens / total tokens |
+
+Weights are automatically normalized to sum to 1.0:
+
+```python
+weights = ScoringWeights(recency=1.0, toin_importance=1.0)
+normalized = weights.normalized()
+# recency=0.5, toin_importance=0.5, others=0.0
+```
+
 ## Environment Variables
 
 Some settings can be configured via environment variables:

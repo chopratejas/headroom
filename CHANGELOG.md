@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Production-ready proxy server with caching, rate limiting, and metrics
 - CLI command `headroom proxy` to start the proxy server
+- **IntelligentContextManager** (semantic-aware context management)
+  - Multi-factor importance scoring: recency, semantic similarity, TOIN importance, error indicators, forward references, token density
+  - No hardcoded patterns - all importance signals learned from TOIN or computed from metrics
+  - TOIN integration for retrieval_rate and field_semantics-based scoring
+  - Strategy selection: NONE, COMPRESS_FIRST, DROP_BY_SCORE based on budget overage
+  - Atomic tool unit handling (call + response dropped together)
+  - Configurable scoring weights via `ScoringWeights` dataclass
+  - `IntelligentContextConfig` for full configuration control
+  - Backwards compatible with `RollingWindowConfig`
 - **LLMLingua-2 Integration** (opt-in ML-based compression)
   - `LLMLinguaCompressor` transform using Microsoft's LLMLingua-2 model
   - Content-aware compression rates (code: 0.4, JSON: 0.35, text: 0.3)

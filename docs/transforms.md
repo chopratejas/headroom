@@ -160,6 +160,152 @@ config = RollingWindowConfig(
 3. **Old user messages** - Only if necessary
 4. **Never dropped**: System prompt, recent turns, active tool pairs
 
+> **Note:** For more intelligent context management based on semantic importance rather than just position, see [IntelligentContextManager](#intelligentcontextmanager) below.
+
+---
+
+## IntelligentContextManager
+
+Semantic-aware context management with TOIN-learned importance scoring.
+
+### The Problem
+
+RollingWindow drops messages by position (oldest first), but position doesn't equal importance:
+
+- An error message from turn 3 might be critical
+- A verbose success response from turn 10 might be expendable
+- Messages referenced by later turns should be preserved
+
+### The Solution
+
+IntelligentContextManager uses multi-factor importance scoring:
+
+```python
+from headroom.transforms import IntelligentContextManager, IntelligentContextConfig
+
+manager = IntelligentContextManager(config)
+result = manager.apply(messages, tokenizer, model_limit=128000)
+
+# Guarantees:
+# 1. System messages never dropped (configurable)
+# 2. Last N turns always protected
+# 3. Tool calls/responses dropped atomically
+# 4. Drops by importance score, not just position
+```
+
+### How Scoring Works
+
+Messages are scored on multiple factors (all learned, no hardcodes):
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| Recency | 20% | Exponential decay from conversation end |
+| Semantic Similarity | 20% | Embedding similarity to recent context |
+| TOIN Importance | 25% | Learned from retrieval patterns |
+| Error Indicators | 15% | TOIN-learned error field detection |
+| Forward References | 15% | Messages referenced by later messages |
+| Token Density | 5% | Information density (unique/total tokens) |
+
+**Key principle:** No hardcoded patterns. Error detection uses TOIN's `field_semantics.inferred_type == "error_indicator"`, not keyword matching.
+
+### Configuration
+
+```python
+from headroom.transforms import IntelligentContextManager
+from headroom.config import IntelligentContextConfig, ScoringWeights
+
+# Custom scoring weights
+weights = ScoringWeights(
+    recency=0.20,
+    semantic_similarity=0.20,
+    toin_importance=0.25,
+    error_indicator=0.15,
+    forward_reference=0.15,
+    token_density=0.05,
+)
+
+config = IntelligentContextConfig(
+    enabled=True,
+    keep_system=True,              # Never drop system messages
+    keep_last_turns=2,             # Protect last N user turns
+    output_buffer_tokens=4000,     # Reserve for model output
+    use_importance_scoring=True,   # Enable semantic scoring
+    scoring_weights=weights,       # Custom weights
+    toin_integration=True,         # Use TOIN patterns
+    recency_decay_rate=0.1,        # Exponential decay lambda
+    compress_threshold=0.1,        # Try compression first if <10% over
+)
+
+manager = IntelligentContextManager(config)
+```
+
+### Strategy Selection
+
+Based on how much over budget you are:
+
+| Overage | Strategy | Action |
+|---------|----------|--------|
+| Under budget | NONE | No action needed |
+| < 10% over | COMPRESS_FIRST | Try deeper compression |
+| >= 10% over | DROP_BY_SCORE | Drop lowest-scored messages |
+
+### TOIN Integration
+
+When TOIN is available, scoring uses learned patterns:
+
+```python
+from headroom.telemetry import get_toin
+
+toin = get_toin()
+manager = IntelligentContextManager(config, toin=toin)
+
+# TOIN provides:
+# - retrieval_rate: How often this tool's output is retrieved (high = important)
+# - field_semantics: Learned field types (error_indicator, identifier, etc.)
+# - commonly_retrieved_fields: Fields that users frequently need
+```
+
+### Example: Before vs After
+
+**RollingWindow (position-based):**
+```
+Messages: [sys, user1, asst1, user2, asst2_error, user3, asst3, user4, asst4]
+Over budget by 3 messages.
+Drops: user1, asst1, user2 (oldest first)
+Result: Loses context, keeps verbose asst3
+```
+
+**IntelligentContextManager (score-based):**
+```
+Messages scored:
+  - asst2_error: 0.85 (TOIN learned error indicator)
+  - asst1: 0.45 (old, low density)
+  - asst3: 0.40 (verbose, low unique tokens)
+
+Drops: asst1, asst3, user1 (lowest scores)
+Result: Preserves critical error message
+```
+
+### Backwards Compatibility
+
+Convert from RollingWindowConfig:
+
+```python
+from headroom.config import IntelligentContextConfig, RollingWindowConfig
+
+rolling_config = RollingWindowConfig(
+    max_tokens=100000,
+    preserve_system=True,
+    preserve_recent_turns=3,
+)
+
+# Convert to intelligent context config
+intelligent_config = IntelligentContextConfig(
+    keep_system=rolling_config.preserve_system,
+    keep_last_turns=rolling_config.preserve_recent_turns,
+)
+```
+
 ---
 
 ## LLMLinguaCompressor (Optional)

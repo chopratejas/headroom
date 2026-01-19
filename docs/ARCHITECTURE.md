@@ -241,6 +241,37 @@ headroom proxy --llmlingua --llmlingua-device cuda
 
 ---
 
+#### Transform 6: Intelligent Context Manager (Advanced)
+
+**Problem:** Rolling Window drops by position (oldest first), but position doesn't equal importance.
+
+```python
+# Scenario: Error at turn 3, verbose success at turn 10
+# Rolling Window: Drops turn 3 error (oldest first)
+# Intelligent Context: Keeps turn 3 error (high TOIN error score)
+```
+
+**The Solution:** Multi-factor importance scoring using TOIN-learned patterns:
+
+```python
+# Message scores (all learned, no hardcodes):
+scores = {
+    "recency": 0.20,           # Exponential decay from end
+    "semantic_similarity": 0.20,  # Embedding similarity to recent context
+    "toin_importance": 0.25,   # TOIN retrieval_rate (high = important)
+    "error_indicator": 0.15,   # TOIN field_semantics.inferred_type
+    "forward_reference": 0.15, # Referenced by later messages
+    "token_density": 0.05,     # Unique tokens / total tokens
+}
+
+# Drops lowest-scored messages first
+# Preserves critical errors even if old
+```
+
+**Key principle:** No hardcoded patterns. Error detection uses TOIN's learned `field_semantics.inferred_type == "error_indicator"`, not keyword matching like "error" or "fail".
+
+---
+
 ### 5. Storage (`storage/`) - Metrics Database
 
 Every request is logged:
@@ -876,7 +907,9 @@ headroom/
 │   ├── cache_aligner.py     # Date extraction for caching
 │   ├── tool_crusher.py      # Naive compression (disabled)
 │   ├── smart_crusher.py     # Statistical compression (default)
-│   ├── rolling_window.py    # Token limit enforcement
+│   ├── rolling_window.py    # Token limit enforcement (position-based)
+│   ├── intelligent_context.py  # Semantic context management (score-based)
+│   ├── scoring.py           # Message importance scoring
 │   └── llmlingua_compressor.py  # ML-based compression (opt-in)
 │
 ├── cache/               # CCR Architecture - Caching & Storage

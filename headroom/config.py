@@ -106,6 +106,103 @@ class RollingWindowConfig:
 
 
 @dataclass
+class ScoringWeights:
+    """Weights for importance scoring factors.
+
+    All weights should sum to approximately 1.0 for normalized scoring.
+    These can be learned from TOIN retrieval patterns over time.
+
+    Design principle: NO HARDCODED PATTERNS. All importance is derived from:
+    - Computed metrics (recency, density, references)
+    - TOIN-learned patterns (field semantics, retrieval rates)
+    - Embedding similarity (semantic relevance)
+    """
+
+    recency: float = 0.20  # Exponential decay from conversation end
+    semantic_similarity: float = 0.20  # Embedding similarity to recent context
+    toin_importance: float = 0.25  # TOIN-learned field importance
+    error_indicator: float = 0.15  # TOIN-learned error field detection
+    forward_reference: float = 0.15  # Referenced by later messages
+    token_density: float = 0.05  # Information density (entropy-based)
+
+    def normalized(self) -> ScoringWeights:
+        """Return a copy with weights normalized to sum to 1.0."""
+        total = (
+            self.recency
+            + self.semantic_similarity
+            + self.toin_importance
+            + self.error_indicator
+            + self.forward_reference
+            + self.token_density
+        )
+        if total == 0:
+            return ScoringWeights()
+        return ScoringWeights(
+            recency=self.recency / total,
+            semantic_similarity=self.semantic_similarity / total,
+            toin_importance=self.toin_importance / total,
+            error_indicator=self.error_indicator / total,
+            forward_reference=self.forward_reference / total,
+            token_density=self.token_density / total,
+        )
+
+
+@dataclass
+class IntelligentContextConfig:
+    """Configuration for intelligent context management.
+
+    This extends RollingWindowConfig with semantic-aware scoring and
+    TOIN integration. All importance detection is learned, not hardcoded.
+
+    Phases:
+    - Phase 1 (current): Importance scoring + TOIN integration
+    - Phase 2 (future): Progressive summarization
+    - Phase 3 (future): Memory tiers with retrieval
+    """
+
+    # === Basic settings (backwards compatible with RollingWindowConfig) ===
+    enabled: bool = True
+    keep_system: bool = True
+    keep_last_turns: int = 2
+    output_buffer_tokens: int = 4000
+
+    # === Scoring configuration ===
+    use_importance_scoring: bool = True
+    scoring_weights: ScoringWeights = field(default_factory=ScoringWeights)
+
+    # Recency decay parameter (higher = faster decay)
+    recency_decay_rate: float = 0.1
+
+    # === TOIN integration ===
+    toin_integration: bool = True
+    toin_confidence_threshold: float = 0.3  # Min confidence to use TOIN signals
+
+    # === Strategy selection thresholds ===
+    # These determine when to try different strategies based on how much over budget
+    compress_threshold: float = 0.10  # Try deeper compression if <10% over
+
+    # === Summarization (Phase 2 - not yet implemented) ===
+    summarization_enabled: bool = False
+    summarization_model: str | None = None
+    summary_max_tokens: int = 500
+    summarize_threshold: float = 0.25  # Try summarization if <25% over
+
+    # === Memory tiers (Phase 3 - not yet implemented) ===
+    memory_tiers_enabled: bool = False
+    warm_tier_enabled: bool = False  # Summarized tier
+    cold_tier_enabled: bool = False  # Vector retrieval tier
+
+    def to_rolling_window_config(self) -> RollingWindowConfig:
+        """Convert to basic RollingWindowConfig for backwards compatibility."""
+        return RollingWindowConfig(
+            enabled=self.enabled,
+            keep_system=self.keep_system,
+            keep_last_turns=self.keep_last_turns,
+            output_buffer_tokens=self.output_buffer_tokens,
+        )
+
+
+@dataclass
 class RelevanceScorerConfig:
     """Configuration for relevance scoring in SmartCrusher.
 
