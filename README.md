@@ -4,7 +4,7 @@
     <strong>The Context Optimization Layer for LLM Applications</strong>
   </p>
   <p align="center">
-    Cut your LLM costs by 50-90% without losing accuracy
+    Tool outputs are 70-95% redundant boilerplate. Headroom compresses that away.
   </p>
 </p>
 
@@ -26,28 +26,78 @@
 
 ---
 
-## Why Headroom?
+## Does It Actually Work? A Real Test
 
-- **Zero code changes** - works as a transparent proxy
-- **50-90% cost savings** - verified on real workloads
-- **Reversible compression** - LLM retrieves original data via CCR
-- **Content-aware** - code, logs, JSON each handled optimally
-- **Provider caching** - automatic prefix optimization for cache hits
-- **Persistent memory** - remember across conversations with zero-latency extraction
-- **Framework native** - LangChain, Agno, MCP, agents supported
+**The setup:** 100 production log entries. One critical error buried at position 67.
+
+<details>
+<summary><b>BEFORE:</b> 100 log entries (18,952 chars) - click to expand</summary>
+
+```json
+[
+  {"timestamp": "2024-12-15T00:00:00Z", "level": "INFO", "service": "api-gateway", "message": "Request processed successfully - latency=50ms", "request_id": "req-000000", "status_code": 200},
+  {"timestamp": "2024-12-15T01:01:00Z", "level": "INFO", "service": "user-service", "message": "Request processed successfully - latency=51ms", "request_id": "req-000001", "status_code": 200},
+  {"timestamp": "2024-12-15T02:02:00Z", "level": "INFO", "service": "inventory", "message": "Request processed successfully - latency=52ms", "request_id": "req-000002", "status_code": 200},
+  // ... 64 more INFO entries ...
+  {"timestamp": "2024-12-15T03:47:23Z", "level": "FATAL", "service": "payment-gateway", "message": "Connection pool exhausted", "error_code": "PG-5523", "resolution": "Increase max_connections to 500 in config/database.yml", "affected_transactions": 1847},
+  // ... 32 more INFO entries ...
+]
+```
+</details>
+
+**AFTER:** Headroom compresses to 6 entries (1,155 chars):
+
+```json
+[
+  {"timestamp": "2024-12-15T00:00:00Z", "level": "INFO", "service": "api-gateway", ...},
+  {"timestamp": "2024-12-15T01:01:00Z", "level": "INFO", "service": "user-service", ...},
+  {"timestamp": "2024-12-15T02:02:00Z", "level": "INFO", "service": "inventory", ...},
+  {"timestamp": "2024-12-15T03:47:23Z", "level": "FATAL", "service": "payment-gateway", "error_code": "PG-5523", "resolution": "Increase max_connections to 500 in config/database.yml", "affected_transactions": 1847},
+  {"timestamp": "2024-12-15T02:38:00Z", "level": "INFO", "service": "inventory", ...},
+  {"timestamp": "2024-12-15T03:39:00Z", "level": "INFO", "service": "auth", ...}
+]
+```
+
+**What happened:** First 3 items + the FATAL error + last 2 items. The critical error at position 67 was automatically preserved.
 
 ---
 
-## Headroom vs Alternatives
+**The question we asked Claude:** "What caused the outage? What's the error code? What's the fix?"
 
-| Approach | Token Reduction | Accuracy | Reversible | Latency |
-|----------|-----------------|----------|------------|---------|
-| **Headroom** | 50-90% | No loss | Yes (CCR) | ~1-5ms |
-| Truncation | Variable | Data loss | No | ~0ms |
-| Summarization | 60-80% | Lossy | No | ~500ms+ |
-| No optimization | 0% | Full | N/A | 0ms |
+|  | Baseline | Headroom |
+|--|----------|----------|
+| Input tokens | 10,144 | 1,260 |
+| Correct answers | **4/4** | **4/4** |
 
-**Headroom wins** because it intelligently selects relevant content while keeping a retrieval path to the original data.
+Both responses: *"payment-gateway service, error PG-5523, fix: Increase max_connections to 500, 1,847 transactions affected"*
+
+**87.6% fewer tokens. Same answer.**
+
+Run it yourself: `python examples/needle_in_haystack_test.py`
+
+---
+
+## How It Works
+
+Headroom doesn't summarize or truncate blindly. It uses **statistical analysis**:
+
+1. **Detects redundancy** - Repeated fields like `"language": "typescript"` across 100 items
+2. **Keeps what matters** - First items, last items, query-relevant matches, anomalies
+3. **Preserves errors** - Never drops items containing "error", "exception", "failed"
+4. **Maintains schema** - Output JSON structure stays identical
+
+The compression is **reversible** via CCR (Compress-Cache-Retrieve). If the LLM needs more data, it can request the original.
+
+---
+
+## Why Headroom?
+
+- **Zero code changes** - works as a transparent proxy
+- **47-92% savings** - depends on your workload (tool-heavy = more savings)
+- **Reversible compression** - LLM retrieves original data via CCR
+- **Content-aware** - code, logs, JSON each handled optimally
+- **Provider caching** - automatic prefix optimization for cache hits
+- **Framework native** - LangChain, Agno, MCP, agents supported
 
 ---
 
@@ -144,16 +194,21 @@ See the full [Agno Integration Guide](docs/agno.md) for hooks, multi-provider su
 
 ---
 
-## Performance
+## Verified Performance
 
-| Scenario | Before | After | Savings |
-|----------|--------|-------|---------|
-| Search results (1000 items) | 45,000 tokens | 4,500 tokens | 90% |
-| Log analysis (500 entries) | 22,000 tokens | 3,300 tokens | 85% |
-| Long conversation (50 turns) | 80,000 tokens | 32,000 tokens | 60% |
-| Agent with tools (10 calls) | 100,000 tokens | 15,000 tokens | 85% |
+These numbers are from actual API calls, not estimates:
 
-**Overhead**: ~1-5ms per request
+| Scenario | Before | After | Savings | Verified |
+|----------|--------|-------|---------|----------|
+| Code search (100 results) | 17,765 tokens | 1,408 tokens | 92% | Claude Sonnet |
+| SRE incident debugging | 65,694 tokens | 5,118 tokens | 92% | GPT-4o |
+| Codebase exploration | 78,502 tokens | 41,254 tokens | 47% | GPT-4o |
+| GitHub issue triage | 54,174 tokens | 14,761 tokens | 73% | GPT-4o |
+
+**Overhead**: ~1-5ms compression latency
+
+**When savings are highest**: Tool-heavy workloads (search, logs, database queries)
+**When savings are lowest**: Conversation-heavy workloads with minimal tool use
 
 ---
 
