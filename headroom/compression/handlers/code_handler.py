@@ -58,7 +58,7 @@ def _get_parser(language: str) -> Any:
         if language not in _tree_sitter_parsers:
             from tree_sitter_language_pack import get_parser
 
-            _tree_sitter_parsers[language] = get_parser(language)
+            _tree_sitter_parsers[language] = get_parser(language)  # type: ignore[arg-type]
 
         return _tree_sitter_parsers[language]
 

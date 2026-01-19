@@ -34,7 +34,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 # LangChain imports - these are optional dependencies
 try:
@@ -47,15 +47,15 @@ try:
         SystemMessage,
         ToolMessage,
     )
-    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult  # noqa: F401
     from langchain_core.runnables import RunnableLambda
     from pydantic import ConfigDict, Field, PrivateAttr
 
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     LANGCHAIN_AVAILABLE = False
-    BaseChatModel = object
-    BaseCallbackHandler = object
+    BaseChatModel = object  # type: ignore[misc,assignment]
+    BaseCallbackHandler = object  # type: ignore[misc,assignment]
     ConfigDict = lambda **kwargs: {}  # type: ignore[assignment,misc]  # noqa: E731
     Field = lambda **kwargs: None  # type: ignore[assignment]  # noqa: E731
     PrivateAttr = lambda **kwargs: None  # type: ignore[assignment]  # noqa: E731
@@ -173,7 +173,7 @@ class HeadroomChatModel(BaseChatModel):
         """
         _check_langchain_available()
 
-        super().__init__(
+        super().__init__(  # type: ignore[call-arg]
             wrapped_model=wrapped_model,
             headroom_config=config or HeadroomConfig(),
             mode=mode,
@@ -271,7 +271,7 @@ class HeadroomChatModel(BaseChatModel):
 
     def _convert_messages_from_openai(self, messages: list[dict[str, Any]]) -> list[BaseMessage]:
         """Convert OpenAI format messages back to LangChain format."""
-        result = []
+        result: list[BaseMessage] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -378,7 +378,7 @@ class HeadroomChatModel(BaseChatModel):
         )
 
         # Call wrapped model with optimized messages
-        result = self.wrapped_model._generate(
+        result: ChatResult = self.wrapped_model._generate(
             optimized_messages,
             stop=stop,
             run_manager=run_manager,
@@ -393,7 +393,7 @@ class HeadroomChatModel(BaseChatModel):
         stop: list[str] | None = None,
         run_manager: Any = None,
         **kwargs: Any,
-    ) -> Iterator[ChatGeneration]:
+    ) -> Iterator[ChatGenerationChunk]:
         """Stream response with Headroom optimization."""
         # Optimize messages
         optimized_messages, metrics = self._optimize_messages(messages)
@@ -435,7 +435,7 @@ class HeadroomChatModel(BaseChatModel):
         )
 
         # Call wrapped model's async generate
-        result = await self.wrapped_model._agenerate(
+        result: ChatResult = await self.wrapped_model._agenerate(
             optimized_messages,
             stop=stop,
             run_manager=run_manager,
@@ -450,7 +450,7 @@ class HeadroomChatModel(BaseChatModel):
         stop: list[str] | None = None,
         run_manager: Any = None,
         **kwargs: Any,
-    ) -> AsyncIterator[ChatGeneration]:
+    ) -> AsyncIterator[ChatGenerationChunk]:
         """Async stream response with Headroom optimization.
 
         This enables `async for chunk in model.astream(messages)` to work correctly.
@@ -669,7 +669,14 @@ class HeadroomCallbackHandler(BaseCallbackHandler):
 
         self._current_request = None
 
-    def on_llm_error(self, error: Exception, **kwargs: Any) -> None:
+    def on_llm_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> Any:
         """Called when LLM encounters an error."""
         if self._current_request:
             self._current_request["error"] = str(error)
@@ -850,7 +857,7 @@ class HeadroomRunnable:
         self._metrics_history.append(metrics)
 
         # Convert back to LangChain messages
-        output_messages = []
+        output_messages: list[BaseMessage] = []
         for msg in result.messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -951,10 +958,10 @@ def optimize_messages(
     )
 
     # Convert back
-    output_messages = []
-    for msg in result.messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
+    output_messages: list[BaseMessage] = []
+    for openai_msg in result.messages:
+        role = openai_msg.get("role", "user")
+        content = openai_msg.get("content", "")
 
         if role == "system":
             output_messages.append(SystemMessage(content=content))
@@ -962,8 +969,8 @@ def optimize_messages(
             output_messages.append(HumanMessage(content=content))
         elif role == "assistant":
             tool_calls = []
-            if "tool_calls" in msg:
-                for tc in msg["tool_calls"]:
+            if "tool_calls" in openai_msg:
+                for tc in openai_msg["tool_calls"]:
                     tool_calls.append(
                         {
                             "id": tc["id"],
@@ -976,7 +983,7 @@ def optimize_messages(
             output_messages.append(
                 ToolMessage(
                     content=content,
-                    tool_call_id=msg.get("tool_call_id", ""),
+                    tool_call_id=openai_msg.get("tool_call_id", ""),
                 )
             )
 
