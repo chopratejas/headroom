@@ -503,19 +503,32 @@ class TestFallbackCompression:
             assert result.syntax_valid is True  # Fallback guarantees validity
 
     def test_fallback_preserves_structure(self, default_config):
-        """Fallback compression preserves basic structure."""
-        with patch(
-            "headroom.transforms.code_compressor._check_tree_sitter_available",
-            return_value=False,
+        """Fallback compression preserves basic structure when no compressor available.
+
+        When both tree-sitter and LLMLingua are unavailable, the fallback
+        returns the original code unchanged - preserving all structure.
+        """
+        with (
+            patch(
+                "headroom.transforms.code_compressor._check_tree_sitter_available",
+                return_value=False,
+            ),
+            patch(
+                "headroom.transforms.llmlingua_compressor._check_llmlingua_available",
+                return_value=False,
+            ),
         ):
             compressor = CodeAwareCompressor(default_config)
             code = generate_python_code(3)
 
             result = compressor.compress(code)
 
-            # Should preserve imports and class/function signatures
+            # With no compressor available, original code is returned unchanged
+            # This preserves all imports and class/function signatures
             assert "import os" in result.compressed
             assert "def function_" in result.compressed
+            # Compression ratio should be 1.0 (no compression)
+            assert result.compression_ratio == 1.0
 
 
 # =============================================================================

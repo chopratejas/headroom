@@ -49,6 +49,20 @@ class ToolCrusherConfig:
 class CacheAlignerConfig:
     """Configuration for cache alignment.
 
+    Phase 1 Enhancement: Now integrates DynamicContentDetector for comprehensive
+    dynamic content detection beyond just dates.
+
+    New Detection Capabilities (when use_dynamic_detector=True):
+    - UUIDs: 550e8400-e29b-41d4-a716-446655440000
+    - API keys/tokens: sk-abc123..., api_key_xyz...
+    - JWT tokens: eyJhbGciOiJIUzI1NiIs...
+    - Unix timestamps: 1705312847
+    - Request/trace IDs: req_abc123, trace_xyz789
+    - Hex hashes: MD5 (32 chars), SHA1 (40 chars), SHA256 (64 chars)
+    - Version numbers: v1.2.3, v2.0.0-beta
+    - Structural patterns: "Session: abc123", "User: john@example.com"
+    - High-entropy strings: Random-looking alphanumeric sequences
+
     GOTCHAS:
     - Date regex may match non-date content (e.g., version numbers like "2024-01-15")
     - Moving dates to end of system prompt may confuse models if date was
@@ -63,6 +77,31 @@ class CacheAlignerConfig:
     """
 
     enabled: bool = True
+
+    # === Phase 1: DynamicContentDetector Integration ===
+    # When True, uses the full DynamicContentDetector with 15+ patterns
+    # When False, uses legacy date_patterns only (backward compatible)
+    use_dynamic_detector: bool = True
+
+    # Which detection tiers to use (only when use_dynamic_detector=True)
+    # - "regex": Fast structural/universal patterns (~0ms) - RECOMMENDED
+    # - "ner": Named Entity Recognition via spaCy (~5-10ms) - optional
+    # - "semantic": Embedding similarity (~20-50ms) - optional
+    detection_tiers: list[Literal["regex", "ner", "semantic"]] = field(
+        default_factory=lambda: ["regex"]
+    )
+
+    # Additional dynamic labels to detect (extends default list)
+    # These are KEY names that hint the VALUE is dynamic
+    # e.g., "session" will detect "session: abc123" and extract "abc123"
+    extra_dynamic_labels: list[str] = field(default_factory=list)
+
+    # Entropy threshold for detecting random strings (0-1 scale)
+    # Higher = more selective (only very random strings like UUIDs)
+    # Lower = more aggressive (may catch non-random content)
+    entropy_threshold: float = 0.7
+
+    # === Legacy Configuration (used when use_dynamic_detector=False) ===
     date_patterns: list[str] = field(
         default_factory=lambda: [
             r"Current [Dd]ate:?\s*\d{4}-\d{2}-\d{2}",
@@ -71,8 +110,11 @@ class CacheAlignerConfig:
             r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
         ]
     )
+
+    # === Whitespace Normalization ===
     normalize_whitespace: bool = True
     collapse_blank_lines: bool = True
+
     # Separator used to mark where dynamic content begins in system message
     # Content before this separator is cached; content after is dynamic
     dynamic_tail_separator: str = "\n\n---\n[Dynamic Context]\n"

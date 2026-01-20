@@ -775,3 +775,466 @@ Please be helpful, harmless, and honest."""
         # apply should work but not modify anything
         result = aligner.apply(messages, tokenizer)
         assert "cache_align" not in result.transforms_applied
+
+
+# ============================================================================
+# Phase 1: DynamicContentDetector Integration Tests
+# ============================================================================
+
+
+class TestDynamicContentDetectorIntegration:
+    """Tests for Phase 1: DynamicContentDetector integration."""
+
+    def test_uuid_detection(self, tokenizer):
+        """Test extraction of UUID patterns."""
+        system_prompt = (
+            "You are a helpful assistant.\n"
+            "Session ID: 550e8400-e29b-41d4-a716-446655440000\n"
+            "Please help the user."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        assert "cache_align" in result.transforms_applied
+        # UUID should be in dynamic section
+        dynamic_section = system_content.split("[Dynamic Context]")[1]
+        assert "550e8400-e29b-41d4-a716-446655440000" in dynamic_section
+
+    def test_api_key_detection(self, tokenizer):
+        """Test extraction of API key patterns."""
+        system_prompt = (
+            "You are an assistant with API access.\n"
+            "API Key: sk-abc123def456ghi789jkl012mno345pqr678\n"
+            "Use this to make requests."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        # API key should be extracted
+        assert "cache_align" in result.transforms_applied
+
+    def test_jwt_token_detection(self, tokenizer):
+        """Test extraction of JWT token patterns."""
+        jwt_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        system_prompt = f"You are an assistant.\nAuth Token: {jwt_token}\nHelp the user."
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        assert "cache_align" in result.transforms_applied
+
+    def test_unix_timestamp_detection(self, tokenizer):
+        """Test extraction of Unix timestamp patterns."""
+        system_prompt = (
+            "You are a logging assistant.\nRequest started at: 1705312200000\nHelp analyze logs."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+
+    def test_request_trace_id_detection(self, tokenizer):
+        """Test extraction of request/trace ID patterns."""
+        system_prompt = (
+            "You are a debugging assistant.\n"
+            "Trace ID: req_abc123def456\n"
+            "Request ID: tx_987654321abc\n"
+            "Help debug issues."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        assert "cache_align" in result.transforms_applied
+
+    def test_hex_hash_md5_detection(self, tokenizer):
+        """Test extraction of MD5 hash patterns (32 hex chars)."""
+        system_prompt = (
+            "You are a file assistant.\n"
+            "File hash: d41d8cd98f00b204e9800998ecf8427e\n"
+            "Help with file operations."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        dynamic_section = system_content.split("[Dynamic Context]")[1]
+        assert "d41d8cd98f00b204e9800998ecf8427e" in dynamic_section
+
+    def test_hex_hash_sha1_detection(self, tokenizer):
+        """Test extraction of SHA1 hash patterns (40 hex chars)."""
+        system_prompt = (
+            "You are a git assistant.\n"
+            "Commit: da39a3ee5e6b4b0d3255bfef95601890afd80709\n"
+            "Help with git operations."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        dynamic_section = system_content.split("[Dynamic Context]")[1]
+        assert "da39a3ee5e6b4b0d3255bfef95601890afd80709" in dynamic_section
+
+    def test_hex_hash_sha256_detection(self, tokenizer):
+        """Test extraction of SHA256 hash patterns (64 hex chars)."""
+        sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        system_prompt = f"You are a security assistant.\nHash: {sha256}\nHelp verify files."
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        dynamic_section = system_content.split("[Dynamic Context]")[1]
+        assert sha256 in dynamic_section
+
+    def test_version_number_detection(self, tokenizer):
+        """Test extraction of version number patterns."""
+        system_prompt = (
+            "You are a deployment assistant.\n"
+            "Current version: v2.15.3\n"
+            "Previous version: 1.14.2\n"
+            "Help with deployments."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        assert "cache_align" in result.transforms_applied
+
+    def test_combined_dynamic_content(self, tokenizer):
+        """Test extraction of multiple dynamic content types together."""
+        system_prompt = (
+            "You are a comprehensive assistant.\n"
+            "Session: 550e8400-e29b-41d4-a716-446655440000\n"
+            "Current date: 2024-01-15\n"
+            "Request ID: req_abc123def456\n"
+            "Version: v3.2.1\n"
+            "Commit: da39a3ee5e6b4b0d3255bfef95601890afd80709\n"
+            "Help the user with their tasks."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        assert "cache_align" in result.transforms_applied
+
+        # Multiple dynamic values should be present in dynamic section
+        dynamic_section = system_content.split("[Dynamic Context]")[1]
+        # At least some of these should be in the dynamic section
+        dynamic_items_found = sum(
+            [
+                "550e8400" in dynamic_section,
+                "2024-01-15" in dynamic_section,
+                "da39a3ee" in dynamic_section,
+            ]
+        )
+        assert dynamic_items_found >= 2, "Expected multiple dynamic items in dynamic section"
+
+    def test_detection_stats_tracking(self, tokenizer):
+        """Test that detection statistics are properly tracked."""
+        system_prompt = (
+            "Assistant.\n"
+            "UUID: 550e8400-e29b-41d4-a716-446655440000\n"
+            "Current date: 2024-01-15T10:30:00\n"
+            "Hash: d41d8cd98f00b204e9800998ecf8427e\n"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        # Cache metrics should show detection occurred
+        assert result.cache_metrics is not None
+        assert result.cache_metrics.stable_prefix_hash
+        assert "cache_align" in result.transforms_applied
+
+    def test_stable_hash_with_dynamic_detector(self, tokenizer):
+        """Test that hash remains stable when only dynamic content changes."""
+        # Same static content, different dynamic content
+        messages_v1 = [
+            {
+                "role": "system",
+                "content": "You are helpful.\nSession: 550e8400-e29b-41d4-a716-446655440000",
+            },
+            {"role": "user", "content": "Hello"},
+        ]
+        messages_v2 = [
+            {
+                "role": "system",
+                "content": "You are helpful.\nSession: 661f9511-f30c-52e5-b827-557766551111",
+            },
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner1 = CacheAligner(config)
+        aligner2 = CacheAligner(config)
+
+        result1 = aligner1.apply(messages_v1, tokenizer)
+        result2 = aligner2.apply(messages_v2, tokenizer)
+
+        # Hashes should be identical - only the UUID changed
+        assert result1.cache_metrics.stable_prefix_hash == result2.cache_metrics.stable_prefix_hash
+
+
+class TestLegacyModeBackwardCompatibility:
+    """Tests for backward compatibility with legacy date-only mode."""
+
+    def test_legacy_mode_only_detects_dates(self, tokenizer):
+        """Test that legacy mode only extracts date patterns."""
+        system_prompt = (
+            "You are an assistant.\n"
+            "Current date: 2024-01-15\n"
+            "Session: 550e8400-e29b-41d4-a716-446655440000\n"
+            "Help users."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        # Legacy mode - should only detect dates
+        config = CacheAlignerConfig(use_dynamic_detector=False)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+
+        # In legacy mode, UUID should NOT be in dynamic section (still in static)
+        # Split by separator to get static and dynamic parts
+        parts = system_content.split("---")
+        if len(parts) > 1:
+            static_part = parts[0]
+            # UUID should still be in static part in legacy mode
+            assert "550e8400-e29b-41d4-a716-446655440000" in static_part
+
+    def test_legacy_mode_uses_configured_patterns(self, tokenizer):
+        """Test that legacy mode uses configured date_patterns."""
+        custom_patterns = [r"Build #\d+", r"Release \d+\.\d+"]
+        system_prompt = "Assistant.\nBuild #123\nRelease 2.5\nHelp users."
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=False, date_patterns=custom_patterns)
+        aligner = CacheAligner(config)
+        result = aligner.apply(messages, tokenizer)
+
+        system_content = result.messages[0]["content"]
+        assert "[Dynamic Context]" in system_content
+        assert "cache_align" in result.transforms_applied
+
+    def test_default_config_uses_dynamic_detector(self, tokenizer):
+        """Test that default config enables dynamic detector."""
+        config = CacheAlignerConfig()
+        assert config.use_dynamic_detector is True
+
+        aligner = CacheAligner(config)
+        assert aligner._dynamic_detector is not None
+
+
+class TestDynamicDetectorConfiguration:
+    """Tests for DynamicContentDetector configuration options."""
+
+    def test_detection_tiers_default(self, tokenizer):
+        """Test that default detection tier is regex only."""
+        config = CacheAlignerConfig()
+        assert config.detection_tiers == ["regex"]
+
+    def test_detection_tiers_configurable(self, tokenizer):
+        """Test that detection tiers can be configured."""
+        config = CacheAlignerConfig(detection_tiers=["regex", "ner"])
+        assert "regex" in config.detection_tiers
+        assert "ner" in config.detection_tiers
+
+    def test_extra_dynamic_labels_empty_by_default(self, tokenizer):
+        """Test that extra_dynamic_labels is empty by default."""
+        config = CacheAlignerConfig()
+        assert config.extra_dynamic_labels == []
+
+    def test_entropy_threshold_default(self, tokenizer):
+        """Test that entropy threshold has correct default."""
+        config = CacheAlignerConfig()
+        assert config.entropy_threshold == 0.7
+
+    def test_entropy_threshold_configurable(self, tokenizer):
+        """Test that entropy threshold can be configured."""
+        config = CacheAlignerConfig(entropy_threshold=0.8)
+        assert config.entropy_threshold == 0.8
+
+
+class TestAlignmentScoreWithDynamicDetector:
+    """Tests for alignment score with dynamic detector enabled."""
+
+    def test_alignment_score_penalizes_uuids(self, tokenizer):
+        """Test alignment score decreases with UUID patterns."""
+        messages_no_uuid = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ]
+        messages_with_uuid = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nSession: 550e8400-e29b-41d4-a716-446655440000",
+            },
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+
+        score_no_uuid = aligner.get_alignment_score(messages_no_uuid)
+        score_with_uuid = aligner.get_alignment_score(messages_with_uuid)
+
+        assert score_with_uuid < score_no_uuid
+
+    def test_alignment_score_penalizes_multiple_dynamic_patterns(self, tokenizer):
+        """Test alignment score decreases significantly with many dynamic patterns."""
+        system_prompt = (
+            "Assistant.\n"
+            "Session: 550e8400-e29b-41d4-a716-446655440000\n"
+            "Request: req_abc123def456\n"
+            "Date: 2024-01-15T10:30:00\n"
+            "Hash: d41d8cd98f00b204e9800998ecf8427e\n"
+            "Version: v2.5.1\n"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligner = CacheAligner(config)
+
+        score = aligner.get_alignment_score(messages)
+
+        # Many dynamic patterns should significantly reduce score
+        assert score < 60.0  # 5+ patterns at 10 points each = at least 50 point reduction
+
+
+class TestConvenienceFunction:
+    """Tests for align_for_cache convenience function."""
+
+    def test_align_for_cache_basic(self):
+        """Test align_for_cache convenience function."""
+        from headroom.transforms.cache_aligner import align_for_cache
+
+        messages = [
+            {"role": "system", "content": "Assistant. Current date: 2024-01-15"},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        aligned_messages, stable_hash = align_for_cache(messages)
+
+        assert "[Dynamic Context]" in aligned_messages[0]["content"]
+        assert len(stable_hash) == 16
+
+    def test_align_for_cache_with_config(self):
+        """Test align_for_cache with custom config."""
+        from headroom.transforms.cache_aligner import align_for_cache
+
+        messages = [
+            {
+                "role": "system",
+                "content": "Assistant. Session: 550e8400-e29b-41d4-a716-446655440000",
+            },
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=True)
+        aligned_messages, stable_hash = align_for_cache(messages, config)
+
+        assert "[Dynamic Context]" in aligned_messages[0]["content"]
+        assert len(stable_hash) == 16
+
+    def test_align_for_cache_legacy_mode(self):
+        """Test align_for_cache with legacy mode."""
+        from headroom.transforms.cache_aligner import align_for_cache
+
+        messages = [
+            {"role": "system", "content": "Assistant. Current date: 2024-01-15"},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        config = CacheAlignerConfig(use_dynamic_detector=False)
+        aligned_messages, stable_hash = align_for_cache(messages, config)
+
+        assert "[Dynamic Context]" in aligned_messages[0]["content"]
+        assert len(stable_hash) == 16
