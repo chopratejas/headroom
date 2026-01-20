@@ -169,6 +169,7 @@ class ProxyConfig:
     # Server
     host: str = "127.0.0.1"
     port: int = 8787
+    openai_api_url: str | None = None  # Custom OpenAI API URL override
 
     # Optimization
     optimize: bool = True
@@ -759,6 +760,10 @@ class HeadroomProxy:
 
     def __init__(self, config: ProxyConfig):
         self.config = config
+
+        # Override OPENAI_API_URL with config if set
+        if config.openai_api_url:
+            HeadroomProxy.OPENAI_API_URL = config.openai_api_url
 
         # Initialize providers
         self.anthropic_provider = AnthropicProvider()
@@ -2562,6 +2567,7 @@ if __name__ == "__main__":
     # Server
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})")
 
     # Optimization
     parser.add_argument("--no-optimize", action="store_true", help="Disable optimization")
@@ -2659,6 +2665,7 @@ if __name__ == "__main__":
     config = ProxyConfig(
         host=_get_env_str("HEADROOM_HOST", args.host),
         port=_get_env_int("HEADROOM_PORT", args.port),
+        openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
         optimize=optimize,
         min_tokens_to_crush=_get_env_int("HEADROOM_MIN_TOKENS", args.min_tokens),
         max_items_after_crush=_get_env_int("HEADROOM_MAX_ITEMS", args.max_items),

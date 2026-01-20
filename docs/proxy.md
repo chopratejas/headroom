@@ -32,6 +32,7 @@ headroom proxy \
 | `--no-rate-limit` | `false` | Disable rate limiting |
 | `--log-file` | None | Path to JSONL log file |
 | `--budget` | None | Daily budget limit in USD |
+| `--openai-api-url` | `https://api.openai.com` | Custom OpenAI API URL endpoint |
 
 ### LLMLingua Options (ML Compression)
 
@@ -204,6 +205,7 @@ headroom_latency_ms_sum
 export HEADROOM_HOST=0.0.0.0
 export HEADROOM_PORT=8787
 export HEADROOM_BUDGET=100.0
+export OPENAI_TARGET_API_URL=https://custom.openai.endpoint.com
 headroom proxy
 ```
 
