@@ -412,25 +412,10 @@ class CostTracker:
     Cost history is automatically pruned to prevent unbounded memory growth:
     - Entries older than 24 hours are removed
     - Maximum of 100,000 entries are kept
-    """
 
-    # Fallback pricing - LiteLLM is preferred source
-    # Pricing per 1M tokens (input, output, cached_input)
-    PRICING = {
-        # Anthropic
-        "claude-3-5-sonnet": (3.00, 15.00, 0.30),
-        "claude-3-5-haiku": (0.80, 4.00, 0.08),
-        "claude-3-opus": (15.00, 75.00, 1.50),
-        "claude-sonnet-4": (3.00, 15.00, 0.30),
-        "claude-opus-4": (15.00, 75.00, 1.50),
-        # OpenAI
-        "gpt-4o": (2.50, 10.00, 1.25),
-        "gpt-4o-mini": (0.15, 0.60, 0.075),
-        "o1": (15.00, 60.00, 7.50),
-        "o1-mini": (1.10, 4.40, 0.55),
-        "o3-mini": (1.10, 4.40, 0.55),
-        "gpt-4-turbo": (10.00, 30.00, 5.00),
-    }
+    Uses LiteLLM's community-maintained pricing database for accurate costs.
+    See: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+    """
 
     MAX_COST_ENTRIES = 100_000
     COST_RETENTION_HOURS = 24
@@ -445,14 +430,6 @@ class CostTracker:
         self._total_savings_usd: float = 0
         self._last_prune_time: datetime = datetime.now()
 
-    def _get_pricing(self, model: str) -> tuple[float, float, float] | None:
-        """Get pricing for model."""
-        model_lower = model.lower()
-        for prefix, pricing in self.PRICING.items():
-            if prefix in model_lower:
-                return pricing
-        return None
-
     def estimate_cost(
         self,
         model: str,
@@ -460,34 +437,46 @@ class CostTracker:
         output_tokens: int,
         cached_tokens: int = 0,
     ) -> float | None:
-        """Estimate cost in USD."""
-        # Try LiteLLM first
-        if LITELLM_AVAILABLE:
-            try:
-                cost = litellm.completion_cost(
-                    model=model,
-                    prompt_tokens=input_tokens,
-                    completion_tokens=output_tokens,
-                )
-                if cost is not None and cost > 0:
-                    return float(cost)
-            except Exception:
-                pass
-
-        # Fall back to hardcoded pricing
-        pricing = self._get_pricing(model)
-        if pricing is None:
+        """Estimate cost in USD using LiteLLM's pricing database."""
+        if not LITELLM_AVAILABLE:
+            logger.warning("LiteLLM not available - cannot calculate costs")
             return None
 
-        input_price, output_price, cached_price = pricing
+        try:
+            # cost_per_token returns (total_input_cost, total_output_cost) for the given token counts
+            # Despite the name, it returns total cost not per-token cost
+            regular_input = input_tokens - cached_tokens
 
-        regular_input = input_tokens - cached_tokens
-        cost = (
-            (regular_input / 1_000_000) * input_price
-            + (cached_tokens / 1_000_000) * cached_price
-            + (output_tokens / 1_000_000) * output_price
-        )
-        return cost
+            # Get cost for regular (non-cached) input tokens
+            input_cost, _ = litellm.cost_per_token(
+                model=model,
+                prompt_tokens=regular_input,
+                completion_tokens=0,
+            )
+
+            # Get cost for output tokens
+            _, output_cost = litellm.cost_per_token(
+                model=model,
+                prompt_tokens=0,
+                completion_tokens=output_tokens,
+            )
+
+            # For cached tokens, providers typically charge ~10% of input price
+            cached_cost = 0.0
+            if cached_tokens > 0:
+                cached_full_cost, _ = litellm.cost_per_token(
+                    model=model,
+                    prompt_tokens=cached_tokens,
+                    completion_tokens=0,
+                )
+                cached_cost = cached_full_cost * 0.1  # 10% for cached tokens
+
+            total_cost = input_cost + cached_cost + output_cost
+            return float(total_cost) if total_cost > 0 else None
+
+        except Exception as e:
+            logger.warning(f"Failed to get pricing for model {model}: {e}")
+            return None
 
     def _prune_old_costs(self):
         """Remove cost entries older than retention period.
