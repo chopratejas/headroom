@@ -26,6 +26,12 @@
 
 ---
 
+## Demo
+
+**[Watch Headroom in action](https://github.com/chopratejas/headroom/releases/download/v0.2.15/Headroom.-.Optimized.mp4)** - Analyzing its own codebase with Claude Code while demonstrating real-time token savings with multi-tool agents.
+
+---
+
 ## Does It Actually Work? A Real Test
 
 **The setup:** 100 production log entries. One critical error buried at position 67.
