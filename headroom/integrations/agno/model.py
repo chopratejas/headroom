@@ -72,6 +72,21 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
     before each API call. Works with OpenAIChat, Claude, Gemini, and
     other Agno model types.
 
+    Important - Reasoning Modes:
+        Claude's extended thinking and Agno's reasoning flow are INCOMPATIBLE.
+        Choose ONE approach:
+
+        1. Claude Extended Thinking (native):
+           - Set thinking={"type": "enabled", "budget_tokens": N} on Claude model
+           - Do NOT use reasoning=True on Agent
+           - Claude handles reasoning internally with structured thinking blocks
+
+        2. Agno Reasoning Flow (framework):
+           - Do NOT set thinking config on the model
+           - Use reasoning=True on Agent
+           - Use underlying_model as reasoning_model for proper detection
+           - Agno handles chain-of-thought with text-based <thinking> tags
+
     Example:
         from agno.agent import Agent
         from agno.models.openai import OpenAIChat
@@ -93,8 +108,18 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         config = HeadroomConfig(default_mode=HeadroomMode.OPTIMIZE)
         optimized = HeadroomAgnoModel(wrapped_model=model, headroom_config=config)
 
+        # Agno reasoning with HeadroomAgnoModel
+        model = OpenAIChat(id="gpt-4o")
+        wrapped = HeadroomAgnoModel(wrapped_model=model)
+        agent = Agent(
+            model=wrapped,
+            reasoning=True,
+            reasoning_model=wrapped.underlying_model,  # Use underlying for detection
+        )
+
     Attributes:
         wrapped_model: The underlying Agno model
+        underlying_model: Same as wrapped_model, for framework introspection
         total_tokens_saved: Running total of tokens saved
         metrics_history: List of OptimizationMetrics from recent calls
     """
@@ -137,6 +162,10 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         if self.provider is None and hasattr(self.wrapped_model, "provider"):
             self.provider = self.wrapped_model.provider
 
+        # Forward capability attributes from wrapped model
+        # These are critical for framework introspection (e.g., Agno reasoning detection)
+        self._forward_capability_attributes()
+
         # Initialize config
         if self.headroom_config is None:
             self.headroom_config = HeadroomConfig()
@@ -155,6 +184,43 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         if hasattr(super(), "__post_init__"):
             super().__post_init__()
 
+    def _forward_capability_attributes(self) -> None:
+        """Forward capability attributes from wrapped model.
+
+        This ensures that framework introspection (like Agno's reasoning detection)
+        can access capabilities like 'thinking', 'reasoning_effort', etc.
+        through the wrapper.
+        """
+        # Reasoning-related attributes
+        capability_attrs = [
+            "thinking",  # Claude extended thinking
+            "reasoning_effort",  # OpenAI reasoning effort
+            "supports_native_structured_outputs",  # Structured output support
+            "supports_json_schema_outputs",  # JSON schema support
+        ]
+
+        for attr in capability_attrs:
+            if hasattr(self.wrapped_model, attr):
+                value = getattr(self.wrapped_model, attr)
+                # Use object.__setattr__ to bypass any dataclass restrictions
+                object.__setattr__(self, attr, value)
+
+    def has_extended_thinking_enabled(self) -> bool:
+        """Check if the wrapped model has extended thinking enabled.
+
+        Extended thinking is a Claude-specific feature that uses structured
+        content blocks. It is INCOMPATIBLE with Agno's reasoning flow.
+
+        Returns:
+            True if extended thinking is configured on the wrapped model.
+        """
+        thinking = getattr(self.wrapped_model, "thinking", None)
+        if thinking is None:
+            return False
+        if isinstance(thinking, dict):
+            return thinking.get("type") == "enabled"
+        return bool(thinking)
+
     # Forward attribute access to wrapped model for compatibility
     def __getattr__(self, name: str) -> Any:
         """Forward attribute access to wrapped model."""
@@ -172,9 +238,32 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
             "id",
             "name",
             "provider",
+            "underlying_model",
         ):
             raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
         return getattr(self.wrapped_model, name)
+
+    # =========================================================================
+    # Capability property: underlying_model for type introspection
+    # =========================================================================
+
+    @property
+    def underlying_model(self) -> Any:
+        """Return the underlying model for type introspection.
+
+        Frameworks like Agno that need to check model capabilities
+        (e.g., native reasoning detection via __class__.__name__) can use
+        this to access the actual model class.
+
+        Example:
+            wrapped = HeadroomAgnoModel(wrapped_model=Claude(...))
+            actual_class = wrapped.underlying_model.__class__.__name__  # "Claude"
+        """
+        return self.wrapped_model
+
+    # =========================================================================
+    # Pipeline and metrics
+    # =========================================================================
 
     @property
     def pipeline(self) -> TransformPipeline:
@@ -207,21 +296,47 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         return self._metrics_history.copy()
 
     def _convert_messages_to_openai(self, messages: list[Any]) -> list[dict[str, Any]]:
-        """Convert Agno messages to OpenAI format for Headroom."""
+        """Convert Agno messages to OpenAI format for Headroom.
+
+        Preserves extended thinking content blocks (thinking, redacted_thinking)
+        which must be passed through unchanged for Claude's extended thinking API.
+        """
         result = []
         for msg in messages:
             # Handle Agno Message objects
             if hasattr(msg, "role") and hasattr(msg, "content"):
                 entry: dict[str, Any] = {
                     "role": msg.role,
-                    "content": msg.content if msg.content is not None else "",
                 }
+
+                # Handle content - can be string or list of content blocks
+                content = msg.content
+                if content is None:
+                    entry["content"] = ""
+                elif isinstance(content, list):
+                    # Content blocks (e.g., extended thinking)
+                    # Preserve the structure - don't stringify
+                    entry["content"] = content
+                else:
+                    entry["content"] = content
+
                 # Handle tool calls
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     entry["tool_calls"] = msg.tool_calls
                 # Handle tool call ID for tool responses
                 if hasattr(msg, "tool_call_id") and msg.tool_call_id:
                     entry["tool_call_id"] = msg.tool_call_id
+
+                # Preserve reasoning content for extended thinking
+                if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+                    entry["reasoning_content"] = msg.reasoning_content
+                if hasattr(msg, "redacted_reasoning_content") and msg.redacted_reasoning_content:
+                    entry["redacted_reasoning_content"] = msg.redacted_reasoning_content
+
+                # Preserve provider_data which may contain thinking signatures
+                if hasattr(msg, "provider_data") and msg.provider_data:
+                    entry["provider_data"] = msg.provider_data
+
                 result.append(entry)
             # Handle dict format
             elif isinstance(msg, dict):
@@ -238,6 +353,9 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         Agno's base Model methods call _log_messages() which requires
         Message objects with a .log() method.
 
+        Preserves extended thinking fields (reasoning_content, provider_data, etc.)
+        which are critical for Claude's extended thinking API.
+
         Args:
             messages: List of messages (may be dicts or Message objects)
 
@@ -253,13 +371,17 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
                 try:
                     result.append(AgnoMessage.from_dict(msg))
                 except Exception:
-                    # If from_dict fails, create a simple Message
+                    # If from_dict fails, create a Message with all relevant fields
                     result.append(
                         AgnoMessage(
                             role=msg.get("role", "user"),
                             content=msg.get("content"),
                             tool_calls=msg.get("tool_calls"),
                             tool_call_id=msg.get("tool_call_id"),
+                            # Extended thinking fields
+                            reasoning_content=msg.get("reasoning_content"),
+                            redacted_reasoning_content=msg.get("redacted_reasoning_content"),
+                            provider_data=msg.get("provider_data"),
                         )
                     )
             else:
@@ -285,10 +407,37 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
         # Reuse the ensure method which handles the conversion
         return self._ensure_message_objects(messages)
 
+    def _has_thinking_blocks(self, messages: list[dict[str, Any]]) -> bool:
+        """Check if any message contains extended thinking content blocks.
+
+        Extended thinking blocks (thinking, redacted_thinking) must not be
+        modified and require special handling by Claude's API.
+
+        Args:
+            messages: List of messages in dict format
+
+        Returns:
+            True if any message contains thinking blocks
+        """
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        block_type = block.get("type", "")
+                        if block_type in ("thinking", "redacted_thinking"):
+                            return True
+            # Also check for reasoning_content which indicates thinking was used
+            if msg.get("reasoning_content") or msg.get("redacted_reasoning_content"):
+                return True
+        return False
+
     def _optimize_messages(self, messages: list[Any]) -> tuple[list[Any], OptimizationMetrics]:
         """Apply Headroom optimization to messages.
 
         Thread-safe with fallback on pipeline errors.
+        Skips optimization for messages with extended thinking blocks to preserve
+        Claude's thinking content structure.
         """
         request_id = str(uuid4())
 
@@ -311,6 +460,26 @@ class HeadroomAgnoModel(Model):  # type: ignore[misc]
 
         # Get model name from wrapped model
         model = get_model_name_from_agno(self.wrapped_model)
+
+        # Skip optimization for messages with extended thinking blocks
+        # Thinking blocks must be passed through unchanged for Claude's API
+        if self._has_thinking_blocks(openai_messages):
+            logger.info("Skipping Headroom optimization: messages contain extended thinking blocks")
+            # Estimate token count (rough approximation)
+            tokens_estimate = sum(len(str(m.get("content", ""))) // 4 for m in openai_messages)
+            metrics = OptimizationMetrics(
+                request_id=request_id,
+                timestamp=datetime.now(timezone.utc),
+                tokens_before=tokens_estimate,
+                tokens_after=tokens_estimate,
+                tokens_saved=0,
+                savings_percent=0,
+                transforms_applied=["skipped:extended_thinking"],
+                model=model,
+            )
+            # Convert back to Agno Message objects
+            result_messages = self._convert_messages_from_openai(openai_messages, messages)
+            return result_messages, metrics
 
         # Ensure pipeline is initialized
         _ = self.pipeline

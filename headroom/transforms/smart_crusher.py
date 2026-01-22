@@ -1418,7 +1418,7 @@ class SmartCrusher(Transform):
         self._relevance_threshold = rel_cfg.relevance_threshold
 
         # Initialize AnchorSelector for dynamic position-based preservation
-        anchor_config = self.config.anchor if hasattr(self.config, 'anchor') else AnchorConfig()
+        anchor_config = self.config.anchor if hasattr(self.config, "anchor") else AnchorConfig()
         self._anchor_selector = AnchorSelector(anchor_config)
 
         # NOTE: Error detection now uses structural outlier detection (_detect_structural_outliers)
@@ -1629,9 +1629,7 @@ class SmartCrusher(Transform):
                 item_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
             except (TypeError, ValueError, RecursionError) as e:
                 # Serialization failed - keep the item (fail-safe)
-                logger.debug(
-                    "Dedup hash failed for item at index %d: %s. Keeping item.", idx, e
-                )
+                logger.debug("Dedup hash failed for item at index %d: %s. Keeping item.", idx, e)
                 # Use index as unique "hash" to ensure item is kept
                 item_hash = f"__idx_{idx}__"
 
@@ -1814,9 +1812,7 @@ class SmartCrusher(Transform):
         # Instead of returning a sparse result, fill remaining slots with
         # diverse items from the array. This maximizes information density.
         if len(keep_indices) < effective_max and len(keep_indices) < n:
-            keep_indices = self._fill_remaining_slots(
-                keep_indices, items, n, effective_max
-            )
+            keep_indices = self._fill_remaining_slots(keep_indices, items, n, effective_max)
 
         if len(keep_indices) <= effective_max:
             return keep_indices

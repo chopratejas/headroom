@@ -610,6 +610,203 @@ class TestIntegrationWithRealHeadroom:
         assert metrics.tokens_after >= 0
 
 
+class TestReasoningCapabilityForwarding:
+    """Tests for reasoning capability forwarding in HeadroomAgnoModel.
+
+    These tests verify that HeadroomAgnoModel properly forwards
+    reasoning-related properties from the wrapped model, enabling
+    framework introspection (e.g., Agno's reasoning detection).
+    """
+
+    def test_underlying_model_property_returns_wrapped_model(self, mock_agno_model):
+        """underlying_model property should return the wrapped model."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.underlying_model is mock_agno_model
+
+    def test_underlying_model_class_introspection(self):
+        """underlying_model allows class name introspection for framework detection."""
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o")
+        wrapped = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Framework detection typically checks __class__.__name__
+        assert wrapped.underlying_model.__class__.__name__ == "OpenAIChat"
+        assert wrapped.__class__.__name__ == "HeadroomAgnoModel"
+
+    def test_thinking_property_forwarded_when_present(self, mock_agno_model):
+        """thinking property is forwarded from wrapped model when present."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Set thinking config on mock model
+        mock_agno_model.thinking = {"type": "enabled", "budget_tokens": 5000}
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.thinking == {"type": "enabled", "budget_tokens": 5000}
+
+    def test_thinking_property_not_present_when_absent(self, mock_agno_model):
+        """thinking property not set when wrapped model doesn't have it."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Ensure mock doesn't have thinking attribute
+        if hasattr(mock_agno_model, "thinking"):
+            delattr(mock_agno_model, "thinking")
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        # Should raise AttributeError when accessed
+        assert not hasattr(wrapped, "thinking") or wrapped.thinking is None
+
+    def test_reasoning_effort_property_forwarded(self, mock_agno_model):
+        """reasoning_effort property is forwarded from wrapped model."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.reasoning_effort = "high"
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.reasoning_effort == "high"
+
+    def test_provider_property_forwarded_from_wrapped_model(self, mock_agno_model):
+        """provider property is set from wrapped model during init."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.provider = "OpenAI"
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.provider == "OpenAI"
+
+    def test_name_property_forwarded_from_wrapped_model(self, mock_agno_model):
+        """name property is set from wrapped model during init."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.name = "gpt-4o"
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.name == "gpt-4o"
+
+    def test_has_extended_thinking_enabled_with_dict_config(self, mock_agno_model):
+        """has_extended_thinking_enabled returns True when thinking dict is enabled."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.thinking = {"type": "enabled", "budget_tokens": 5000}
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.has_extended_thinking_enabled() is True
+
+    def test_has_extended_thinking_disabled_with_dict_config(self, mock_agno_model):
+        """has_extended_thinking_enabled returns False when thinking dict is disabled."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.thinking = {"type": "disabled"}
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.has_extended_thinking_enabled() is False
+
+    def test_has_extended_thinking_returns_false_when_none(self, mock_agno_model):
+        """has_extended_thinking_enabled returns False when thinking is None."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.thinking = None
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.has_extended_thinking_enabled() is False
+
+    def test_has_extended_thinking_returns_false_when_missing(self, mock_agno_model):
+        """has_extended_thinking_enabled returns False when thinking attribute missing."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        # Remove thinking attribute if present
+        if hasattr(mock_agno_model, "thinking"):
+            delattr(mock_agno_model, "thinking")
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.has_extended_thinking_enabled() is False
+
+    def test_has_extended_thinking_with_truthy_value(self, mock_agno_model):
+        """has_extended_thinking_enabled handles non-dict truthy values."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.thinking = True
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.has_extended_thinking_enabled() is True
+
+    def test_has_extended_thinking_with_falsy_value(self, mock_agno_model):
+        """has_extended_thinking_enabled handles non-dict falsy values."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.thinking = False
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.has_extended_thinking_enabled() is False
+
+    def test_supports_native_structured_outputs_forwarded(self, mock_agno_model):
+        """supports_native_structured_outputs property is forwarded."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.supports_native_structured_outputs = True
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.supports_native_structured_outputs is True
+
+    def test_supports_json_schema_outputs_forwarded(self, mock_agno_model):
+        """supports_json_schema_outputs property is forwarded."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.supports_json_schema_outputs = True
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.supports_json_schema_outputs is True
+
+    def test_multiple_capability_properties_forwarded(self, mock_agno_model):
+        """Multiple capability properties are forwarded correctly."""
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        mock_agno_model.thinking = {"type": "enabled", "budget_tokens": 10000}
+        mock_agno_model.reasoning_effort = "medium"
+        mock_agno_model.supports_native_structured_outputs = True
+        mock_agno_model.supports_json_schema_outputs = False
+        mock_agno_model.provider = "Anthropic"
+
+        wrapped = HeadroomAgnoModel(wrapped_model=mock_agno_model)
+
+        assert wrapped.thinking == {"type": "enabled", "budget_tokens": 10000}
+        assert wrapped.reasoning_effort == "medium"
+        assert wrapped.supports_native_structured_outputs is True
+        assert wrapped.supports_json_schema_outputs is False
+        assert wrapped.provider == "Anthropic"
+
+    def test_underlying_model_with_real_openai_model(self):
+        """Test underlying_model with real Agno OpenAIChat model."""
+        from agno.models.openai import OpenAIChat
+
+        from headroom.integrations.agno import HeadroomAgnoModel
+
+        base_model = OpenAIChat(id="gpt-4o")
+        wrapped = HeadroomAgnoModel(wrapped_model=base_model)
+
+        # Verify underlying_model returns the actual model
+        assert wrapped.underlying_model is base_model
+        assert isinstance(wrapped.underlying_model, OpenAIChat)
+
+
 class TestRealAgnoIntegration:
     """REAL integration tests with actual Agno components.
 

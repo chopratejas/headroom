@@ -14,19 +14,14 @@ preservation with adaptive, pattern-aware anchor selection.
 """
 
 import json
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any
 
 import pytest
 
 from headroom import OpenAIProvider, SmartCrusherConfig, Tokenizer
 from headroom.transforms.smart_crusher import (
-    CompressionStrategy,
     SmartAnalyzer,
     SmartCrusher,
 )
-
 
 # =============================================================================
 # Test Fixtures
@@ -211,9 +206,7 @@ def crush_items(
             }
         )
 
-    messages.append(
-        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps(items)}
-    )
+    messages.append({"role": "tool", "tool_call_id": "call_1", "content": json.dumps(items)})
 
     config = SmartCrusherConfig(
         enabled=True,
@@ -329,7 +322,7 @@ class TestAdversarialPositions:
         crushed = crush_items(items, tokenizer, max_items=15)
 
         # All spikes should be preserved
-        preserved_ids = set(item.get("id") for item in crushed)
+        preserved_ids = {item.get("id") for item in crushed}
         for pos in spike_positions:
             assert pos in preserved_ids, f"Spike at position {pos} should be preserved"
 
@@ -342,10 +335,7 @@ class TestAdversarialPositions:
         # First 10 items are identical
         identical_items = [{"id": "same", "value": 0, "type": "duplicate"} for _ in range(10)]
         # Rest are unique
-        unique_items = [
-            {"id": f"unique_{i}", "value": i * 10, "type": "unique"}
-            for i in range(90)
-        ]
+        unique_items = [{"id": f"unique_{i}", "value": i * 10, "type": "unique"} for i in range(90)]
         items = identical_items + unique_items
 
         crushed = crush_items(items, tokenizer, max_items=10)
@@ -365,10 +355,7 @@ class TestAdversarialPositions:
         we should preserve variety instead of duplicates.
         """
         # First 90 items are unique
-        unique_items = [
-            {"id": f"unique_{i}", "value": i * 10, "type": "unique"}
-            for i in range(90)
-        ]
+        unique_items = [{"id": f"unique_{i}", "value": i * 10, "type": "unique"} for i in range(90)]
         # Last 10 items are identical
         identical_items = [{"id": "same", "value": 100, "type": "duplicate"} for _ in range(10)]
         items = unique_items + identical_items
@@ -385,10 +372,7 @@ class TestAdversarialPositions:
         When user queries for a specific item that's at position 42,
         it should be preserved even though it's not at front/back.
         """
-        items = [
-            {"id": i, "name": f"item_{i}", "status": "active"}
-            for i in range(100)
-        ]
+        items = [{"id": i, "name": f"item_{i}", "status": "active"} for i in range(100)]
         # Put target item in the middle
         items[42]["name"] = "target_special_item"
         items[42]["description"] = "This is what the user is looking for"
@@ -432,10 +416,10 @@ class TestSizeAdaptation:
     @pytest.mark.parametrize(
         "size,max_items,expected_min_anchors",
         [
-            (20, 10, 3),   # Small array: at least 3 anchors (front + back)
+            (20, 10, 3),  # Small array: at least 3 anchors (front + back)
             (100, 15, 4),  # Medium array: at least 4 anchors
             (500, 20, 5),  # Large array: at least 5 anchors
-            (2000, 25, 6), # Very large: at least 6 anchors
+            (2000, 25, 6),  # Very large: at least 6 anchors
         ],
     )
     def test_anchor_count_scales(self, tokenizer, size, max_items, expected_min_anchors):
@@ -453,9 +437,7 @@ class TestSizeAdaptation:
         back_boundary = int(size * 0.9)
 
         anchor_count = sum(
-            1
-            for item in crushed
-            if item["id"] < front_boundary or item["id"] >= back_boundary
+            1 for item in crushed if item["id"] < front_boundary or item["id"] >= back_boundary
         )
 
         assert anchor_count >= expected_min_anchors, (
@@ -619,9 +601,7 @@ class TestPatternAwareAnchoring:
         positions = get_preserved_positions(crushed, 100)
 
         # Should have items from multiple regions
-        regions_with_items = sum(
-            1 for region in ["front", "middle", "back"] if positions[region]
-        )
+        regions_with_items = sum(1 for region in ["front", "middle", "back"] if positions[region])
 
         assert regions_with_items >= 2, (
             f"Generic data should cover multiple regions, got {regions_with_items}"
@@ -654,7 +634,9 @@ class TestQueryAwareAnchoring:
         recent_count = sum(1 for id in ids if id > 20)
 
         # Should have multiple recent items due to "latest" keyword
-        assert recent_count >= 2, f"Query with 'latest' should preserve recent items, got {recent_count}"
+        assert recent_count >= 2, (
+            f"Query with 'latest' should preserve recent items, got {recent_count}"
+        )
 
     def test_recent_query_shifts_to_back(self, tokenizer):
         """'Recent' in query should preserve more recent items."""
@@ -689,7 +671,9 @@ class TestQueryAwareAnchoring:
         early_count = sum(1 for id in ids if id < 10)
 
         # Should have multiple early items due to "first" keyword
-        assert early_count >= 2, f"Query with 'first' should preserve early items, got {early_count}"
+        assert early_count >= 2, (
+            f"Query with 'first' should preserve early items, got {early_count}"
+        )
 
     def test_oldest_query_shifts_to_front(self, tokenizer):
         """'Oldest' in query should preserve earlier items."""
@@ -771,9 +755,7 @@ class TestInformationDensity:
         # First 6 items are identical
         items = [{"id": "dup", "value": 0, "constant": "same"} for _ in range(6)]
         # Rest are unique
-        items.extend(
-            [{"id": f"uniq_{i}", "value": i * 10, "unique": True} for i in range(94)]
-        )
+        items.extend([{"id": f"uniq_{i}", "value": i * 10, "unique": True} for i in range(94)])
 
         crushed = crush_items(items, tokenizer, max_items=12)
 
@@ -811,11 +793,13 @@ class TestInformationDensity:
         items = []
         # Create items with varying diversity
         for i in range(100):
-            items.append({
-                "id": i,
-                "type": "common" if i < 90 else f"rare_type_{i}",
-                "value": i,
-            })
+            items.append(
+                {
+                    "id": i,
+                    "type": "common" if i < 90 else f"rare_type_{i}",
+                    "value": i,
+                }
+            )
 
         crushed = crush_items(items, tokenizer, max_items=15)
 
@@ -857,7 +841,7 @@ class TestCoverageMetrics:
 
         crushed = crush_items(items, tokenizer, max_items=12)
 
-        categories = set(item["category"] for item in crushed)
+        categories = {item["category"] for item in crushed}
 
         # Should have at least 2 of 3 categories represented
         assert len(categories) >= 2, f"Should cover multiple categories, got {categories}"
@@ -922,8 +906,6 @@ class TestEdgeCases:
 
     def test_empty_array(self, tokenizer):
         """Empty array should return empty result."""
-        items: list[dict] = []
-
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "tool", "tool_call_id": "call_1", "content": "[]"},
@@ -998,10 +980,7 @@ class TestEdgeCases:
         NOTE: Future AnchorSelector may implement error deduplication or sampling
         for cases where all items are errors, but that requires careful design.
         """
-        items = [
-            {"id": i, "status": "error", "error_code": f"ERR_{i}"}
-            for i in range(50)
-        ]
+        items = [{"id": i, "status": "error", "error_code": f"ERR_{i}"} for i in range(50)]
 
         crushed = crush_items(items, tokenizer, max_items=15)
 
@@ -1056,10 +1035,7 @@ class TestEdgeCases:
 
     def test_very_long_string_values(self, tokenizer):
         """Items with very long string values should be handled."""
-        items = [
-            {"id": i, "data": "x" * 10000 if i == 10 else "short"}
-            for i in range(30)
-        ]
+        items = [{"id": i, "data": "x" * 10000 if i == 10 else "short"} for i in range(30)]
 
         crushed = crush_items(items, tokenizer, max_items=10)
 
@@ -1068,6 +1044,7 @@ class TestEdgeCases:
 
     def test_deeply_nested_items(self, tokenizer):
         """Deeply nested items should be handled without stack overflow."""
+
         def create_nested(depth: int) -> dict:
             if depth == 0:
                 return {"value": "leaf"}

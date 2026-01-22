@@ -200,7 +200,9 @@ def _calculate_value_uniqueness(item: dict[str, Any], all_items: list[dict[str, 
                 field_value_counts[key] = Counter()
             # Convert to string for hashability
             try:
-                value_str = json.dumps(value, sort_keys=True) if not isinstance(value, str) else value
+                value_str = (
+                    json.dumps(value, sort_keys=True) if not isinstance(value, str) else value
+                )
             except (TypeError, ValueError):
                 value_str = str(value)
             field_value_counts[key][value_str] += 1
