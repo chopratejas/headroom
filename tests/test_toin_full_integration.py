@@ -13,17 +13,17 @@ from pathlib import Path
 
 import pytest
 
+from headroom.config import CCRConfig
+from headroom.telemetry.models import ToolSignature
 from headroom.telemetry.toin import (
+    TOIN_PATH_ENV_VAR,
     TOINConfig,
     ToolIntelligenceNetwork,
+    get_default_toin_storage_path,
     get_toin,
     reset_toin,
-    get_default_toin_storage_path,
-    TOIN_PATH_ENV_VAR,
 )
-from headroom.telemetry.models import ToolSignature
 from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
-from headroom.config import CCRConfig
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +76,7 @@ class TestTOINDefaultStoragePath:
         config = TOINConfig()
 
         print(f"\nDefault storage_path: {config.storage_path}")
-        print(f"Expected location: ~/.headroom/toin.json")
+        print("Expected location: ~/.headroom/toin.json")
 
         # Verify it's not None/empty
         assert config.storage_path, "TOINConfig should have a default storage_path"
@@ -238,7 +238,7 @@ class TestTOINPersistenceAcrossInstances:
             # Verify specific pattern exists
             pattern = toin2.get_pattern(sample_tool_signature.structure_hash)
             assert pattern is not None, "Pattern for our tool signature should exist"
-            print(f"\nReloaded pattern details:")
+            print("\nReloaded pattern details:")
             print(f"  - total_compressions: {pattern.total_compressions}")
             print(f"  - total_retrievals: {pattern.total_retrievals}")
             print(f"  - sample_size: {pattern.sample_size}")
@@ -290,7 +290,7 @@ class TestTOINFullFeedbackLoop:
 
             # Get pattern stats
             pattern = toin.get_pattern(sample_tool_signature.structure_hash)
-            print(f"\n--- Pattern Stats ---")
+            print("\n--- Pattern Stats ---")
             print(f"  total_compressions: {pattern.total_compressions}")
             print(f"  total_retrievals: {pattern.total_retrievals}")
             print(f"  retrieval_rate: {pattern.retrieval_rate:.1%}")
@@ -312,11 +312,16 @@ class TestTOINFullFeedbackLoop:
             # With 60% retrieval rate (3/5) and full_retrieval_rate of 100% (3/3),
             # TOIN should recommend skipping compression
             retrieval_rate = pattern.retrieval_rate
-            assert retrieval_rate >= 0.5, f"Expected retrieval rate >= 50%, got {retrieval_rate:.1%}"
+            assert retrieval_rate >= 0.5, (
+                f"Expected retrieval rate >= 50%, got {retrieval_rate:.1%}"
+            )
 
             # With high retrieval rate and high full retrieval rate, should skip
             if pattern.full_retrieval_rate > 0.8:
-                assert hint.skip_compression or hint.compression_level in ("none", "conservative"), (
+                assert hint.skip_compression or hint.compression_level in (
+                    "none",
+                    "conservative",
+                ), (
                     f"High full retrieval rate should trigger skip or conservative, "
                     f"got compression_level={hint.compression_level}"
                 )
@@ -486,7 +491,7 @@ class TestTOINWithSmartCrusher:
 
             # Get TOIN stats after compression
             stats_after = toin.get_stats()
-            print(f"\n--- TOIN Stats After Compression ---")
+            print("\n--- TOIN Stats After Compression ---")
             print(f"  patterns_tracked: {stats_after['patterns_tracked']}")
             print(f"  total_compressions: {stats_after['total_compressions']}")
             print(f"  total_retrievals: {stats_after['total_retrievals']}")
@@ -494,11 +499,13 @@ class TestTOINWithSmartCrusher:
             # Verify TOIN recorded the compression
             # Note: SmartCrusher uses internal telemetry which may or may not go through TOIN
             # depending on the integration. Let's check if patterns were recorded.
-            if stats_after['patterns_tracked'] > 0:
+            if stats_after["patterns_tracked"] > 0:
                 print("\n[PASS] SmartCrusher integration with TOIN works")
             else:
                 # If no patterns recorded via global TOIN, manually record to verify TOIN works
-                print("\n[INFO] SmartCrusher may use internal telemetry, testing manual recording...")
+                print(
+                    "\n[INFO] SmartCrusher may use internal telemetry, testing manual recording..."
+                )
                 sig = ToolSignature.from_items(sample_items)
                 toin.record_compression(
                     tool_signature=sig,
@@ -510,7 +517,7 @@ class TestTOINWithSmartCrusher:
                 )
                 stats_manual = toin.get_stats()
                 print(f"  patterns_tracked after manual: {stats_manual['patterns_tracked']}")
-                assert stats_manual['patterns_tracked'] > 0, "Manual recording should work"
+                assert stats_manual["patterns_tracked"] > 0, "Manual recording should work"
                 print("\n[PASS] TOIN recording works (manual verification)")
 
 
@@ -542,7 +549,7 @@ class TestTOINStatsOutput:
                     strategy="smart_sample" if i % 2 == 0 else "top_n",
                     query_context=f"query with field:value_{i}",
                 )
-            print(f"  Recorded 10 compressions")
+            print("  Recorded 10 compressions")
 
             # Record retrievals
             for i in range(3):
@@ -553,7 +560,7 @@ class TestTOINStatsOutput:
                     query_fields=["status", "error"],
                     strategy="smart_sample",
                 )
-            print(f"  Recorded 3 retrievals")
+            print("  Recorded 3 retrievals")
 
             # Get stats
             stats = toin.get_stats()
@@ -657,7 +664,7 @@ class TestTOINFieldLearning:
         print("=" * 60)
 
         # Record compressions first
-        for i in range(5):
+        for _i in range(5):
             fresh_toin.record_compression(
                 tool_signature=sample_tool_signature,
                 original_count=100,
@@ -681,7 +688,7 @@ class TestTOINFieldLearning:
 
         # Check pattern
         pattern = fresh_toin.get_pattern(sample_tool_signature.structure_hash)
-        print(f"\n--- Field Retrieval Frequency ---")
+        print("\n--- Field Retrieval Frequency ---")
         for field_hash, count in pattern.field_retrieval_frequency.items():
             print(f"  {field_hash}: {count} retrievals")
 

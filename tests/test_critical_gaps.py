@@ -1209,9 +1209,9 @@ class TestLowPriorityFixes:
         """LOW FIX #21: TOIN confidence threshold should be configurable."""
         from headroom.config import SmartCrusherConfig
 
-        # Default value
+        # Default value (lowered from 0.5 to 0.3 for faster TOIN learning)
         config = SmartCrusherConfig()
-        assert config.toin_confidence_threshold == 0.5
+        assert config.toin_confidence_threshold == 0.3
 
         # Custom value
         config2 = SmartCrusherConfig(toin_confidence_threshold=0.8)
