@@ -468,15 +468,31 @@ class CostTracker:
                 completion_tokens=output_tokens,
             )
 
-            # For cached tokens, providers typically charge ~10% of input price
+            # For cached tokens, use LiteLLM's cache_read_input_token_cost if available
             cached_cost = 0.0
             if cached_tokens > 0:
-                cached_full_cost, _ = litellm.cost_per_token(
-                    model=model,
-                    prompt_tokens=cached_tokens,
-                    completion_tokens=0,
-                )
-                cached_cost = cached_full_cost * 0.1  # 10% for cached tokens
+                try:
+                    # Try to get the specific cache read cost from LiteLLM's pricing database
+                    model_info = litellm.get_model_info(model)
+                    cache_read_cost_per_token = model_info.get("cache_read_input_token_cost")
+                    if cache_read_cost_per_token:
+                        cached_cost = cached_tokens * cache_read_cost_per_token
+                    else:
+                        # Fallback: most providers charge ~10% of input price for cache reads
+                        cached_full_cost, _ = litellm.cost_per_token(
+                            model=model,
+                            prompt_tokens=cached_tokens,
+                            completion_tokens=0,
+                        )
+                        cached_cost = cached_full_cost * 0.1
+                except Exception:
+                    # Fallback if get_model_info fails
+                    cached_full_cost, _ = litellm.cost_per_token(
+                        model=model,
+                        prompt_tokens=cached_tokens,
+                        completion_tokens=0,
+                    )
+                    cached_cost = cached_full_cost * 0.1
 
             total_cost = input_cost + cached_cost + output_cost
             return float(total_cost) if total_cost > 0 else None
@@ -1477,21 +1493,25 @@ class HeadroomProxy:
 
                 total_latency = (time.time() - start_time) * 1000
 
-                # Parse response for output tokens
+                # Parse response for output tokens and cache info
                 output_tokens = 0
+                cache_read_tokens = 0
                 if resp_json:
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
+                    # Anthropic returns cache_read_input_tokens for cached prompt tokens
+                    # These are charged at 10% of the input price
+                    cache_read_tokens = usage.get("cache_read_input_tokens", 0)
 
-                # Calculate cost
+                # Calculate cost (accounting for cached tokens at discounted rate)
                 cost_usd = None
                 savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens
+                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens
+                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -2632,6 +2652,10 @@ class HeadroomProxy:
                 # Estimate output tokens from total bytes (rough estimate: ~4 bytes per token)
                 output_tokens = total_bytes // 4
 
+                # TODO: For accurate cost tracking with streaming, we'd need to parse
+                # the final SSE event which contains usage info including cached tokens.
+                # Currently streaming doesn't account for cache discounts.
+
                 # Calculate cost
                 cost_usd = None
                 savings_usd = None
@@ -2822,21 +2846,26 @@ class HeadroomProxy:
                 total_latency = (time.time() - start_time) * 1000
 
                 output_tokens = 0
+                cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("completion_tokens", 0)
+                    # OpenAI returns cached_tokens in prompt_tokens_details
+                    # These are charged at 50% of the input price
+                    prompt_details = usage.get("prompt_tokens_details", {})
+                    cache_read_tokens = prompt_details.get("cached_tokens", 0)
                 except Exception:
                     pass
 
-                # Cost tracking
+                # Cost tracking (accounting for cached tokens at discounted rate)
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens
+                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens
+                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -3540,18 +3569,24 @@ class HeadroomProxy:
                 total_latency = (time.time() - start_time) * 1000
 
                 output_tokens = 0
+                cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
+                    # OpenAI returns cached_tokens in prompt_tokens_details (or input_tokens_details)
+                    prompt_details = usage.get(
+                        "prompt_tokens_details", usage.get("input_tokens_details", {})
+                    )
+                    cache_read_tokens = prompt_details.get("cached_tokens", 0)
                 except Exception:
                     pass
 
-                # Cost tracking
+                # Cost tracking (accounting for cached tokens at discounted rate)
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens
+                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     if cost_usd:
                         self.cost_tracker.record_cost(cost_usd)
@@ -3791,21 +3826,25 @@ class HeadroomProxy:
                 total_latency = (time.time() - start_time) * 1000
 
                 output_tokens = 0
+                cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usageMetadata", {})
                     output_tokens = usage.get("candidatesTokenCount", 0)
+                    # Gemini returns cachedContentTokenCount for context-cached tokens
+                    # These are charged at 10-25% of the input price depending on model
+                    cache_read_tokens = usage.get("cachedContentTokenCount", 0)
                 except Exception:
                     pass
 
-                # Cost tracking
+                # Cost tracking (accounting for cached tokens at discounted rate)
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens
+                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens
+                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
