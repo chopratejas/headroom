@@ -1,7 +1,7 @@
 """Tests for the hierarchical memory system.
 
 Tests cover:
-- Memory models (Memory, ScopeLevel, MemoryCategory)
+- Memory models (Memory, ScopeLevel)
 - SQLite memory store
 - HNSW vector index
 - FTS5 text index
@@ -31,7 +31,7 @@ import pytest
 from headroom.memory.adapters.cache import LRUMemoryCache
 from headroom.memory.adapters.fts5 import FTS5TextIndex
 from headroom.memory.adapters.sqlite import SQLiteMemoryStore
-from headroom.memory.models import Memory, MemoryCategory, ScopeLevel
+from headroom.memory.models import Memory, ScopeLevel
 from headroom.memory.ports import MemoryFilter, TextFilter, VectorFilter
 
 # =============================================================================
@@ -53,7 +53,6 @@ def sample_memory():
         content="User prefers Python over JavaScript",
         user_id="alice",
         session_id="session-123",
-        category=MemoryCategory.PREFERENCE,
         importance=0.8,
         entity_refs=["Python", "JavaScript"],
         metadata={"source": "conversation"},
@@ -83,7 +82,6 @@ class TestMemoryModel:
         assert memory.content == "Test content"
         assert memory.user_id == "test-user"
         assert memory.id is not None  # Auto-generated UUID
-        assert memory.category == MemoryCategory.FACT  # Default
         assert memory.importance == 0.5  # Default
 
     def test_scope_level_computation(self):
@@ -124,7 +122,6 @@ class TestMemoryModel:
             content="Test content",
             user_id="alice",
             session_id="sess-1",
-            category=MemoryCategory.PREFERENCE,
             importance=0.9,
             entity_refs=["entity1"],
             metadata={"key": "value"},
@@ -135,14 +132,12 @@ class TestMemoryModel:
         data = memory.to_dict()
         assert data["content"] == "Test content"
         assert data["user_id"] == "alice"
-        assert data["category"] == "preference"
         assert data["embedding"] is not None
 
         # Deserialize
         restored = Memory.from_dict(data)
         assert restored.content == memory.content
         assert restored.user_id == memory.user_id
-        assert restored.category == memory.category
         assert restored.importance == memory.importance
         assert np.allclose(restored.embedding, memory.embedding)
 
@@ -170,7 +165,6 @@ class TestSQLiteMemoryStore:
         assert retrieved.id == sample_memory.id
         assert retrieved.content == sample_memory.content
         assert retrieved.user_id == sample_memory.user_id
-        assert retrieved.category == sample_memory.category
 
     @pytest.mark.asyncio
     async def test_save_batch(self, store):
@@ -213,21 +207,20 @@ class TestSQLiteMemoryStore:
         assert len(results) == 3
 
     @pytest.mark.asyncio
-    async def test_query_by_category(self, store):
-        """Test querying memories by category."""
+    async def test_query_by_importance_range(self, store):
+        """Test querying memories by importance range."""
         memories = [
-            Memory(content="Pref 1", user_id="alice", category=MemoryCategory.PREFERENCE),
-            Memory(content="Pref 2", user_id="alice", category=MemoryCategory.PREFERENCE),
-            Memory(content="Fact 1", user_id="alice", category=MemoryCategory.FACT),
+            Memory(content="Low importance", user_id="alice", importance=0.2),
+            Memory(content="Medium importance", user_id="alice", importance=0.5),
+            Memory(content="High importance", user_id="alice", importance=0.9),
         ]
 
         await store.save_batch(memories)
 
-        # Query preferences
-        results = await store.query(
-            MemoryFilter(user_id="alice", categories=[MemoryCategory.PREFERENCE])
-        )
-        assert len(results) == 2
+        # Query high importance only
+        results = await store.query(MemoryFilter(user_id="alice", min_importance=0.8))
+        assert len(results) == 1
+        assert results[0].content == "High importance"
 
     @pytest.mark.asyncio
     async def test_query_by_importance(self, store):
@@ -274,7 +267,6 @@ class TestSQLiteMemoryStore:
         original = Memory(
             content="User prefers Python",
             user_id="alice",
-            category=MemoryCategory.PREFERENCE,
         )
         await store.save(original)
 
@@ -282,7 +274,6 @@ class TestSQLiteMemoryStore:
         new_memory = Memory(
             content="User now prefers Rust",
             user_id="alice",
-            category=MemoryCategory.PREFERENCE,
         )
 
         superseded = await store.supersede(original.id, new_memory)
@@ -455,13 +446,15 @@ class TestFTS5TextIndex:
         assert len(results) == 1
         assert results[0].memory_id == "mem-1"
 
-    def test_search_with_category_filter(self, text_index):
-        """Test searching with category filter."""
-        text_index.index("mem-1", "Prefers Python", {"user_id": "alice", "category": "preference"})
-        text_index.index("mem-2", "Python is installed", {"user_id": "alice", "category": "fact"})
+    def test_search_with_session_filter(self, text_index):
+        """Test searching with session filter."""
+        text_index.index("mem-1", "Prefers Python", {"user_id": "alice", "session_id": "sess-1"})
+        text_index.index(
+            "mem-2", "Python is installed", {"user_id": "alice", "session_id": "sess-2"}
+        )
 
-        # Search only preferences
-        filter = TextFilter(categories=[MemoryCategory.PREFERENCE])
+        # Search only session-1
+        filter = TextFilter(user_id="alice", session_id="sess-1")
         results = text_index.search("Python", k=10, filter=filter)
 
         assert len(results) == 1

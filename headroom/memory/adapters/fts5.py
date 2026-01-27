@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..models import Memory, MemoryCategory
+from ..models import Memory
 from ..ports import TextFilter, TextSearchResult
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ class FTS5TextIndex:
     - BM25 ranking for relevance scoring
     - Porter stemming for morphological matching
     - Unicode support for international text
-    - Filtering by user_id, session_id, and categories
+    - Filtering by user_id and session_id
     - Batch indexing for efficiency
 
     Usage:
@@ -104,16 +104,12 @@ class FTS5TextIndex:
         Args:
             memory_id: Unique identifier for the memory.
             text: Text content to index.
-            metadata: Optional metadata dict with user_id, session_id, category.
+            metadata: Optional metadata dict with user_id, session_id.
         """
         metadata = metadata or {}
         user_id = metadata.get("user_id", "")
         session_id = metadata.get("session_id", "")
-        category = metadata.get("category", "")
-
-        # Handle MemoryCategory enum values
-        if isinstance(category, MemoryCategory):
-            category = category.value
+        category = ""  # Deprecated - kept for backwards compatibility
 
         with self._get_conn() as conn:
             # Delete existing entry if present (upsert behavior)
@@ -186,10 +182,7 @@ class FTS5TextIndex:
             for memory_id, text, meta in zip(memory_ids, texts, metadata):
                 user_id = meta.get("user_id", "")
                 session_id = meta.get("session_id", "")
-                category = meta.get("category", "")
-
-                if isinstance(category, MemoryCategory):
-                    category = category.value
+                category = ""  # Deprecated - kept for backwards compatibility
 
                 batch_data.append((memory_id, text, user_id, session_id, category))
 
@@ -214,7 +207,7 @@ class FTS5TextIndex:
         Args:
             query: Search query string.
             k: Maximum number of results to return.
-            filter: Optional filter for user_id, session_id, categories.
+            filter: Optional filter for user_id, session_id.
 
         Returns:
             List of FTS5SearchResult ordered by BM25 relevance score.
@@ -236,19 +229,6 @@ class FTS5TextIndex:
             if filter.session_id is not None:
                 where_clauses.append("session_id = ?")
                 params.append(filter.session_id)
-
-            if filter.categories is not None and len(filter.categories) > 0:
-                # Handle enum values
-                category_values = []
-                for cat in filter.categories:
-                    if isinstance(cat, MemoryCategory):
-                        category_values.append(cat.value)
-                    else:
-                        category_values.append(cat)
-
-                placeholders = ", ".join("?" * len(category_values))
-                where_clauses.append(f"category IN ({placeholders})")
-                params.extend(category_values)
 
         params.append(k)
         where_sql = " AND ".join(where_clauses)
@@ -359,7 +339,6 @@ class FTS5TextIndex:
         metadata = {
             "user_id": memory.user_id,
             "session_id": memory.session_id or "",
-            "category": memory.category,
         }
         self.index(memory.id, memory.content, metadata)
 
@@ -381,7 +360,6 @@ class FTS5TextIndex:
             {
                 "user_id": m.user_id,
                 "session_id": m.session_id or "",
-                "category": m.category,
             }
             for m in memories
         ]
@@ -437,7 +415,6 @@ class FTS5TextIndex:
                 id=fts_result.memory_id,
                 content=fts_result.content,
                 user_id=fts_result.metadata.get("user_id", ""),
-                category=MemoryCategory(fts_result.metadata.get("category", "fact")),
             )
             results.append(
                 TextSearchResult(

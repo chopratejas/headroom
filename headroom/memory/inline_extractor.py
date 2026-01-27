@@ -29,13 +29,13 @@ MEMORY_INSTRUCTION = """
 After your response, if there are facts worth remembering about the user/entity for future conversations, output them in a <memory> block:
 
 <memory>
-{"memories": [{"content": "fact to remember", "category": "preference|fact|context"}]}
+{"memories": [{"content": "fact to remember"}]}
 </memory>
 
-Categories:
-- preference: likes, dislikes, preferred tools/languages/styles
-- fact: identity, role, job, location, constraints
-- context: current goals, ongoing tasks, recent events
+What to remember:
+- User preferences (likes, dislikes, preferred tools/languages/styles)
+- User facts (identity, role, job, location, constraints)
+- Context (current goals, ongoing tasks, recent events)
 
 Only output memories for significant, reusable information. Skip for:
 - Greetings, thanks, small talk
@@ -48,7 +48,7 @@ If nothing worth remembering: <memory>{"memories": []}</memory>
 # Shorter version for token efficiency
 MEMORY_INSTRUCTION_SHORT = """
 
-After responding, output facts to remember: <memory>{"memories": [{"content": "...", "category": "preference|fact|context"}]}</memory>
+After responding, output facts to remember: <memory>{"memories": [{"content": "..."}]}</memory>
 Skip for greetings/small talk. If nothing: <memory>{"memories": []}</memory>"""
 
 
@@ -150,7 +150,7 @@ class InlineMemoryWrapper:
             model="gpt-4o-mini"
         )
         # response = "Great choice! Python is excellent..."
-        # memories = [{"content": "User prefers Python", "category": "preference"}]
+        # memories = [{"content": "User prefers Python"}]
     """
 
     def __init__(self, client: Any):

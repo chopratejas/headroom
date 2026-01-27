@@ -15,8 +15,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from headroom.memory.models import ScopeLevel
-
 
 class StoreBackend(Enum):
     """Supported memory store backends."""
@@ -76,8 +74,7 @@ class MemoryConfig:
         cache_max_size: Maximum number of entries in the cache.
 
         auto_bubble: Whether to automatically bubble memories up the hierarchy.
-        preference_bubble_to: Default scope level for bubbling preferences.
-        decision_bubble_to: Default scope level for bubbling decisions.
+        bubble_threshold: Minimum importance score for bubbling (0.0 - 1.0).
 
     Example:
         config = MemoryConfig(
@@ -114,8 +111,7 @@ class MemoryConfig:
 
     # Bubbling defaults
     auto_bubble: bool = True
-    preference_bubble_to: ScopeLevel = ScopeLevel.USER
-    decision_bubble_to: ScopeLevel = ScopeLevel.SESSION
+    bubble_threshold: float = 0.7  # Minimum importance for bubbling
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""

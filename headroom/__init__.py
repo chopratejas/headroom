@@ -118,7 +118,6 @@ from .memory import (
     EmbedderBackend,
     HierarchicalMemory,
     Memory,
-    MemoryCategory,
     MemoryConfig,
     ScopeLevel,
     with_memory,
@@ -216,7 +215,6 @@ __all__ = [
     # Memory - hierarchical memory system
     "with_memory",  # Main user-facing API
     "Memory",
-    "MemoryCategory",
     "ScopeLevel",
     "HierarchicalMemory",
     "MemoryConfig",

@@ -71,6 +71,7 @@ from headroom.ccr import (
 )
 from headroom.config import CacheAlignerConfig, CCRConfig, RollingWindowConfig, SmartCrusherConfig
 from headroom.providers import AnthropicProvider, OpenAIProvider
+from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
 from headroom.telemetry import get_telemetry_collector
 from headroom.telemetry.toin import get_toin
 from headroom.tokenizers import get_tokenizer
@@ -261,6 +262,21 @@ class ProxyConfig:
     # Timeouts
     request_timeout_seconds: int = 300
     connect_timeout_seconds: int = 10
+
+    # Memory System
+    memory_enabled: bool = False  # Enable memory integration
+    memory_backend: Literal["local", "qdrant-neo4j"] = "local"  # Backend type
+    memory_db_path: str = "headroom_memory.db"  # Path for local backend
+    memory_inject_tools: bool = True  # Auto-inject memory tools
+    memory_inject_context: bool = True  # Inject searched memories into context
+    memory_top_k: int = 10  # Number of memories to inject
+    memory_min_similarity: float = 0.3  # Minimum similarity threshold
+    # Qdrant+Neo4j config (only used when memory_backend="qdrant-neo4j")
+    memory_qdrant_host: str = "localhost"
+    memory_qdrant_port: int = 6333
+    memory_neo4j_uri: str = "neo4j://localhost:7687"
+    memory_neo4j_user: str = "neo4j"
+    memory_neo4j_password: str = "password"
 
 
 # =============================================================================
@@ -950,6 +966,25 @@ class HeadroomProxy:
         # Turn counter for context tracking
         self._turn_counter = 0
 
+        # Memory Handler (persistent user memory)
+        self.memory_handler: MemoryHandler | None = None
+        if config.memory_enabled:
+            memory_config = MemoryConfig(
+                enabled=True,
+                backend=config.memory_backend,
+                db_path=config.memory_db_path,
+                inject_tools=config.memory_inject_tools,
+                inject_context=config.memory_inject_context,
+                top_k=config.memory_top_k,
+                min_similarity=config.memory_min_similarity,
+                qdrant_host=config.memory_qdrant_host,
+                qdrant_port=config.memory_qdrant_port,
+                neo4j_uri=config.memory_neo4j_uri,
+                neo4j_user=config.memory_neo4j_user,
+                neo4j_password=config.memory_neo4j_password,
+            )
+            self.memory_handler = MemoryHandler(memory_config)
+
     def _setup_llmlingua(self, config: ProxyConfig, transforms: list) -> str:
         """Set up LLMLingua compression if enabled.
 
@@ -1125,6 +1160,30 @@ class HeadroomProxy:
                 tags[tag_name] = value
         return tags
 
+    def _inject_system_context(
+        self,
+        messages: list[dict[str, Any]],
+        context: str,
+    ) -> list[dict[str, Any]]:
+        """Inject context into the system message.
+
+        If a system message exists, appends the context to it.
+        Otherwise, creates a new system message at the beginning.
+        """
+        messages = list(messages)  # Copy to avoid mutation
+
+        # Find existing system message
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    messages[i] = {**msg, "content": content + "\n\n" + context}
+                return messages
+
+        # No system message found - prepend one
+        messages.insert(0, {"role": "system", "content": context})
+        return messages
+
     async def _retry_request(
         self,
         method: str,
@@ -1256,6 +1315,23 @@ class HeadroomProxy:
                 raise HTTPException(
                     status_code=429,
                     detail=f"Budget exceeded for {self.config.budget_period} period",
+                )
+
+        # Memory: Validate user ID when memory is enabled
+        memory_user_id: str | None = None
+        if self.memory_handler:
+            memory_user_id = headers.get("x-headroom-user-id")
+            if not memory_user_id:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "x-headroom-user-id header is required when memory is enabled. "
+                            "Set this header to identify the user for memory scoping.",
+                        },
+                    },
                 )
 
         # Check cache (non-streaming only)
@@ -1399,6 +1475,30 @@ class HeadroomProxy:
                                     "content": content + "\n\n" + expansion_text,
                                 }
 
+        # Memory: Inject context and tools
+        if self.memory_handler and memory_user_id:
+            # Search and inject memory context
+            if self.memory_handler.config.inject_context:
+                try:
+                    memory_context = await self.memory_handler.search_and_format_context(
+                        memory_user_id, optimized_messages
+                    )
+                    if memory_context:
+                        optimized_messages = self._inject_system_context(
+                            optimized_messages, memory_context
+                        )
+                        logger.info(
+                            f"[{request_id}] Memory: Injected {len(memory_context)} chars of context"
+                        )
+                except Exception as e:
+                    logger.warning(f"[{request_id}] Memory: Context injection failed: {e}")
+
+            # Inject memory tools
+            if self.memory_handler.config.inject_tools:
+                tools, mem_tools_injected = self.memory_handler.inject_tools(tools, "anthropic")
+                if mem_tools_injected:
+                    logger.debug(f"[{request_id}] Memory: Injected memory tools")
+
         # Update body
         body["messages"] = optimized_messages
         if tools is not None:
@@ -1522,6 +1622,55 @@ class HeadroomProxy:
                             f"[{request_id}] CCR: Response handling failed: {e}\n"
                             f"Traceback: {traceback.format_exc()}"
                         )
+                        # Continue with original response
+
+                # Memory: Handle memory tool calls in response
+                if (
+                    self.memory_handler
+                    and memory_user_id
+                    and resp_json
+                    and response.status_code == 200
+                    and self.memory_handler.has_memory_tool_calls(resp_json, "anthropic")
+                ):
+                    logger.info(f"[{request_id}] Memory: Detected memory tool call, handling...")
+
+                    try:
+                        # Execute memory tool calls
+                        tool_results = await self.memory_handler.handle_memory_tool_calls(
+                            resp_json, memory_user_id, "anthropic"
+                        )
+
+                        if tool_results:
+                            # Create continuation messages
+                            assistant_msg = {
+                                "role": "assistant",
+                                "content": resp_json.get("content", []),
+                            }
+                            user_msg = {
+                                "role": "user",
+                                "content": tool_results,
+                            }
+
+                            continuation_messages = optimized_messages + [assistant_msg, user_msg]
+
+                            # Make continuation API call
+                            continuation_body = {**body, "messages": continuation_messages}
+                            if tools:
+                                continuation_body["tools"] = tools
+
+                            cont_response = await self._retry_request(
+                                "POST", url, headers, continuation_body
+                            )
+
+                            # Update response with continuation
+                            resp_json = cont_response.json()
+                            response = cont_response
+                            logger.info(
+                                f"[{request_id}] Memory: Tool calls handled, continuation complete"
+                            )
+
+                    except Exception as e:
+                        logger.warning(f"[{request_id}] Memory: Tool call handling failed: {e}")
                         # Continue with original response
 
                 total_latency = (time.time() - start_time) * 1000

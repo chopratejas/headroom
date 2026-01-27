@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from headroom.memory.config import MemoryConfig
 from headroom.memory.factory import create_memory_system
-from headroom.memory.models import Memory, MemoryCategory, ScopeLevel
+from headroom.memory.models import Memory, ScopeLevel
 from headroom.memory.ports import MemoryFilter, TextFilter, VectorFilter
 
 if TYPE_CHECKING:
@@ -55,7 +55,6 @@ class HierarchicalMemory:
         await memory.add(
             content="User prefers Python over JavaScript",
             user_id="alice",
-            category=MemoryCategory.PREFERENCE,
             importance=0.9,
         )
 
@@ -68,7 +67,6 @@ class HierarchicalMemory:
         # Query with filters
         memories = await memory.query(MemoryFilter(
             user_id="alice",
-            categories=[MemoryCategory.PREFERENCE],
             min_importance=0.8,
         ))
     """
@@ -137,7 +135,6 @@ class HierarchicalMemory:
         session_id: str | None = None,
         agent_id: str | None = None,
         turn_id: str | None = None,
-        category: MemoryCategory = MemoryCategory.FACT,
         importance: float = 0.5,
         entity_refs: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -156,7 +153,6 @@ class HierarchicalMemory:
             session_id: Session identifier (optional).
             agent_id: Agent identifier (optional).
             turn_id: Turn identifier (optional).
-            category: Memory classification.
             importance: Importance score (0.0 - 1.0).
             entity_refs: List of entity references.
             metadata: Additional metadata.
@@ -171,7 +167,6 @@ class HierarchicalMemory:
                 content="User prefers dark mode",
                 user_id="alice",
                 session_id="sess-123",
-                category=MemoryCategory.PREFERENCE,
                 importance=0.8,
             )
         """
@@ -182,7 +177,6 @@ class HierarchicalMemory:
             session_id=session_id,
             agent_id=agent_id,
             turn_id=turn_id,
-            category=category,
             importance=importance,
             entity_refs=entity_refs or [],
             metadata=metadata or {},
@@ -248,7 +242,6 @@ class HierarchicalMemory:
                 session_id=data.get("session_id"),
                 agent_id=data.get("agent_id"),
                 turn_id=data.get("turn_id"),
-                category=data.get("category", MemoryCategory.FACT),
                 importance=data.get("importance", 0.5),
                 entity_refs=data.get("entity_refs", []),
                 metadata=data.get("metadata", {}),
@@ -323,7 +316,6 @@ class HierarchicalMemory:
         Example:
             memories = await system.query(MemoryFilter(
                 user_id="alice",
-                categories=[MemoryCategory.PREFERENCE],
                 min_importance=0.7,
                 limit=10,
             ))
@@ -353,7 +345,6 @@ class HierarchicalMemory:
         agent_id: str | None = None,
         top_k: int = 10,
         min_similarity: float = 0.0,
-        categories: list[MemoryCategory] | None = None,
         scope_levels: list[ScopeLevel] | None = None,
         include_superseded: bool = False,
     ) -> list[VectorSearchResult]:
@@ -369,7 +360,6 @@ class HierarchicalMemory:
             agent_id: Filter by agent.
             top_k: Maximum number of results.
             min_similarity: Minimum cosine similarity threshold.
-            categories: Filter by categories.
             scope_levels: Filter by scope levels.
             include_superseded: Include superseded memories.
 
@@ -396,7 +386,6 @@ class HierarchicalMemory:
             user_id=user_id,
             session_id=session_id,
             agent_id=agent_id,
-            categories=categories,
             scope_levels=scope_levels,
             include_superseded=include_superseded,
         )
@@ -409,7 +398,6 @@ class HierarchicalMemory:
         user_id: str | None = None,
         session_id: str | None = None,
         limit: int = 100,
-        categories: list[MemoryCategory] | None = None,
     ) -> list[TextSearchResult]:
         """Full-text search for memories.
 
@@ -421,7 +409,6 @@ class HierarchicalMemory:
             user_id: Filter by user.
             session_id: Filter by session.
             limit: Maximum number of results.
-            categories: Filter by categories.
 
         Returns:
             List of TextSearchResult sorted by relevance.
@@ -434,7 +421,6 @@ class HierarchicalMemory:
             user_id=user_id,
             session_id=session_id,
             limit=limit,
-            categories=categories,
         )
 
         return await self._text_index.search(text_filter)
@@ -448,7 +434,6 @@ class HierarchicalMemory:
         memory_id: str,
         content: str | None = None,
         importance: float | None = None,
-        category: MemoryCategory | None = None,
         entity_refs: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         re_embed: bool = True,
@@ -461,7 +446,6 @@ class HierarchicalMemory:
             memory_id: ID of memory to update.
             content: New content (triggers re-embedding if re_embed=True).
             importance: New importance score.
-            category: New category.
             entity_refs: New entity references.
             metadata: New or updated metadata (merged with existing).
             re_embed: Whether to regenerate embedding on content change.
@@ -481,9 +465,6 @@ class HierarchicalMemory:
 
         if importance is not None:
             memory.importance = importance
-
-        if category is not None:
-            memory.category = category
 
         if entity_refs is not None:
             memory.entity_refs = entity_refs
@@ -554,7 +535,6 @@ class HierarchicalMemory:
             session_id=old_memory.session_id,
             agent_id=old_memory.agent_id,
             turn_id=old_memory.turn_id,
-            category=old_memory.category,
             importance=old_memory.importance,
             entity_refs=old_memory.entity_refs.copy(),
             metadata=old_memory.metadata.copy(),
@@ -681,7 +661,6 @@ class HierarchicalMemory:
         content: str,
         user_id: str,
         session_id: str | None = None,
-        category: MemoryCategory = MemoryCategory.FACT,
         importance: float = 0.5,
     ) -> Memory:
         """Convenience method to quickly add a memory.
@@ -692,7 +671,6 @@ class HierarchicalMemory:
             content: What to remember.
             user_id: Who it's for.
             session_id: Optional session context.
-            category: Memory category.
             importance: How important (0.0 - 1.0).
 
         Returns:
@@ -705,7 +683,6 @@ class HierarchicalMemory:
             content=content,
             user_id=user_id,
             session_id=session_id,
-            category=category,
             importance=importance,
         )
 
@@ -796,39 +773,30 @@ class HierarchicalMemory:
         await self._text_index.index_memory(memory)  # type: ignore[attr-defined]
 
     async def _maybe_bubble(self, memory: Memory) -> None:
-        """Maybe bubble a memory up the hierarchy based on category and importance.
+        """Maybe bubble a memory up the hierarchy based on importance.
 
         Bubbling creates a copy of the memory at a higher scope level.
-        Only happens if the memory meets bubbling criteria.
+        Only happens if the memory meets bubbling criteria (high importance).
         """
-        # Determine target scope based on category
-        target_scope: ScopeLevel | None = None
-
-        if memory.category == MemoryCategory.PREFERENCE:
-            target_scope = self._config.preference_bubble_to
-        elif memory.category == MemoryCategory.DECISION:
-            target_scope = self._config.decision_bubble_to
-
-        if target_scope is None:
+        # Only bubble high-importance memories
+        if memory.importance < self._config.bubble_threshold:
             return
 
-        # Check if already at or above target scope
+        # Only bubble from session or lower scopes
         current_scope = memory.scope_level
-        if self._scope_level_value(current_scope) <= self._scope_level_value(target_scope):
-            return
+        if current_scope == ScopeLevel.USER:
+            return  # Already at highest scope
 
-        # Only bubble if importance is high enough (> 0.7)
-        if memory.importance < 0.7:
-            return
+        # Target scope is USER level for high-importance memories
+        target_scope = ScopeLevel.USER
 
-        # Create bubbled memory at target scope
+        # Create bubbled memory at user scope
         bubbled = Memory(
             content=memory.content,
             user_id=memory.user_id,
-            session_id=memory.session_id if target_scope != ScopeLevel.USER else None,
-            agent_id=None,  # Don't bubble to agent level
+            session_id=None,  # Bubble to user level
+            agent_id=None,
             turn_id=None,
-            category=memory.category,
             importance=memory.importance,
             entity_refs=memory.entity_refs.copy(),
             metadata=memory.metadata.copy(),

@@ -22,7 +22,7 @@ from headroom.memory.inline_extractor import (
     inject_memory_instruction,
     parse_response_with_memory,
 )
-from headroom.memory.models import Memory, MemoryCategory
+from headroom.memory.models import Memory
 
 logger = logging.getLogger(__name__)
 
@@ -187,15 +187,6 @@ class MemoryWrapper:
         try:
             for mem in memories:
                 content = mem.get("content", "")
-                category_str = mem.get("category", "fact")
-
-                # Map string category to enum
-                category_map = {
-                    "preference": MemoryCategory.PREFERENCE,
-                    "fact": MemoryCategory.FACT,
-                    "context": MemoryCategory.CONTEXT,
-                }
-                category = category_map.get(category_str, MemoryCategory.FACT)
 
                 if content:
                     loop.run_until_complete(
@@ -204,7 +195,6 @@ class MemoryWrapper:
                             user_id=self._user_id,
                             session_id=self._session_id,
                             agent_id=self._agent_id,
-                            category=category,
                             importance=0.7,  # Default importance for extracted memories
                         )
                     )
@@ -314,42 +304,23 @@ class _MemoryAPI:
     def add(
         self,
         content: str,
-        category: str | MemoryCategory = "fact",
         importance: float = 0.5,
     ) -> Memory:
         """Manually add a memory.
 
         Args:
             content: Memory content
-            category: preference, fact, or context (or MemoryCategory enum)
             importance: 0.0-1.0
 
         Returns:
             The created memory
         """
-        # Map string category to enum
-        cat_enum: MemoryCategory
-        if isinstance(category, str):
-            category_map: dict[str, MemoryCategory] = {
-                "preference": MemoryCategory.PREFERENCE,
-                "fact": MemoryCategory.FACT,
-                "context": MemoryCategory.CONTEXT,
-                "episodic": MemoryCategory.CONTEXT,
-                "entity": MemoryCategory.ENTITY,
-                "decision": MemoryCategory.DECISION,
-                "insight": MemoryCategory.INSIGHT,
-            }
-            cat_enum = category_map.get(category, MemoryCategory.FACT)
-        else:
-            cat_enum = category
-
         result: Memory = self._run_async(
             self._memory.add(
                 content=content,
                 user_id=self._user_id,
                 session_id=self._session_id,
                 agent_id=self._agent_id,
-                category=cat_enum,
                 importance=importance,
             )
         )
@@ -371,14 +342,9 @@ class _MemoryAPI:
     def stats(self) -> dict:
         """Get memory statistics."""
         memories = self.get_all()
-        categories: dict[str, int] = {}
-        for mem in memories:
-            cat = mem.category.value if hasattr(mem.category, "value") else str(mem.category)
-            categories[cat] = categories.get(cat, 0) + 1
 
         return {
             "total": len(memories),
-            "categories": categories,
         }
 
 

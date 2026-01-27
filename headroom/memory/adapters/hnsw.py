@@ -31,7 +31,7 @@ except ImportError:
     hnswlib = None  # type: ignore[assignment]
     HNSW_AVAILABLE = False
 
-from ..models import Memory, MemoryCategory, ScopeLevel
+from ..models import Memory, ScopeLevel
 from ..ports import VectorFilter, VectorSearchResult
 
 if TYPE_CHECKING:
@@ -50,12 +50,12 @@ class IndexedMemoryMetadata:
     user_id: str
     session_id: str | None
     agent_id: str | None
-    category: str  # Stored as string value
     valid_until: datetime | None
     entity_refs: list[str]
     content: str  # For reconstructing Memory in search results
     created_at: datetime
     importance: float
+    metadata: dict[str, Any] | None = None  # Custom metadata from Memory
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for persistence."""
@@ -64,12 +64,12 @@ class IndexedMemoryMetadata:
             "user_id": self.user_id,
             "session_id": self.session_id,
             "agent_id": self.agent_id,
-            "category": self.category,
             "valid_until": self.valid_until.isoformat() if self.valid_until else None,
             "entity_refs": self.entity_refs,
             "content": self.content,
             "created_at": self.created_at.isoformat(),
             "importance": self.importance,
+            "metadata": self.metadata or {},
         }
 
     @classmethod
@@ -80,7 +80,6 @@ class IndexedMemoryMetadata:
             user_id=data["user_id"],
             session_id=data.get("session_id"),
             agent_id=data.get("agent_id"),
-            category=data["category"],
             valid_until=(
                 datetime.fromisoformat(data["valid_until"]) if data.get("valid_until") else None
             ),
@@ -88,27 +87,23 @@ class IndexedMemoryMetadata:
             content=data["content"],
             created_at=datetime.fromisoformat(data["created_at"]),
             importance=data.get("importance", 0.5),
+            metadata=data.get("metadata"),
         )
 
     @classmethod
     def from_memory(cls, memory: Memory) -> IndexedMemoryMetadata:
         """Create metadata from a Memory object."""
-        category_value = (
-            memory.category.value
-            if isinstance(memory.category, MemoryCategory)
-            else memory.category
-        )
         return cls(
             memory_id=memory.id,
             user_id=memory.user_id,
             session_id=memory.session_id,
             agent_id=memory.agent_id,
-            category=category_value,
             valid_until=memory.valid_until,
             entity_refs=memory.entity_refs.copy(),
             content=memory.content,
             created_at=memory.created_at,
             importance=memory.importance,
+            metadata=memory.metadata.copy() if memory.metadata else None,
         )
 
     def to_memory(self, embedding: np.ndarray | None = None) -> Memory:
@@ -123,12 +118,12 @@ class IndexedMemoryMetadata:
             user_id=self.user_id,
             session_id=self.session_id,
             agent_id=self.agent_id,
-            category=MemoryCategory(self.category),
             valid_until=self.valid_until,
             entity_refs=self.entity_refs.copy(),
             created_at=self.created_at,
             importance=self.importance,
             embedding=embedding,
+            metadata=self.metadata.copy() if self.metadata else {},
         )
 
 
@@ -575,18 +570,6 @@ class HNSWVectorIndex:
                 memory_scope = ScopeLevel.USER
 
             if memory_scope not in filter.scope_levels:
-                return False
-
-        # Category filter
-        if filter.categories is not None:
-            category_values = []
-            for cat in filter.categories:
-                if isinstance(cat, MemoryCategory):
-                    category_values.append(cat.value)
-                else:
-                    category_values.append(cat)
-
-            if metadata.category not in category_values:
                 return False
 
         # Temporal filter - valid_at

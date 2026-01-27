@@ -15,38 +15,38 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import base64
 import io
-from dataclasses import dataclass
-from enum import Enum
-from typing import Optional
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Import from PIL for creating test images
 try:
     from PIL import Image
+
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
 from headroom.image.compressor import (
+    CompressionResult,
     ImageCompressor,
     Technique,
-    CompressionResult,
     compress_images,
     get_compressor,
 )
 from headroom.image.trained_router import (
-    TrainedRouter,
-    Technique as RouterTechnique,
-    RouteDecision,
     ImageSignals,
+    RouteDecision,
+    TrainedRouter,
 )
-
+from headroom.image.trained_router import (
+    Technique as RouterTechnique,
+)
 
 # ============================================================================
 # Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def small_test_image_bytes():
@@ -98,10 +98,10 @@ def openai_messages_with_image(small_image_base64):
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/png;base64,{small_image_base64}",
-                        "detail": "auto"
-                    }
-                }
-            ]
+                        "detail": "auto",
+                    },
+                },
+            ],
         }
     ]
 
@@ -119,10 +119,10 @@ def anthropic_messages_with_image(small_image_base64):
                     "source": {
                         "type": "base64",
                         "media_type": "image/png",
-                        "data": small_image_base64
-                    }
-                }
-            ]
+                        "data": small_image_base64,
+                    },
+                },
+            ],
         }
     ]
 
@@ -135,13 +135,8 @@ def google_messages_with_image(small_image_base64):
             "role": "user",
             "content": [
                 {"text": "What do you see?"},
-                {
-                    "inlineData": {
-                        "mimeType": "image/png",
-                        "data": small_image_base64
-                    }
-                }
-            ]
+                {"inlineData": {"mimeType": "image/png", "data": small_image_base64}},
+            ],
         }
     ]
 
@@ -153,7 +148,7 @@ def text_only_messages():
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello, how are you?"},
         {"role": "assistant", "content": "I'm doing well, thank you!"},
-        {"role": "user", "content": "What is the capital of France?"}
+        {"role": "user", "content": "What is the capital of France?"},
     ]
 
 
@@ -226,6 +221,7 @@ def create_mock_router(route_decision):
 # Test ImageCompressor class - Image detection
 # ============================================================================
 
+
 class TestImageDetection:
     """Tests for image detection in various formats."""
 
@@ -251,9 +247,7 @@ class TestImageDetection:
 
     def test_has_images_string_content(self, compressor):
         """Handles messages with plain string content."""
-        messages = [
-            {"role": "user", "content": "Just text, no images"}
-        ]
+        messages = [{"role": "user", "content": "Just text, no images"}]
         assert compressor.has_images(messages) is False
 
     def test_has_images_mixed_content(self, compressor, small_image_base64):
@@ -267,10 +261,10 @@ class TestImageDetection:
                     {"type": "text", "text": "Now look at this"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
-                    }
-                ]
-            }
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
+            },
         ]
         assert compressor.has_images(messages) is True
 
@@ -278,6 +272,7 @@ class TestImageDetection:
 # ============================================================================
 # Test ImageCompressor class - Query extraction
 # ============================================================================
+
 
 class TestQueryExtraction:
     """Tests for extracting text query from messages."""
@@ -300,9 +295,9 @@ class TestQueryExtraction:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
                     }
-                ]
+                ],
             }
         ]
         query = compressor._extract_query(messages)
@@ -310,9 +305,7 @@ class TestQueryExtraction:
 
     def test_extract_query_from_plain_text_message(self, compressor):
         """Extracts query from plain text user message."""
-        messages = [
-            {"role": "user", "content": "What is this?"}
-        ]
+        messages = [{"role": "user", "content": "What is this?"}]
         query = compressor._extract_query(messages)
         assert query == "What is this?"
 
@@ -321,7 +314,7 @@ class TestQueryExtraction:
         messages = [
             {"role": "user", "content": "First question"},
             {"role": "assistant", "content": "First answer"},
-            {"role": "user", "content": "Second question"}
+            {"role": "user", "content": "Second question"},
         ]
         query = compressor._extract_query(messages)
         assert query == "Second question"
@@ -331,10 +324,13 @@ class TestQueryExtraction:
 # Test ImageCompressor class - Image data extraction
 # ============================================================================
 
+
 class TestImageDataExtraction:
     """Tests for extracting base64 image data from messages."""
 
-    def test_extract_image_data_openai_format(self, compressor, openai_messages_with_image, small_test_image_bytes):
+    def test_extract_image_data_openai_format(
+        self, compressor, openai_messages_with_image, small_test_image_bytes
+    ):
         """Extracts base64 image data from OpenAI format."""
         data = compressor._extract_image_data(openai_messages_with_image)
         assert data is not None
@@ -342,14 +338,18 @@ class TestImageDataExtraction:
         # Verify it's valid image data
         assert data == small_test_image_bytes
 
-    def test_extract_image_data_anthropic_format(self, compressor, anthropic_messages_with_image, small_test_image_bytes):
+    def test_extract_image_data_anthropic_format(
+        self, compressor, anthropic_messages_with_image, small_test_image_bytes
+    ):
         """Extracts base64 image data from Anthropic format."""
         data = compressor._extract_image_data(anthropic_messages_with_image)
         assert data is not None
         assert isinstance(data, bytes)
         assert data == small_test_image_bytes
 
-    def test_extract_image_data_google_format(self, compressor, google_messages_with_image, small_test_image_bytes):
+    def test_extract_image_data_google_format(
+        self, compressor, google_messages_with_image, small_test_image_bytes
+    ):
         """Extracts base64 image data from Google format."""
         data = compressor._extract_image_data(google_messages_with_image)
         assert data is not None
@@ -369,13 +369,13 @@ class TestImageDataExtraction:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,SECOND_IMAGE_DATA"}
-                    }
-                ]
+                        "image_url": {"url": "data:image/png;base64,SECOND_IMAGE_DATA"},
+                    },
+                ],
             }
         ]
         data = compressor._extract_image_data(messages)
@@ -386,14 +386,17 @@ class TestImageDataExtraction:
 # Test Compression routing
 # ============================================================================
 
+
 class TestCompressionRouting:
     """Tests for compression technique routing based on query."""
 
-    def test_compress_general_query(self, compressor, openai_messages_with_image, mock_route_decision_full_low):
+    def test_compress_general_query(
+        self, compressor, openai_messages_with_image, mock_route_decision_full_low
+    ):
         """'What is this?' query routes to full_low technique."""
         mock_router = create_mock_router(mock_route_decision_full_low)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(openai_messages_with_image, "openai")
 
             # Verify the router was called
@@ -405,7 +408,9 @@ class TestCompressionRouting:
                 if item.get("type") == "image_url":
                     assert item["image_url"].get("detail") == "low"
 
-    def test_compress_detail_query(self, compressor, small_image_base64, mock_route_decision_preserve):
+    def test_compress_detail_query(
+        self, compressor, small_image_base64, mock_route_decision_preserve
+    ):
         """'Count the whiskers' query routes to preserve technique."""
         messages = [
             {
@@ -414,18 +419,20 @@ class TestCompressionRouting:
                     {"type": "text", "text": "Count the whiskers on the cat"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
-                    }
-                ]
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
             }
         ]
         mock_router = create_mock_router(mock_route_decision_preserve)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
-            result = compressor.compress(messages, "openai")
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            compressor.compress(messages, "openai")
             mock_router.classify.assert_called_once()
 
-    def test_compress_text_query(self, compressor, small_image_base64, mock_route_decision_transcode):
+    def test_compress_text_query(
+        self, compressor, small_image_base64, mock_route_decision_transcode
+    ):
         """'Read the text' query routes to transcode technique."""
         messages = [
             {
@@ -434,15 +441,15 @@ class TestCompressionRouting:
                     {"type": "text", "text": "Read the text in this document"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
-                    }
-                ]
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
             }
         ]
         mock_router = create_mock_router(mock_route_decision_transcode)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
-            result = compressor.compress(messages, "openai")
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            compressor.compress(messages, "openai")
             mock_router.classify.assert_called_once()
 
     def test_compress_region_query(self, compressor, small_image_base64, mock_route_decision_crop):
@@ -454,15 +461,15 @@ class TestCompressionRouting:
                     {"type": "text", "text": "What's in the top-left corner?"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
-                    }
-                ]
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
             }
         ]
         mock_router = create_mock_router(mock_route_decision_crop)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
-            result = compressor.compress(messages, "openai")
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            compressor.compress(messages, "openai")
             mock_router.classify.assert_called_once()
 
 
@@ -470,14 +477,17 @@ class TestCompressionRouting:
 # Test Provider-specific compression
 # ============================================================================
 
+
 class TestProviderSpecificCompression:
     """Tests for provider-specific image compression."""
 
-    def test_openai_detail_low(self, compressor, openai_messages_with_image, mock_route_decision_full_low):
+    def test_openai_detail_low(
+        self, compressor, openai_messages_with_image, mock_route_decision_full_low
+    ):
         """OpenAI: sets detail='low' for full_low technique."""
         mock_router = create_mock_router(mock_route_decision_full_low)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(openai_messages_with_image, "openai")
 
             # Find the image item and check detail
@@ -485,7 +495,9 @@ class TestProviderSpecificCompression:
                 if item.get("type") == "image_url":
                     assert item["image_url"]["detail"] == "low"
 
-    def test_openai_detail_preserved(self, compressor, small_image_base64, mock_route_decision_preserve):
+    def test_openai_detail_preserved(
+        self, compressor, small_image_base64, mock_route_decision_preserve
+    ):
         """OpenAI: preserves original detail setting for preserve technique."""
         messages = [
             {
@@ -496,15 +508,15 @@ class TestProviderSpecificCompression:
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/png;base64,{small_image_base64}",
-                            "detail": "high"
-                        }
-                    }
-                ]
+                            "detail": "high",
+                        },
+                    },
+                ],
             }
         ]
         mock_router = create_mock_router(mock_route_decision_preserve)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(messages, "openai")
 
             # For preserve, the image should remain unchanged
@@ -514,11 +526,13 @@ class TestProviderSpecificCompression:
                     detail = item["image_url"].get("detail")
                     assert detail == "high"
 
-    def test_anthropic_format(self, compressor, anthropic_messages_with_image, mock_route_decision_full_low):
+    def test_anthropic_format(
+        self, compressor, anthropic_messages_with_image, mock_route_decision_full_low
+    ):
         """Handles Anthropic image format correctly."""
         mock_router = create_mock_router(mock_route_decision_full_low)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(anthropic_messages_with_image, "anthropic")
 
             # Should return valid messages (may or may not transform Anthropic format)
@@ -529,6 +543,7 @@ class TestProviderSpecificCompression:
 # ============================================================================
 # Test Edge cases
 # ============================================================================
+
 
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
@@ -548,7 +563,7 @@ class TestEdgeCases:
         mock_router = MagicMock()
         mock_router.classify.side_effect = Exception("Router failed")
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             # Should not raise, should fall back gracefully
             result = compressor.compress(openai_messages_with_image, "openai")
 
@@ -565,16 +580,16 @@ class TestEdgeCases:
                     {"type": "text", "text": "What is this?"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,bm90X3ZhbGlkX2ltYWdlX2RhdGE="}
-                    }
-                ]
+                        "image_url": {"url": "data:image/png;base64,bm90X3ZhbGlkX2ltYWdlX2RhdGE="},
+                    },
+                ],
             }
         ]
 
         # Use a mock router to avoid actual model loading
         mock_router = create_mock_router(mock_route_decision_preserve)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             # Should not raise
             result = compressor.compress(messages, "openai")
             assert isinstance(result, list)
@@ -586,11 +601,8 @@ class TestEdgeCases:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "What is this?"},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "https://example.com/image.jpg"}
-                    }
-                ]
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
+                ],
             }
         ]
 
@@ -602,18 +614,14 @@ class TestEdgeCases:
 
     def test_none_content(self, compressor):
         """Handles messages with None content."""
-        messages = [
-            {"role": "user", "content": None}
-        ]
+        messages = [{"role": "user", "content": None}]
 
         result = compressor.compress(messages, "openai")
         assert result == messages
 
     def test_missing_content_key(self, compressor):
         """Handles messages missing content key."""
-        messages = [
-            {"role": "user"}
-        ]
+        messages = [{"role": "user"}]
 
         result = compressor.compress(messages, "openai")
         assert result == messages
@@ -622,6 +630,7 @@ class TestEdgeCases:
 # ============================================================================
 # Test Token estimation
 # ============================================================================
+
 
 class TestTokenEstimation:
     """Tests for image token estimation."""
@@ -650,10 +659,7 @@ class TestTokenEstimation:
     def test_savings_calculation(self):
         """CompressionResult calculates savings percentage correctly."""
         result = CompressionResult(
-            technique=Technique.FULL_LOW,
-            original_tokens=1000,
-            compressed_tokens=85,
-            confidence=0.9
+            technique=Technique.FULL_LOW, original_tokens=1000, compressed_tokens=85, confidence=0.9
         )
 
         # (1000 - 85) / 1000 * 100 = 91.5%
@@ -662,10 +668,7 @@ class TestTokenEstimation:
     def test_savings_zero_original_tokens(self):
         """Handles zero original tokens without division error."""
         result = CompressionResult(
-            technique=Technique.PRESERVE,
-            original_tokens=0,
-            compressed_tokens=0,
-            confidence=1.0
+            technique=Technique.PRESERVE, original_tokens=0, compressed_tokens=0, confidence=1.0
         )
 
         assert result.savings_percent == 0.0
@@ -681,6 +684,7 @@ class TestTokenEstimation:
 # ============================================================================
 # Test TrainedRouter (mocked)
 # ============================================================================
+
 
 class TestTrainedRouterMocked:
     """Tests for TrainedRouter with mocked model loading."""
@@ -700,7 +704,7 @@ class TestTrainedRouterMocked:
             reason="Test reason",
             image_signals=None,
             query_prediction="full_low",
-            query_confidence=0.9
+            query_confidence=0.9,
         )
 
         assert decision.technique == RouterTechnique.FULL_LOW
@@ -709,12 +713,7 @@ class TestTrainedRouterMocked:
 
     def test_image_signals_dataclass(self):
         """Verify ImageSignals dataclass structure."""
-        signals = ImageSignals(
-            has_text=0.8,
-            is_document=0.6,
-            is_complex=0.3,
-            has_small_details=0.2
-        )
+        signals = ImageSignals(has_text=0.8, is_document=0.6, is_complex=0.3, has_small_details=0.2)
 
         assert signals.has_text == 0.8
         assert signals.is_document == 0.6
@@ -731,7 +730,7 @@ class TestTrainedRouterMocked:
         router = TrainedRouter()
 
         # Mock _load_models to not actually load
-        with patch.object(router, '_load_models'):
+        with patch.object(router, "_load_models"):
             assert router.is_available() is True
 
     def test_router_is_available_false_on_error(self):
@@ -740,13 +739,14 @@ class TestTrainedRouterMocked:
 
         # This should return False since the model path doesn't exist
         # and loading will fail
-        with patch.object(router, '_load_models', side_effect=Exception("Model not found")):
+        with patch.object(router, "_load_models", side_effect=Exception("Model not found")):
             assert router.is_available() is False
 
 
 # ============================================================================
 # Test Convenience functions
 # ============================================================================
+
 
 class TestConvenienceFunctions:
     """Tests for module-level convenience functions."""
@@ -772,6 +772,7 @@ class TestConvenienceFunctions:
 # Integration tests (with mocked router)
 # ============================================================================
 
+
 class TestIntegration:
     """Integration tests with mocked router."""
 
@@ -786,17 +787,17 @@ class TestIntegration:
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/png;base64,{small_image_base64}",
-                            "detail": "auto"
-                        }
-                    }
-                ]
+                            "detail": "auto",
+                        },
+                    },
+                ],
             }
         ]
 
         compressor = ImageCompressor()
         mock_router = create_mock_router(mock_route_decision_full_low)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(messages, "openai")
 
             # Verify structure
@@ -812,7 +813,9 @@ class TestIntegration:
                     assert item["image_url"]["detail"] == "low"
             assert has_image
 
-    def test_full_compression_flow_anthropic(self, small_image_base64, mock_route_decision_full_low):
+    def test_full_compression_flow_anthropic(
+        self, small_image_base64, mock_route_decision_full_low
+    ):
         """Test complete compression flow for Anthropic format."""
         messages = [
             {
@@ -824,17 +827,17 @@ class TestIntegration:
                         "source": {
                             "type": "base64",
                             "media_type": "image/png",
-                            "data": small_image_base64
-                        }
-                    }
-                ]
+                            "data": small_image_base64,
+                        },
+                    },
+                ],
             }
         ]
 
         compressor = ImageCompressor()
         mock_router = create_mock_router(mock_route_decision_full_low)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(messages, "anthropic")
 
             # Should return valid messages
@@ -850,20 +853,20 @@ class TestIntegration:
                     {"type": "text", "text": "Compare these images"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"}
-                    }
-                ]
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
             }
         ]
 
         compressor = ImageCompressor()
         mock_router = create_mock_router(mock_route_decision_full_low)
 
-        with patch.object(compressor, '_get_router', return_value=mock_router):
+        with patch.object(compressor, "_get_router", return_value=mock_router):
             result = compressor.compress(messages, "openai")
 
             # Both images should be processed
@@ -910,17 +913,16 @@ class TestContentRouterIntegration:
 
     def test_content_router_optimize_images_works(self):
         """Test optimize_images_in_messages returns valid result."""
-        from headroom.transforms.content_router import ContentRouter
         from unittest.mock import MagicMock
+
+        from headroom.transforms.content_router import ContentRouter
 
         router = ContentRouter()
         tokenizer = MagicMock()
 
         # Simple message without images
         messages = [{"role": "user", "content": "Hello"}]
-        result, metrics = router.optimize_images_in_messages(
-            messages, tokenizer, provider="openai"
-        )
+        result, metrics = router.optimize_images_in_messages(messages, tokenizer, provider="openai")
 
         assert result == messages
         assert "images_optimized" in metrics

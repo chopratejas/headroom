@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from ..models import Memory, MemoryCategory, ScopeLevel
+from ..models import Memory, ScopeLevel
 from ..ports import MemoryFilter
 
 
@@ -166,7 +166,7 @@ class SQLiteMemoryStore:
             "created_at": memory.created_at.isoformat(),
             "valid_from": memory.valid_from.isoformat(),
             "valid_until": memory.valid_until.isoformat() if memory.valid_until else None,
-            "category": memory.category.value,
+            "category": "",  # Deprecated - kept for backwards compatibility
             "importance": memory.importance,
             "supersedes": memory.supersedes,
             "superseded_by": memory.superseded_by,
@@ -191,7 +191,6 @@ class SQLiteMemoryStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             valid_from=datetime.fromisoformat(row["valid_from"]),
             valid_until=datetime.fromisoformat(row["valid_until"]) if row["valid_until"] else None,
-            category=MemoryCategory(row["category"]),
             importance=row["importance"],
             supersedes=row["supersedes"],
             superseded_by=row["superseded_by"],
@@ -428,15 +427,6 @@ class SQLiteMemoryStore:
 
             if scope_conditions:
                 conditions.append(f"({' OR '.join(scope_conditions)})")
-
-        # Category filtering
-        if filter.categories is not None and len(filter.categories) > 0:
-            category_values = [
-                c.value if isinstance(c, MemoryCategory) else c for c in filter.categories
-            ]
-            placeholders = ", ".join("?" * len(category_values))
-            conditions.append(f"category IN ({placeholders})")
-            params.extend(category_values)
 
         # Temporal filtering
         if filter.created_after is not None:

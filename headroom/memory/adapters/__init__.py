@@ -5,6 +5,7 @@ This module provides concrete implementations of the memory system's ports:
 - FTS5TextIndex: SQLite FTS5 full-text search index
 - HNSWVectorIndex: HNSW-based vector index using hnswlib (optional)
 - LRUMemoryCache: Thread-safe LRU cache for hot memories
+- InMemoryGraphStore: In-memory graph store for knowledge graphs
 - LocalEmbedder: sentence-transformers embedding (local, optional)
 - OpenAIEmbedder: OpenAI API embedding (cloud, optional)
 - OllamaEmbedder: Ollama API embedding (local server, optional)
@@ -16,6 +17,7 @@ deferred until the adapter is actually used.
 # Core adapters (no external dependencies beyond sqlite3)
 from headroom.memory.adapters.cache import LRUMemoryCache
 from headroom.memory.adapters.fts5 import FTS5TextIndex
+from headroom.memory.adapters.graph import InMemoryGraphStore
 from headroom.memory.adapters.sqlite import SQLiteMemoryStore
 
 # Check for optional dependencies availability
@@ -69,6 +71,7 @@ def __getattr__(name: str) -> type:
 __all__ = [
     # Core adapters (always available)
     "FTS5TextIndex",
+    "InMemoryGraphStore",
     "LRUMemoryCache",
     "SQLiteMemoryStore",
     # Optional adapters (lazy-loaded)

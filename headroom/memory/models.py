@@ -20,17 +20,6 @@ class ScopeLevel(Enum):
     TURN = "turn"  # Ephemeral, single LLM call
 
 
-class MemoryCategory(Enum):
-    """Memory classification categories."""
-
-    PREFERENCE = "preference"  # User preferences ("likes Rust")
-    FACT = "fact"  # Factual information ("auth is in src/")
-    CONTEXT = "context"  # Contextual info ("working on CLI tool")
-    ENTITY = "entity"  # Entity reference ("John from team X")
-    DECISION = "decision"  # Decisions made ("chose OAuth over JWT")
-    INSIGHT = "insight"  # Derived insights ("user is senior dev")
-
-
 @dataclass
 class Memory:
     """A hierarchically-scoped memory with temporal awareness."""
@@ -51,7 +40,6 @@ class Memory:
     valid_until: datetime | None = None  # None = current/active
 
     # Classification
-    category: MemoryCategory = MemoryCategory.FACT
     importance: float = 0.5  # 0.0 - 1.0
 
     # Lineage (for supersession and bubbling)
@@ -101,7 +89,6 @@ class Memory:
             "created_at": self.created_at.isoformat(),
             "valid_from": self.valid_from.isoformat(),
             "valid_until": self.valid_until.isoformat() if self.valid_until else None,
-            "category": self.category.value,
             "importance": self.importance,
             "supersedes": self.supersedes,
             "superseded_by": self.superseded_by,
@@ -133,7 +120,6 @@ class Memory:
             valid_until=datetime.fromisoformat(data["valid_until"])
             if data.get("valid_until")
             else None,
-            category=MemoryCategory(data["category"]),
             importance=data["importance"],
             supersedes=data.get("supersedes"),
             superseded_by=data.get("superseded_by"),
