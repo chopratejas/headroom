@@ -87,8 +87,8 @@ def anthropic_api_key():
 class TestMemoryHeaderValidation:
     """Test user ID header validation."""
 
-    def test_missing_user_id_returns_400(self, memory_client, anthropic_api_key):
-        """Request without x-headroom-user-id should return 400 when memory enabled."""
+    def test_missing_user_id_uses_default(self, memory_client, anthropic_api_key):
+        """Request without x-headroom-user-id should use 'default' user for simple DevEx."""
         if not anthropic_api_key:
             pytest.skip("ANTHROPIC_API_KEY not set")
 
@@ -97,7 +97,7 @@ class TestMemoryHeaderValidation:
             headers={
                 "x-api-key": anthropic_api_key,
                 "anthropic-version": "2023-06-01",
-                # Note: NOT setting x-headroom-user-id
+                # Note: NOT setting x-headroom-user-id - should default to "default"
             },
             json={
                 "model": "claude-sonnet-4-20250514",
@@ -105,10 +105,8 @@ class TestMemoryHeaderValidation:
                 "messages": [{"role": "user", "content": "Hello"}],
             },
         )
-        assert response.status_code == 400
-        error = response.json()
-        assert "error" in error
-        assert "x-headroom-user-id" in error["error"]["message"]
+        # Should succeed, not return 400
+        assert response.status_code == 200
 
     def test_with_user_id_succeeds(self, memory_client, anthropic_api_key):
         """Request with x-headroom-user-id should succeed."""

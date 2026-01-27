@@ -103,8 +103,8 @@ Usage with OpenAI-compatible clients:
         ""
         if not config.memory_enabled
         else '''
-Memory Requirements:
-  Set x-headroom-user-id header to identify the user for memory scoping.
+Memory:
+  Memories are scoped per user. Set x-headroom-user-id header for multi-user setups (defaults to 'default').
 '''
     }
 Endpoints:
@@ -488,7 +488,7 @@ Documentation: https://github.com/headroom-sdk/headroom
     proxy_parser.add_argument(
         "--memory",
         action="store_true",
-        help="Enable persistent user memory (requires x-headroom-user-id header)",
+        help="Enable persistent user memory (uses x-headroom-user-id header if set, otherwise 'default')",
     )
     proxy_parser.add_argument(
         "--memory-backend",

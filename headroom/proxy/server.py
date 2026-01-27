@@ -1343,22 +1343,10 @@ class HeadroomProxy:
                     detail=f"Budget exceeded for {self.config.budget_period} period",
                 )
 
-        # Memory: Validate user ID when memory is enabled
+        # Memory: Get user ID when memory is enabled (fallback to "default" for simple DevEx)
         memory_user_id: str | None = None
         if self.memory_handler:
-            memory_user_id = headers.get("x-headroom-user-id")
-            if not memory_user_id:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "type": "error",
-                        "error": {
-                            "type": "invalid_request_error",
-                            "message": "x-headroom-user-id header is required when memory is enabled. "
-                            "Set this header to identify the user for memory scoping.",
-                        },
-                    },
-                )
+            memory_user_id = headers.get("x-headroom-user-id", "default")
 
         # Check cache (non-streaming only)
         cache_hit = False
@@ -3070,7 +3058,9 @@ class HeadroomProxy:
                 # Use actual tokens from API if available, fallback to estimates
                 # Note: use 'is not None' instead of 'or' to handle 0 correctly
                 api_input_tokens = stream_state["input_tokens"]
-                total_input_tokens = api_input_tokens if api_input_tokens is not None else optimized_tokens
+                total_input_tokens = (
+                    api_input_tokens if api_input_tokens is not None else optimized_tokens
+                )
                 cache_read_tokens = stream_state["cache_read_input_tokens"]
                 cache_write_tokens = stream_state["cache_creation_input_tokens"]
 
