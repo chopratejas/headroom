@@ -69,7 +69,13 @@ from headroom.ccr import (
     get_batch_context_store,
     parse_tool_call,
 )
-from headroom.config import CacheAlignerConfig, CCRConfig, RollingWindowConfig, SmartCrusherConfig
+from headroom.config import (
+    CacheAlignerConfig,
+    CCRConfig,
+    IntelligentContextConfig,
+    RollingWindowConfig,
+    SmartCrusherConfig,
+)
 from headroom.providers import AnthropicProvider, OpenAIProvider
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
 from headroom.telemetry import get_telemetry_collector
@@ -82,6 +88,7 @@ from headroom.transforms import (
     CodeCompressorConfig,
     ContentRouter,
     ContentRouterConfig,
+    IntelligentContextManager,
     RollingWindow,
     SmartCrusher,
     TransformPipeline,
@@ -229,6 +236,11 @@ class ProxyConfig:
     # Smart content routing (routes each message to optimal compressor)
     smart_routing: bool = True  # Use ContentRouter for intelligent compression
 
+    # Intelligent context management (score-based dropping instead of age-based)
+    intelligent_context: bool = True  # Use IntelligentContextManager instead of RollingWindow
+    intelligent_context_scoring: bool = True  # Use multi-factor importance scoring
+    intelligent_context_compress_first: bool = True  # Try deeper compression before dropping
+
     # Caching
     cache_enabled: bool = True
     cache_ttl_seconds: int = 3600  # 1 hour
@@ -262,6 +274,11 @@ class ProxyConfig:
     # Timeouts
     request_timeout_seconds: int = 300
     connect_timeout_seconds: int = 10
+
+    # Connection pool (for high concurrency with multiple agents)
+    max_connections: int = 500  # Max total connections to upstream APIs
+    max_keepalive_connections: int = 100  # Max idle connections to keep alive
+    http2: bool = True  # Enable HTTP/2 multiplexing for better throughput
 
     # Memory System
     memory_enabled: bool = False  # Enable memory integration
@@ -849,6 +866,32 @@ class HeadroomProxy:
         self.openai_provider = OpenAIProvider()
 
         # Initialize transforms based on routing mode
+        # Choose context manager: IntelligentContextManager (smart) or RollingWindow (legacy)
+        if config.intelligent_context:
+            # Get TOIN instance for learned pattern integration
+            toin = get_toin() if config.intelligent_context_scoring else None
+            context_manager = IntelligentContextManager(
+                config=IntelligentContextConfig(
+                    enabled=True,
+                    keep_system=True,
+                    keep_last_turns=config.keep_last_turns,
+                    use_importance_scoring=config.intelligent_context_scoring,
+                    toin_integration=config.intelligent_context_scoring,
+                    compress_threshold=0.10 if config.intelligent_context_compress_first else 0.0,
+                ),
+                toin=toin,
+            )
+            self._context_manager_status = "intelligent"
+        else:
+            context_manager = RollingWindow(
+                RollingWindowConfig(
+                    enabled=True,
+                    keep_system=True,
+                    keep_last_turns=config.keep_last_turns,
+                )
+            )
+            self._context_manager_status = "rolling_window"
+
         if config.smart_routing:
             # Smart routing: ContentRouter handles all content types intelligently
             # It lazy-loads compressors (including LLMLingua) only when needed
@@ -859,13 +902,7 @@ class HeadroomProxy:
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=True)),
                 ContentRouter(router_config),
-                RollingWindow(
-                    RollingWindowConfig(
-                        enabled=True,
-                        keep_system=True,
-                        keep_last_turns=config.keep_last_turns,
-                    )
-                ),
+                context_manager,
             ]
             self._llmlingua_status = "lazy" if config.llmlingua_enabled else "disabled"
             self._code_aware_status = "lazy" if config.code_aware_enabled else "disabled"
@@ -884,13 +921,7 @@ class HeadroomProxy:
                         inject_retrieval_marker=config.ccr_inject_tool,  # Add CCR markers
                     ),
                 ),
-                RollingWindow(
-                    RollingWindowConfig(
-                        enabled=True,
-                        keep_system=True,
-                        keep_last_turns=config.keep_last_turns,
-                    )
-                ),
+                context_manager,
             ]
             # Add LLMLingua if enabled and available
             self._llmlingua_status = self._setup_llmlingua(config, transforms)
@@ -1083,12 +1114,22 @@ class HeadroomProxy:
                 read=self.config.request_timeout_seconds,
                 write=self.config.request_timeout_seconds,
                 pool=self.config.connect_timeout_seconds,
-            )
+            ),
+            limits=httpx.Limits(
+                max_connections=self.config.max_connections,
+                max_keepalive_connections=self.config.max_keepalive_connections,
+            ),
+            http2=self.config.http2,
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
         logger.info(f"Caching: {'ENABLED' if self.config.cache_enabled else 'DISABLED'}")
         logger.info(f"Rate Limiting: {'ENABLED' if self.config.rate_limit_enabled else 'DISABLED'}")
+        logger.info(
+            f"Connection Pool: max_connections={self.config.max_connections}, "
+            f"max_keepalive={self.config.max_keepalive_connections}, "
+            f"http2={'ENABLED' if self.config.http2 else 'DISABLED'}"
+        )
 
         # Smart routing status
         if self.config.smart_routing:
@@ -1604,30 +1645,29 @@ class HeadroomProxy:
                             )
                         }
 
-                        # Use a fresh client for CCR continuations
+                        # Reuse main client for CCR continuations (connection pooling)
                         logger.info(f"CCR: Making continuation request with {len(msgs)} messages")
-                        async with httpx.AsyncClient(
-                            timeout=httpx.Timeout(120.0),
-                        ) as ccr_client:
-                            try:
-                                cont_response = await ccr_client.post(
-                                    url,
-                                    json=continuation_body,
-                                    headers=continuation_headers,
-                                )
-                                logger.info(
-                                    f"CCR: Got response status={cont_response.status_code}, "
-                                    f"content-encoding={cont_response.headers.get('content-encoding')}"
-                                )
-                                result: dict[str, Any] = cont_response.json()
-                                logger.info("CCR: Parsed JSON successfully")
-                                return result
-                            except Exception as e:
-                                logger.error(
-                                    f"CCR: API call failed: {e}, "
-                                    f"response headers: {dict(cont_response.headers) if 'cont_response' in dir() else 'N/A'}"
-                                )
-                                raise
+                        assert self.http_client is not None, "HTTP client not initialized"
+                        try:
+                            cont_response = await self.http_client.post(
+                                url,
+                                json=continuation_body,
+                                headers=continuation_headers,
+                                timeout=httpx.Timeout(120.0),  # Override timeout for CCR
+                            )
+                            logger.info(
+                                f"CCR: Got response status={cont_response.status_code}, "
+                                f"content-encoding={cont_response.headers.get('content-encoding')}"
+                            )
+                            result: dict[str, Any] = cont_response.json()
+                            logger.info("CCR: Parsed JSON successfully")
+                            return result
+                        except Exception as e:
+                            logger.error(
+                                f"CCR: API call failed: {e}, "
+                                f"response headers: {dict(cont_response.headers) if 'cont_response' in dir() else 'N/A'}"
+                            )
+                            raise
 
                     # Handle CCR tool calls
                     try:
@@ -5872,8 +5912,18 @@ def _get_code_aware_banner_status(config: ProxyConfig) -> str:
         return "DISABLED"
 
 
-def run_server(config: ProxyConfig | None = None):
-    """Run the proxy server."""
+def run_server(
+    config: ProxyConfig | None = None,
+    workers: int = 1,
+    limit_concurrency: int = 1000,
+):
+    """Run the proxy server.
+
+    Args:
+        config: Proxy configuration
+        workers: Number of worker processes (use N for multi-core scaling)
+        limit_concurrency: Max concurrent connections before 503 response
+    """
     if not FASTAPI_AVAILABLE:
         print("ERROR: FastAPI required. Install: pip install fastapi uvicorn httpx")
         sys.exit(1)
@@ -5884,12 +5934,17 @@ def run_server(config: ProxyConfig | None = None):
     llmlingua_status = _get_llmlingua_banner_status(config)
     code_aware_status = _get_code_aware_banner_status(config)
 
+    # Format connection pool info
+    pool_info = f"max={config.max_connections}, keepalive={config.max_keepalive_connections}"
+    http2_status = "ENABLED" if config.http2 else "DISABLED"
+
     print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                      HEADROOM PROXY SERVER                           ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  Version: 1.0.0                                                      ║
 ║  Listening: http://{config.host}:{config.port:<5}                                      ║
+║  Workers: {workers:<3}  Concurrency Limit: {limit_concurrency:<5}                          ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -5899,6 +5954,8 @@ def run_server(config: ProxyConfig | None = None):
 ║    Cost Tracking:   {"ENABLED " if config.cost_tracking_enabled else "DISABLED"}   (budget: {"$" + str(config.budget_limit_usd) + "/" + config.budget_period if config.budget_limit_usd else "unlimited"})          ║
 ║    LLMLingua:       {llmlingua_status:<52}║
 ║    Code-Aware:      {code_aware_status:<52}║
+║    HTTP/2:          {http2_status:<52}║
+║    Conn Pool:       {pool_info:<52}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  USAGE:                                                              ║
 ║    Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude     ║
@@ -5923,7 +5980,14 @@ def run_server(config: ProxyConfig | None = None):
 ╚══════════════════════════════════════════════════════════════════════╝
 """)
 
-    uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
+    uvicorn.run(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level="warning",
+        workers=workers if workers > 1 else None,  # None = single process (default)
+        limit_concurrency=limit_concurrency,
+    )
 
 
 def _get_env_bool(name: str, default: bool) -> bool:
@@ -5969,6 +6033,34 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})"
+    )
+
+    # Connection pool (scalability)
+    parser.add_argument(
+        "--max-connections",
+        type=int,
+        default=500,
+        help="Max connections to upstream APIs (default: 500)",
+    )
+    parser.add_argument(
+        "--max-keepalive", type=int, default=100, help="Max keepalive connections (default: 100)"
+    )
+    parser.add_argument(
+        "--no-http2",
+        action="store_true",
+        help="Disable HTTP/2 (enabled by default for better throughput)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of worker processes (default: 1, use N for multi-core)",
+    )
+    parser.add_argument(
+        "--limit-concurrency",
+        type=int,
+        default=1000,
+        help="Max concurrent connections before 503 (default: 1000)",
     )
 
     # Optimization
@@ -6087,6 +6179,14 @@ if __name__ == "__main__":
         llmlingua_device=_get_env_str("HEADROOM_LLMLINGUA_DEVICE", args.llmlingua_device),
         llmlingua_target_rate=_get_env_float("HEADROOM_LLMLINGUA_RATE", args.llmlingua_rate),
         code_aware_enabled=code_aware_enabled,
+        # Connection pool settings
+        max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", args.max_connections),
+        max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),
+        http2=not args.no_http2 and _get_env_bool("HEADROOM_HTTP2", True),
     )
 
-    run_server(config)
+    # Get worker and concurrency settings
+    workers = _get_env_int("HEADROOM_WORKERS", args.workers)
+    limit_concurrency = _get_env_int("HEADROOM_LIMIT_CONCURRENCY", args.limit_concurrency)
+
+    run_server(config, workers=workers, limit_concurrency=limit_concurrency)

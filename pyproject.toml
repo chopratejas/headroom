@@ -68,7 +68,7 @@ relevance = [
 proxy = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
-    "httpx>=0.24.0",
+    "httpx[http2]>=0.24.0",  # http2 extra enables h2 for HTTP/2 support
 ]
 # Report generation
 reports = [
