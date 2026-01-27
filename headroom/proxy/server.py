@@ -478,9 +478,18 @@ class CostTracker:
         model: str,
         input_tokens: int,
         output_tokens: int,
-        cached_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> float | None:
-        """Estimate cost in USD using LiteLLM's pricing database."""
+        """Estimate cost in USD using LiteLLM's pricing database.
+
+        Args:
+            model: Model name for pricing lookup
+            input_tokens: Input tokens sent to API (does NOT include cache_read, which is served from cache)
+            output_tokens: Output tokens
+            cache_read_tokens: Tokens read from cache (charged at ~10% of input rate)
+            cache_write_tokens: Tokens written to cache - this is a SUBSET of input_tokens (charged at ~125% of input rate)
+        """
         if not LITELLM_AVAILABLE:
             logger.warning("LiteLLM not available - cannot calculate costs")
             return None
@@ -488,7 +497,13 @@ class CostTracker:
         try:
             # cost_per_token returns (total_input_cost, total_output_cost) for the given token counts
             # Despite the name, it returns total cost not per-token cost
-            regular_input = input_tokens - cached_tokens
+
+            # Anthropic's token semantics (all three are SEPARATE, not overlapping):
+            # - input_tokens: tokens sent that are NOT cached (neither read nor written)
+            # - cache_read_input_tokens: tokens served from existing cache
+            # - cache_creation_input_tokens: tokens being written to cache
+            # Total billable = input_tokens + cache_read + cache_write (each at different rates)
+            regular_input = input_tokens  # Don't subtract cache_write, they're separate
 
             # Get cost for regular (non-cached) input tokens
             input_cost, _ = litellm.cost_per_token(
@@ -504,33 +519,44 @@ class CostTracker:
                 completion_tokens=output_tokens,
             )
 
-            # For cached tokens, use LiteLLM's cache_read_input_token_cost if available
-            cached_cost = 0.0
-            if cached_tokens > 0:
-                try:
-                    # Try to get the specific cache read cost from LiteLLM's pricing database
-                    model_info = litellm.get_model_info(model)
-                    cache_read_cost_per_token = model_info.get("cache_read_input_token_cost")
-                    if cache_read_cost_per_token:
-                        cached_cost = cached_tokens * cache_read_cost_per_token
-                    else:
-                        # Fallback: most providers charge ~10% of input price for cache reads
-                        cached_full_cost, _ = litellm.cost_per_token(
-                            model=model,
-                            prompt_tokens=cached_tokens,
-                            completion_tokens=0,
-                        )
-                        cached_cost = cached_full_cost * 0.1
-                except Exception:
-                    # Fallback if get_model_info fails
-                    cached_full_cost, _ = litellm.cost_per_token(
+            # Get model info for cache pricing
+            model_info: dict[str, Any] = {}
+            try:
+                model_info = dict(litellm.get_model_info(model))
+            except Exception:
+                pass
+
+            # Calculate cache read cost (typically 10% of input price)
+            cache_read_cost = 0.0
+            if cache_read_tokens > 0:
+                cache_read_cost_per_token = model_info.get("cache_read_input_token_cost")
+                if cache_read_cost_per_token:
+                    cache_read_cost = cache_read_tokens * cache_read_cost_per_token
+                else:
+                    # Fallback: most providers charge ~10% of input price for cache reads
+                    cache_read_full_cost, _ = litellm.cost_per_token(
                         model=model,
-                        prompt_tokens=cached_tokens,
+                        prompt_tokens=cache_read_tokens,
                         completion_tokens=0,
                     )
-                    cached_cost = cached_full_cost * 0.1
+                    cache_read_cost = cache_read_full_cost * 0.1
 
-            total_cost = input_cost + cached_cost + output_cost
+            # Calculate cache write cost (typically 125% of input price)
+            cache_write_cost = 0.0
+            if cache_write_tokens > 0:
+                cache_write_cost_per_token = model_info.get("cache_creation_input_token_cost")
+                if cache_write_cost_per_token:
+                    cache_write_cost = cache_write_tokens * cache_write_cost_per_token
+                else:
+                    # Fallback: most providers charge ~125% of input price for cache writes
+                    cache_write_full_cost, _ = litellm.cost_per_token(
+                        model=model,
+                        prompt_tokens=cache_write_tokens,
+                        completion_tokens=0,
+                    )
+                    cache_write_cost = cache_write_full_cost * 1.25
+
+            total_cost = input_cost + cache_read_cost + cache_write_cost + output_cost
             return float(total_cost) if total_cost > 0 else None
 
         except Exception as e:
@@ -1675,25 +1701,39 @@ class HeadroomProxy:
 
                 total_latency = (time.time() - start_time) * 1000
 
-                # Parse response for output tokens and cache info
+                # Parse response for actual token counts from API
+                actual_input_tokens = optimized_tokens  # fallback
                 output_tokens = 0
                 cache_read_tokens = 0
+                cache_write_tokens = 0
                 if resp_json:
                     usage = resp_json.get("usage", {})
+                    actual_input_tokens = usage.get("input_tokens", optimized_tokens)
                     output_tokens = usage.get("output_tokens", 0)
                     # Anthropic returns cache_read_input_tokens for cached prompt tokens
                     # These are charged at 10% of the input price
                     cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                    # Anthropic returns cache_creation_input_tokens for tokens written to cache
+                    # These are charged at 125% of the input price
+                    cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
 
-                # Calculate cost (accounting for cached tokens at discounted rate)
+                # Calculate cost using actual API tokens with proper cache pricing
                 cost_usd = None
                 savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        actual_input_tokens,
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
                     )
                     original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        original_tokens,
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -1710,11 +1750,11 @@ class HeadroomProxy:
                         tokens_saved=tokens_saved,
                     )
 
-                # Record metrics
+                # Record metrics with actual API tokens
                 await self.metrics.record_request(
                     provider="anthropic",
                     model=model,
-                    input_tokens=optimized_tokens,
+                    input_tokens=actual_input_tokens,
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
@@ -2876,6 +2916,83 @@ class HeadroomProxy:
 
         return None
 
+    def _parse_sse_usage_from_buffer(
+        self, stream_state: dict[str, Any], provider: str
+    ) -> dict[str, int] | None:
+        """Parse usage from buffered SSE data, handling split chunks.
+
+        Processes complete SSE events (ending with double newline) from the buffer
+        and removes them from the buffer. Incomplete events are kept in the buffer
+        for the next chunk.
+        """
+        buffer = stream_state["sse_buffer"]
+        usage_found: dict[str, int] = {}
+
+        # Process complete SSE events (separated by double newlines)
+        while "\n\n" in buffer:
+            event_end = buffer.index("\n\n")
+            event_text = buffer[: event_end + 2]
+            buffer = buffer[event_end + 2 :]
+
+            # Parse this complete event
+            for line in event_text.split("\n"):
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+
+                try:
+                    data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                if provider == "anthropic":
+                    event_type = data.get("type", "")
+                    if event_type == "message_start":
+                        msg = data.get("message", {})
+                        msg_usage = msg.get("usage", {})
+                        if msg_usage:
+                            usage_found["input_tokens"] = msg_usage.get("input_tokens", 0)
+                            usage_found["cache_read_input_tokens"] = msg_usage.get(
+                                "cache_read_input_tokens", 0
+                            )
+                            usage_found["cache_creation_input_tokens"] = msg_usage.get(
+                                "cache_creation_input_tokens", 0
+                            )
+                            # INFO logging for cache token tracking (temporary for debugging)
+                            logger.info(
+                                f"[CACHE] Anthropic usage: input={usage_found.get('input_tokens')}, "
+                                f"cache_read={usage_found.get('cache_read_input_tokens')}, "
+                                f"cache_write={usage_found.get('cache_creation_input_tokens')}"
+                            )
+                    elif event_type == "message_delta":
+                        delta_usage = data.get("usage", {})
+                        if delta_usage:
+                            usage_found["output_tokens"] = delta_usage.get("output_tokens", 0)
+
+                elif provider == "openai":
+                    chunk_usage = data.get("usage")
+                    if chunk_usage:
+                        usage_found["input_tokens"] = chunk_usage.get("prompt_tokens", 0)
+                        usage_found["output_tokens"] = chunk_usage.get("completion_tokens", 0)
+                        details = chunk_usage.get("prompt_tokens_details", {})
+                        usage_found["cache_read_input_tokens"] = details.get("cached_tokens", 0)
+
+                elif provider == "gemini":
+                    usage_meta = data.get("usageMetadata")
+                    if usage_meta:
+                        usage_found["input_tokens"] = usage_meta.get("promptTokenCount", 0)
+                        usage_found["output_tokens"] = usage_meta.get("candidatesTokenCount", 0)
+                        usage_found["cache_read_input_tokens"] = usage_meta.get(
+                            "cachedContentTokenCount", 0
+                        )
+
+        # Update buffer with remaining incomplete data
+        stream_state["sse_buffer"] = buffer
+
+        return usage_found if usage_found else None
+
     async def _stream_response(
         self,
         url: str,
@@ -2905,6 +3022,7 @@ class HeadroomProxy:
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
             "total_bytes": 0,
+            "sse_buffer": "",  # Buffer for incomplete SSE events
         }
 
         async def generate():
@@ -2915,8 +3033,11 @@ class HeadroomProxy:
                     async for chunk in response.aiter_bytes():
                         stream_state["total_bytes"] += len(chunk)
 
-                        # Parse usage from SSE events
-                        usage = self._parse_sse_usage(chunk, provider)
+                        # Buffer SSE data to handle chunks split across calls
+                        stream_state["sse_buffer"] += chunk.decode("utf-8", errors="ignore")
+
+                        # Parse complete SSE events from buffer
+                        usage = self._parse_sse_usage_from_buffer(stream_state, provider)
                         if usage:
                             if "input_tokens" in usage:
                                 stream_state["input_tokens"] = usage["input_tokens"]
@@ -2946,28 +3067,67 @@ class HeadroomProxy:
                         f"[{request_id}] No usage in stream, estimated {output_tokens} output tokens"
                     )
 
-                # Use actual input tokens from API if available
+                # Use actual tokens from API if available, fallback to estimates
+                # Note: use 'is not None' instead of 'or' to handle 0 correctly
+                api_input_tokens = stream_state["input_tokens"]
+                total_input_tokens = api_input_tokens if api_input_tokens is not None else optimized_tokens
                 cache_read_tokens = stream_state["cache_read_input_tokens"]
+                cache_write_tokens = stream_state["cache_creation_input_tokens"]
 
-                # Calculate cost (accounting for cached tokens at discounted rate)
+                # INFO logging for token tracking (temporary for debugging)
+                if api_input_tokens is None:
+                    logger.info(
+                        f"[{request_id}] No input_tokens from API, using estimate: {optimized_tokens}"
+                    )
+                else:
+                    logger.info(
+                        f"[{request_id}] Final tokens: input={api_input_tokens}, "
+                        f"cache_read={cache_read_tokens}, cache_write={cache_write_tokens}"
+                    )
+
+                # Normalize input tokens based on provider semantics:
+                # - Anthropic: input_tokens excludes cache_read (it's separate), pass as-is
+                # - OpenAI/Gemini: input_tokens includes cache_read (it's a subset), subtract it
+                if provider == "anthropic":
+                    # Anthropic's input_tokens = non-cached tokens sent (excludes cache_read)
+                    non_cached_input = total_input_tokens
+                else:
+                    # OpenAI/Gemini's input_tokens = total (includes cache_read)
+                    non_cached_input = total_input_tokens - cache_read_tokens
+
+                # Calculate cost using actual API tokens with proper cache pricing
                 cost_usd = None
                 savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        non_cached_input,
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
                     )
-                    original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
+                    # For savings calculation, compare compression benefit using base token rates only
+                    # (cache effects are Anthropic's feature, not Headroom's compression benefit)
+                    compressed_base_cost = self.cost_tracker.estimate_cost(
+                        model,
+                        non_cached_input,
+                        output_tokens,
                     )
-                    if cost_usd and original_cost:
-                        savings_usd = original_cost - cost_usd
+                    original_base_cost = self.cost_tracker.estimate_cost(
+                        model,
+                        original_tokens,
+                        output_tokens,
+                    )
+                    if cost_usd:
                         self.cost_tracker.record_cost(cost_usd)
-                        self.cost_tracker.record_savings(savings_usd)
+                    if compressed_base_cost and original_base_cost:
+                        savings_usd = original_base_cost - compressed_base_cost
+                        self.cost_tracker.record_savings(max(0, savings_usd))
 
                 await self.metrics.record_request(
                     provider=provider,
                     model=model,
-                    input_tokens=optimized_tokens,
+                    input_tokens=total_input_tokens,  # Record total for accurate tracking
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
@@ -3158,11 +3318,13 @@ class HeadroomProxy:
                 response = await self._retry_request("POST", url, headers, body)
                 total_latency = (time.time() - start_time) * 1000
 
+                total_input_tokens = optimized_tokens  # fallback
                 output_tokens = 0
                 cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
+                    total_input_tokens = usage.get("prompt_tokens", optimized_tokens)
                     output_tokens = usage.get("completion_tokens", 0)
                     # OpenAI returns cached_tokens in prompt_tokens_details
                     # These are charged at 50% of the input price
@@ -3171,14 +3333,24 @@ class HeadroomProxy:
                 except Exception:
                     pass
 
-                # Cost tracking (accounting for cached tokens at discounted rate)
+                # For OpenAI, prompt_tokens is TOTAL (includes cached)
+                # Normalize to non-cached input for consistent cost calculation
+                non_cached_input = total_input_tokens - cache_read_tokens
+
+                # Cost tracking using actual API tokens
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        non_cached_input,  # Pass non-cached portion
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
                     original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        original_tokens,
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -3191,11 +3363,11 @@ class HeadroomProxy:
                         messages, model, response.content, dict(response.headers), tokens_saved
                     )
 
-                # Metrics
+                # Metrics with actual API tokens (total, for accurate tracking)
                 await self.metrics.record_request(
                     provider="openai",
                     model=model,
-                    input_tokens=optimized_tokens,
+                    input_tokens=total_input_tokens,
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
@@ -3881,11 +4053,13 @@ class HeadroomProxy:
                 response = await self._retry_request("POST", url, headers, body)
                 total_latency = (time.time() - start_time) * 1000
 
+                total_input_tokens = original_tokens  # fallback
                 output_tokens = 0
                 cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
+                    total_input_tokens = usage.get("input_tokens", original_tokens)
                     output_tokens = usage.get("output_tokens", 0)
                     # OpenAI returns cached_tokens in prompt_tokens_details (or input_tokens_details)
                     prompt_details = usage.get(
@@ -3895,20 +4069,27 @@ class HeadroomProxy:
                 except Exception:
                     pass
 
-                # Cost tracking (accounting for cached tokens at discounted rate)
+                # For OpenAI, input_tokens is TOTAL (includes cached)
+                # Normalize to non-cached input for consistent cost calculation
+                non_cached_input = total_input_tokens - cache_read_tokens
+
+                # Cost tracking using actual API tokens
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        non_cached_input,  # Pass non-cached portion
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
                     if cost_usd:
                         self.cost_tracker.record_cost(cost_usd)
 
-                # Metrics
+                # Metrics with actual API tokens (total, for accurate tracking)
                 await self.metrics.record_request(
                     provider="openai",
                     model=model,
-                    input_tokens=original_tokens,
+                    input_tokens=total_input_tokens,
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
@@ -3916,7 +4097,7 @@ class HeadroomProxy:
                     savings_usd=savings_usd or 0,
                 )
 
-                logger.info(f"[{request_id}] /v1/responses {model}: {original_tokens:,} tokens")
+                logger.info(f"[{request_id}] /v1/responses {model}: {total_input_tokens:,} tokens")
 
                 # Remove compression headers
                 response_headers = dict(response.headers)
@@ -4138,11 +4319,13 @@ class HeadroomProxy:
                 response = await self._retry_request("POST", url, headers, body)
                 total_latency = (time.time() - start_time) * 1000
 
+                total_input_tokens = optimized_tokens  # fallback
                 output_tokens = 0
                 cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usageMetadata", {})
+                    total_input_tokens = usage.get("promptTokenCount", optimized_tokens)
                     output_tokens = usage.get("candidatesTokenCount", 0)
                     # Gemini returns cachedContentTokenCount for context-cached tokens
                     # These are charged at 10-25% of the input price depending on model
@@ -4150,25 +4333,35 @@ class HeadroomProxy:
                 except Exception:
                     pass
 
-                # Cost tracking (accounting for cached tokens at discounted rate)
+                # For Gemini, promptTokenCount is TOTAL (includes cached)
+                # Normalize to non-cached input for consistent cost calculation
+                non_cached_input = total_input_tokens - cache_read_tokens
+
+                # Cost tracking using actual API tokens
                 cost_usd = savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        non_cached_input,  # Pass non-cached portion
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
                     original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens, cached_tokens=cache_read_tokens
+                        model,
+                        original_tokens,
+                        output_tokens,
+                        cache_read_tokens=cache_read_tokens,
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
                         self.cost_tracker.record_cost(cost_usd)
                         self.cost_tracker.record_savings(savings_usd)
 
-                # Metrics
+                # Metrics with actual API tokens (total, for accurate tracking)
                 await self.metrics.record_request(
                     provider="gemini",
                     model=model,
-                    input_tokens=optimized_tokens,
+                    input_tokens=total_input_tokens,
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,

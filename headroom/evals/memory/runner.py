@@ -338,7 +338,8 @@ IMPORTANT: Every event MUST have a specific date. If you cannot determine the da
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
-                return data.get("memories", [])
+                memories: list[dict[str, str]] = data.get("memories", [])
+                return memories
         except Exception as e:
             logger.warning(f"Memory extraction failed: {e}")
 
@@ -359,7 +360,7 @@ IMPORTANT: Every event MUST have a specific date. If you cannot determine the da
         if self.memory is None:
             raise RuntimeError("Memory system not initialized")
 
-        memories_data = []
+        memories_data: list[dict[str, Any]] = []
         user_id = f"locomo_{conversation.sample_id}"
 
         if self.config.extract_memories:

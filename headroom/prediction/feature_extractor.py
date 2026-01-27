@@ -1155,7 +1155,7 @@ class StructuralExtractor(BaseFeatureExtractor):
         delimiters = self.DELIMITER.findall(text)
         features.delimiter_types = list({d[0] for d in delimiters if d})
         features.has_structured_template = (
-            features.xml_tag_count > 2 or features.delimiter_types or features.json_object_count > 0
+            features.xml_tag_count > 2 or bool(features.delimiter_types) or features.json_object_count > 0
         )
 
         # Conversation structure
@@ -1743,6 +1743,7 @@ class SemanticExtractor(BaseFeatureExtractor):
 
                 self._nlp = spacy.load("en_core_web_sm")
 
+            assert self._nlp is not None
             doc = self._nlp(text)
             return [(ent.text, ent.label_) for ent in doc.ents]
         except Exception as e:
@@ -2277,6 +2278,7 @@ class PromptFeatureExtractor:
         self.meta_extractor = MetaExtractor(tokenizer=tokenizer)
 
         self.use_embeddings = use_embeddings
+        self.embedding_extractor: EmbeddingExtractor | None
         if use_embeddings:
             self.embedding_extractor = EmbeddingExtractor(
                 model_name=embedding_model, cluster_centers=cluster_centers

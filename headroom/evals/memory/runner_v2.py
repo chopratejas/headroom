@@ -339,7 +339,7 @@ class LoCoMoEvaluatorV2:
             answer_model: LLM model for answering questions.
             config: Evaluation configuration.
         """
-        self._backend: MemoryBackend | None = backend
+        self._backend: MemoryBackend | LocalBackend | None = backend
         self._answer_model = answer_model
         self._config = config or MemoryEvalConfigV2()
         self._metrics = EvalMetrics()
@@ -675,7 +675,7 @@ The answer should contain ONLY the specific information requested, nothing more.
         answer_start = time.time()
 
         # Allow multiple tool call rounds
-        messages = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Question: {case.question}"},
         ]

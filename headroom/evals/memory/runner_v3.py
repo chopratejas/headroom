@@ -38,6 +38,7 @@ from headroom.evals.memory.locomo import (
 from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 from headroom.memory.backends.mem0 import Mem0Backend, Mem0Config
 from headroom.memory.models import Memory
+from headroom.memory.ports import MemorySearchResult, VectorSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,7 @@ class LoCoMoEvaluatorV3:
 
         No LLM extraction - just raw dialogue with metadata.
         """
+        assert self._backend is not None, "Backend must be initialized"
         stored = 0
         user_id = f"locomo_{conv.sample_id}"
 
@@ -334,9 +336,11 @@ class LoCoMoEvaluatorV3:
 
     async def _evaluate_case(self, case: LoCoMoCase, conv: LoCoMoConversation) -> CaseResultV3:
         """Evaluate a single QA case."""
+        assert self._backend is not None, "Backend must be initialized"
         user_id = f"locomo_{conv.sample_id}"
 
         # Retrieve relevant turns - handle different backend interfaces
+        results: list[MemorySearchResult] | list[VectorSearchResult]
         if isinstance(self._backend, Mem0Backend):
             # Mem0 has its own optimized search with graph expansion
             results = await self._backend.search_memories(

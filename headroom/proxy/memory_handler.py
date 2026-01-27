@@ -268,7 +268,7 @@ Use this context to provide personalized and contextually relevant responses."""
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "")
+                        text = str(block.get("text", ""))
                         if text:
                             return text[:500]
 

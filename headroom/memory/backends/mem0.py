@@ -300,9 +300,9 @@ class Mem0Backend:
         if isinstance(result, dict) and "results" in result:
             results = result["results"]
             if results and len(results) > 0:
-                return results[0].get("id", memory.id)
+                return str(results[0].get("id", memory.id))
         elif isinstance(result, list) and len(result) > 0:
-            return result[0].get("id", memory.id)
+            return str(result[0].get("id", memory.id))
 
         return memory.id
 

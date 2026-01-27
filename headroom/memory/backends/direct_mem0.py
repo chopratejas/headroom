@@ -429,7 +429,7 @@ class DirectMem0Adapter:
                 }
             )
 
-        def write_graph():
+        def write_graph() -> None:
             with self._neo4j_driver.session() as session:
                 for rel in normalized_rels:
                     source = rel["source"]

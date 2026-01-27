@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 
 
 def get_version() -> str:
@@ -224,7 +225,7 @@ def cmd_memory_eval(args: argparse.Namespace) -> int:
             return 1
 
     # Create LLM judge if enabled
-    llm_judge_fn = None
+    llm_judge_fn: Callable[[str, str, str], tuple[float, str]] | None = None
     if args.llm_judge:
         # Use answer model for judge if not explicitly set
         judge_model = args.judge_model

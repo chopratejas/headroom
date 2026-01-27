@@ -14,6 +14,7 @@ import io
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import torch
 from PIL import Image
@@ -112,11 +113,11 @@ class TrainedRouter:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Lazy-loaded models
-        self._classifier = None
-        self._tokenizer = None
-        self._siglip_model = None
-        self._siglip_processor = None
-        self._text_embeddings = None
+        self._classifier: Any = None
+        self._tokenizer: Any = None
+        self._siglip_model: Any = None
+        self._siglip_processor: Any = None
+        self._text_embeddings: Any = None
 
     def is_available(self) -> bool:
         """Check if required models can be loaded."""
@@ -205,7 +206,7 @@ class TrainedRouter:
         with torch.no_grad():
             outputs = self._classifier(**inputs)
             probs = torch.softmax(outputs.logits, dim=-1)
-            pred_id = torch.argmax(probs, dim=-1).item()
+            pred_id = int(torch.argmax(probs, dim=-1).item())
             confidence = probs[0][pred_id].item()
 
         # Map ID to technique
@@ -229,7 +230,7 @@ class TrainedRouter:
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            image_embeds = self._siglip_model.get_image_features(**inputs)
+            image_embeds: torch.Tensor = self._siglip_model.get_image_features(**inputs)
             image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
 
         return image_embeds

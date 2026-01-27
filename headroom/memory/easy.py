@@ -136,7 +136,7 @@ class Memory:
                     Mem0Config,
                 )
 
-                config = Mem0Config(
+                mem0_config = Mem0Config(
                     qdrant_host=self._qdrant_host,
                     qdrant_port=self._qdrant_port,
                     neo4j_uri=self._neo4j_uri,
@@ -144,7 +144,7 @@ class Memory:
                     neo4j_password=self._neo4j_password,
                     enable_graph=True,
                 )
-                self._backend = DirectMem0Adapter(config)
+                self._backend = DirectMem0Adapter(mem0_config)
             except ImportError as e:
                 raise ImportError(
                     "qdrant-neo4j backend requires additional packages. "
@@ -213,7 +213,7 @@ class Memory:
             metadata=metadata,
         )
 
-        return result.id
+        return str(result.id)
 
     async def search(
         self,
@@ -262,7 +262,7 @@ class Memory:
             True if deleted, False if not found.
         """
         await self._ensure_initialized()
-        return await self._backend.delete_memory(memory_id)
+        return bool(await self._backend.delete_memory(memory_id))
 
     async def clear(self, user_id: str) -> int:
         """Clear all memories for a user.
@@ -276,7 +276,7 @@ class Memory:
         await self._ensure_initialized()
 
         if hasattr(self._backend, "clear_user"):
-            return await self._backend.clear_user(user_id)
+            return int(await self._backend.clear_user(user_id))
         else:
             # Fallback for backends without clear_user
             return 0

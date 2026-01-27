@@ -149,7 +149,7 @@ _DirectMem0Adapter = None
 _DirectMem0Config = None
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> type:
     """Lazy import for optional backend components."""
     global _Mem0Backend, _Mem0Config, _DirectMem0Adapter, _DirectMem0Config
 

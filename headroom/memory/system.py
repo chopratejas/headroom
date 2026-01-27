@@ -153,6 +153,10 @@ class MemoryBackend(Protocol):
         """Whether this backend supports vector similarity search."""
         ...
 
+    async def close(self) -> None:
+        """Close the backend and release resources."""
+        ...
+
 
 # =============================================================================
 # Memory System Orchestrator
@@ -650,7 +654,8 @@ class MemorySystem:
             Returns {"status": "not_supported"} if backend doesn't support async.
         """
         if hasattr(self._backend, "get_task_status"):
-            return self._backend.get_task_status(task_id)
+            result: dict[str, Any] = self._backend.get_task_status(task_id)
+            return result
         return {"status": "not_supported", "message": "Backend doesn't support async tasks"}
 
     def get_pending_tasks(self) -> list[str]:
@@ -660,7 +665,8 @@ class MemorySystem:
             List of task IDs, or empty list if not supported.
         """
         if hasattr(self._backend, "get_pending_tasks"):
-            return self._backend.get_pending_tasks()
+            tasks: list[str] = self._backend.get_pending_tasks()
+            return tasks
         return []
 
     async def wait_for_task(self, task_id: str, timeout: float = 30.0) -> dict[str, Any]:
@@ -674,7 +680,8 @@ class MemorySystem:
             Task result or timeout error.
         """
         if hasattr(self._backend, "wait_for_task"):
-            return await self._backend.wait_for_task(task_id, timeout)
+            task_result: dict[str, Any] = await self._backend.wait_for_task(task_id, timeout)
+            return task_result
         return {"status": "not_supported", "message": "Backend doesn't support async tasks"}
 
     async def flush_pending(self, timeout: float = 60.0) -> dict[str, Any]:
@@ -690,5 +697,6 @@ class MemorySystem:
             Summary of completed and failed tasks.
         """
         if hasattr(self._backend, "flush_pending"):
-            return await self._backend.flush_pending(timeout)
+            flush_result: dict[str, Any] = await self._backend.flush_pending(timeout)
+            return flush_result
         return {"completed": 0, "failed": 0, "pending": 0}

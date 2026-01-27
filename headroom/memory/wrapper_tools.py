@@ -99,7 +99,7 @@ class MemoryToolsWrapper:
                 extraction system prompt into messages so the LLM knows to
                 extract structured data when calling memory_save.
         """
-        self._client = client
+        self._client: Any = client
         self._memory = MemorySystem(backend, user_id, session_id)
         self._auto_handle = auto_handle_tools
         self._optimized = optimized
