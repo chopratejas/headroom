@@ -91,6 +91,7 @@ from headroom.transforms import (
     IntelligentContextManager,
     RollingWindow,
     SmartCrusher,
+    Transform,
     TransformPipeline,
     is_tree_sitter_available,
 )
@@ -867,6 +868,7 @@ class HeadroomProxy:
 
         # Initialize transforms based on routing mode
         # Choose context manager: IntelligentContextManager (smart) or RollingWindow (legacy)
+        context_manager: Transform  # Can be either IntelligentContextManager or RollingWindow
         if config.intelligent_context:
             # Get TOIN instance for learned pattern integration
             toin = get_toin() if config.intelligent_context_scoring else None

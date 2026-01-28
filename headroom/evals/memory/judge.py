@@ -139,7 +139,9 @@ def create_anthropic_judge(
             messages=[{"role": "user", "content": prompt}],
         )
 
-        text = response.content[0].text if response.content else ""
+        text = ""
+        if response.content and hasattr(response.content[0], "text"):
+            text = response.content[0].text
         return _parse_judge_response(text)
 
     return judge

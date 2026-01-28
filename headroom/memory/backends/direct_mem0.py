@@ -136,6 +136,7 @@ class DirectMem0Adapter:
         self._mem0_client: Any = None
         self._embedder: Any = None
         self._neo4j_graph: Any = None
+        self._neo4j_driver: Any = None
         self._qdrant_client: Any = None
         self._initialized = False
 
