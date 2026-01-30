@@ -213,6 +213,20 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 ```
 
+**Using AWS Bedrock, Google Vertex, or Azure?** Route through Headroom:
+
+```bash
+# AWS Bedrock (uses your AWS credentials)
+headroom proxy --backend bedrock --region us-west-2
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+# Google Vertex AI
+headroom proxy --backend vertex_ai --region us-central1
+
+# Azure OpenAI
+headroom proxy --backend azure --region eastus
+```
+
 ### Option 2: LangChain Integration
 
 ```bash
