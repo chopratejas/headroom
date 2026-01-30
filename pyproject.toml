@@ -56,6 +56,8 @@ dependencies = [
     "pillow>=10.0.0",             # Image processing for compression
     "datasets>=4.5.0",
     "hnswlib>=0.8.0",             # HNSW vector index for memory system
+    "click>=8.1.0",               # CLI framework
+    "rich>=13.0.0",               # Rich terminal output
 ]
 
 [project.optional-dependencies]
@@ -88,6 +90,18 @@ code = [
 agno = [
     "agno>=1.0.0",
 ]
+# Voice filler detection (training and inference)
+voice = [
+    "onnxruntime>=1.16.0",       # Fast CPU inference
+    "transformers>=4.30.0",      # Model loading and tokenization
+    "torch>=2.0.0",              # Training
+]
+# Voice training only (includes voice deps + training extras)
+voice-train = [
+    "headroom-ai[voice]",
+    "datasets>=2.14.0",          # Data loading
+    "accelerate>=0.20.0",        # Training acceleration
+]
 # Evaluation framework for testing compression accuracy
 evals = [
     "datasets>=2.14.0",           # HuggingFace datasets
@@ -100,6 +114,10 @@ evals = [
 # Memory system extras (hierarchical memory with vector search)
 memory = [
     "hnswlib>=0.8.0",  # HNSW vector index for semantic search
+]
+# AWS Bedrock backend
+bedrock = [
+    "boto3>=1.28.0",
 ]
 # Development dependencies
 dev = [
@@ -117,7 +135,7 @@ dev = [
 ]
 # All optional dependencies
 all = [
-    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory]",
+    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice]",
 ]
 
 [project.scripts]
