@@ -53,6 +53,8 @@ except ImportError:
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from headroom.backends import LiteLLMBackend
+from headroom.backends.base import Backend
 from headroom.cache.compression_feedback import get_compression_feedback
 from headroom.cache.compression_store import get_compression_store
 from headroom.ccr import (
@@ -205,6 +207,12 @@ class ProxyConfig:
     port: int = 8787
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
+
+    # Backend: "anthropic" (direct API), "bedrock" (AWS Bedrock), or "litellm-*" (via LiteLLM)
+    # LiteLLM backends: "litellm-bedrock", "litellm-vertex", "litellm-azure", etc.
+    backend: str = "anthropic"
+    bedrock_region: str = "us-west-2"  # AWS region for Bedrock/LiteLLM
+    bedrock_profile: str | None = None  # AWS profile (optional)
 
     # Optimization
     optimize: bool = True
@@ -981,6 +989,29 @@ class HeadroomProxy:
         # HTTP client
         self.http_client: httpx.AsyncClient | None = None
 
+        # Backend for Anthropic API (direct or via LiteLLM)
+        # Supports: "anthropic" (direct), "bedrock", "vertex", or "litellm-<provider>"
+        self.anthropic_backend: Backend | None = None
+        if config.backend != "anthropic":
+            # Normalize backend name: "bedrock" -> "litellm-bedrock"
+            backend = config.backend
+            if not backend.startswith("litellm-"):
+                backend = f"litellm-{backend}"
+            provider = backend.replace("litellm-", "")
+
+            try:
+                self.anthropic_backend = LiteLLMBackend(
+                    provider=provider,
+                    region=config.bedrock_region,
+                )
+                logger.info(
+                    f"LiteLLM backend enabled (provider={provider}, region={config.bedrock_region})"
+                )
+            except ImportError as e:
+                logger.warning(f"LiteLLM backend not available: {e}")
+            except Exception as e:
+                logger.error(f"Failed to initialize LiteLLM backend: {e}")
+
         # Request counter for IDs
         self._request_counter = 0
         self._request_counter_lock = asyncio.Lock()
@@ -1583,7 +1614,70 @@ class HeadroomProxy:
         if tools is not None:
             body["tools"] = tools
 
-        # Forward request
+        # Forward request - use Bedrock backend if configured, otherwise direct API
+        if self.anthropic_backend is not None:
+            # Route through Bedrock backend
+            try:
+                if stream:
+                    return await self._stream_response_bedrock(
+                        body,
+                        headers,
+                        "anthropic",
+                        model,
+                        request_id,
+                        original_tokens,
+                        optimized_tokens,
+                        tokens_saved,
+                        transforms_applied,
+                        tags,
+                        optimization_latency,
+                    )
+                else:
+                    backend_response = await self.anthropic_backend.send_message(body, headers)
+
+                    if backend_response.error:
+                        return JSONResponse(
+                            status_code=backend_response.status_code,
+                            content=backend_response.body,
+                        )
+
+                    # Track metrics
+                    total_latency = (time.time() - start_time) * 1000
+                    usage = backend_response.body.get("usage", {})
+                    output_tokens = usage.get("output_tokens", 0)
+
+                    await self.metrics.record_request(
+                        provider="bedrock",
+                        model=model,
+                        input_tokens=optimized_tokens,
+                        output_tokens=output_tokens,
+                        tokens_saved=tokens_saved,
+                        latency_ms=total_latency,
+                        cached=False,
+                    )
+
+                    if self.cost_tracker:
+                        cost_usd = self.cost_tracker.estimate_cost(
+                            model, optimized_tokens, output_tokens
+                        )
+                        if cost_usd:
+                            self.cost_tracker.record_cost(cost_usd)
+
+                    return JSONResponse(
+                        status_code=backend_response.status_code,
+                        content=backend_response.body,
+                    )
+            except Exception as e:
+                logger.error(f"[{request_id}] Bedrock backend error: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "type": "error",
+                        "error": {"type": "api_error", "message": str(e)},
+                    },
+                )
+
+        # Direct Anthropic API
         url = f"{self.ANTHROPIC_API_URL}/v1/messages"
 
         try:
@@ -3499,6 +3593,101 @@ class HeadroomProxy:
                 if tokens_saved > 0:
                     logger.info(
                         f"[{request_id}] {model}: saved {tokens_saved:,} tokens (streaming)"
+                    )
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+        )
+
+    async def _stream_response_bedrock(
+        self,
+        body: dict,
+        headers: dict,
+        provider: str,
+        model: str,
+        request_id: str,
+        original_tokens: int,
+        optimized_tokens: int,
+        tokens_saved: int,
+        transforms_applied: list[str],
+        tags: dict[str, str],
+        optimization_latency: float,
+    ) -> StreamingResponse:
+        """Stream response from Bedrock backend with metrics tracking.
+
+        Translates Bedrock streaming events to Anthropic SSE format.
+        """
+        start_time = time.time()
+
+        # Mutable state for the generator
+        stream_state: dict[str, Any] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+
+        async def generate():
+            try:
+                assert self.anthropic_backend is not None
+
+                async for event in self.anthropic_backend.stream_message(body, headers):
+                    # Format as SSE
+                    if event.raw_sse:
+                        yield event.raw_sse.encode()
+                    else:
+                        sse_line = f"event: {event.event_type}\ndata: {json.dumps(event.data)}\n\n"
+                        yield sse_line.encode()
+
+                    # Track usage from message_start event
+                    if event.event_type == "message_start":
+                        msg = event.data.get("message", {})
+                        usage = msg.get("usage", {})
+                        if "input_tokens" in usage:
+                            stream_state["input_tokens"] = usage["input_tokens"]
+
+                    # Track output tokens from message_delta
+                    if event.event_type == "message_delta":
+                        usage = event.data.get("usage", {})
+                        if "output_tokens" in usage:
+                            stream_state["output_tokens"] = usage["output_tokens"]
+
+                    # Handle errors
+                    if event.event_type == "error":
+                        logger.error(f"[{request_id}] Bedrock stream error: {event.data}")
+
+            except Exception as e:
+                logger.error(f"[{request_id}] Bedrock streaming error: {e}")
+                error_event = {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": str(e)},
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+
+            finally:
+                # Record metrics
+                total_latency = (time.time() - start_time) * 1000
+                output_tokens = stream_state["output_tokens"]
+
+                await self.metrics.record_request(
+                    provider="bedrock",
+                    model=model,
+                    input_tokens=optimized_tokens,
+                    output_tokens=output_tokens,
+                    tokens_saved=tokens_saved,
+                    latency_ms=total_latency,
+                    cached=False,
+                )
+
+                if self.cost_tracker:
+                    cost_usd = self.cost_tracker.estimate_cost(
+                        model, optimized_tokens, output_tokens
+                    )
+                    if cost_usd:
+                        self.cost_tracker.record_cost(cost_usd)
+
+                if tokens_saved > 0:
+                    logger.info(
+                        f"[{request_id}] Bedrock {model}: saved {tokens_saved:,} tokens (streaming)"
                     )
 
         return StreamingResponse(
@@ -5948,6 +6137,17 @@ def run_server(
     pool_info = f"max={config.max_connections}, keepalive={config.max_keepalive_connections}"
     http2_status = "ENABLED" if config.http2 else "DISABLED"
 
+    # Backend status
+    if config.backend == "anthropic":
+        backend_status = "ANTHROPIC (direct API)"
+    else:
+        # Normalize: "bedrock" -> "litellm-bedrock"
+        backend = config.backend
+        if not backend.startswith("litellm-"):
+            backend = f"litellm-{backend}"
+        provider = backend.replace("litellm-", "")
+        backend_status = f"{provider.upper()} via LiteLLM (region={config.bedrock_region})"
+
     print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                      HEADROOM PROXY SERVER                           ║
@@ -5955,6 +6155,7 @@ def run_server(
 ║  Version: 1.0.0                                                      ║
 ║  Listening: http://{config.host}:{config.port:<5}                                      ║
 ║  Workers: {workers:<3}  Concurrency Limit: {limit_concurrency:<5}                          ║
+║  Backend: {backend_status:<59}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -6043,6 +6244,23 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})"
+    )
+
+    # Backend (anthropic direct or bedrock)
+    parser.add_argument(
+        "--backend",
+        choices=["anthropic", "bedrock"],
+        default="anthropic",
+        help="Backend for Anthropic API: 'anthropic' (direct) or 'bedrock' (AWS Bedrock)",
+    )
+    parser.add_argument(
+        "--bedrock-region",
+        default="us-west-2",
+        help="AWS region for Bedrock backend (default: us-west-2)",
+    )
+    parser.add_argument(
+        "--bedrock-profile",
+        help="AWS profile for Bedrock backend (default: use default credentials)",
     )
 
     # Connection pool (scalability)
@@ -6170,6 +6388,10 @@ if __name__ == "__main__":
         host=_get_env_str("HEADROOM_HOST", args.host),
         port=_get_env_int("HEADROOM_PORT", args.port),
         openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
+        # Backend settings
+        backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
+        bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),
+        bedrock_profile=args.bedrock_profile or os.environ.get("AWS_PROFILE"),
         optimize=optimize,
         min_tokens_to_crush=_get_env_int("HEADROOM_MIN_TOKENS", args.min_tokens),
         max_items_after_crush=_get_env_int("HEADROOM_MAX_ITEMS", args.max_items),

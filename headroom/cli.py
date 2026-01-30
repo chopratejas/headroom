@@ -78,11 +78,25 @@ def cmd_proxy(args: argparse.Namespace) -> int:
         memory_inject_tools=not args.no_memory_tools,
         memory_inject_context=not args.no_memory_context,
         memory_top_k=args.memory_top_k,
+        # Backend (Anthropic direct, Bedrock, or LiteLLM)
+        backend=args.backend,
+        bedrock_region=args.bedrock_region or args.region,
+        bedrock_profile=args.bedrock_profile,
     )
 
     memory_status = "DISABLED"
     if config.memory_enabled:
         memory_status = f"ENABLED ({config.memory_backend})"
+
+    region = args.bedrock_region or args.region
+    backend_status = "Anthropic (direct API)"
+    if config.backend != "anthropic":
+        # Normalize: "bedrock" -> "litellm-bedrock"
+        backend = config.backend
+        if not backend.startswith("litellm-"):
+            backend = f"litellm-{backend}"
+        provider = backend.replace("litellm-", "")
+        backend_status = f"{provider.upper()} via LiteLLM (region={region})"
 
     print(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
@@ -93,12 +107,14 @@ def cmd_proxy(args: argparse.Namespace) -> int:
 Starting proxy server...
 
   URL:          http://{config.host}:{config.port}
+  Backend:      {backend_status}
   Optimization: {"ENABLED" if config.optimize else "DISABLED"}
   Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
 
 Usage with Claude Code:
+  {"unset CLAUDE_CODE_USE_BEDROCK  # Important!" if config.backend == "bedrock" else ""}
   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
 
 Usage with OpenAI-compatible clients:
@@ -543,6 +559,29 @@ Documentation: https://github.com/headroom-sdk/headroom
         type=int,
         default=10,
         help="Number of memories to inject as context (default: 10)",
+    )
+    # Backend configuration
+    proxy_parser.add_argument(
+        "--backend",
+        default="anthropic",
+        help=(
+            "API backend: 'anthropic' (direct), 'bedrock' (AWS), "
+            "or 'litellm-<provider>' (e.g., litellm-bedrock, litellm-vertex)"
+        ),
+    )
+    proxy_parser.add_argument(
+        "--region",
+        default="us-west-2",
+        help="Cloud region for Bedrock/Vertex/etc (default: us-west-2)",
+    )
+    proxy_parser.add_argument(
+        "--bedrock-region",
+        default=None,
+        help="(deprecated, use --region) AWS region for Bedrock",
+    )
+    proxy_parser.add_argument(
+        "--bedrock-profile",
+        help="AWS profile name for Bedrock (default: use default credentials)",
     )
     proxy_parser.set_defaults(func=cmd_proxy)
 
