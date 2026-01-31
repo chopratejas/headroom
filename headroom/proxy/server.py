@@ -44,7 +44,7 @@ try:
     import uvicorn
     from fastapi import FastAPI, HTTPException, Request, Response
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
     FASTAPI_AVAILABLE = True
 except ImportError:
@@ -53,6 +53,7 @@ except ImportError:
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from headroom import __version__
 from headroom.backends import LiteLLMBackend
 from headroom.backends.base import Backend
 from headroom.cache.compression_feedback import get_compression_feedback
@@ -78,6 +79,7 @@ from headroom.config import (
     RollingWindowConfig,
     SmartCrusherConfig,
 )
+from headroom.dashboard import get_dashboard_html
 from headroom.providers import AnthropicProvider, OpenAIProvider
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
 from headroom.telemetry import get_telemetry_collector
@@ -676,7 +678,14 @@ class PrometheusMetrics:
         self.tokens_saved_total = 0
 
         self.latency_sum_ms = 0.0
+        self.latency_min_ms = float("inf")
+        self.latency_max_ms = 0.0
         self.latency_count = 0
+
+        # Headroom overhead (optimization time only, excludes LLM)
+        self.overhead_sum_ms = 0.0
+        self.overhead_min_ms = float("inf")
+        self.overhead_max_ms = 0.0
 
         self.cost_total_usd = 0.0
         self.savings_total_usd = 0.0
@@ -694,6 +703,7 @@ class PrometheusMetrics:
         cached: bool = False,
         cost_usd: float = 0,
         savings_usd: float = 0,
+        overhead_ms: float = 0,
     ):
         """Record metrics for a request."""
         async with self._lock:
@@ -709,7 +719,15 @@ class PrometheusMetrics:
             self.tokens_saved_total += tokens_saved
 
             self.latency_sum_ms += latency_ms
+            self.latency_min_ms = min(self.latency_min_ms, latency_ms)
+            self.latency_max_ms = max(self.latency_max_ms, latency_ms)
             self.latency_count += 1
+
+            # Track Headroom overhead separately
+            if overhead_ms > 0:
+                self.overhead_sum_ms += overhead_ms
+                self.overhead_min_ms = min(self.overhead_min_ms, overhead_ms)
+                self.overhead_max_ms = max(self.overhead_max_ms, overhead_ms)
 
             self.cost_total_usd += cost_usd
             self.savings_total_usd += savings_usd
@@ -1654,14 +1672,51 @@ class HeadroomProxy:
                         tokens_saved=tokens_saved,
                         latency_ms=total_latency,
                         cached=False,
+                        overhead_ms=optimization_latency,
                     )
 
+                    cost_usd = None
+                    savings_usd = None
                     if self.cost_tracker:
                         cost_usd = self.cost_tracker.estimate_cost(
                             model, optimized_tokens, output_tokens
                         )
+                        original_cost = self.cost_tracker.estimate_cost(
+                            model, original_tokens, output_tokens
+                        )
                         if cost_usd:
                             self.cost_tracker.record_cost(cost_usd)
+                        if cost_usd and original_cost:
+                            savings_usd = original_cost - cost_usd
+                            self.cost_tracker.record_savings(savings_usd)
+
+                    # Log request
+                    if self.logger:
+                        self.logger.log(
+                            RequestLog(
+                                request_id=request_id,
+                                timestamp=datetime.now().isoformat(),
+                                provider="bedrock",
+                                model=model,
+                                input_tokens_original=original_tokens,
+                                input_tokens_optimized=optimized_tokens,
+                                output_tokens=output_tokens,
+                                tokens_saved=tokens_saved,
+                                savings_percent=(tokens_saved / original_tokens * 100)
+                                if original_tokens > 0
+                                else 0,
+                                estimated_cost_usd=cost_usd,
+                                estimated_savings_usd=savings_usd,
+                                optimization_latency_ms=optimization_latency,
+                                total_latency_ms=total_latency,
+                                tags=tags,
+                                cache_hit=False,
+                                transforms_applied=transforms_applied,
+                                request_messages=body.get("messages")
+                                if self.config.log_full_messages
+                                else None,
+                            )
+                        )
 
                     return JSONResponse(
                         status_code=backend_response.status_code,
@@ -1909,6 +1964,7 @@ class HeadroomProxy:
                     latency_ms=total_latency,
                     cost_usd=cost_usd or 0,
                     savings_usd=savings_usd or 0,
+                    overhead_ms=optimization_latency,
                 )
 
                 # Log request
@@ -3676,14 +3732,51 @@ class HeadroomProxy:
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
                     cached=False,
+                    overhead_ms=optimization_latency,
                 )
 
+                cost_usd = None
+                savings_usd = None
                 if self.cost_tracker:
                     cost_usd = self.cost_tracker.estimate_cost(
                         model, optimized_tokens, output_tokens
                     )
+                    original_cost = self.cost_tracker.estimate_cost(
+                        model, original_tokens, output_tokens
+                    )
                     if cost_usd:
                         self.cost_tracker.record_cost(cost_usd)
+                    if cost_usd and original_cost:
+                        savings_usd = original_cost - cost_usd
+                        self.cost_tracker.record_savings(savings_usd)
+
+                # Log request
+                if self.logger:
+                    self.logger.log(
+                        RequestLog(
+                            request_id=request_id,
+                            timestamp=datetime.now().isoformat(),
+                            provider="bedrock",
+                            model=model,
+                            input_tokens_original=original_tokens,
+                            input_tokens_optimized=optimized_tokens,
+                            output_tokens=output_tokens,
+                            tokens_saved=tokens_saved,
+                            savings_percent=(tokens_saved / original_tokens * 100)
+                            if original_tokens > 0
+                            else 0,
+                            estimated_cost_usd=cost_usd,
+                            estimated_savings_usd=savings_usd,
+                            optimization_latency_ms=optimization_latency,
+                            total_latency_ms=total_latency,
+                            tags=tags,
+                            cache_hit=False,
+                            transforms_applied=transforms_applied,
+                            request_messages=body.get("messages")
+                            if self.config.log_full_messages
+                            else None,
+                        )
+                    )
 
                 if tokens_saved > 0:
                     logger.info(
@@ -5231,7 +5324,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Headroom Proxy",
         description="Production-ready LLM optimization proxy",
-        version="1.0.0",
+        version=__version__,
     )
 
     # CORS
@@ -5260,13 +5353,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def health():
         return {
             "status": "healthy",
-            "version": "1.0.0",
+            "version": __version__,
             "config": {
                 "optimize": config.optimize,
                 "cache": config.cache_enabled,
                 "rate_limit": config.rate_limit_enabled,
             },
         }
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard():
+        """Serve the Headroom dashboard UI."""
+        return get_dashboard_html()
 
     @app.get("/stats")
     async def stats():
@@ -5284,6 +5382,23 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         # Calculate average latency
         avg_latency_ms = round(m.latency_sum_ms / m.latency_count, 2) if m.latency_count > 0 else 0
+        min_latency_ms = (
+            round(m.latency_min_ms, 2)
+            if m.latency_count > 0 and m.latency_min_ms != float("inf")
+            else 0
+        )
+        max_latency_ms = round(m.latency_max_ms, 2) if m.latency_count > 0 else 0
+
+        # Calculate Headroom overhead (optimization time only)
+        avg_overhead_ms = (
+            round(m.overhead_sum_ms / m.latency_count, 2) if m.latency_count > 0 else 0
+        )
+        min_overhead_ms = (
+            round(m.overhead_min_ms, 2)
+            if m.latency_count > 0 and m.overhead_min_ms != float("inf")
+            else 0
+        )
+        max_overhead_ms = round(m.overhead_max_ms, 2) if m.latency_count > 0 else 0
 
         # Get compression store stats
         store = get_compression_store()
@@ -5323,7 +5438,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             },
             "latency": {
                 "average_ms": avg_latency_ms,
+                "min_ms": min_latency_ms,
+                "max_ms": max_latency_ms,
                 "total_requests": m.latency_count,
+            },
+            "overhead": {
+                "average_ms": avg_overhead_ms,
+                "min_ms": min_overhead_ms,
+                "max_ms": max_overhead_ms,
             },
             "cost": proxy.cost_tracker.stats() if proxy.cost_tracker else None,
             "compression": {
