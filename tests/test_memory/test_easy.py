@@ -131,7 +131,7 @@ class TestMemoryInitialization:
             # Initialization happens on first use
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(mem._ensure_initialized())
+            asyncio.run(mem._ensure_initialized())
 
     def test_repr(self):
         """Test string representation."""
