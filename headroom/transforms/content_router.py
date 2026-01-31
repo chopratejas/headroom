@@ -461,6 +461,7 @@ class ContentRouter(Transform):
         self._smart_crusher: Any = None
         self._search_compressor: Any = None
         self._log_compressor: Any = None
+        self._diff_compressor: Any = None
         self._llmlingua: Any = None
         self._text_compressor: Any = None
         self._image_optimizer: Any = None
@@ -772,6 +773,15 @@ class ContentRouter(Transform):
                             result.compressed_line_count,
                         )
 
+            elif strategy == CompressionStrategy.DIFF:
+                compressor = self._get_diff_compressor()
+                if compressor:
+                    result = compressor.compress(content, context=context)
+                    compressed, compressed_tokens = (
+                        result.compressed,
+                        result.compressed_line_count,
+                    )
+
             elif strategy == CompressionStrategy.LLMLINGUA:
                 compressed, compressed_tokens = self._try_llmlingua(content, context)
 
@@ -906,6 +916,17 @@ class ContentRouter(Transform):
             except ImportError:
                 logger.debug("LogCompressor not available")
         return self._log_compressor
+
+    def _get_diff_compressor(self) -> Any:
+        """Get DiffCompressor (lazy load)."""
+        if self._diff_compressor is None:
+            try:
+                from .diff_compressor import DiffCompressor
+
+                self._diff_compressor = DiffCompressor()
+            except ImportError:
+                logger.debug("DiffCompressor not available")
+        return self._diff_compressor
 
     def _get_llmlingua(self) -> Any:
         """Get LLMLinguaCompressor (lazy load)."""

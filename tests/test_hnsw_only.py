@@ -13,9 +13,11 @@ import pytest
 from headroom.memory.models import Memory
 from headroom.memory.ports import VectorFilter
 
-# Check if hnswlib is available
+# Check if hnswlib is available (use lazy check to avoid SIGILL on incompatible CPUs)
 try:
-    from headroom.memory.adapters.hnsw import HNSW_AVAILABLE
+    from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+    HNSW_AVAILABLE = _check_hnswlib_available()
 except ImportError:
     HNSW_AVAILABLE = False
 

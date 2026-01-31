@@ -21,21 +21,31 @@ from headroom.memory.adapters.graph import InMemoryGraphStore
 from headroom.memory.adapters.sqlite import SQLiteMemoryStore
 
 # Check for optional dependencies availability
-try:
-    from headroom.memory.adapters.hnsw import HNSW_AVAILABLE
-except ImportError:
-    HNSW_AVAILABLE = False
+# Note: We don't import from hnsw.py here because hnswlib may crash with
+# "Illegal instruction" on CPUs without required instructions (e.g., AVX).
+# Instead, we check lazily when HNSWVectorIndex is actually used.
+# HNSW_AVAILABLE is handled through __getattr__ to ensure lazy checking.
 
 # Lazy imports for optional adapters
+_HNSW_AVAILABLE: bool | None = None  # Internal cache for HNSW_AVAILABLE
 _HNSWVectorIndex = None
 _LocalEmbedder = None
 _OpenAIEmbedder = None
 _OllamaEmbedder = None
 
 
-def __getattr__(name: str) -> type:
+def __getattr__(name: str) -> type | bool:
     """Lazy import for optional adapters."""
     global _HNSWVectorIndex, _LocalEmbedder, _OpenAIEmbedder, _OllamaEmbedder
+    global _HNSW_AVAILABLE
+
+    if name == "HNSW_AVAILABLE":
+        # Lazily check hnswlib availability
+        if _HNSW_AVAILABLE is None:
+            from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+            _HNSW_AVAILABLE = _check_hnswlib_available()
+        return _HNSW_AVAILABLE
 
     if name == "HNSWVectorIndex":
         if _HNSWVectorIndex is None:
