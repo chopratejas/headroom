@@ -14,6 +14,9 @@ import os
 
 import pytest
 
+# Skip entire module if trafilatura not installed
+pytest.importorskip("trafilatura")
+
 from headroom.evals.html_extraction import (
     HTMLEvalCase,
     HTMLEvalResult,

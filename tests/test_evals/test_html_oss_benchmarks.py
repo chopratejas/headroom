@@ -21,6 +21,9 @@ import os
 
 import pytest
 
+# Skip entire module if trafilatura not installed
+pytest.importorskip("trafilatura")
+
 
 class TestExtractionBenchmark:
     """Tests using Scrapinghub Article Extraction Benchmark.
