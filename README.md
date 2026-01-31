@@ -202,9 +202,13 @@ For deep technical details, see [Architecture Documentation](docs/ARCHITECTURE.m
 ### Option 1: Proxy (Zero Code Changes)
 
 ```bash
-pip install "headroom-ai[proxy]"
+pip install "headroom-ai[all]"  # Recommended for best performance
 headroom proxy --port 8787
 ```
+
+> **Note:** First startup downloads ML models (~500MB) for optimal compression. This is a one-time download.
+
+**Dashboard:** Open http://localhost:8787/dashboard to see real-time stats, token savings, and request history.
 
 Point your tools at the proxy:
 
@@ -434,6 +438,10 @@ New models auto-supported via naming pattern detection.
 ## Installation
 
 ```bash
+# Recommended: Install everything for best compression performance
+pip install "headroom-ai[all]"
+
+# Or install specific components
 pip install headroom-ai              # SDK only
 pip install "headroom-ai[proxy]"     # Proxy server
 pip install "headroom-ai[langchain]" # LangChain integration
@@ -441,10 +449,11 @@ pip install "headroom-ai[agno]"      # Agno agent framework
 pip install "headroom-ai[evals]"     # Evaluation framework
 pip install "headroom-ai[code]"      # AST-based code compression
 pip install "headroom-ai[llmlingua]" # ML-based compression
-pip install "headroom-ai[all]"       # Everything
 ```
 
 **Requirements**: Python 3.10+
+
+> **First-time startup:** Headroom downloads ML models (~500MB) on first run for optimal compression. This is cached locally and only happens once.
 
 ---
 
