@@ -90,6 +90,10 @@ code = [
 agno = [
     "agno>=1.0.0",
 ]
+# AWS Strands Agents SDK integration
+strands = [
+    "strands-agents>=0.1.0",
+]
 # Voice filler detection (training and inference)
 voice = [
     "onnxruntime>=1.16.0",       # Fast CPU inference
