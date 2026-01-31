@@ -7,7 +7,6 @@
     Tool outputs are 70-95% redundant boilerplate. Headroom compresses that away.
   </p>
 </p>
-
 <p align="center">
   <a href="https://github.com/chopratejas/headroom/actions/workflows/ci.yml">
     <img src="https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg" alt="CI">
@@ -28,6 +27,10 @@
     <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation">
   </a>
 </p>
+
+[Documentation](https://github.com/chopratejas/headroom/tree/main/docs)
+  •  
+[Discord](https://discord.gg/EZPYr5s66t)
 
 
 ---
