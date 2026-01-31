@@ -216,10 +216,38 @@ OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 **Using AWS Bedrock, Google Vertex, or Azure?** Route through Headroom:
 
 ```bash
-# AWS Bedrock (uses your AWS credentials)
-headroom proxy --backend bedrock --region us-west-2
-ANTHROPIC_BASE_URL=http://localhost:8787 claude
+# AWS Bedrock - Terminal 1: Start proxy
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
+export AWS_REGION="us-east-1"
+headroom proxy --backend bedrock --region us-east-1
 
+# AWS Bedrock - Terminal 2: Run Claude Code
+export ANTHROPIC_API_KEY="sk-ant-dummy"  # Any value works! Headroom ignores it.
+export ANTHROPIC_BASE_URL="http://localhost:8787"
+# IMPORTANT: Do NOT set CLAUDE_CODE_USE_BEDROCK=1 (Headroom handles Bedrock routing)
+claude
+```
+
+<details>
+<summary><b>VS Code settings.json for Bedrock</b> (click to expand)</summary>
+
+```json
+{
+  "claudeCode.environmentVariables": [
+    { "name": "ANTHROPIC_API_KEY", "value": "sk-ant-dummy" },
+    { "name": "ANTHROPIC_BASE_URL", "value": "http://localhost:8787" },
+    { "name": "AWS_ACCESS_KEY_ID", "value": "AKIA..." },
+    { "name": "AWS_SECRET_ACCESS_KEY", "value": "..." },
+    { "name": "AWS_REGION", "value": "us-east-1" }
+  ]
+}
+```
+
+**Do NOT include** `CLAUDE_CODE_USE_BEDROCK` - Headroom handles the Bedrock routing.
+</details>
+
+```bash
 # Google Vertex AI
 headroom proxy --backend vertex_ai --region us-central1
 
