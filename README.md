@@ -24,6 +24,9 @@
   <a href="https://github.com/chopratejas/headroom/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
   </a>
+  <a href="https://chopratejas.github.io/headroom/">
+    <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation">
+  </a>
 </p>
 
 
