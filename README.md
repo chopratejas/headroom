@@ -91,6 +91,42 @@ Run it yourself: `python examples/needle_in_haystack_test.py`
 
 ---
 
+## Accuracy Benchmarks
+
+> **Headroom's guarantee: compress without losing accuracy.**
+
+We validate against established open-source benchmarks. Full methodology and reproducible tests: [Benchmarks Documentation](https://chopratejas.github.io/headroom/benchmarks/)
+
+| Benchmark | Metric | Result | Status |
+|-----------|--------|--------|--------|
+| [Scrapinghub Article Extraction](https://huggingface.co/datasets/allenai/scrapinghub-article-extraction-benchmark) | F1 Score | **0.919** (baseline: 0.958) | :white_check_mark: |
+| [Scrapinghub Article Extraction](https://huggingface.co/datasets/allenai/scrapinghub-article-extraction-benchmark) | Recall | **98.2%** | :white_check_mark: |
+| [Scrapinghub Article Extraction](https://huggingface.co/datasets/allenai/scrapinghub-article-extraction-benchmark) | Compression | **94.9%** | :white_check_mark: |
+| SmartCrusher (JSON) | Accuracy | **100%** (4/4 correct) | :white_check_mark: |
+| SmartCrusher (JSON) | Compression | **87.6%** | :white_check_mark: |
+| Multi-Tool Agent | Accuracy | **100%** (all findings) | :white_check_mark: |
+| Multi-Tool Agent | Compression | **76.3%** | :white_check_mark: |
+
+**Why recall matters most**: For LLM applications, capturing all relevant information is critical. 98.2% recall means nearly all content is preserved — LLMs can answer questions accurately from compressed context.
+
+<details>
+<summary><b>Run benchmarks yourself</b></summary>
+
+```bash
+# Install with benchmark dependencies
+pip install "headroom-ai[evals,html]" datasets
+
+# Run HTML extraction benchmark (no API key needed)
+pytest tests/test_evals/test_html_oss_benchmarks.py::TestExtractionBenchmark -v -s
+
+# Run QA accuracy tests (requires OPENAI_API_KEY)
+pytest tests/test_evals/test_html_oss_benchmarks.py::TestQAAccuracyPreservation -v -s
+```
+
+</details>
+
+---
+
 ## Multi-Tool Agent Test: Real Function Calling
 
 **The setup:** An Agno agent with 4 tools (GitHub Issues, ArXiv Papers, Code Search, Database Logs) investigating a memory leak. Total tool output: 62,323 chars (~15,580 tokens).

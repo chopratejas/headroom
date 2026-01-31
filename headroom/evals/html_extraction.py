@@ -286,7 +286,7 @@ class HTMLExtractionEvaluator:
             try:
                 import anthropic
 
-                client = anthropic.Anthropic()
+                anthropic_client = anthropic.Anthropic()
 
                 def judge(question: str, ground_truth: str, prediction: str) -> tuple[float, str]:
                     prompt = HTML_JUDGE_PROMPT.format(
@@ -294,12 +294,16 @@ class HTMLExtractionEvaluator:
                         ground_truth=ground_truth,
                         prediction=prediction,
                     )
-                    response = client.messages.create(
+                    anthropic_response = anthropic_client.messages.create(
                         model=self.judge_model,
                         max_tokens=200,
                         messages=[{"role": "user", "content": prompt}],
                     )
-                    text = response.content[0].text if response.content else ""
+                    text = (
+                        getattr(anthropic_response.content[0], "text", "")
+                        if anthropic_response.content
+                        else ""
+                    )
                     return self._parse_judge_response(text)
 
                 return judge
@@ -364,36 +368,40 @@ Answer concisely and factually based only on the content provided."""
         if self.provider == "openai":
             from openai import OpenAI
 
-            client = OpenAI()
-            response = client.chat.completions.create(
+            openai_client = OpenAI()
+            openai_response = openai_client.chat.completions.create(
                 model=self.answer_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=500,
             )
-            return response.choices[0].message.content or ""
+            return openai_response.choices[0].message.content or ""
 
         elif self.provider == "anthropic":
             import anthropic
 
-            client = anthropic.Anthropic()
-            response = client.messages.create(
+            anthropic_client = anthropic.Anthropic()
+            anthropic_response = anthropic_client.messages.create(
                 model=self.answer_model,
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text if response.content else ""
+            return (
+                getattr(anthropic_response.content[0], "text", "")
+                if anthropic_response.content
+                else ""
+            )
 
         else:
             import litellm
 
-            response = litellm.completion(
+            litellm_response = litellm.completion(
                 model=self.answer_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=500,
             )
-            return response.choices[0].message.content or ""
+            return litellm_response.choices[0].message.content or ""
 
     def evaluate_case(self, case: HTMLEvalCase) -> HTMLEvalResult:
         """Evaluate a single HTML extraction case.

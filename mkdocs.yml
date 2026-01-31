@@ -60,6 +60,7 @@ nav:
   - Getting Started:
     - Quickstart: quickstart.md
     - Installation: getting-started.md
+  - Benchmarks: benchmarks.md
   - User Guide:
     - Proxy Server: proxy.md
     - Compression: compression.md
