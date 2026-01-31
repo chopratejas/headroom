@@ -90,6 +90,10 @@ code = [
 agno = [
     "agno>=1.0.0",
 ]
+# AWS Strands Agents SDK integration
+strands = [
+    "strands-agents>=0.1.0",
+]
 # Voice filler detection (training and inference)
 voice = [
     "onnxruntime>=1.16.0",       # Fast CPU inference
@@ -135,7 +139,7 @@ dev = [
 ]
 # All optional dependencies
 all = [
-    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice]",
+    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice,strands]",
 ]
 
 [project.scripts]
@@ -202,6 +206,7 @@ module = [
     "headroom.proxy.server",
     "headroom.integrations.langchain",
     "headroom.integrations.mcp",
+    "headroom.integrations.strands",
     "headroom.ccr.mcp_server",
     "headroom.relevance.embedding",
     "headroom.reporting.generator",

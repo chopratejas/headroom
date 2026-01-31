@@ -15,6 +15,11 @@ Agno (pip install agno):
     - HeadroomPreHook/HeadroomPostHook: Agent-level hooks for tracking
     - create_headroom_hooks: Convenience function to create hook pairs
 
+Strands Agents (pip install strands-agents):
+    - HeadroomStrandsModel: Drop-in wrapper for any Strands model
+    - HeadroomHookProvider: HookProvider for Strands SDK lifecycle events
+    - create_headroom_callback: Convenience function for callback creation
+
 MCP (Model Context Protocol):
     - HeadroomMCPCompressor: Compress MCP tool results
     - compress_tool_result: Simple function for tool compression
@@ -29,6 +34,11 @@ Example:
     from headroom.integrations.agno import HeadroomAgnoModel
     # or explicitly:
     from headroom.integrations.agno import HeadroomAgnoModel
+
+    # Strands integration
+    from headroom.integrations.strands import HeadroomHookProvider
+    # or explicitly:
+    from headroom.integrations.strands import HeadroomStrandsModel
 
     # MCP integration
     from headroom.integrations import compress_tool_result
@@ -103,6 +113,23 @@ try:
 except ImportError:
     _AGNO_AVAILABLE = False
 
+# Re-export from strands subpackage (optional dependency)
+try:
+    from .strands import (
+        CallbackMetrics,
+        HeadroomCallbackHandler as StrandsCallbackHandler,
+        HeadroomHookProvider,
+        HeadroomStrandsModel,
+        create_headroom_callback,
+        strands_available,
+    )
+    from .strands import OptimizationMetrics as StrandsOptimizationMetrics
+    from .strands import optimize_messages as optimize_strands_messages
+
+    _STRANDS_AVAILABLE = True
+except ImportError:
+    _STRANDS_AVAILABLE = False
+
 __all__ = [
     # LangChain Core
     "HeadroomChatModel",
@@ -156,4 +183,13 @@ __all__ = [
     "get_model_name_from_agno",
     "AgnoOptimizationMetrics",
     "optimize_agno_messages",
+    # Strands
+    "HeadroomStrandsModel",
+    "HeadroomHookProvider",
+    "StrandsCallbackHandler",
+    "CallbackMetrics",
+    "strands_available",
+    "create_headroom_callback",
+    "StrandsOptimizationMetrics",
+    "optimize_strands_messages",
 ]
