@@ -32,23 +32,29 @@ except ImportError:
 
 
 # Model mapping: Anthropic model IDs -> LiteLLM model strings
+# IMPORTANT: Claude 4+ models require inference profiles (us.anthropic.* or global.anthropic.*)
+# Direct model IDs (anthropic.*) don't support on-demand throughput for newer models.
+# See: https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles.html
 BEDROCK_MODEL_MAP = {
-    # Claude 4.5
-    "claude-opus-4-5-20251101": "bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
-    "claude-sonnet-4-5-20250929": "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
-    # Claude 4
-    "claude-opus-4-20250514": "bedrock/anthropic.claude-opus-4-20250514-v1:0",
-    "claude-sonnet-4-20250514": "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
-    # Claude 3.7
-    "claude-3-7-sonnet-20250219": "bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0",
-    # Claude 3.5
-    "claude-3-5-sonnet-20241022": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "claude-3-5-sonnet-20240620": "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
-    "claude-3-5-haiku-20241022": "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0",
-    # Claude 3
-    "claude-3-opus-20240229": "bedrock/anthropic.claude-3-opus-20240229-v1:0",
-    "claude-3-sonnet-20240229": "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
-    "claude-3-haiku-20240307": "bedrock/anthropic.claude-3-haiku-20240307-v1:0",
+    # Claude 4.5 (requires inference profiles)
+    "claude-opus-4-5-20251101": "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-sonnet-4-5-20250929": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-haiku-4-5-20251001": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Claude 4.1
+    "claude-opus-4-1-20250805": "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0",
+    # Claude 4 (requires inference profiles)
+    "claude-opus-4-20250514": "bedrock/us.anthropic.claude-opus-4-20250514-v1:0",
+    "claude-sonnet-4-20250514": "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+    # Claude 3.7 (requires inference profiles)
+    "claude-3-7-sonnet-20250219": "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+    # Claude 3.5 (can use inference profiles for cross-region)
+    "claude-3-5-sonnet-20241022": "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "claude-3-5-sonnet-20240620": "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+    "claude-3-5-haiku-20241022": "bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0",
+    # Claude 3 (can use inference profiles for cross-region)
+    "claude-3-opus-20240229": "bedrock/us.anthropic.claude-3-opus-20240229-v1:0",
+    "claude-3-sonnet-20240229": "bedrock/us.anthropic.claude-3-sonnet-20240229-v1:0",
+    "claude-3-haiku-20240307": "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0",
 }
 
 VERTEX_MODEL_MAP = {

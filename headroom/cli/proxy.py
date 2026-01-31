@@ -205,9 +205,17 @@ Memory:
             memory_section += "  - NOTE: Memory tools require ANTHROPIC_API_KEY (Claude Code subscription credentials have restrictions).\n"
 
     # Build usage note for Bedrock
-    bedrock_note = ""
-    if config.backend == "bedrock":
-        bedrock_note = "unset CLAUDE_CODE_USE_BEDROCK  # Important!"
+    bedrock_section = ""
+    if config.backend != "anthropic":
+        provider = config.backend.replace("litellm-", "").upper()
+        bedrock_section = f"""
+IMPORTANT for {provider} users (Claude Code / VS Code):
+  1. Set AWS credentials: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+  2. Set a dummy Anthropic key: ANTHROPIC_API_KEY="sk-ant-dummy"
+     (Headroom ignores this - it uses your AWS credentials for {provider})
+  3. Set base URL: ANTHROPIC_BASE_URL=http://{config.host}:{config.port}
+  4. Do NOT set: CLAUDE_CODE_USE_BEDROCK=1 (Headroom handles this)
+"""
 
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
@@ -223,9 +231,8 @@ Starting proxy server...
   Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
-
+{bedrock_section}
 Usage with Claude Code:
-  {bedrock_note}
   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
 
 Usage with OpenAI-compatible clients:
