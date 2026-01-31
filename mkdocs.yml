@@ -1,0 +1,93 @@
+site_name: Headroom
+site_description: The Context Optimization Layer for LLM Applications
+site_url: https://chopratejas.github.io/headroom
+repo_url: https://github.com/chopratejas/headroom
+repo_name: chopratejas/headroom
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - content.tabs.link
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart: quickstart.md
+    - Installation: getting-started.md
+  - User Guide:
+    - Proxy Server: proxy.md
+    - Compression: compression.md
+    - Image Compression: image-compression.md
+    - CCR (Compress-Cache-Retrieve): ccr.md
+    - Configuration: configuration.md
+  - Integrations:
+    - LangChain: langchain.md
+    - Agno: agno.md
+  - Advanced:
+    - LLMLingua: llmlingua.md
+    - Text Compression: text-compression.md
+    - Transforms: transforms.md
+    - Architecture: ARCHITECTURE.md
+  - Reference:
+    - API: api.md
+    - SDK: sdk.md
+    - Metrics: metrics.md
+    - Errors: errors.md
+    - Troubleshooting: troubleshooting.md
+  - Deployment:
+    - macOS: macos-deployment.md
+  - Memory:
+    - Overview: memory.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/chopratejas/headroom
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/headroom-ai/
