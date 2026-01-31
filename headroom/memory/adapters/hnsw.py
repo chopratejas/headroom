@@ -22,17 +22,44 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-# hnswlib is optional - may not compile on all platforms
-try:
-    import hnswlib
-
-    HNSW_AVAILABLE = True
-except ImportError:
-    hnswlib = None  # type: ignore[assignment]
-    HNSW_AVAILABLE = False
-
 from ..models import Memory, ScopeLevel
 from ..ports import VectorFilter, VectorSearchResult
+
+# hnswlib is optional - may not compile on all platforms
+# NOTE: We don't import hnswlib at module level because it can crash with SIGILL
+# (Illegal Instruction) on CPUs without required AVX instructions. The crash
+# happens at the C level before Python's try/except can catch it.
+# Instead, we import lazily when HNSWVectorIndex is actually instantiated.
+hnswlib: Any = None  # Will be imported lazily
+HNSW_AVAILABLE: bool | None = None  # None = not yet checked, True/False = checked
+
+
+def _check_hnswlib_available() -> bool:
+    """Check if hnswlib is available, importing it lazily.
+
+    Returns:
+        True if hnswlib is available and working.
+
+    Note:
+        This function caches the result in HNSW_AVAILABLE.
+        On CPUs without AVX support, importing hnswlib may crash
+        the process with SIGILL before we can catch the error.
+    """
+    global hnswlib, HNSW_AVAILABLE
+
+    if HNSW_AVAILABLE is not None:
+        return HNSW_AVAILABLE
+
+    try:
+        import hnswlib as _hnswlib
+
+        hnswlib = _hnswlib
+        HNSW_AVAILABLE = True
+    except ImportError:
+        HNSW_AVAILABLE = False
+
+    return HNSW_AVAILABLE
+
 
 if TYPE_CHECKING:
     pass
@@ -187,12 +214,13 @@ class HNSWVectorIndex:
             ValueError: If auto_save is True but save_path is not provided.
             ImportError: If hnswlib is not installed.
         """
-        if not HNSW_AVAILABLE:
+        if not _check_hnswlib_available():
             raise ImportError(
                 "hnswlib is required for HNSWVectorIndex. "
                 "Install with: pip install hnswlib\n"
                 "Note: hnswlib requires C++ compilation and may not be "
-                "available on all platforms."
+                "available on all platforms (crashes with SIGILL on CPUs "
+                "without AVX support)."
             )
 
         if auto_save and save_path is None:
@@ -208,7 +236,8 @@ class HNSWVectorIndex:
 
         # Initialize HNSW index with cosine similarity
         # hnswlib uses 'cosine' space which internally normalizes vectors
-        self._index = hnswlib.Index(space="cosine", dim=dimension)
+        # Note: hnswlib is guaranteed non-None here due to _check_hnswlib_available() above
+        self._index = hnswlib.Index(space="cosine", dim=dimension)  # type: ignore[union-attr]
         self._index.init_index(
             max_elements=max_elements,
             ef_construction=ef_construction,
@@ -729,7 +758,7 @@ class HNSWVectorIndex:
             self._ef_search = meta_data["ef_search"]
 
             # Create new index and load from file
-            self._index = hnswlib.Index(space="cosine", dim=self._dimension)
+            self._index = hnswlib.Index(space="cosine", dim=self._dimension)  # type: ignore[union-attr]
             self._index.load_index(
                 str(hnsw_path),
                 max_elements=self._max_elements,
@@ -757,7 +786,7 @@ class HNSWVectorIndex:
         """Clear all entries from the index."""
         with self._lock:
             # Reinitialize the index
-            self._index = hnswlib.Index(space="cosine", dim=self._dimension)
+            self._index = hnswlib.Index(space="cosine", dim=self._dimension)  # type: ignore[union-attr]
             self._index.init_index(
                 max_elements=self._max_elements,
                 ef_construction=self._ef_construction,

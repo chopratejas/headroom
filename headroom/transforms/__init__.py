@@ -11,6 +11,7 @@ from .anchor_selector import (
 from .base import Transform
 from .cache_aligner import CacheAligner
 from .content_detector import ContentType, DetectionResult, detect_content_type
+from .diff_compressor import DiffCompressionResult, DiffCompressor, DiffCompressorConfig
 from .intelligent_context import ContextStrategy, IntelligentContextManager
 from .log_compressor import LogCompressionResult, LogCompressor, LogCompressorConfig
 from .pipeline import TransformPipeline
@@ -84,6 +85,9 @@ __all__ = [
     "LogCompressor",
     "LogCompressorConfig",
     "LogCompressionResult",
+    "DiffCompressor",
+    "DiffCompressorConfig",
+    "DiffCompressionResult",
     "TextCompressor",
     "TextCompressorConfig",
     "TextCompressionResult",
