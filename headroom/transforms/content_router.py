@@ -107,6 +107,7 @@ class CompressionStrategy(Enum):
     LLMLINGUA = "llmlingua"
     TEXT = "text"
     DIFF = "diff"
+    HTML = "html"
     MIXED = "mixed"
     PASSTHROUGH = "passthrough"
 
@@ -232,6 +233,7 @@ class ContentRouterConfig:
     enable_smart_crusher: bool = True
     enable_search_compressor: bool = True
     enable_log_compressor: bool = True
+    enable_html_extractor: bool = True  # HTML content extraction
     enable_image_optimizer: bool = True  # Image token optimization
 
     # Routing preferences
@@ -462,6 +464,7 @@ class ContentRouter(Transform):
         self._search_compressor: Any = None
         self._log_compressor: Any = None
         self._diff_compressor: Any = None
+        self._html_extractor: Any = None
         self._llmlingua: Any = None
         self._text_compressor: Any = None
         self._image_optimizer: Any = None
@@ -603,6 +606,7 @@ class ContentRouter(Transform):
             ContentType.SEARCH_RESULTS: CompressionStrategy.SEARCH,
             ContentType.BUILD_OUTPUT: CompressionStrategy.LOG,
             ContentType.GIT_DIFF: CompressionStrategy.DIFF,
+            ContentType.HTML: CompressionStrategy.HTML,
             ContentType.PLAIN_TEXT: CompressionStrategy.TEXT,
         }
 
@@ -782,6 +786,15 @@ class ContentRouter(Transform):
                         result.compressed_line_count,
                     )
 
+            elif strategy == CompressionStrategy.HTML:
+                if self.config.enable_html_extractor:
+                    extractor = self._get_html_extractor()
+                    if extractor:
+                        result = extractor.extract(content)
+                        compressed = result.extracted
+                        # Estimate tokens from extracted text (simple word count)
+                        compressed_tokens = len(compressed.split()) if compressed else 0
+
             elif strategy == CompressionStrategy.LLMLINGUA:
                 compressed, compressed_tokens = self._try_llmlingua(content, context)
 
@@ -844,6 +857,7 @@ class ContentRouter(Transform):
             ContentType.SEARCH_RESULTS: CompressionStrategy.SEARCH,
             ContentType.BUILD_OUTPUT: CompressionStrategy.LOG,
             ContentType.GIT_DIFF: CompressionStrategy.DIFF,
+            ContentType.HTML: CompressionStrategy.HTML,
             ContentType.PLAIN_TEXT: CompressionStrategy.TEXT,
         }
         return mapping.get(content_type, self.config.fallback_strategy)
@@ -856,6 +870,7 @@ class ContentRouter(Transform):
             CompressionStrategy.SEARCH: ContentType.SEARCH_RESULTS,
             CompressionStrategy.LOG: ContentType.BUILD_OUTPUT,
             CompressionStrategy.DIFF: ContentType.GIT_DIFF,
+            CompressionStrategy.HTML: ContentType.HTML,
             CompressionStrategy.TEXT: ContentType.PLAIN_TEXT,
             CompressionStrategy.LLMLINGUA: ContentType.PLAIN_TEXT,
             CompressionStrategy.PASSTHROUGH: ContentType.PLAIN_TEXT,
@@ -927,6 +942,17 @@ class ContentRouter(Transform):
             except ImportError:
                 logger.debug("DiffCompressor not available")
         return self._diff_compressor
+
+    def _get_html_extractor(self) -> Any:
+        """Get HTMLExtractor (lazy load)."""
+        if self._html_extractor is None:
+            try:
+                from .html_extractor import HTMLExtractor
+
+                self._html_extractor = HTMLExtractor()
+            except ImportError:
+                logger.debug("HTMLExtractor not available (install trafilatura)")
+        return self._html_extractor
 
     def _get_llmlingua(self) -> Any:
         """Get LLMLinguaCompressor (lazy load)."""

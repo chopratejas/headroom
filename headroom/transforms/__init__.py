@@ -41,6 +41,19 @@ try:
 except ImportError:
     _LLMLINGUA_AVAILABLE = False
 
+# HTML content extraction (optional dependency - requires trafilatura)
+try:
+    from .html_extractor import (  # noqa: F401
+        HTMLExtractionResult,
+        HTMLExtractor,
+        HTMLExtractorConfig,
+        is_html_content,
+    )
+
+    _HTML_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    _HTML_EXTRACTOR_AVAILABLE = False
+
 # AST-based code compression (optional dependency)
 from .code_compressor import (
     CodeAwareCompressor,
@@ -115,6 +128,8 @@ __all__ = [
     "EmbeddingProvider",
     # ML-based compression (optional)
     "_LLMLINGUA_AVAILABLE",
+    # HTML extraction (optional)
+    "_HTML_EXTRACTOR_AVAILABLE",
 ]
 
 # Conditionally add LLMLingua exports
@@ -127,5 +142,16 @@ if _LLMLINGUA_AVAILABLE:
             "compress_with_llmlingua",
             "is_llmlingua_model_loaded",
             "unload_llmlingua_model",
+        ]
+    )
+
+# Conditionally add HTML extractor exports
+if _HTML_EXTRACTOR_AVAILABLE:
+    __all__.extend(
+        [
+            "HTMLExtractor",
+            "HTMLExtractorConfig",
+            "HTMLExtractionResult",
+            "is_html_content",
         ]
     )

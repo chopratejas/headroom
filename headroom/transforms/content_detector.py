@@ -29,6 +29,7 @@ class ContentType(Enum):
     SEARCH_RESULTS = "search"  # grep/ripgrep output
     BUILD_OUTPUT = "build"  # Compiler, test, lint logs
     GIT_DIFF = "diff"  # Unified diff format
+    HTML = "html"  # Web pages (needs content extraction, not compression)
     PLAIN_TEXT = "text"  # Fallback
 
 
@@ -128,22 +129,27 @@ def detect_content_type(content: str) -> DetectionResult:
     if diff_result and diff_result.confidence >= 0.7:
         return diff_result
 
-    # 3. Check for search results (file:line: format)
+    # 3. Check for HTML (very distinctive, needs extraction not compression)
+    html_result = _try_detect_html(content)
+    if html_result and html_result.confidence >= 0.7:
+        return html_result
+
+    # 4. Check for search results (file:line: format)
     search_result = _try_detect_search(content)
     if search_result and search_result.confidence >= 0.6:
         return search_result
 
-    # 4. Check for build/log output
+    # 5. Check for build/log output
     log_result = _try_detect_log(content)
     if log_result and log_result.confidence >= 0.5:
         return log_result
 
-    # 5. Check for source code
+    # 6. Check for source code
     code_result = _try_detect_code(content)
     if code_result and code_result.confidence >= 0.5:
         return code_result
 
-    # 6. Fallback to plain text
+    # 7. Fallback to plain text
     return DetectionResult(ContentType.PLAIN_TEXT, 0.5, {})
 
 
@@ -200,6 +206,75 @@ def _try_detect_diff(content: str) -> DetectionResult | None:
         ContentType.GIT_DIFF,
         confidence,
         {"header_matches": header_matches, "change_lines": change_matches},
+    )
+
+
+# HTML detection patterns
+_HTML_DOCTYPE_PATTERN = re.compile(r"^\s*<!doctype\s+html", re.IGNORECASE)
+_HTML_TAG_PATTERN = re.compile(r"<html[\s>]", re.IGNORECASE)
+_HTML_HEAD_PATTERN = re.compile(r"<head[\s>]", re.IGNORECASE)
+_HTML_BODY_PATTERN = re.compile(r"<body[\s>]", re.IGNORECASE)
+_HTML_STRUCTURAL_TAGS = re.compile(
+    r"<(div|span|script|style|link|meta|nav|header|footer|aside|article|section|main)[\s>]",
+    re.IGNORECASE,
+)
+
+
+def _try_detect_html(content: str) -> DetectionResult | None:
+    """Try to detect HTML content.
+
+    HTML needs content extraction (removing scripts, styles, nav, etc.),
+    not token-level compression like LLMLingua.
+    """
+    # Check first 3000 chars for HTML indicators
+    sample = content[:3000]
+
+    # Check for DOCTYPE (very strong signal)
+    has_doctype = bool(_HTML_DOCTYPE_PATTERN.search(sample))
+
+    # Check for <html> tag
+    has_html_tag = bool(_HTML_TAG_PATTERN.search(sample))
+
+    # Check for <head> or <body>
+    has_head = bool(_HTML_HEAD_PATTERN.search(sample))
+    has_body = bool(_HTML_BODY_PATTERN.search(sample))
+
+    # Count structural HTML tags
+    structural_matches = len(_HTML_STRUCTURAL_TAGS.findall(sample))
+
+    # Quick rejection: not HTML if no indicators
+    if not has_doctype and not has_html_tag and structural_matches < 3:
+        return None
+
+    # Calculate confidence
+    confidence = 0.0
+
+    if has_doctype:
+        confidence += 0.5
+    if has_html_tag:
+        confidence += 0.3
+    if has_head:
+        confidence += 0.1
+    if has_body:
+        confidence += 0.1
+
+    # Structural tags contribute to confidence
+    confidence += min(0.3, structural_matches * 0.03)
+
+    # Cap at 1.0
+    confidence = min(1.0, confidence)
+
+    if confidence < 0.5:
+        return None
+
+    return DetectionResult(
+        ContentType.HTML,
+        confidence,
+        {
+            "has_doctype": has_doctype,
+            "has_html_tag": has_html_tag,
+            "structural_tags": structural_matches,
+        },
     )
 
 
