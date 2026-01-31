@@ -290,6 +290,24 @@ claude
 **Do NOT include** `CLAUDE_CODE_USE_BEDROCK` - Headroom handles the Bedrock routing.
 </details>
 
+**Using OpenRouter?** Access 400+ models through a single API:
+
+```bash
+# OpenRouter - Terminal 1: Start proxy
+export OPENROUTER_API_KEY="sk-or-v1-..."
+headroom proxy --backend openrouter
+
+# OpenRouter - Terminal 2: Run your client
+export ANTHROPIC_API_KEY="sk-ant-dummy"  # Any value works! Headroom ignores it.
+export ANTHROPIC_BASE_URL="http://localhost:8787"
+# Use OpenRouter model names in your requests:
+# - anthropic/claude-3.5-sonnet
+# - openai/gpt-4o
+# - google/gemini-pro
+# - meta-llama/llama-3-70b-instruct
+# See all models: https://openrouter.ai/models
+```
+
 ```bash
 # Google Vertex AI
 headroom proxy --backend vertex_ai --region us-central1

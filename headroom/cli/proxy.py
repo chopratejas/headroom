@@ -77,8 +77,8 @@ from .main import main
     "--backend",
     default="anthropic",
     help=(
-        "API backend: 'anthropic' (direct), 'bedrock' (AWS), "
-        "or 'litellm-<provider>' (e.g., litellm-bedrock, litellm-vertex)"
+        "API backend: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter' (OpenRouter), "
+        "or 'litellm-<provider>' (e.g., litellm-vertex)"
     ),
 )
 @click.option(
@@ -185,13 +185,36 @@ def proxy(
 
     effective_region = bedrock_region or region
     backend_status = "Anthropic (direct API)"
+    backend_section = ""
+
     if config.backend != "anthropic":
-        # Normalize: "bedrock" -> "litellm-bedrock"
-        backend_name = config.backend
-        if not backend_name.startswith("litellm-"):
-            backend_name = f"litellm-{backend_name}"
-        provider = backend_name.replace("litellm-", "")
-        backend_status = f"{provider.upper()} via LiteLLM (region={effective_region})"
+        # Get provider config from registry
+        from headroom.backends.litellm import get_provider_config
+
+        provider = config.backend.replace("litellm-", "")
+        provider_config = get_provider_config(provider)
+
+        # Build backend status
+        if provider_config.uses_region:
+            backend_status = (
+                f"{provider_config.display_name} via LiteLLM (region={effective_region})"
+            )
+        else:
+            backend_status = f"{provider_config.display_name} via LiteLLM"
+
+        # Build usage instructions from provider config
+        env_vars_str = (
+            ", ".join(provider_config.env_vars) if provider_config.env_vars else "See docs"
+        )
+        backend_section = f"""
+IMPORTANT for {provider_config.display_name} users:
+  1. Set credentials: {env_vars_str}
+  2. Set a dummy Anthropic key: ANTHROPIC_API_KEY="sk-ant-dummy"
+     (Headroom ignores this - it uses your {provider_config.display_name} credentials)
+  3. Set base URL: ANTHROPIC_BASE_URL=http://{config.host}:{config.port}"""
+        if provider_config.model_format_hint:
+            backend_section += f"\n  4. Use model names: {provider_config.model_format_hint}"
+        backend_section += "\n"
 
     # Build memory section if enabled
     memory_section = ""
@@ -202,20 +225,7 @@ Memory:
   - Tools: {"ENABLED" if config.memory_inject_tools else "DISABLED"}  Context: {"ENABLED" if config.memory_inject_context else "DISABLED"}
 """
         if config.memory_inject_tools:
-            memory_section += "  - NOTE: Memory tools require ANTHROPIC_API_KEY (Claude Code subscription credentials have restrictions).\n"
-
-    # Build usage note for Bedrock
-    bedrock_section = ""
-    if config.backend != "anthropic":
-        provider = config.backend.replace("litellm-", "").upper()
-        bedrock_section = f"""
-IMPORTANT for {provider} users (Claude Code / VS Code):
-  1. Set AWS credentials: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
-  2. Set a dummy Anthropic key: ANTHROPIC_API_KEY="sk-ant-dummy"
-     (Headroom ignores this - it uses your AWS credentials for {provider})
-  3. Set base URL: ANTHROPIC_BASE_URL=http://{config.host}:{config.port}
-  4. Do NOT set: CLAUDE_CODE_USE_BEDROCK=1 (Headroom handles this)
-"""
+            memory_section += "  - NOTE: Memory tools require ANTHROPIC_API_KEY.\n"
 
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
@@ -231,7 +241,7 @@ Starting proxy server...
   Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
-{bedrock_section}
+{backend_section}
 Usage with Claude Code:
   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
 

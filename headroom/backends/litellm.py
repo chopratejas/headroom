@@ -4,6 +4,7 @@ Uses LiteLLM to support 100+ providers with minimal code:
 - AWS Bedrock: model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"
 - Azure OpenAI: model="azure/gpt-4"
 - Google Vertex: model="vertex_ai/claude-3-5-sonnet"
+- OpenRouter: model="openrouter/anthropic/claude-3.5-sonnet"
 - And many more...
 
 LiteLLM handles all the auth and format translation internally.
@@ -14,6 +15,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from .base import Backend, BackendResponse, StreamEvent
@@ -31,11 +33,26 @@ except ImportError:
     acompletion = None  # type: ignore
 
 
-# Model mapping: Anthropic model IDs -> LiteLLM model strings
-# IMPORTANT: Claude 4+ models require inference profiles (us.anthropic.* or global.anthropic.*)
-# Direct model IDs (anthropic.*) don't support on-demand throughput for newer models.
-# See: https://docs.aws.amazon.com/bedrock/latest/userguide/inference-profiles.html
-BEDROCK_MODEL_MAP = {
+# =============================================================================
+# Provider Registry - Add new providers here!
+# =============================================================================
+
+
+@dataclass
+class ProviderConfig:
+    """Configuration for a LiteLLM provider."""
+
+    name: str  # Provider identifier (e.g., "bedrock", "openrouter")
+    display_name: str  # Human-readable name (e.g., "AWS Bedrock", "OpenRouter")
+    model_map: dict[str, str] = field(default_factory=dict)  # Anthropic -> provider model map
+    pass_through: bool = False  # If True, prepend provider/ to any model
+    uses_region: bool = True  # Whether region is relevant for this provider
+    env_vars: list[str] = field(default_factory=list)  # Required env vars
+    model_format_hint: str = ""  # Hint for model naming (shown in help)
+
+
+# Model mappings for providers that need translation
+_BEDROCK_MODEL_MAP = {
     # Claude 4.5 (requires inference profiles)
     "claude-opus-4-5-20251101": "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
     "claude-sonnet-4-5-20250929": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -57,7 +74,7 @@ BEDROCK_MODEL_MAP = {
     "claude-3-haiku-20240307": "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0",
 }
 
-VERTEX_MODEL_MAP = {
+_VERTEX_MODEL_MAP = {
     "claude-3-5-sonnet-20241022": "vertex_ai/claude-3-5-sonnet-v2@20241022",
     "claude-3-5-sonnet-20240620": "vertex_ai/claude-3-5-sonnet@20240620",
     "claude-3-opus-20240229": "vertex_ai/claude-3-opus@20240229",
@@ -66,14 +83,65 @@ VERTEX_MODEL_MAP = {
 }
 
 
+# Provider Registry - to add a new provider, just add an entry here!
+PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
+    "bedrock": ProviderConfig(
+        name="bedrock",
+        display_name="AWS Bedrock",
+        model_map=_BEDROCK_MODEL_MAP,
+        uses_region=True,
+        env_vars=["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"],
+    ),
+    "vertex_ai": ProviderConfig(
+        name="vertex_ai",
+        display_name="Google Vertex AI",
+        model_map=_VERTEX_MODEL_MAP,
+        uses_region=True,
+        env_vars=["GOOGLE_APPLICATION_CREDENTIALS"],
+    ),
+    "openrouter": ProviderConfig(
+        name="openrouter",
+        display_name="OpenRouter",
+        model_map={},  # No static map - pass through
+        pass_through=True,
+        uses_region=False,
+        env_vars=["OPENROUTER_API_KEY"],
+        model_format_hint="anthropic/claude-3.5-sonnet, openai/gpt-4o, etc.",
+    ),
+    "azure": ProviderConfig(
+        name="azure",
+        display_name="Azure OpenAI",
+        model_map={},
+        uses_region=True,
+        env_vars=["AZURE_API_KEY", "AZURE_API_BASE"],
+    ),
+}
+
+
+def get_provider_config(provider: str) -> ProviderConfig:
+    """Get provider config, with fallback for unknown providers."""
+    if provider in PROVIDER_REGISTRY:
+        return PROVIDER_REGISTRY[provider]
+    # Fallback for unknown providers - basic pass-through
+    return ProviderConfig(
+        name=provider,
+        display_name=provider.upper(),
+        model_map={},
+        pass_through=True,
+    )
+
+
 class LiteLLMBackend(Backend):
     """Backend using LiteLLM for multi-provider support.
 
     Supports any provider LiteLLM supports:
     - bedrock: AWS Bedrock (uses AWS credentials)
     - vertex_ai: Google Vertex AI (uses GCP credentials)
+    - openrouter: OpenRouter (400+ models via single API)
     - azure: Azure OpenAI (uses Azure credentials)
     - And 100+ more...
+
+    To add a new provider, just add an entry to PROVIDER_REGISTRY above.
     """
 
     def __init__(
@@ -85,7 +153,7 @@ class LiteLLMBackend(Backend):
         """Initialize LiteLLM backend.
 
         Args:
-            provider: LiteLLM provider prefix (bedrock, vertex_ai, azure, etc.)
+            provider: LiteLLM provider prefix (bedrock, vertex_ai, openrouter, etc.)
             region: Cloud region (provider-specific)
             **kwargs: Additional provider-specific config
         """
@@ -98,16 +166,13 @@ class LiteLLMBackend(Backend):
         self.region = region
         self.kwargs = kwargs
 
-        # Select model map based on provider
-        if provider == "bedrock":
-            self._model_map = BEDROCK_MODEL_MAP
-            # Set AWS region for litellm
-            if region:
-                litellm.set_verbose = False  # Reduce noise
-        elif provider == "vertex_ai":
-            self._model_map = VERTEX_MODEL_MAP
-        else:
-            self._model_map = {}
+        # Get provider config from registry
+        self._config = get_provider_config(provider)
+        self._model_map = self._config.model_map
+
+        # Provider-specific setup
+        if provider == "bedrock" and region:
+            litellm.set_verbose = False  # Reduce noise
 
         logger.info(f"LiteLLM backend initialized (provider={provider})")
 
@@ -117,9 +182,17 @@ class LiteLLMBackend(Backend):
 
     def map_model_id(self, anthropic_model: str) -> str:
         """Map Anthropic model ID to LiteLLM model string."""
-        # Check direct mapping
+        # Check direct mapping first
         if anthropic_model in self._model_map:
             return self._model_map[anthropic_model]
+
+        # Pass-through providers: prepend provider prefix
+        if self._config.pass_through:
+            # If already has provider prefix, use as-is
+            if anthropic_model.startswith(f"{self.provider}/"):
+                return anthropic_model
+            # Otherwise prepend provider/
+            return f"{self.provider}/{anthropic_model}"
 
         # If already has provider prefix, use as-is
         if "/" in anthropic_model:
@@ -130,6 +203,9 @@ class LiteLLMBackend(Backend):
 
     def supports_model(self, model: str) -> bool:
         """Check if model is supported."""
+        # Pass-through providers accept any model
+        if self._config.pass_through:
+            return True
         return "claude" in model.lower() or model in self._model_map
 
     def _convert_messages_for_litellm(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

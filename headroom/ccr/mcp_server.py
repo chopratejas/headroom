@@ -43,8 +43,8 @@ try:
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
-    Server = None
-    stdio_server = None
+    Server = None  # type: ignore[assignment,misc]
+    stdio_server = None  # type: ignore[assignment]
 
 # Try to import httpx for proxy communication
 try:

@@ -6259,16 +6259,20 @@ def run_server(
     pool_info = f"max={config.max_connections}, keepalive={config.max_keepalive_connections}"
     http2_status = "ENABLED" if config.http2 else "DISABLED"
 
-    # Backend status
+    # Backend status - use provider registry for display info
     if config.backend == "anthropic":
         backend_status = "ANTHROPIC (direct API)"
     else:
-        # Normalize: "bedrock" -> "litellm-bedrock"
-        backend = config.backend
-        if not backend.startswith("litellm-"):
-            backend = f"litellm-{backend}"
-        provider = backend.replace("litellm-", "")
-        backend_status = f"{provider.upper()} via LiteLLM (region={config.bedrock_region})"
+        from headroom.backends.litellm import get_provider_config
+
+        provider = config.backend.replace("litellm-", "")
+        provider_config = get_provider_config(provider)
+        if provider_config.uses_region:
+            backend_status = (
+                f"{provider_config.display_name} via LiteLLM (region={config.bedrock_region})"
+            )
+        else:
+            backend_status = f"{provider_config.display_name} via LiteLLM"
 
     print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -6368,12 +6372,12 @@ if __name__ == "__main__":
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})"
     )
 
-    # Backend (anthropic direct or bedrock)
+    # Backend (anthropic direct, bedrock, or openrouter)
     parser.add_argument(
         "--backend",
-        choices=["anthropic", "bedrock"],
+        choices=["anthropic", "bedrock", "openrouter"],
         default="anthropic",
-        help="Backend for Anthropic API: 'anthropic' (direct) or 'bedrock' (AWS Bedrock)",
+        help="Backend for Anthropic API: 'anthropic' (direct), 'bedrock' (AWS), or 'openrouter' (OpenRouter)",
     )
     parser.add_argument(
         "--bedrock-region",
@@ -6383,6 +6387,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--bedrock-profile",
         help="AWS profile for Bedrock backend (default: use default credentials)",
+    )
+    parser.add_argument(
+        "--openrouter-api-key",
+        help="OpenRouter API key (or set OPENROUTER_API_KEY env var)",
     )
 
     # Connection pool (scalability)
@@ -6505,6 +6513,10 @@ if __name__ == "__main__":
     optimize = env_optimize if not args.no_optimize else False
     cache_enabled = env_cache if not args.no_cache else False
     rate_limit_enabled = env_rate_limit if not args.no_rate_limit else False
+
+    # Set OpenRouter API key from CLI if provided
+    if hasattr(args, "openrouter_api_key") and args.openrouter_api_key:
+        os.environ["OPENROUTER_API_KEY"] = args.openrouter_api_key
 
     config = ProxyConfig(
         host=_get_env_str("HEADROOM_HOST", args.host),
