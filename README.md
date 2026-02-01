@@ -256,6 +256,19 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 ```
 
+**Enable Persistent Memory** - Claude remembers across conversations:
+
+```bash
+headroom proxy --memory
+```
+
+Memory auto-detects your provider (Anthropic, OpenAI, Gemini) and uses the appropriate format:
+- **Anthropic**: Uses native memory tool (`memory_20250818`) - works with Claude Code subscriptions
+- **OpenAI/Gemini/Others**: Uses function calling format
+- All providers share the same semantic vector store for search
+
+Set `x-headroom-user-id` header for per-user memory isolation (defaults to 'default').
+
 **Using AWS Bedrock, Google Vertex, or Azure?** Route through Headroom:
 
 ```bash

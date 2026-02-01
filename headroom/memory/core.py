@@ -859,3 +859,43 @@ class HierarchicalMemory:
     def config(self) -> MemoryConfig:
         """Access the configuration."""
         return self._config
+
+    # =========================================================================
+    # Lifecycle
+    # =========================================================================
+
+    async def close(self) -> None:
+        """Close all resources held by the memory system.
+
+        This should be called when done using the memory system to properly
+        clean up resources like HTTP clients used by embedders.
+        """
+        # Close embedder if it has a close method (e.g., API-based embedders)
+        if hasattr(self._embedder, "close"):
+            await self._embedder.close()
+
+        # Close store if it has a close method
+        if hasattr(self._store, "close"):
+            await self._store.close()
+
+        # Close vector index if it has a close method
+        if hasattr(self._vector_index, "close"):
+            await self._vector_index.close()
+
+        # Close text index if it has a close method
+        if hasattr(self._text_index, "close"):
+            await self._text_index.close()
+
+        # Close cache if it has a close method
+        if self._cache is not None and hasattr(self._cache, "close"):
+            await self._cache.close()
+
+        logger.debug("HierarchicalMemory closed")
+
+    async def __aenter__(self) -> HierarchicalMemory:
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Async context manager exit - closes resources."""
+        await self.close()

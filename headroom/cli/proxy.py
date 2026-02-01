@@ -45,22 +45,17 @@ from .main import main
     is_flag=True,
     help="Disable trying deeper compression before dropping messages",
 )
-# Memory System
+# Memory System (Multi-Provider Support)
 @click.option(
     "--memory",
     is_flag=True,
-    help="Enable persistent user memory (uses x-headroom-user-id header if set, otherwise 'default')",
-)
-@click.option(
-    "--memory-backend",
-    type=click.Choice(["local", "qdrant-neo4j"]),
-    default="local",
-    help="Memory storage backend: local (SQLite+HNSW) or qdrant-neo4j (default: local)",
+    help="Enable persistent user memory. Auto-detects provider and uses appropriate tool format. "
+    "Set x-headroom-user-id header for per-user memory (defaults to 'default').",
 )
 @click.option(
     "--memory-db-path",
     default="headroom_memory.db",
-    help="Path to memory database file for local backend (default: headroom_memory.db)",
+    help="Path to memory database file (default: headroom_memory.db)",
 )
 @click.option("--no-memory-tools", is_flag=True, help="Disable automatic memory tool injection")
 @click.option(
@@ -114,7 +109,6 @@ def proxy(
     no_intelligent_scoring: bool,
     no_compress_first: bool,
     memory: bool,
-    memory_backend: str,
     memory_db_path: str,
     no_memory_tools: bool,
     no_memory_context: bool,
@@ -166,9 +160,8 @@ def proxy(
         intelligent_context=not no_intelligent_context,
         intelligent_context_scoring=not no_intelligent_scoring,
         intelligent_context_compress_first=not no_compress_first,
-        # Memory System
+        # Memory System (Multi-Provider with auto-detection)
         memory_enabled=memory,
-        memory_backend=memory_backend,  # type: ignore[arg-type]
         memory_db_path=memory_db_path,
         memory_inject_tools=not no_memory_tools,
         memory_inject_context=not no_memory_context,
@@ -181,7 +174,7 @@ def proxy(
 
     memory_status = "DISABLED"
     if config.memory_enabled:
-        memory_status = f"ENABLED ({config.memory_backend})"
+        memory_status = "ENABLED (multi-provider)"
 
     effective_region = bedrock_region or region
     backend_status = "Anthropic (direct API)"
@@ -220,12 +213,16 @@ IMPORTANT for {provider_config.display_name} users:
     memory_section = ""
     if config.memory_enabled:
         memory_section = f"""
-Memory:
-  - Memories are scoped per user. Set x-headroom-user-id header (defaults to 'default').
-  - Tools: {"ENABLED" if config.memory_inject_tools else "DISABLED"}  Context: {"ENABLED" if config.memory_inject_context else "DISABLED"}
+Memory (Multi-Provider):
+  - Auto-detects provider from request (Anthropic, OpenAI, Gemini, etc.)
+  - Anthropic: Uses native memory tool (memory_20250818) - subscription safe
+  - OpenAI/Gemini/Others: Uses function calling format
+  - All providers share the same semantic vector store backend
+  - Set x-headroom-user-id header for per-user memory (defaults to 'default')
+  - Tools: {"ENABLED" if config.memory_inject_tools else "DISABLED"}
+  - Context injection: {"ENABLED" if config.memory_inject_context else "DISABLED"}
+  - Database: {config.memory_db_path}
 """
-        if config.memory_inject_tools:
-            memory_section += "  - NOTE: Memory tools require ANTHROPIC_API_KEY.\n"
 
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗

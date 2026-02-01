@@ -78,6 +78,8 @@ async def memory_system(temp_db_path):
     config = MemoryConfig(db_path=str(temp_db_path))
     system = await HierarchicalMemory.create(config)
     yield system
+    # Properly close to release httpx clients
+    await system.close()
 
 
 # =============================================================================

@@ -639,6 +639,9 @@ class LocalBackend:
 
     async def close(self) -> None:
         """Close the backend and release resources."""
+        # Close HierarchicalMemory to release httpx clients in embedders
+        if self._hierarchical_memory is not None:
+            await self._hierarchical_memory.close()
         self._hierarchical_memory = None
         self._graph = None
         self._initialized = False

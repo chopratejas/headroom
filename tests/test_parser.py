@@ -569,17 +569,23 @@ class TestFindToolUnits:
             # OpenAI format
             {
                 "role": "assistant",
-                "tool_calls": [{"id": "call_1", "function": {"name": "openai_tool", "arguments": "{}"}}],
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "openai_tool", "arguments": "{}"}}
+                ],
             },
             {"role": "tool", "tool_call_id": "call_1", "content": "openai result"},
             # Anthropic format
             {
                 "role": "assistant",
-                "content": [{"type": "tool_use", "id": "toolu_2", "name": "anthropic_tool", "input": {}}],
+                "content": [
+                    {"type": "tool_use", "id": "toolu_2", "name": "anthropic_tool", "input": {}}
+                ],
             },
             {
                 "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "anthropic result"}],
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_2", "content": "anthropic result"}
+                ],
             },
         ]
         units = find_tool_units(messages)

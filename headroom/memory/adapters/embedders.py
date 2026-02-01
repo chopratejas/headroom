@@ -259,6 +259,11 @@ class LocalEmbedder:
         """Return the maximum number of tokens the model can process."""
         return self.DEFAULT_MAX_TOKENS
 
+    async def close(self) -> None:
+        """Close resources (no-op for local embedder)."""
+        # LocalEmbedder doesn't hold persistent connections
+        pass
+
 
 # =============================================================================
 # OpenAIEmbedder - OpenAI API
@@ -464,6 +469,13 @@ class OpenAIEmbedder:
     def max_tokens(self) -> int:
         """Return the maximum number of tokens the model can process."""
         return self.DEFAULT_MAX_TOKENS
+
+    async def close(self) -> None:
+        """Close the OpenAI async client and its underlying httpx connection."""
+        if "_async_client" in self.__dict__:
+            await self._async_client.close()
+            # Remove from cache to allow re-creation if needed
+            del self.__dict__["_async_client"]
 
 
 # =============================================================================

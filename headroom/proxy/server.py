@@ -296,6 +296,7 @@ class ProxyConfig:
     memory_backend: Literal["local", "qdrant-neo4j"] = "local"  # Backend type
     memory_db_path: str = "headroom_memory.db"  # Path for local backend
     memory_inject_tools: bool = True  # Auto-inject memory tools
+    memory_use_native_tool: bool = False  # Use Anthropic's native memory_20250818 tool
     memory_inject_context: bool = True  # Inject searched memories into context
     memory_top_k: int = 10  # Number of memories to inject
     memory_min_similarity: float = 0.3  # Minimum similarity threshold
@@ -1082,6 +1083,7 @@ class HeadroomProxy:
                 backend=config.memory_backend,
                 db_path=config.memory_db_path,
                 inject_tools=config.memory_inject_tools,
+                use_native_tool=config.memory_use_native_tool,
                 inject_context=config.memory_inject_context,
                 top_k=config.memory_top_k,
                 min_similarity=config.memory_min_similarity,
@@ -1623,9 +1625,26 @@ class HeadroomProxy:
                 tools, mem_tools_injected = self.memory_handler.inject_tools(tools, "anthropic")
                 if mem_tools_injected:
                     tool_names = [
-                        t.get("name") for t in tools if t.get("name", "").startswith("memory_")
+                        t.get("name") or t.get("type", "")
+                        for t in tools
+                        if t.get("name", "").startswith("memory")
+                        or t.get("type", "").startswith("memory")
                     ]
                     logger.info(f"[{request_id}] Memory: Injected tools: {tool_names}")
+
+                    # Add beta headers for native memory tool
+                    beta_headers = self.memory_handler.get_beta_headers()
+                    if beta_headers:
+                        for key, value in beta_headers.items():
+                            # Merge with existing beta header if present
+                            existing = headers.get(key, "")
+                            if existing and value not in existing:
+                                headers[key] = f"{existing},{value}"
+                            else:
+                                headers[key] = value
+                            logger.info(
+                                f"[{request_id}] Memory: Added beta header: {key}={headers[key]}"
+                            )
 
         # Update body
         body["messages"] = optimized_messages
