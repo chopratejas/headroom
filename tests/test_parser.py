@@ -483,6 +483,112 @@ class TestFindToolUnits:
         _, response_indices = units[0]
         assert response_indices == sorted(response_indices)
 
+    def test_anthropic_format_tool_use_and_result(self):
+        """Finds Anthropic format tool_use/tool_result pairs in content blocks."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Take a screenshot"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me take a screenshot."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_123",
+                        "name": "browser_screenshot",
+                        "input": {},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_123",
+                        "content": "Screenshot taken successfully",
+                    }
+                ],
+            },
+            {"role": "user", "content": "Thanks!"},
+        ]
+        units = find_tool_units(messages)
+        assert len(units) == 1
+        assistant_idx, response_indices = units[0]
+        assert assistant_idx == 2
+        assert response_indices == [3]
+
+    def test_anthropic_format_multiple_tool_uses(self):
+        """Finds multiple Anthropic format tool_use blocks from same assistant."""
+        messages = [
+            {"role": "user", "content": "Do two things"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_a", "name": "first", "input": {}},
+                    {"type": "tool_use", "id": "toolu_b", "name": "second", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_a", "content": "first done"},
+                    {"type": "tool_result", "tool_use_id": "toolu_b", "content": "second done"},
+                ],
+            },
+        ]
+        units = find_tool_units(messages)
+        assert len(units) == 1
+        assistant_idx, response_indices = units[0]
+        assert assistant_idx == 1
+        assert response_indices == [2]
+
+    def test_anthropic_format_orphaned_tool_result(self):
+        """Anthropic tool_result without matching tool_use is not included."""
+        messages = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "orphan_toolu",
+                        "content": "orphaned result",
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        units = find_tool_units(messages)
+        assert units == []
+
+    def test_mixed_openai_and_anthropic_formats(self):
+        """Both OpenAI and Anthropic formats can coexist (edge case)."""
+        messages = [
+            {"role": "user", "content": "Do things"},
+            # OpenAI format
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "call_1", "function": {"name": "openai_tool", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "openai result"},
+            # Anthropic format
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_2", "name": "anthropic_tool", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "anthropic result"}],
+            },
+        ]
+        units = find_tool_units(messages)
+        assert len(units) == 2
+        # First unit: OpenAI format (assistant at 1, tool response at 2)
+        assert units[0] == (1, [2])
+        # Second unit: Anthropic format (assistant at 3, user with tool_result at 4)
+        assert units[1] == (3, [4])
+
 
 # --- TestGetMessageContentText ---
 
