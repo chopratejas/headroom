@@ -26,6 +26,16 @@ from headroom.memory.factory import (
     create_memory_system,
 )
 
+# Check if hnswlib is available (most factory tests require it)
+try:
+    from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+    HNSW_AVAILABLE = _check_hnswlib_available()
+except ImportError:
+    HNSW_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
+
 # =============================================================================
 # Test MemoryConfig
 # =============================================================================

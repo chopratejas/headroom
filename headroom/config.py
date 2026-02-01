@@ -345,6 +345,25 @@ class AnchorConfig:
     dedup_identical_items: bool = True  # Don't waste slots on identical items
 
 
+# Default tools to exclude from compression (local file/code tools)
+# These tools return precise content (line numbers, paths, code) where
+# exact fidelity matters. Web tools are NOT excluded - they benefit from
+# compression and can use CCR for retrieval if needed.
+DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
+    {
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
+        # Lowercase variants for case-insensitive matching
+        "read",
+        "glob",
+        "grep",
+        "bash",
+    }
+)
+
+
 @dataclass
 class SmartCrusherConfig:
     """Configuration for smart statistical crusher (DEFAULT).

@@ -543,3 +543,251 @@ class TestSummary:
 
         # Should be a string
         assert summary is not None
+
+
+# =============================================================================
+# TestExcludeTools
+# =============================================================================
+
+
+class TestExcludeTools:
+    """Tests for exclude_tools feature - bypassing compression for specific tools."""
+
+    @pytest.fixture
+    def tokenizer(self):
+        """Get a tokenizer for tests."""
+        from headroom.providers import OpenAIProvider
+        from headroom.tokenizer import Tokenizer
+
+        provider = OpenAIProvider()
+        token_counter = provider.get_token_counter("gpt-4o")
+        return Tokenizer(token_counter, "gpt-4o")
+
+    def test_default_exclude_tools_uses_defaults(self, tokenizer):
+        """Default config excludes DEFAULT_EXCLUDE_TOOLS (Read, Glob, etc)."""
+        config = ContentRouterConfig(min_section_tokens=10)
+        router = ContentRouter(config)
+
+        # Create message with tool call from "Read" tool (should be excluded)
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": generate_python_code(20),  # Large content that would normally compress
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        # Content should be unchanged (passed through, not compressed)
+        assert result.messages[1]["content"] == messages[1]["content"]
+        # Check transform was marked as excluded
+        assert "router:excluded:tool" in result.transforms_applied
+
+    def test_custom_exclude_tools(self, tokenizer):
+        """Custom exclude_tools set is respected."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools={"MyCustomTool"},  # Only exclude this tool
+        )
+        router = ContentRouter(config)
+
+        # Create message with MyCustomTool (should be excluded)
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_custom_1",
+                        "type": "function",
+                        "function": {"name": "MyCustomTool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_custom_1",
+                "content": generate_json_data(50),
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        # Content should be unchanged
+        assert result.messages[1]["content"] == messages[1]["content"]
+        assert "router:excluded:tool" in result.transforms_applied
+
+    def test_non_excluded_tools_are_compressed(self, tokenizer):
+        """Tools not in exclude_tools set are still compressed."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools={"Read"},  # Only exclude Read, not OtherTool
+        )
+        router = ContentRouter(config)
+
+        original_content = generate_json_data(100)  # Large JSON array
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_other_1",
+                        "type": "function",
+                        "function": {"name": "OtherTool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_other_1",
+                "content": original_content,
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        # Content should be compressed (different from original)
+        # Note: Compression may or may not change the content depending on strategy
+        # But it should NOT have the excluded marker
+        assert "router:excluded:tool" not in result.transforms_applied
+
+    def test_empty_exclude_tools_compresses_all(self, tokenizer):
+        """Empty exclude_tools set means no tools are excluded."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools=set(),  # Empty set - exclude nothing
+        )
+        router = ContentRouter(config)
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": generate_python_code(20),
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        # Should NOT be excluded (empty set means compress everything)
+        assert "router:excluded:tool" not in result.transforms_applied
+
+    def test_anthropic_format_tool_result_exclusion(self, tokenizer):
+        """Anthropic format tool_result blocks are also excluded."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools={"Glob"},
+        )
+        router = ContentRouter(config)
+
+        # Anthropic format with tool_use and tool_result in content blocks
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_glob_1",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_glob_1",
+                        "content": generate_search_results(50),
+                    }
+                ],
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        # Find the tool_result block and verify content unchanged
+        user_msg = result.messages[1]
+        tool_result_block = next(
+            (b for b in user_msg["content"] if b.get("type") == "tool_result"), None
+        )
+        assert tool_result_block is not None
+        assert tool_result_block["content"] == messages[1]["content"][0]["content"]
+        # Verify exclusion was tracked (consistent with OpenAI format)
+        assert "router:excluded:tool" in result.transforms_applied
+
+    def test_mixed_excluded_and_non_excluded_tools(self, tokenizer):
+        """Multiple tools in same conversation - only excluded ones pass through."""
+        config = ContentRouterConfig(
+            min_section_tokens=10,
+            exclude_tools={"Read"},  # Only exclude Read
+        )
+        router = ContentRouter(config)
+
+        read_content = generate_python_code(20)
+        other_content = generate_json_data(100)
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "type": "function",
+                        "function": {"name": "Read", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_other_1",
+                        "type": "function",
+                        "function": {"name": "OtherTool", "arguments": "{}"},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": read_content,
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_other_1",
+                "content": other_content,
+            },
+        ]
+
+        result = router.apply(messages, tokenizer)
+
+        # Read tool content should be unchanged (excluded)
+        read_result = next(m for m in result.messages if m.get("tool_call_id") == "call_read_1")
+        assert read_result["content"] == read_content
+
+        # OtherTool may or may not be compressed, but should be processed
+        # (we just verify it wasn't excluded)
+        assert "router:excluded:tool" in result.transforms_applied

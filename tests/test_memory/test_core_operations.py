@@ -31,6 +31,16 @@ from headroom.memory.core import HierarchicalMemory
 from headroom.memory.models import Memory, ScopeLevel
 from headroom.memory.ports import MemoryFilter
 
+# Check if hnswlib is available (HierarchicalMemory requires it)
+try:
+    from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+    HNSW_AVAILABLE = _check_hnswlib_available()
+except ImportError:
+    HNSW_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
+
 
 def network_timeout_handler(func):
     """Decorator to skip tests on network timeouts (flaky CI)."""
