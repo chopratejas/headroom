@@ -492,6 +492,11 @@ class HeadroomConfig:
     cache_optimizer: CacheOptimizerConfig = field(default_factory=CacheOptimizerConfig)
     ccr: CCRConfig = field(default_factory=CCRConfig)  # Compress-Cache-Retrieve
 
+    # Content Router - intelligent content-type based compression
+    # Routes content to appropriate compressor (LLMLingua for text, SmartCrusher for JSON,
+    # CodeCompressor for code, LogCompressor for logs, etc.)
+    content_router_enabled: bool = True
+
     # Intelligent context management (Phase 2.5)
     # When enabled, replaces RollingWindow with semantic-aware context management
     intelligent_context: IntelligentContextConfig = field(
