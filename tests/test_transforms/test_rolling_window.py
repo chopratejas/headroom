@@ -1,10 +1,19 @@
 """Tests for rolling window transform."""
 
+import os
+from typing import Any
+
 import pytest
 
 from headroom import OpenAIProvider, RollingWindowConfig, Tokenizer
 from headroom.parser import find_tool_units
 from headroom.transforms import RollingWindow
+
+# Skip all tests in this module if OPENAI_API_KEY is not set
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("OPENAI_API_KEY"),
+    reason="OPENAI_API_KEY not set - skipping tests that require API access",
+)
 
 # Create a shared provider for tests
 _provider = OpenAIProvider()
@@ -846,3 +855,364 @@ class TestTransformResult:
 
         # warnings should be a list (possibly empty)
         assert isinstance(result.warnings, list)
+
+
+# =============================================================================
+# Test Anthropic Format Tool Protection
+# =============================================================================
+
+
+class TestAnthropicFormatToolProtection:
+    """Tests for Anthropic format tool_use/tool_result protection in RollingWindow.
+
+    These tests verify that RollingWindow correctly handles Anthropic's native format
+    where:
+    - tool_use blocks appear in assistant.content[]
+    - tool_result blocks appear in user.content[]
+
+    This is critical for Claude Code integration.
+    """
+
+    @pytest.fixture
+    def anthropic_tool_conversation(self) -> list[dict[str, Any]]:
+        """Conversation with Anthropic format tool_use/tool_result."""
+        return [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Take a screenshot of the page."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I'll take a screenshot for you."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_screenshot_1",
+                        "name": "browser_screenshot",
+                        "input": {},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_screenshot_1",
+                        "content": "Screenshot captured successfully: [base64 image data]",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "I've captured the screenshot. The page shows a login form.",
+            },
+            {"role": "user", "content": "Now click the submit button."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Clicking the submit button."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_click_1",
+                        "name": "browser_click",
+                        "input": {"selector": "#submit"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_click_1",
+                        "content": "Clicked element #submit",
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "Done! The form has been submitted."},
+            {"role": "user", "content": "Thanks!"},
+        ]
+
+    @pytest.fixture
+    def anthropic_multiple_tools_same_message(self) -> list[dict[str, Any]]:
+        """Multiple Anthropic tool_use blocks in same assistant message."""
+        return [
+            {"role": "system", "content": "You are a code assistant."},
+            {"role": "user", "content": "Read both config files."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I'll read both files."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_1",
+                        "name": "Read",
+                        "input": {"file_path": "/etc/config1.json"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_2",
+                        "name": "Read",
+                        "input": {"file_path": "/etc/config2.json"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_read_1",
+                        "content": '{"setting1": "value1"}',
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_read_2",
+                        "content": '{"setting2": "value2"}',
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "Both config files have been read."},
+            {"role": "user", "content": "Great, thanks!"},
+        ]
+
+    def test_anthropic_tool_result_protected_when_tool_use_protected(
+        self,
+        anthropic_tool_conversation: list[dict[str, Any]],
+    ):
+        """Tool_result user messages should be protected when their tool_use is protected."""
+        config = RollingWindowConfig(keep_last_turns=2)
+        window = RollingWindow(config)
+
+        protected = window._get_protected_indices(anthropic_tool_conversation)
+
+        # Check that if assistant with tool_use is protected, its tool_result is too
+        for i in protected:
+            msg = anthropic_tool_conversation[i]
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    tool_use_ids = set()
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_use_ids.add(block.get("id"))
+
+                    # Find the corresponding tool_result message
+                    if tool_use_ids:
+                        for j, other_msg in enumerate(anthropic_tool_conversation):
+                            if other_msg.get("role") == "user":
+                                other_content = other_msg.get("content")
+                                if isinstance(other_content, list):
+                                    for block in other_content:
+                                        if (
+                                            isinstance(block, dict)
+                                            and block.get("type") == "tool_result"
+                                            and block.get("tool_use_id") in tool_use_ids
+                                        ):
+                                            assert j in protected, (
+                                                f"Tool_result at {j} should be protected "
+                                                f"because tool_use at {i} is protected"
+                                            )
+
+    def test_anthropic_tool_units_dropped_atomically(
+        self,
+        anthropic_tool_conversation: list[dict[str, Any]],
+    ):
+        """Anthropic tool_use and tool_result should be dropped together."""
+        config = RollingWindowConfig(keep_last_turns=1)
+        window = RollingWindow(config)
+        tokenizer = get_tokenizer()
+
+        # Force dropping by using small limit
+        result = window.apply(
+            anthropic_tool_conversation,
+            tokenizer,
+            model_limit=300,
+            output_buffer=50,
+        )
+
+        # Verify no orphaned tool_results
+        tool_use_ids_present = set()
+        tool_result_ids_present = set()
+
+        for msg in result.messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "tool_use":
+                            tool_use_ids_present.add(block.get("id"))
+                        elif block.get("type") == "tool_result":
+                            tool_result_ids_present.add(block.get("tool_use_id"))
+
+        # Every tool_result should have its tool_use present
+        for result_id in tool_result_ids_present:
+            assert result_id in tool_use_ids_present, (
+                f"Orphaned tool_result with tool_use_id={result_id}"
+            )
+
+    def test_anthropic_multiple_tools_same_message_atomic(
+        self,
+        anthropic_multiple_tools_same_message: list[dict[str, Any]],
+    ):
+        """Multiple tool_use blocks in same message should be handled atomically."""
+        config = RollingWindowConfig(keep_last_turns=1)
+        window = RollingWindow(config)
+        tokenizer = get_tokenizer()
+
+        result = window.apply(
+            anthropic_multiple_tools_same_message,
+            tokenizer,
+            model_limit=200,
+            output_buffer=50,
+        )
+
+        # Check atomicity
+        tool_use_ids = set()
+        tool_result_ids = set()
+
+        for msg in result.messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "tool_use":
+                            tool_use_ids.add(block.get("id"))
+                        elif block.get("type") == "tool_result":
+                            tool_result_ids.add(block.get("tool_use_id"))
+
+        # All tool_results should have their tool_use
+        for result_id in tool_result_ids:
+            assert result_id in tool_use_ids, f"Orphaned tool_result: {result_id}"
+
+    def test_anthropic_format_no_api_error_scenario(
+        self,
+        anthropic_tool_conversation: list[dict[str, Any]],
+    ):
+        """Verify the specific scenario that causes 'unexpected tool_use_id' error is fixed."""
+        config = RollingWindowConfig(
+            keep_last_turns=1,
+            keep_system=True,
+        )
+        window = RollingWindow(config)
+        tokenizer = get_tokenizer()
+
+        # Use a limit that would cause dropping
+        result = window.apply(
+            anthropic_tool_conversation,
+            tokenizer,
+            model_limit=250,
+            output_buffer=50,
+        )
+
+        # Simulate what the API would check
+        tool_use_ids_in_conversation = set()
+        tool_result_ids_in_conversation = set()
+
+        for msg in result.messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "tool_use":
+                            tool_use_ids_in_conversation.add(block.get("id"))
+                        elif block.get("type") == "tool_result":
+                            tool_result_ids_in_conversation.add(block.get("tool_use_id"))
+
+        # API error condition: tool_result references a tool_use_id that doesn't exist
+        orphaned_results = tool_result_ids_in_conversation - tool_use_ids_in_conversation
+
+        assert len(orphaned_results) == 0, (
+            f"Would cause API error! Orphaned tool_result ids: {orphaned_results}"
+        )
+
+    def test_mixed_openai_and_anthropic_formats(self):
+        """Both OpenAI and Anthropic formats should work together."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Do things."},
+            # OpenAI format tool call
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_openai_1",
+                        "type": "function",
+                        "function": {"name": "openai_tool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_openai_1",
+                "content": "OpenAI tool result",
+            },
+            {"role": "assistant", "content": "OpenAI tool done."},
+            {"role": "user", "content": "Now use Anthropic format."},
+            # Anthropic format tool call
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_anthropic_1",
+                        "name": "anthropic_tool",
+                        "input": {},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_anthropic_1",
+                        "content": "Anthropic tool result",
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "All done!"},
+            {"role": "user", "content": "Thanks!"},
+        ]
+
+        config = RollingWindowConfig(keep_last_turns=1)
+        window = RollingWindow(config)
+        tokenizer = get_tokenizer()
+
+        result = window.apply(
+            messages,
+            tokenizer,
+            model_limit=200,
+            output_buffer=50,
+        )
+
+        # Verify no orphaned tools of either format
+        openai_call_ids = set()
+        openai_result_ids = set()
+        anthropic_use_ids = set()
+        anthropic_result_ids = set()
+
+        for msg in result.messages:
+            # OpenAI format
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    openai_call_ids.add(tc.get("id"))
+            if msg.get("role") == "tool":
+                openai_result_ids.add(msg.get("tool_call_id"))
+
+            # Anthropic format
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "tool_use":
+                            anthropic_use_ids.add(block.get("id"))
+                        elif block.get("type") == "tool_result":
+                            anthropic_result_ids.add(block.get("tool_use_id"))
+
+        # Check OpenAI format
+        for result_id in openai_result_ids:
+            assert result_id in openai_call_ids, f"Orphaned OpenAI tool: {result_id}"
+
+        # Check Anthropic format
+        for result_id in anthropic_result_ids:
+            assert result_id in anthropic_use_ids, f"Orphaned Anthropic tool: {result_id}"
