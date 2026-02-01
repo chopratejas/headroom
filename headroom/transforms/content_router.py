@@ -1250,6 +1250,7 @@ class ContentRouter(Transform):
                 tool_use_id = block.get("tool_use_id", "")
                 if tool_use_id in excluded_tool_ids:
                     new_blocks.append(block)
+                    transforms_applied.append("router:excluded:tool")
                     continue
 
                 tool_content = block.get("content", "")

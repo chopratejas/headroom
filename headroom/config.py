@@ -425,10 +425,6 @@ class SmartCrusherConfig:
     # many items have identical content (e.g., repeated status messages).
     dedup_identical_items: bool = True
 
-    # Tools to exclude from compression (output passed through unmodified)
-    # Set to None to use DEFAULT_EXCLUDE_TOOLS, or provide custom set
-    exclude_tools: set[str] | None = None
-
 
 @dataclass
 class CacheOptimizerConfig:
