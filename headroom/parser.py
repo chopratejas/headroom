@@ -242,6 +242,10 @@ def find_tool_units(messages: list[dict[str, Any]]) -> list[tuple[int, list[int]
     A tool unit is atomic - if the assistant message is dropped, all its
     tool responses must also be dropped.
 
+    Supports both OpenAI and Anthropic formats:
+    - OpenAI: assistant.tool_calls[] + tool messages with tool_call_id
+    - Anthropic: assistant.content[type=tool_use] + user.content[type=tool_result]
+
     Args:
         messages: List of message dicts.
 
@@ -253,24 +257,49 @@ def find_tool_units(messages: list[dict[str, Any]]) -> list[tuple[int, list[int]
     # Build map of tool_call_id -> message index for tool responses
     tool_response_map: dict[str, int] = {}
     for i, msg in enumerate(messages):
+        # OpenAI format: role="tool" with tool_call_id
         if msg.get("role") == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id:
                 tool_response_map[tc_id] = i
 
-    # Find assistant messages with tool_calls
-    for i, msg in enumerate(messages):
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            tool_calls = msg["tool_calls"]
-            response_indices: list[int] = []
+        # Anthropic format: role="user" with content blocks containing tool_result
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        tc_id = block.get("tool_use_id")
+                        if tc_id:
+                            tool_response_map[tc_id] = i
 
+    # Find assistant messages with tool calls
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+
+        response_indices: list[int] = []
+
+        # OpenAI format: tool_calls array
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
             for tc in tool_calls:
                 tc_id = tc.get("id")
                 if tc_id and tc_id in tool_response_map:
                     response_indices.append(tool_response_map[tc_id])
 
-            if response_indices:
-                units.append((i, sorted(response_indices)))
+        # Anthropic format: content blocks with type=tool_use
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tc_id = block.get("id")
+                    if tc_id and tc_id in tool_response_map:
+                        response_indices.append(tool_response_map[tc_id])
+
+        if response_indices:
+            # Use set to deduplicate in case same message has both formats
+            units.append((i, sorted(set(response_indices))))
 
     return units
 

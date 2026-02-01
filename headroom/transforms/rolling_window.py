@@ -225,13 +225,44 @@ class RollingWindow(Transform):
             # Also protect any tool responses that belong to protected assistant messages
             for i in list(protected):
                 msg = messages[i]
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                if msg.get("role") == "assistant":
+                    tool_call_ids: set[str] = set()
+
+                    # OpenAI format: tool_calls array
+                    if msg.get("tool_calls"):
+                        tool_call_ids.update(
+                            tc.get("id") for tc in msg.get("tool_calls", []) if tc.get("id")
+                        )
+
+                    # Anthropic format: content blocks with type=tool_use
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "tool_use":
+                                tc_id = block.get("id")
+                                if tc_id:
+                                    tool_call_ids.add(tc_id)
+
                     # Find and protect corresponding tool responses
-                    tool_call_ids = {tc.get("id") for tc in msg.get("tool_calls", [])}
-                    for j, other_msg in enumerate(messages):
-                        if other_msg.get("role") == "tool":
-                            if other_msg.get("tool_call_id") in tool_call_ids:
-                                protected.add(j)
+                    if tool_call_ids:
+                        for j, other_msg in enumerate(messages):
+                            # OpenAI format: role="tool"
+                            if other_msg.get("role") == "tool":
+                                if other_msg.get("tool_call_id") in tool_call_ids:
+                                    protected.add(j)
+
+                            # Anthropic format: role="user" with tool_result blocks
+                            if other_msg.get("role") == "user":
+                                other_content = other_msg.get("content")
+                                if isinstance(other_content, list):
+                                    for block in other_content:
+                                        if (
+                                            isinstance(block, dict)
+                                            and block.get("type") == "tool_result"
+                                            and block.get("tool_use_id") in tool_call_ids
+                                        ):
+                                            protected.add(j)
+                                            break
 
         return protected
 
