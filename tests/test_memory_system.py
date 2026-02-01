@@ -23,6 +23,14 @@ from typing import Any
 
 import pytest
 
+# Check if hnswlib is available for LocalBackend tests
+try:
+    from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+    HNSW_AVAILABLE = _check_hnswlib_available()
+except ImportError:
+    HNSW_AVAILABLE = False
+
 from headroom.memory.adapters.graph import InMemoryGraphStore
 from headroom.memory.adapters.graph_models import (
     Entity,
@@ -1370,6 +1378,7 @@ class TestMemoryTools:
 # =============================================================================
 
 
+@pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
 class TestLocalBackend:
     """Integration tests for LocalBackend."""
 

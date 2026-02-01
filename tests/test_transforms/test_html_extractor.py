@@ -7,6 +7,9 @@ and removes structural noise.
 
 import pytest
 
+# Skip entire module if trafilatura not installed
+pytest.importorskip("trafilatura")
+
 from headroom.transforms.html_extractor import (
     HTMLExtractionResult,
     HTMLExtractor,
