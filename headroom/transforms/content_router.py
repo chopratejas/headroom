@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from ..config import TransformResult
+from ..config import DEFAULT_EXCLUDE_TOOLS, TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
 from .content_detector import ContentType, detect_content_type
@@ -252,6 +252,10 @@ class ContentRouterConfig:
     # CCR (Compress-Cache-Retrieve) settings for SmartCrusher
     ccr_enabled: bool = True  # Enable CCR marker injection for reversible compression
     ccr_inject_marker: bool = True  # Add retrieval markers to compressed content
+
+    # Tools to exclude from compression (output passed through unmodified)
+    # Set to None to use DEFAULT_EXCLUDE_TOOLS, or provide custom set
+    exclude_tools: set[str] | None = None
 
 
 # Patterns for detecting mixed content
@@ -1053,6 +1057,38 @@ class ContentRouter(Transform):
 
     # Transform interface
 
+    def _build_tool_name_map(self, messages: list[dict[str, Any]]) -> dict[str, str]:
+        """Build mapping from tool_call_id to tool_name.
+
+        Scans assistant messages to find tool calls and extract their names.
+        Supports both OpenAI and Anthropic message formats.
+        """
+        mapping: dict[str, str] = {}
+
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+
+            # OpenAI format: tool_calls array
+            for tc in msg.get("tool_calls", []):
+                if isinstance(tc, dict):
+                    tc_id = tc.get("id", "")
+                    name = tc.get("function", {}).get("name", "")
+                    if tc_id and name:
+                        mapping[tc_id] = name
+
+            # Anthropic format: content blocks with type=tool_use
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tc_id = block.get("id", "")
+                        name = block.get("name", "")
+                        if tc_id and name:
+                            mapping[tc_id] = name
+
+        return mapping
+
     def apply(
         self,
         messages: list[dict[str, Any]],
@@ -1072,6 +1108,19 @@ class ContentRouter(Transform):
         tokens_before = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
         context = kwargs.get("context", "")
 
+        # Build tool name map for exclusion checking
+        tool_name_map = self._build_tool_name_map(messages)
+
+        # Compute excluded tool IDs based on config
+        exclude_tools = (
+            self.config.exclude_tools
+            if self.config.exclude_tools is not None
+            else DEFAULT_EXCLUDE_TOOLS
+        )
+        excluded_tool_ids = {
+            tool_id for tool_id, name in tool_name_map.items() if name in exclude_tools
+        }
+
         transformed_messages: list[dict[str, Any]] = []
         transforms_applied: list[str] = []
         warnings: list[str] = []
@@ -1090,7 +1139,7 @@ class ContentRouter(Transform):
             # Handle list content (Anthropic format with content blocks)
             if isinstance(content, list):
                 transformed_message = self._process_content_blocks(
-                    message, content, context, transforms_applied
+                    message, content, context, transforms_applied, excluded_tool_ids
                 )
                 transformed_messages.append(transformed_message)
                 continue
@@ -1099,6 +1148,14 @@ class ContentRouter(Transform):
             if not isinstance(content, str):
                 transformed_messages.append(message)
                 continue
+
+            # Skip OpenAI-style tool messages for excluded tools
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id", "")
+                if tool_call_id in excluded_tool_ids:
+                    transformed_messages.append(message)
+                    transforms_applied.append("router:excluded:tool")
+                    continue
 
             # Protection 1: Never compress user messages
             if self.config.skip_user_messages and role == "user":
@@ -1161,6 +1218,7 @@ class ContentRouter(Transform):
         content_blocks: list[Any],
         context: str,
         transforms_applied: list[str],
+        excluded_tool_ids: set[str],
     ) -> dict[str, Any]:
         """Process content blocks (Anthropic format) for tool_result compression.
 
@@ -1188,6 +1246,13 @@ class ContentRouter(Transform):
 
             # Handle tool_result blocks
             if block_type == "tool_result":
+                # Check if tool is excluded from compression
+                tool_use_id = block.get("tool_use_id", "")
+                if tool_use_id in excluded_tool_ids:
+                    new_blocks.append(block)
+                    transforms_applied.append("router:excluded:tool")
+                    continue
+
                 tool_content = block.get("content", "")
 
                 # Only process string content

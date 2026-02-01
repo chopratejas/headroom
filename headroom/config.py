@@ -345,6 +345,27 @@ class AnchorConfig:
     dedup_identical_items: bool = True  # Don't waste slots on identical items
 
 
+# Default tools to exclude from compression (Claude Code CLI tools)
+# These tools return content that should be passed through unmodified
+DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
+    {
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebFetch",
+        "WebSearch",
+        # Lowercase variants for case-insensitive matching
+        "read",
+        "glob",
+        "grep",
+        "bash",
+        "webfetch",
+        "websearch",
+    }
+)
+
+
 @dataclass
 class SmartCrusherConfig:
     """Configuration for smart statistical crusher (DEFAULT).

@@ -35,28 +35,57 @@ HNSW_AVAILABLE: bool | None = None  # None = not yet checked, True/False = check
 
 
 def _check_hnswlib_available() -> bool:
-    """Check if hnswlib is available, importing it lazily.
+    """Check if hnswlib is available, using subprocess to avoid SIGILL crash.
 
     Returns:
         True if hnswlib is available and working.
 
     Note:
         This function caches the result in HNSW_AVAILABLE.
-        On CPUs without AVX support, importing hnswlib may crash
-        the process with SIGILL before we can catch the error.
+        On CPUs without AVX support, importing hnswlib crashes with SIGILL
+        (Illegal Instruction) at the C level before Python's try/except
+        can catch it. We use subprocess to safely probe for hnswlib,
+        isolating any potential crash.
     """
     global hnswlib, HNSW_AVAILABLE
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     if HNSW_AVAILABLE is not None:
         return HNSW_AVAILABLE
 
-    try:
-        import hnswlib as _hnswlib
+    # Use subprocess to safely probe for hnswlib - if it crashes with SIGILL,
+    # only the subprocess dies, not our main process
+    import subprocess
+    import sys
 
-        hnswlib = _hnswlib
-        HNSW_AVAILABLE = True
-    except ImportError:
+    try:
+        # Probe by importing and creating a small Index to catch SIGILL
+        # at both import time and during first use of AVX instructions
+        probe_code = "import hnswlib; hnswlib.Index(space='cosine', dim=4)"
+        result = subprocess.run(
+            [sys.executable, "-c", probe_code],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            # Safe to import in main process now
+            import hnswlib as _hnswlib
+
+            hnswlib = _hnswlib
+            HNSW_AVAILABLE = True
+            logger.debug("hnswlib is available")
+        else:
+            HNSW_AVAILABLE = False
+            stderr = result.stderr.decode() if result.stderr else "(no stderr)"
+            logger.debug("hnswlib probe failed (exit %d): %s", result.returncode, stderr)
+    except subprocess.TimeoutExpired:
         HNSW_AVAILABLE = False
+        logger.debug("hnswlib probe timed out")
+    except (FileNotFoundError, OSError) as e:
+        HNSW_AVAILABLE = False
+        logger.debug("hnswlib probe failed: %s", e)
 
     return HNSW_AVAILABLE
 
