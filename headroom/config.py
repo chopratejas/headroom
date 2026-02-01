@@ -345,23 +345,21 @@ class AnchorConfig:
     dedup_identical_items: bool = True  # Don't waste slots on identical items
 
 
-# Default tools to exclude from compression (Claude Code CLI tools)
-# These tools return content that should be passed through unmodified
+# Default tools to exclude from compression (local file/code tools)
+# These tools return precise content (line numbers, paths, code) where
+# exact fidelity matters. Web tools are NOT excluded - they benefit from
+# compression and can use CCR for retrieval if needed.
 DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
         "Glob",
         "Grep",
         "Bash",
-        "WebFetch",
-        "WebSearch",
         # Lowercase variants for case-insensitive matching
         "read",
         "glob",
         "grep",
         "bash",
-        "webfetch",
-        "websearch",
     }
 )
 
