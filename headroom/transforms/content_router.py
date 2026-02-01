@@ -548,12 +548,15 @@ class ContentRouter(Transform):
         self,
         content: str,
         context: str = "",
+        question: str | None = None,
     ) -> RouterCompressionResult:
         """Compress content using optimal strategy based on content detection.
 
         Args:
             content: Content to compress.
             context: Optional context for relevance-aware compression.
+            question: Optional question for QA-aware compression. When provided,
+                tokens relevant to answering this question are preserved.
 
         Returns:
             RouterCompressionResult with compressed content and routing metadata.
@@ -570,9 +573,9 @@ class ContentRouter(Transform):
         strategy = self._determine_strategy(content)
 
         if strategy == CompressionStrategy.MIXED:
-            return self._compress_mixed(content, context)
+            return self._compress_mixed(content, context, question)
         else:
-            return self._compress_pure(content, strategy, context)
+            return self._compress_pure(content, strategy, context, question)
 
     def _determine_strategy(self, content: str) -> CompressionStrategy:
         """Determine the compression strategy from content analysis.
@@ -625,12 +628,14 @@ class ContentRouter(Transform):
         self,
         content: str,
         context: str,
+        question: str | None = None,
     ) -> RouterCompressionResult:
         """Compress mixed content by splitting and routing sections.
 
         Args:
             content: Mixed content to compress.
             context: User context for relevance.
+            question: Optional question for QA-aware compression.
 
         Returns:
             RouterCompressionResult with reassembled content.
@@ -654,7 +659,7 @@ class ContentRouter(Transform):
             # Compress section
             original_tokens = len(section.content.split())
             compressed_content, compressed_tokens = self._apply_strategy_to_content(
-                section.content, strategy, context, section.language
+                section.content, strategy, context, section.language, question
             )
 
             # Preserve code fence markers
@@ -685,6 +690,7 @@ class ContentRouter(Transform):
         content: str,
         strategy: CompressionStrategy,
         context: str,
+        question: str | None = None,
     ) -> RouterCompressionResult:
         """Compress pure (non-mixed) content.
 
@@ -692,13 +698,16 @@ class ContentRouter(Transform):
             content: Content to compress.
             strategy: Selected strategy.
             context: User context.
+            question: Optional question for QA-aware compression.
 
         Returns:
             RouterCompressionResult.
         """
         original_tokens = len(content.split())
 
-        compressed, compressed_tokens = self._apply_strategy_to_content(content, strategy, context)
+        compressed, compressed_tokens = self._apply_strategy_to_content(
+            content, strategy, context, question=question
+        )
 
         return RouterCompressionResult(
             compressed=compressed,
@@ -720,6 +729,7 @@ class ContentRouter(Transform):
         strategy: CompressionStrategy,
         context: str,
         language: str | None = None,
+        question: str | None = None,
     ) -> tuple[str, int]:
         """Apply a compression strategy to content.
 
@@ -728,6 +738,7 @@ class ContentRouter(Transform):
             strategy: Strategy to use.
             context: User context.
             language: Language hint for code.
+            question: Optional question for QA-aware compression.
 
         Returns:
             Tuple of (compressed_content, compressed_token_count).
@@ -746,7 +757,7 @@ class ContentRouter(Transform):
                         compressed, compressed_tokens = result.compressed, result.compressed_tokens
                 if compressed is None:
                     # Fallback to LLMLingua
-                    compressed, compressed_tokens = self._try_llmlingua(content, context)
+                    compressed, compressed_tokens = self._try_llmlingua(content, context, question)
                     strategy = CompressionStrategy.LLMLINGUA  # Update for TOIN
 
             elif strategy == CompressionStrategy.SMART_CRUSHER:
@@ -796,12 +807,12 @@ class ContentRouter(Transform):
                         compressed_tokens = len(compressed.split()) if compressed else 0
 
             elif strategy == CompressionStrategy.LLMLINGUA:
-                compressed, compressed_tokens = self._try_llmlingua(content, context)
+                compressed, compressed_tokens = self._try_llmlingua(content, context, question)
 
             elif strategy == CompressionStrategy.TEXT:
                 # Prefer LLMLingua for text if available (ML-based, better compression)
                 # Falls back to heuristic TextCompressor if LLMLingua unavailable
-                compressed, compressed_tokens = self._try_llmlingua(content, context)
+                compressed, compressed_tokens = self._try_llmlingua(content, context, question)
 
         except Exception as e:
             logger.warning("Compression with %s failed: %s", strategy.value, e)
@@ -822,12 +833,15 @@ class ContentRouter(Transform):
         # Fallback: return unchanged
         return content, original_tokens
 
-    def _try_llmlingua(self, content: str, context: str) -> tuple[str, int]:
+    def _try_llmlingua(
+        self, content: str, context: str, question: str | None = None
+    ) -> tuple[str, int]:
         """Try LLMLingua compression with fallback.
 
         Args:
             content: Content to compress.
             context: User context.
+            question: Optional question for QA-aware compression.
 
         Returns:
             Tuple of (compressed, token_count).
@@ -836,7 +850,7 @@ class ContentRouter(Transform):
             compressor = self._get_llmlingua()
             if compressor:
                 try:
-                    result = compressor.compress(content, context=context)
+                    result = compressor.compress(content, context=context, question=question)
                     return result.compressed, result.compressed_tokens
                 except Exception as e:
                     logger.debug("LLMLingua failed: %s", e)

@@ -299,6 +299,7 @@ class LLMLinguaCompressor(Transform):
         content: str,
         context: str = "",
         content_type: str | None = None,
+        question: str | None = None,
     ) -> LLMLinguaResult:
         """Compress content using LLMLingua-2.
 
@@ -307,6 +308,9 @@ class LLMLinguaCompressor(Transform):
             context: Optional context for relevance-aware compression.
             content_type: Type of content ('code', 'json', 'text').
                 If None, auto-detected.
+            question: Optional question for QA-aware compression. When provided,
+                LLMLingua preserves tokens relevant to answering this question.
+                This significantly improves accuracy for QA tasks.
 
         Returns:
             LLMLinguaResult with compressed content and metadata.
@@ -357,12 +361,21 @@ class LLMLinguaCompressor(Transform):
 
         # Perform compression
         try:
-            result = compressor.compress_prompt(
-                context=[content],  # LLMLingua expects a list of context strings
-                rate=compression_rate,
-                force_tokens=force_tokens if force_tokens else [],
-                drop_consecutive=self.config.drop_consecutive,
-            )
+            # Build compress_prompt kwargs
+            compress_kwargs: dict[str, Any] = {
+                "context": [content],  # LLMLingua expects a list of context strings
+                "rate": compression_rate,
+                "force_tokens": force_tokens if force_tokens else [],
+                "drop_consecutive": self.config.drop_consecutive,
+            }
+
+            # Add question for QA-aware token selection (LLMLingua-2 feature)
+            # This enables relevance-aware compression where tokens relevant
+            # to answering the question are preserved with higher probability
+            if question:
+                compress_kwargs["question"] = question
+
+            result = compressor.compress_prompt(**compress_kwargs)
 
             compressed = result.get("compressed_prompt", content)
             original_tokens = result.get("origin_tokens", estimated_tokens)

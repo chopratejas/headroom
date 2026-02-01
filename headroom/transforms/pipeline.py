@@ -19,6 +19,7 @@ from ..tokenizer import Tokenizer
 from ..utils import deep_copy_messages
 from .base import Transform
 from .cache_aligner import CacheAligner
+from .content_router import ContentRouter
 from .intelligent_context import IntelligentContextManager
 from .rolling_window import RollingWindow
 from .smart_crusher import SmartCrusher
@@ -36,8 +37,10 @@ class TransformPipeline:
 
     Transform order:
     1. Cache Aligner - normalize prefix for cache hits
-    2. Tool Crusher - compress tool outputs
-    3. Rolling Window - enforce token limits
+    2. Content Router - intelligent content-aware compression (routes to appropriate
+       compressor: LLMLingua for text, SmartCrusher for JSON, CodeCompressor for code, etc.)
+    3. SmartCrusher/ToolCrusher - fallback if ContentRouter disabled
+    4. IntelligentContextManager/RollingWindow - enforce token limits
     """
 
     def __init__(
@@ -72,10 +75,19 @@ class TransformPipeline:
         if self.config.cache_aligner.enabled:
             transforms.append(CacheAligner(self.config.cache_aligner))
 
-        # 2. Tool Output Compression
-        # SmartCrusher (statistical) takes precedence over ToolCrusher (fixed rules)
-        if self.config.smart_crusher.enabled:
-            # Use smart statistical crushing
+        # 2. Content-aware Compression
+        # ContentRouter handles ALL content types intelligently:
+        # - JSON arrays -> SmartCrusher
+        # - Plain text -> LLMLingua (ML-based) or TextCompressor
+        # - Code -> CodeCompressor (AST-aware)
+        # - Logs -> LogCompressor
+        # - Search results -> SearchCompressor
+        # - HTML -> HTMLExtractor
+        if self.config.content_router_enabled:
+            transforms.append(ContentRouter())
+            logger.info("Pipeline using ContentRouter for intelligent content-aware compression")
+        elif self.config.smart_crusher.enabled:
+            # Fallback: SmartCrusher only handles JSON arrays
             from .smart_crusher import SmartCrusherConfig as SCConfig
 
             smart_config = SCConfig(
