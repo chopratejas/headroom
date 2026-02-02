@@ -194,9 +194,10 @@ class HNSWVectorIndex:
     - Persistence support with save_index/load_index
     - Thread-safe operations with Lock
     - Optional auto-save on index modifications
+    - **Bounded memory with LRU eviction** (when max_entries is set)
 
     Usage:
-        index = HNSWVectorIndex(dimension=384)
+        index = HNSWVectorIndex(dimension=384, max_entries=10000)
         await index.index(memory_with_embedding)
         results = await index.search(VectorFilter(
             query_vector=query_embedding,
@@ -211,6 +212,12 @@ class HNSWVectorIndex:
       better recall but use more memory. Default: 16
     - ef_search: Size of dynamic candidate list during search. Higher values
       give better recall but slower search. Default: 50
+
+    Memory Bounding:
+    - max_entries: Soft limit on number of entries. When reached, lowest
+      importance entries are evicted to make room. Default: None (unbounded).
+    - eviction_batch_size: Number of entries to evict at once when limit
+      is reached. Default: 100.
     """
 
     def __init__(
@@ -222,6 +229,8 @@ class HNSWVectorIndex:
         ef_search: int = 50,
         auto_save: bool = False,
         save_path: str | Path | None = None,
+        max_entries: int | None = None,
+        eviction_batch_size: int = 100,
     ) -> None:
         """Initialize the HNSW vector index.
 
@@ -238,6 +247,9 @@ class HNSWVectorIndex:
             auto_save: If True and save_path is set, automatically save
                       index after modifications.
             save_path: Path for auto-save operations. Required if auto_save=True.
+            max_entries: Soft limit on number of entries. When reached,
+                        lowest importance entries are evicted. None = unbounded.
+            eviction_batch_size: Number of entries to evict when limit is reached.
 
         Raises:
             ValueError: If auto_save is True but save_path is not provided.
@@ -262,6 +274,11 @@ class HNSWVectorIndex:
         self._ef_search = ef_search
         self._auto_save = auto_save
         self._save_path = Path(save_path) if save_path else None
+
+        # Memory bounding
+        self._max_entries = max_entries
+        self._eviction_batch_size = eviction_batch_size
+        self._eviction_count = 0  # Track total evictions for stats
 
         # Initialize HNSW index with cosine similarity
         # hnswlib uses 'cosine' space which internally normalizes vectors
@@ -302,7 +319,8 @@ class HNSWVectorIndex:
     async def index(self, memory: Memory) -> None:
         """Index a memory's embedding for similarity search.
 
-        The memory must have an embedding set.
+        The memory must have an embedding set. If max_entries is set and
+        the limit is reached, low-importance entries are evicted.
 
         Args:
             memory: The memory to index.
@@ -327,7 +345,13 @@ class HNSWVectorIndex:
                 # Update metadata
                 self._metadata[memory.id] = IndexedMemoryMetadata.from_memory(memory)
             else:
-                # Resize if needed
+                # Evict if at capacity (before adding new entry)
+                if self._max_entries is not None:
+                    current_size = len(self._memory_to_hnsw)
+                    if current_size >= self._max_entries:
+                        self._evict_entries(self._eviction_batch_size)
+
+                # Resize HNSW index if needed (separate from entry limit)
                 if self._next_hnsw_id >= self._max_elements:
                     self._resize_index(self._max_elements * 2)
 
@@ -349,6 +373,55 @@ class HNSWVectorIndex:
 
         if self._auto_save and self._save_path:
             self.save_index(self._save_path)
+
+    def _evict_entries(self, count: int) -> int:
+        """Evict the lowest importance entries from the index.
+
+        Must be called with lock held.
+
+        Eviction strategy: Sort by importance (ascending), then by age
+        (oldest first for ties). Evict the lowest scoring entries.
+
+        Args:
+            count: Number of entries to evict.
+
+        Returns:
+            Number of entries actually evicted.
+        """
+        if not self._metadata:
+            return 0
+
+        # Sort entries by importance (ascending), then by created_at (oldest first)
+        sorted_entries = sorted(
+            self._metadata.items(),
+            key=lambda x: (x[1].importance, x[1].created_at),
+        )
+
+        # Evict the lowest importance entries
+        evicted = 0
+        for memory_id, _metadata in sorted_entries[:count]:
+            if memory_id not in self._memory_to_hnsw:
+                continue
+
+            hnsw_id = self._memory_to_hnsw[memory_id]
+
+            # Mark as deleted in HNSW index
+            self._index.mark_deleted(hnsw_id)
+
+            # Remove from mappings
+            del self._memory_to_hnsw[memory_id]
+            del self._hnsw_to_memory[hnsw_id]
+
+            # Remove metadata and embedding
+            if memory_id in self._metadata:
+                del self._metadata[memory_id]
+            if memory_id in self._embeddings:
+                del self._embeddings[memory_id]
+
+            evicted += 1
+
+        self._eviction_count += evicted
+        return evicted
 
     async def index_batch(self, memories: list[Memory]) -> int:
         """Index multiple memories' embeddings.
@@ -736,6 +809,9 @@ class HNSWVectorIndex:
                 "ef_construction": self._ef_construction,
                 "m": self._m,
                 "ef_search": self._ef_search,
+                "max_entries": self._max_entries,
+                "eviction_batch_size": self._eviction_batch_size,
+                "eviction_count": self._eviction_count,
                 "memory_to_hnsw": self._memory_to_hnsw,
                 "hnsw_to_memory": self._hnsw_to_memory,
                 "next_hnsw_id": self._next_hnsw_id,
@@ -786,6 +862,11 @@ class HNSWVectorIndex:
             self._m = meta_data["m"]
             self._ef_search = meta_data["ef_search"]
 
+            # Restore bounding parameters (with defaults for backward compatibility)
+            self._max_entries = meta_data.get("max_entries")
+            self._eviction_batch_size = meta_data.get("eviction_batch_size", 100)
+            self._eviction_count = meta_data.get("eviction_count", 0)
+
             # Create new index and load from file
             self._index = hnswlib.Index(space="cosine", dim=self._dimension)  # type: ignore[union-attr]
             self._index.load_index(
@@ -829,6 +910,7 @@ class HNSWVectorIndex:
             self._next_hnsw_id = 0
             self._metadata.clear()
             self._embeddings.clear()
+            self._eviction_count = 0
 
         if self._auto_save and self._save_path:
             self.save_index(self._save_path)
@@ -840,17 +922,21 @@ class HNSWVectorIndex:
             Dictionary with index metrics.
         """
         with self._lock:
+            current_size = len(self._memory_to_hnsw)
             return {
-                "size": len(self._memory_to_hnsw),
+                "size": current_size,
                 "dimension": self._dimension,
                 "max_elements": self._max_elements,
+                "max_entries": self._max_entries,
                 "ef_construction": self._ef_construction,
                 "m": self._m,
                 "ef_search": self._ef_search,
+                "eviction_count": self._eviction_count,
                 "utilization": (
-                    (len(self._memory_to_hnsw) / self._max_elements) * 100
-                    if self._max_elements > 0
-                    else 0.0
+                    (current_size / self._max_elements) * 100 if self._max_elements > 0 else 0.0
+                ),
+                "entry_utilization": (
+                    (current_size / self._max_entries) * 100 if self._max_entries else None
                 ),
             }
 
@@ -902,14 +988,22 @@ class HNSWVectorIndex:
             index_size_estimate = len(self._memory_to_hnsw) * (self._dimension * 4 + self._m * 8)
             size_bytes += index_size_estimate
 
+            # Calculate budget based on max_entries if set
+            # Budget = estimated size at max capacity
+            budget_bytes = None
+            if self._max_entries is not None:
+                # Estimate: each entry ~= embedding bytes + metadata overhead (~500 bytes)
+                per_entry_estimate = self._dimension * 4 + self._m * 8 + 500
+                budget_bytes = self._max_entries * per_entry_estimate
+
             return ComponentStats(
                 name="vector_index",
                 entry_count=len(self._memory_to_hnsw),
                 size_bytes=size_bytes,
-                budget_bytes=None,
+                budget_bytes=budget_bytes,
                 hits=0,
                 misses=0,
-                evictions=0,
+                evictions=self._eviction_count,
             )
 
     def set_ef_search(self, ef_search: int) -> None:
