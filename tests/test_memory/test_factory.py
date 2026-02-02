@@ -49,7 +49,7 @@ class TestMemoryConfig:
         config = MemoryConfig()
 
         assert config.store_backend == StoreBackend.SQLITE
-        assert config.vector_backend == VectorBackend.HNSW
+        assert config.vector_backend == VectorBackend.AUTO
         assert config.text_backend == TextBackend.FTS5
         assert config.embedder_backend == EmbedderBackend.LOCAL
         assert config.cache_enabled is True
