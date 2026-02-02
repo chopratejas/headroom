@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
+from headroom.models.config import ML_MODEL_DEFAULTS
+
 
 class HeadroomMode(str, Enum):
     """Operating modes for Headroom."""
@@ -275,7 +277,7 @@ class RelevanceScorerConfig:
     bm25_b: float = 0.75  # Length normalization
 
     # Embedding parameters
-    embedding_model: str = "all-MiniLM-L6-v2"  # Lightweight model
+    embedding_model: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.sentence_transformer)
 
     # Hybrid parameters
     hybrid_alpha: float = 0.5  # BM25 weight (1-alpha = embedding weight)

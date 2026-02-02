@@ -388,9 +388,11 @@ class TestCreateMemorySystem:
             from headroom.memory.adapters.fts5 import FTS5TextIndex
             from headroom.memory.adapters.hnsw import HNSWVectorIndex
             from headroom.memory.adapters.sqlite import SQLiteMemoryStore
+            from headroom.memory.adapters.sqlite_vector import SQLiteVectorIndex
 
             assert isinstance(store, SQLiteMemoryStore)
-            assert isinstance(vector, HNSWVectorIndex)
+            # Factory auto-selects best available: SQLiteVectorIndex (preferred) or HNSW (fallback)
+            assert isinstance(vector, (SQLiteVectorIndex, HNSWVectorIndex))
             assert isinstance(text, FTS5TextIndex)
             assert isinstance(embedder, LocalEmbedder)
             assert isinstance(cache, LRUMemoryCache)
@@ -416,9 +418,11 @@ class TestCreateMemorySystem:
         from headroom.memory.adapters.fts5 import FTS5TextIndex
         from headroom.memory.adapters.hnsw import HNSWVectorIndex
         from headroom.memory.adapters.sqlite import SQLiteMemoryStore
+        from headroom.memory.adapters.sqlite_vector import SQLiteVectorIndex
 
         assert isinstance(store, SQLiteMemoryStore)
-        assert isinstance(vector, HNSWVectorIndex)
+        # Factory auto-selects best available: SQLiteVectorIndex (preferred) or HNSW (fallback)
+        assert isinstance(vector, (SQLiteVectorIndex, HNSWVectorIndex))
         assert isinstance(text, FTS5TextIndex)
         assert isinstance(embedder, LocalEmbedder)
         assert isinstance(cache, LRUMemoryCache)
@@ -457,6 +461,7 @@ class TestCreateMemorySystem:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MemoryConfig(
                 db_path=Path(tmpdir) / "test.db",
+                vector_backend=VectorBackend.HNSW,  # Explicitly use HNSW to test params
                 vector_dimension=512,
                 hnsw_ef_construction=300,
                 hnsw_m=24,

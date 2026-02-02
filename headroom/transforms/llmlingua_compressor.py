@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import TransformResult
+from ..models.config import ML_MODEL_DEFAULTS
 from ..tokenizer import Tokenizer
 from .base import Transform
 
@@ -199,7 +200,7 @@ class LLMLinguaConfig:
     """
 
     # Model configuration
-    model_name: str = "microsoft/llmlingua-2-xlm-roberta-large-meetingbank"
+    model_name: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.llmlingua)
     device: str = "auto"
 
     # Compression parameters

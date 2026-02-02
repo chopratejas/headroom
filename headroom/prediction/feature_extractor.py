@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from headroom.models.config import ML_MODEL_DEFAULTS
+
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
@@ -1744,7 +1746,7 @@ class SemanticExtractor(BaseFeatureExtractor):
                 # Use centralized registry for shared model instances
                 from headroom.models.ml_models import MLModelRegistry
 
-                self._nlp = MLModelRegistry.get_spacy("en_core_web_sm")
+                self._nlp = MLModelRegistry.get_spacy()
 
             assert self._nlp is not None
             doc = self._nlp(text)
@@ -1952,18 +1954,18 @@ class EmbeddingExtractor(BaseFeatureExtractor):
 
     def __init__(
         self,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str | None = None,
         device: str | None = None,
         cluster_centers: dict[str, list[float]] | None = None,
     ):
         """Initialize embedding extractor.
 
         Args:
-            model_name: Sentence transformer model name.
+            model_name: Sentence transformer model name. Uses config default if None.
             device: Device for model ('cpu', 'cuda', 'mps', or None for auto).
             cluster_centers: Pre-computed cluster centers for similarity.
         """
-        self.model_name = model_name
+        self.model_name = model_name or ML_MODEL_DEFAULTS.sentence_transformer
         self.device = device
         self.cluster_centers = cluster_centers or self.DEFAULT_CLUSTERS
         self._model: SentenceTransformer | None = None
@@ -2260,7 +2262,7 @@ class PromptFeatureExtractor:
         tokenizer: Any | None = None,
         use_embeddings: bool = True,
         use_ner: bool = False,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str | None = None,
         cluster_centers: dict[str, list[float]] | None = None,
     ):
         """Initialize the feature extractor.
@@ -2272,7 +2274,7 @@ class PromptFeatureExtractor:
                 Requires sentence-transformers.
             use_ner: Whether to use NER for entity extraction.
                 Requires spaCy.
-            embedding_model: Sentence transformer model name.
+            embedding_model: Sentence transformer model name. Uses config default if None.
             cluster_centers: Pre-computed cluster centers for similarity.
         """
         self.text_extractor = TextStatisticsExtractor(tokenizer=tokenizer)

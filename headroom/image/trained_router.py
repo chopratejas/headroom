@@ -19,6 +19,8 @@ from typing import Any
 import torch
 from PIL import Image
 
+from headroom.models.config import ML_MODEL_DEFAULTS
+
 
 class Technique(Enum):
     """Image optimization techniques."""
@@ -64,9 +66,14 @@ class TrainedRouter:
     - HuggingFace Hub: headroom-ai/technique-router (for production)
     """
 
-    # Model identifiers
-    DEFAULT_HF_MODEL = "chopratejas/technique-router"
-    SIGLIP_MODEL = "google/siglip-base-patch16-224"
+    # Model identifiers (from centralized config)
+    @property
+    def default_hf_model(self) -> str:
+        return ML_MODEL_DEFAULTS.technique_router
+
+    @property
+    def siglip_model(self) -> str:
+        return ML_MODEL_DEFAULTS.siglip
 
     # Image analysis prompts for SigLIP
     IMAGE_DESCRIPTIONS = {
@@ -138,7 +145,7 @@ class TrainedRouter:
                 if local_path.exists():
                     model_id = str(local_path)
                 else:
-                    model_id = self.DEFAULT_HF_MODEL
+                    model_id = self.default_hf_model
 
             # Use centralized registry for shared model instances
             from headroom.models.ml_models import MLModelRegistry
@@ -153,7 +160,7 @@ class TrainedRouter:
             from headroom.models.ml_models import MLModelRegistry
 
             self._siglip_model, self._siglip_processor = MLModelRegistry.get_siglip(
-                model_name=self.SIGLIP_MODEL,
+                model_name=self.siglip_model,
                 device=self.device,
             )
 

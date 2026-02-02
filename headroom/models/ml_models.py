@@ -6,10 +6,13 @@ to avoid loading the same model multiple times across different components.
 This is different from registry.py which stores LLM metadata. This module
 manages actual loaded model instances that consume memory.
 
+Model defaults are configured in headroom/models/config.py - change them there
+to switch model variants across the entire codebase.
+
 Usage:
     from headroom.models.ml_models import MLModelRegistry
 
-    # Get shared sentence transformer (loads on first access)
+    # Get shared sentence transformer (loads on first access, uses config default)
     model = MLModelRegistry.get_sentence_transformer()
     embeddings = model.encode(["hello", "world"])
 
@@ -27,22 +30,12 @@ import logging
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
+from .config import ML_MODEL_DEFAULTS
+
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
-
-# Model size estimates in MB (approximate)
-MODEL_SIZES_MB = {
-    "sentence_transformer:all-MiniLM-L6-v2": 90,
-    "sentence_transformer:all-mpnet-base-v2": 420,
-    "siglip:google/siglip-base-patch16-224": 400,
-    "siglip:google/siglip-large-patch16-384": 1200,
-    "llmlingua:microsoft/llmlingua-2-xlm-roberta-large-meetingbank": 1000,
-    "spacy:en_core_web_sm": 40,
-    "spacy:en_core_web_md": 120,
-    "technique_router:chopratejas/technique-router": 100,
-}
 
 
 class MLModelRegistry:
@@ -90,18 +83,21 @@ class MLModelRegistry:
     @classmethod
     def get_sentence_transformer(
         cls,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str | None = None,
         device: str | None = None,
     ) -> Any:
         """Get a shared SentenceTransformer instance.
 
         Args:
-            model_name: Model name (default: all-MiniLM-L6-v2).
+            model_name: Model name. If None, uses ML_MODEL_DEFAULTS.sentence_transformer.
             device: Device to use (cuda, mps, cpu). Auto-detected if None.
 
         Returns:
             SentenceTransformer model instance.
         """
+        if model_name is None:
+            model_name = ML_MODEL_DEFAULTS.sentence_transformer
+
         instance = cls.get()
         key = f"sentence_transformer:{model_name}"
 
@@ -126,18 +122,21 @@ class MLModelRegistry:
     @classmethod
     def get_siglip(
         cls,
-        model_name: str = "google/siglip-base-patch16-224",
+        model_name: str | None = None,
         device: str | None = None,
     ) -> tuple[Any, Any]:
         """Get shared SIGLIP model and processor.
 
         Args:
-            model_name: Model name (default: google/siglip-base-patch16-224).
+            model_name: Model name. If None, uses ML_MODEL_DEFAULTS.siglip.
             device: Device to use. Auto-detected if None.
 
         Returns:
             Tuple of (model, processor).
         """
+        if model_name is None:
+            model_name = ML_MODEL_DEFAULTS.siglip
+
         instance = cls.get()
         key = f"siglip:{model_name}"
 
@@ -170,15 +169,18 @@ class MLModelRegistry:
     # =========================================================================
 
     @classmethod
-    def get_spacy(cls, model_name: str = "en_core_web_sm") -> Any:
+    def get_spacy(cls, model_name: str | None = None) -> Any:
         """Get a shared spaCy model.
 
         Args:
-            model_name: Model name (default: en_core_web_sm).
+            model_name: Model name. If None, uses ML_MODEL_DEFAULTS.spacy.
 
         Returns:
             spaCy Language model.
         """
+        if model_name is None:
+            model_name = ML_MODEL_DEFAULTS.spacy
+
         instance = cls.get()
         key = f"spacy:{model_name}"
 
@@ -222,7 +224,7 @@ class MLModelRegistry:
             if local_path.exists():
                 model_path = str(local_path)
             else:
-                model_path = "chopratejas/technique-router"
+                model_path = ML_MODEL_DEFAULTS.technique_router
 
         key = f"technique_router:{model_path}"
 
@@ -274,7 +276,7 @@ class MLModelRegistry:
             device = cls._detect_device()
 
         if model_name is None:
-            model_name = "microsoft/llmlingua-2-xlm-roberta-large-meetingbank"
+            model_name = ML_MODEL_DEFAULTS.llmlingua
 
         return _get_llmlingua_compressor(model_name=model_name, device=device)
 
@@ -317,7 +319,9 @@ class MLModelRegistry:
         total = 0.0
         with instance._model_lock:
             for key in instance._models:
-                total += MODEL_SIZES_MB.get(key, 100)  # Default 100MB if unknown
+                # Extract model name from key (format: "type:model_name")
+                model_name = key.split(":", 1)[1] if ":" in key else key
+                total += ML_MODEL_DEFAULTS.get_memory_estimate(model_name)
         return total
 
     @classmethod
@@ -329,7 +333,9 @@ class MLModelRegistry:
 
         with instance._model_lock:
             for key in instance._models:
-                size_mb = MODEL_SIZES_MB.get(key, 100)
+                # Extract model name from key (format: "type:model_name")
+                model_name = key.split(":", 1)[1] if ":" in key else key
+                size_mb = ML_MODEL_DEFAULTS.get_memory_estimate(model_name)
                 loaded_models.append({"key": key, "size_mb": size_mb})
                 total_estimated_mb += size_mb
 
@@ -341,7 +347,7 @@ class MLModelRegistry:
 
 # Convenience functions for direct access
 def get_sentence_transformer(
-    model_name: str = "all-MiniLM-L6-v2",
+    model_name: str | None = None,
     device: str | None = None,
 ) -> Any:
     """Get a shared SentenceTransformer instance."""
@@ -349,13 +355,13 @@ def get_sentence_transformer(
 
 
 def get_siglip(
-    model_name: str = "google/siglip-base-patch16-224",
+    model_name: str | None = None,
     device: str | None = None,
 ) -> tuple[Any, Any]:
     """Get shared SIGLIP model and processor."""
     return MLModelRegistry.get_siglip(model_name, device)
 
 
-def get_spacy(model_name: str = "en_core_web_sm") -> Any:
+def get_spacy(model_name: str | None = None) -> Any:
     """Get a shared spaCy model."""
     return MLModelRegistry.get_spacy(model_name)

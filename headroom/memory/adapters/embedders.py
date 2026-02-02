@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from headroom.models.config import ML_MODEL_DEFAULTS
+
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
 
@@ -81,7 +83,6 @@ class LocalEmbedder:
         embeddings = await embedder.embed_batch(["Hello", "World"])
     """
 
-    DEFAULT_MODEL = "all-MiniLM-L6-v2"
     DEFAULT_DIMENSION = 384
     DEFAULT_MAX_TOKENS = 256
 
@@ -94,14 +95,14 @@ class LocalEmbedder:
 
         Args:
             model_name: Name of the sentence-transformers model to use.
-                       Defaults to "all-MiniLM-L6-v2".
+                       Defaults to config's sentence_transformer setting.
             device: Device to run on ("cuda", "mps", "cpu", or None for auto).
                    If None, automatically selects the best available device.
 
         Raises:
             ImportError: If sentence-transformers is not installed.
         """
-        self._model_name = model_name or self.DEFAULT_MODEL
+        self._model_name = model_name or ML_MODEL_DEFAULTS.sentence_transformer
         self._requested_device = device
         self._model: SentenceTransformer | None = None
         self._device: str | None = None

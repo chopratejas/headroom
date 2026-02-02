@@ -92,14 +92,14 @@ class EmbeddingScorer(RelevanceScorer):
 
     def __init__(
         self,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str | None = None,
         device: str | None = None,
         cache_model: bool = True,  # Kept for API compatibility, always uses registry now
     ):
         """Initialize embedding scorer.
 
         Args:
-            model_name: Sentence transformer model name.
+            model_name: Sentence transformer model name. If None, uses config default.
                 Recommended models:
                 - "all-MiniLM-L6-v2": Fast, good quality (default)
                 - "all-mpnet-base-v2": Best quality, slower
@@ -107,7 +107,9 @@ class EmbeddingScorer(RelevanceScorer):
             device: Device to use ('cpu', 'cuda', 'mps', or None for auto).
             cache_model: Deprecated, models are always cached via MLModelRegistry.
         """
-        self.model_name = model_name
+        from headroom.models.config import ML_MODEL_DEFAULTS
+
+        self.model_name = model_name or ML_MODEL_DEFAULTS.sentence_transformer
         self.device = device
         self.cache_model = cache_model
         self._available: bool | None = None
