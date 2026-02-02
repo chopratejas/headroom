@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from ..relevance.bm25 import BM25Scorer
 
 if TYPE_CHECKING:
+    from ..memory.tracker import ComponentStats
     from .backends import CompressionStoreBackend
 
 logger = logging.getLogger(__name__)
@@ -504,6 +505,39 @@ class CompressionStore:
                 "event_count": len(self._retrieval_events),
                 "backend": backend_stats,
             }
+
+    def get_memory_stats(self) -> ComponentStats:
+        """Get memory statistics for the MemoryTracker.
+
+        Returns:
+            ComponentStats with current memory usage.
+        """
+        from ..memory.tracker import ComponentStats
+
+        with self._lock:
+            # Get backend stats which include bytes_used
+            backend_stats = self._backend.get_stats()
+            bytes_used = backend_stats.get("bytes_used", 0)
+
+            # Add retrieval events memory
+            import sys
+
+            bytes_used += sys.getsizeof(self._retrieval_events)
+            for event in self._retrieval_events:
+                bytes_used += sys.getsizeof(event)
+
+            # Add eviction heap memory
+            bytes_used += sys.getsizeof(self._eviction_heap)
+
+            return ComponentStats(
+                name="compression_store",
+                entry_count=self._backend.count(),
+                size_bytes=bytes_used,
+                budget_bytes=None,  # No budget set yet
+                hits=sum(1 for _, e in self._backend.items() if e.retrieval_count > 0),
+                misses=0,  # CompressionStore doesn't track misses directly
+                evictions=0,  # Would need to track this separately
+            )
 
     def get_retrieval_events(
         self,
