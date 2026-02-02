@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from .graph_models import Entity, Relationship, RelationshipDirection, Subgraph
 
 if TYPE_CHECKING:
-    pass
+    from ..tracker import ComponentStats
 
 
 class InMemoryGraphStore:
@@ -572,3 +572,63 @@ class InMemoryGraphStore:
                 "source_index_size": len(self._relationships_by_source),
                 "target_index_size": len(self._relationships_by_target),
             }
+
+    def get_memory_stats(self) -> ComponentStats:
+        """Get memory statistics for the MemoryTracker.
+
+        Returns:
+            ComponentStats with current memory usage.
+        """
+        import sys
+
+        from ..tracker import ComponentStats
+
+        with self._lock:
+            # Calculate size of all data structures
+            size_bytes = 0
+
+            # Entities
+            size_bytes += sys.getsizeof(self._entities)
+            for entity_id, entity in self._entities.items():
+                size_bytes += len(entity_id)
+                size_bytes += sys.getsizeof(entity)
+                size_bytes += len(entity.id) + len(entity.user_id) + len(entity.name)
+                size_bytes += len(entity.entity_type)
+                if entity.properties:
+                    size_bytes += sys.getsizeof(entity.properties)
+
+            # Relationships
+            size_bytes += sys.getsizeof(self._relationships)
+            for rel_id, rel in self._relationships.items():
+                size_bytes += len(rel_id)
+                size_bytes += sys.getsizeof(rel)
+                size_bytes += len(rel.id) + len(rel.source_id) + len(rel.target_id)
+                size_bytes += len(rel.relation_type)
+                if rel.properties:
+                    size_bytes += sys.getsizeof(rel.properties)
+
+            # Indexes
+            size_bytes += sys.getsizeof(self._entities_by_user)
+            for user_id, entity_ids in self._entities_by_user.items():
+                size_bytes += len(user_id)
+                size_bytes += sys.getsizeof(entity_ids)
+
+            size_bytes += sys.getsizeof(self._entities_by_name)
+            for user_id, name_map in self._entities_by_name.items():
+                size_bytes += len(user_id)
+                size_bytes += sys.getsizeof(name_map)
+
+            size_bytes += sys.getsizeof(self._relationships_by_source)
+            size_bytes += sys.getsizeof(self._relationships_by_target)
+
+            entry_count = len(self._entities) + len(self._relationships)
+
+            return ComponentStats(
+                name="graph_store",
+                entry_count=entry_count,
+                size_bytes=size_bytes,
+                budget_bytes=None,
+                hits=0,
+                misses=0,
+                evictions=0,
+            )

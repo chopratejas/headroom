@@ -36,7 +36,10 @@ from collections import OrderedDict, defaultdict, deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from ..memory.tracker import ComponentStats, MemoryTracker
 
 import httpx
 
@@ -401,6 +404,37 @@ class SemanticCache:
         """Clear all cache entries."""
         async with self._lock:
             self._cache.clear()
+
+    def get_memory_stats(self) -> ComponentStats:
+        """Get memory statistics for the MemoryTracker.
+
+        Returns:
+            ComponentStats with current memory usage.
+        """
+        from ..memory.tracker import ComponentStats
+
+        # Calculate size - this is sync but we access _cache directly
+        # Note: This is a rough estimate, not perfectly accurate under async load
+        size_bytes = sys.getsizeof(self._cache)
+        total_hits = 0
+
+        for entry in self._cache.values():
+            size_bytes += sys.getsizeof(entry)
+            size_bytes += len(entry.response_body)
+            size_bytes += sys.getsizeof(entry.response_headers)
+            for k, v in entry.response_headers.items():
+                size_bytes += len(k) + len(v)
+            total_hits += entry.hit_count
+
+        return ComponentStats(
+            name="semantic_cache",
+            entry_count=len(self._cache),
+            size_bytes=size_bytes,
+            budget_bytes=None,
+            hits=total_hits,
+            misses=0,  # Would need to track this separately
+            evictions=0,  # Would need to track this separately
+        )
 
 
 # =============================================================================
@@ -864,6 +898,44 @@ class RequestLogger:
             "total_logged": len(self._logs),
             "log_file": str(self.log_file) if self.log_file else None,
         }
+
+    def get_memory_stats(self) -> ComponentStats:
+        """Get memory statistics for the MemoryTracker.
+
+        Returns:
+            ComponentStats with current memory usage.
+        """
+        from ..memory.tracker import ComponentStats
+
+        # Calculate size
+        size_bytes = sys.getsizeof(self._logs)
+
+        for log_entry in self._logs:
+            size_bytes += sys.getsizeof(log_entry)
+            # Add string fields
+            if log_entry.request_id:
+                size_bytes += len(log_entry.request_id)
+            if log_entry.provider:
+                size_bytes += len(log_entry.provider)
+            if log_entry.model:
+                size_bytes += len(log_entry.model)
+            if log_entry.error:
+                size_bytes += len(log_entry.error)
+            # Messages and response can be large
+            if log_entry.request_messages:
+                size_bytes += sys.getsizeof(log_entry.request_messages)
+            if log_entry.response_content:
+                size_bytes += len(log_entry.response_content)
+
+        return ComponentStats(
+            name="request_logger",
+            entry_count=len(self._logs),
+            size_bytes=size_bytes,
+            budget_bytes=None,
+            hits=0,
+            misses=0,
+            evictions=0,
+        )
 
 
 # =============================================================================
@@ -5333,6 +5405,44 @@ async def _log_toin_stats_periodically(interval_seconds: int = 300) -> None:
             logger.debug("Failed to log TOIN stats: %s", e)
 
 
+def _register_memory_components(proxy: HeadroomProxy, tracker: MemoryTracker) -> None:
+    """Register all memory-tracked components with the tracker.
+
+    This function is idempotent - it checks if components are already registered.
+
+    Args:
+        proxy: The HeadroomProxy instance.
+        tracker: The MemoryTracker instance.
+    """
+    # Register compression store (global singleton)
+    if "compression_store" not in tracker.registered_components:
+        store = get_compression_store()
+        tracker.register("compression_store", store.get_memory_stats)
+
+    # Register semantic cache (instance on proxy)
+    if proxy.cache and "semantic_cache" not in tracker.registered_components:
+        tracker.register("semantic_cache", proxy.cache.get_memory_stats)
+
+    # Register request logger (instance on proxy)
+    if proxy.logger and "request_logger" not in tracker.registered_components:
+        tracker.register("request_logger", proxy.logger.get_memory_stats)
+
+    # Register batch context store (global singleton)
+    if "batch_context_store" not in tracker.registered_components:
+        try:
+            from ..ccr.batch_store import get_batch_context_store
+
+            batch_store = get_batch_context_store()
+            if hasattr(batch_store, "get_memory_stats"):
+                tracker.register("batch_context_store", batch_store.get_memory_stats)
+        except ImportError:
+            pass
+
+    # Note: graph_store and vector_index are created per-user within the
+    # LocalMemoryBackend, not as global singletons. They would need to be
+    # registered when the memory system is initialized with specific backends.
+
+
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
     """Create FastAPI application."""
     if not FASTAPI_AVAILABLE:
@@ -5507,6 +5617,30 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             await proxy.metrics.export(),
             media_type="text/plain; version=0.0.4",
         )
+
+    # Debug endpoints
+    @app.get("/debug/memory")
+    async def debug_memory():
+        """Get detailed memory usage statistics.
+
+        Returns memory usage for all tracked components including:
+        - Process-level memory (RSS, VMS, percent)
+        - Per-component memory usage and budgets
+        - Cache hit/miss statistics
+        - Total tracked vs target budget
+
+        This endpoint is useful for debugging memory issues and
+        monitoring memory budgets.
+        """
+        from ..memory.tracker import MemoryTracker
+
+        tracker = MemoryTracker.get()
+
+        # Register components if not already registered
+        _register_memory_components(proxy, tracker)
+
+        report = tracker.get_report()
+        return report.to_dict()
 
     @app.post("/cache/clear")
     async def clear_cache():

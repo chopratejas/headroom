@@ -91,7 +91,7 @@ def _check_hnswlib_available() -> bool:
 
 
 if TYPE_CHECKING:
-    pass
+    from ..tracker import ComponentStats
 
 
 @dataclass
@@ -853,6 +853,64 @@ class HNSWVectorIndex:
                     else 0.0
                 ),
             }
+
+    def get_memory_stats(self) -> ComponentStats:
+        """Get memory statistics for the MemoryTracker.
+
+        Returns:
+            ComponentStats with current memory usage.
+        """
+        import sys
+
+        from ..tracker import ComponentStats
+
+        with self._lock:
+            size_bytes = 0
+
+            # ID mappings
+            size_bytes += sys.getsizeof(self._memory_to_hnsw)
+            for mem_id, hnsw_id in self._memory_to_hnsw.items():
+                size_bytes += len(mem_id) + sys.getsizeof(hnsw_id)
+
+            size_bytes += sys.getsizeof(self._hnsw_to_memory)
+            for hnsw_id, mem_id in self._hnsw_to_memory.items():
+                size_bytes += sys.getsizeof(hnsw_id) + len(mem_id)
+
+            # Metadata storage
+            size_bytes += sys.getsizeof(self._metadata)
+            for mem_id, meta in self._metadata.items():
+                size_bytes += len(mem_id)
+                size_bytes += sys.getsizeof(meta)
+                # Estimate metadata fields
+                if meta.content:
+                    size_bytes += len(meta.content)
+                if meta.entity_refs:
+                    size_bytes += sys.getsizeof(meta.entity_refs)
+                if meta.metadata:
+                    size_bytes += sys.getsizeof(meta.metadata)
+
+            # Embeddings storage (numpy arrays)
+            size_bytes += sys.getsizeof(self._embeddings)
+            for mem_id, embedding in self._embeddings.items():
+                size_bytes += len(mem_id)
+                # numpy array size: dtype size * number of elements
+                size_bytes += embedding.nbytes
+
+            # HNSW index size estimate
+            # The actual index is in hnswlib C++ memory, so we estimate:
+            # Each element uses approximately: dimension * 4 bytes (float32) + M * 8 bytes (neighbors)
+            index_size_estimate = len(self._memory_to_hnsw) * (self._dimension * 4 + self._m * 8)
+            size_bytes += index_size_estimate
+
+            return ComponentStats(
+                name="vector_index",
+                entry_count=len(self._memory_to_hnsw),
+                size_bytes=size_bytes,
+                budget_bytes=None,
+                hits=0,
+                misses=0,
+                evictions=0,
+            )
 
     def set_ef_search(self, ef_search: int) -> None:
         """Update the ef_search parameter for query time.

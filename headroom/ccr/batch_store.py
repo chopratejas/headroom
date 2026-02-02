@@ -15,7 +15,10 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..memory.tracker import ComponentStats
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +236,51 @@ class BatchContextStore:
         for ctx in self._contexts.values():
             counts[ctx.provider] = counts.get(ctx.provider, 0) + 1
         return counts
+
+    def get_memory_stats(self) -> ComponentStats:
+        """Get memory statistics for the MemoryTracker.
+
+        Returns:
+            ComponentStats with current memory usage.
+        """
+        import sys
+
+        from ..memory.tracker import ComponentStats
+
+        # Calculate size
+        size_bytes = sys.getsizeof(self._contexts)
+
+        for batch_id, ctx in self._contexts.items():
+            size_bytes += len(batch_id)
+            size_bytes += sys.getsizeof(ctx)
+
+            # Add request contexts
+            for req_id, req in ctx.requests.items():
+                size_bytes += len(req_id)
+                size_bytes += sys.getsizeof(req)
+                # Messages can be large
+                size_bytes += sys.getsizeof(req.messages)
+                for msg in req.messages:
+                    size_bytes += sys.getsizeof(msg)
+                    for _k, v in msg.items():
+                        if isinstance(v, str):
+                            size_bytes += len(v)
+                        elif isinstance(v, list):
+                            size_bytes += sys.getsizeof(v)
+
+                # Tools
+                if req.tools:
+                    size_bytes += sys.getsizeof(req.tools)
+
+        return ComponentStats(
+            name="batch_context_store",
+            entry_count=len(self._contexts),
+            size_bytes=size_bytes,
+            budget_bytes=None,
+            hits=0,
+            misses=0,
+            evictions=0,
+        )
 
 
 # Global store instance
