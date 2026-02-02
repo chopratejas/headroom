@@ -4,6 +4,7 @@ This module provides concrete implementations of the memory system's ports:
 - SQLiteMemoryStore: SQLite-based memory persistence
 - FTS5TextIndex: SQLite FTS5 full-text search index
 - HNSWVectorIndex: HNSW-based vector index using hnswlib (optional)
+- SQLiteVectorIndex: SQLite-based vector index using sqlite-vec (optional, recommended)
 - LRUMemoryCache: Thread-safe LRU cache for hot memories
 - InMemoryGraphStore: In-memory graph store for knowledge graphs
 - SQLiteGraphStore: SQLite-based graph store (bounded memory, persistent)
@@ -30,7 +31,9 @@ from headroom.memory.adapters.sqlite_graph import SQLiteGraphStore
 
 # Lazy imports for optional adapters
 _HNSW_AVAILABLE: bool | None = None  # Internal cache for HNSW_AVAILABLE
+_SQLITE_VEC_AVAILABLE: bool | None = None  # Internal cache for SQLITE_VEC_AVAILABLE
 _HNSWVectorIndex = None
+_SQLiteVectorIndex = None
 _LocalEmbedder = None
 _OpenAIEmbedder = None
 _OllamaEmbedder = None
@@ -38,8 +41,9 @@ _OllamaEmbedder = None
 
 def __getattr__(name: str) -> type | bool:
     """Lazy import for optional adapters."""
-    global _HNSWVectorIndex, _LocalEmbedder, _OpenAIEmbedder, _OllamaEmbedder
-    global _HNSW_AVAILABLE
+    global _HNSWVectorIndex, _SQLiteVectorIndex
+    global _LocalEmbedder, _OpenAIEmbedder, _OllamaEmbedder
+    global _HNSW_AVAILABLE, _SQLITE_VEC_AVAILABLE
 
     if name == "HNSW_AVAILABLE":
         # Lazily check hnswlib availability
@@ -49,12 +53,27 @@ def __getattr__(name: str) -> type | bool:
             _HNSW_AVAILABLE = _check_hnswlib_available()
         return _HNSW_AVAILABLE
 
+    if name == "SQLITE_VEC_AVAILABLE":
+        # Lazily check sqlite-vec availability
+        if _SQLITE_VEC_AVAILABLE is None:
+            from headroom.memory.adapters.sqlite_vector import is_sqlite_vec_available
+
+            _SQLITE_VEC_AVAILABLE = is_sqlite_vec_available()
+        return _SQLITE_VEC_AVAILABLE
+
     if name == "HNSWVectorIndex":
         if _HNSWVectorIndex is None:
             from headroom.memory.adapters.hnsw import HNSWVectorIndex
 
             _HNSWVectorIndex = HNSWVectorIndex
         return _HNSWVectorIndex
+
+    if name == "SQLiteVectorIndex":
+        if _SQLiteVectorIndex is None:
+            from headroom.memory.adapters.sqlite_vector import SQLiteVectorIndex
+
+            _SQLiteVectorIndex = SQLiteVectorIndex
+        return _SQLiteVectorIndex
 
     if name == "LocalEmbedder":
         if _LocalEmbedder is None:
@@ -89,9 +108,11 @@ __all__ = [
     "SQLiteMemoryStore",
     # Optional adapters (lazy-loaded)
     "HNSWVectorIndex",
+    "SQLiteVectorIndex",
     "LocalEmbedder",
     "OllamaEmbedder",
     "OpenAIEmbedder",
     # Availability flags
     "HNSW_AVAILABLE",
+    "SQLITE_VEC_AVAILABLE",
 ]

@@ -117,7 +117,8 @@ evals = [
 ]
 # Memory system extras (hierarchical memory with vector search)
 memory = [
-    "hnswlib>=0.8.0",  # HNSW vector index for semantic search
+    "hnswlib>=0.8.0", # HNSW vector index for semantic search
+    "sqlite-vec>=0.1.6",
 ]
 # AWS Bedrock backend
 bedrock = [
@@ -126,6 +127,12 @@ bedrock = [
 # HTML content extraction (web scraping results)
 html = [
     "trafilatura>=1.6.0",
+]
+# Comprehensive LLM benchmarks (EleutherAI lm-evaluation-harness)
+benchmark = [
+    "lm-eval>=0.4.0",
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
 ]
 # Development dependencies
 dev = [
@@ -143,7 +150,7 @@ dev = [
 ]
 # All optional dependencies
 all = [
-    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice,html]",
+    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice,html,benchmark]",
 ]
 
 [project.scripts]
