@@ -3,11 +3,12 @@
 These are real tests that:
 - Actually write/read config files
 - Test actual CLI behavior
-- Test MCP server initialization
+- Test MCP server initialization (when MCP SDK is available)
 """
 
 import json
-from unittest.mock import patch
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -18,6 +19,14 @@ from headroom.cli.mcp import (
     load_mcp_config,
     save_mcp_config,
 )
+
+# Check if MCP SDK is available
+try:
+    import mcp  # noqa: F401
+
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
 
 
 @pytest.fixture
@@ -35,6 +44,14 @@ def mock_claude_config_path(temp_claude_dir):
     with patch("headroom.cli.mcp.MCP_CONFIG_PATH", config_path):
         with patch("headroom.cli.mcp.CLAUDE_CONFIG_DIR", temp_claude_dir):
             yield config_path
+
+
+@pytest.fixture
+def mock_mcp_available():
+    """Mock MCP SDK as available for testing install/uninstall commands."""
+    mock_mcp = MagicMock()
+    with patch.dict(sys.modules, {"mcp": mock_mcp}):
+        yield mock_mcp
 
 
 class TestMCPConfigFunctions:
@@ -100,12 +117,12 @@ class TestMCPConfigFunctions:
 class TestMCPInstallCommand:
     """Test 'headroom mcp install' command."""
 
-    def test_install_creates_config(self, mock_claude_config_path):
+    def test_install_creates_config(self, mock_claude_config_path, mock_mcp_available):
         """Install creates MCP config file."""
         runner = CliRunner()
         result = runner.invoke(main, ["mcp", "install"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Failed with output: {result.output}"
         assert "installed" in result.output.lower()
         assert mock_claude_config_path.exists()
 
@@ -116,7 +133,7 @@ class TestMCPInstallCommand:
         assert "mcp" in config["mcpServers"]["headroom"]["args"]
         assert "serve" in config["mcpServers"]["headroom"]["args"]
 
-    def test_install_preserves_other_servers(self, mock_claude_config_path):
+    def test_install_preserves_other_servers(self, mock_claude_config_path, mock_mcp_available):
         """Install preserves existing MCP servers."""
         # Create config with another server
         existing_config = {
@@ -129,37 +146,37 @@ class TestMCPInstallCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["mcp", "install"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Failed with output: {result.output}"
 
         # Both servers should exist
         config = json.loads(mock_claude_config_path.read_text())
         assert "github" in config["mcpServers"]
         assert "headroom" in config["mcpServers"]
 
-    def test_install_with_custom_proxy_url(self, mock_claude_config_path):
+    def test_install_with_custom_proxy_url(self, mock_claude_config_path, mock_mcp_available):
         """Install with custom proxy URL sets env var."""
         runner = CliRunner()
         result = runner.invoke(main, ["mcp", "install", "--proxy-url", "http://localhost:9000"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Failed with output: {result.output}"
 
         config = json.loads(mock_claude_config_path.read_text())
         assert (
             config["mcpServers"]["headroom"]["env"]["HEADROOM_PROXY_URL"] == "http://localhost:9000"
         )
 
-    def test_install_default_proxy_url_no_env(self, mock_claude_config_path):
+    def test_install_default_proxy_url_no_env(self, mock_claude_config_path, mock_mcp_available):
         """Install with default proxy URL doesn't set env var."""
         runner = CliRunner()
         result = runner.invoke(main, ["mcp", "install"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Failed with output: {result.output}"
 
         config = json.loads(mock_claude_config_path.read_text())
         # No env section for default URL
         assert "env" not in config["mcpServers"]["headroom"]
 
-    def test_install_already_configured_no_force(self, mock_claude_config_path):
+    def test_install_already_configured_no_force(self, mock_claude_config_path, mock_mcp_available):
         """Install without --force when already configured exits cleanly."""
         # First install
         runner = CliRunner()
@@ -171,7 +188,7 @@ class TestMCPInstallCommand:
         assert result.exit_code == 0
         assert "already configured" in result.output.lower()
 
-    def test_install_force_overwrites(self, mock_claude_config_path):
+    def test_install_force_overwrites(self, mock_claude_config_path, mock_mcp_available):
         """Install with --force overwrites existing config."""
         runner = CliRunner()
         runner.invoke(main, ["mcp", "install", "--proxy-url", "http://old:8787"])
@@ -181,17 +198,27 @@ class TestMCPInstallCommand:
             main, ["mcp", "install", "--force", "--proxy-url", "http://new:9000"]
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Failed with output: {result.output}"
         assert "installed" in result.output.lower()
 
         config = json.loads(mock_claude_config_path.read_text())
         assert config["mcpServers"]["headroom"]["env"]["HEADROOM_PROXY_URL"] == "http://new:9000"
 
+    @pytest.mark.skipif(MCP_AVAILABLE, reason="Test only runs when MCP SDK is NOT installed")
+    def test_install_without_mcp_sdk_fails(self, mock_claude_config_path):
+        """Install fails gracefully when MCP SDK is not installed."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["mcp", "install"])
+
+        # Should fail with helpful message
+        assert result.exit_code == 1
+        assert "mcp" in result.output.lower() or "not installed" in result.output.lower()
+
 
 class TestMCPUninstallCommand:
     """Test 'headroom mcp uninstall' command."""
 
-    def test_uninstall_removes_headroom(self, mock_claude_config_path):
+    def test_uninstall_removes_headroom(self, mock_claude_config_path, mock_mcp_available):
         """Uninstall removes headroom from config."""
         # First install
         runner = CliRunner()
@@ -264,7 +291,7 @@ class TestMCPStatusCommand:
             or "No config" in result.output
         )
 
-    def test_status_configured(self, mock_claude_config_path):
+    def test_status_configured(self, mock_claude_config_path, mock_mcp_available):
         """Status shows configured when installed."""
         runner = CliRunner()
         runner.invoke(main, ["mcp", "install"])
@@ -288,8 +315,12 @@ class TestMCPServeCommand:
         assert "debug" in result.output
 
 
+@pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP SDK not installed")
 class TestMCPServerInitialization:
-    """Test actual MCP server creation."""
+    """Test actual MCP server creation.
+
+    These tests require the MCP SDK to be installed.
+    """
 
     def test_mcp_server_can_be_created(self):
         """MCP server can be instantiated."""
@@ -323,7 +354,7 @@ class TestMCPServerInitialization:
 class TestEndToEndFlow:
     """Test complete install -> status -> uninstall flow."""
 
-    def test_full_lifecycle(self, mock_claude_config_path):
+    def test_full_lifecycle(self, mock_claude_config_path, mock_mcp_available):
         """Test complete lifecycle of MCP configuration."""
         runner = CliRunner()
 
@@ -333,7 +364,7 @@ class TestEndToEndFlow:
 
         # Install
         result = runner.invoke(main, ["mcp", "install"])
-        assert result.exit_code == 0
+        assert result.exit_code == 0, f"Install failed: {result.output}"
         assert "installed" in result.output.lower()
 
         # Status shows configured
