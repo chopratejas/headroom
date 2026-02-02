@@ -51,28 +51,111 @@ class ProviderConfig:
     model_format_hint: str = ""  # Hint for model naming (shown in help)
 
 
-# Model mappings for providers that need translation
-_BEDROCK_MODEL_MAP = {
-    # Claude 4.5 (requires inference profiles)
-    "claude-opus-4-5-20251101": "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
-    "claude-sonnet-4-5-20250929": "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "claude-haiku-4-5-20251001": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    # Claude 4.1
-    "claude-opus-4-1-20250805": "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0",
-    # Claude 4 (requires inference profiles)
-    "claude-opus-4-20250514": "bedrock/us.anthropic.claude-opus-4-20250514-v1:0",
-    "claude-sonnet-4-20250514": "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
-    # Claude 3.7 (requires inference profiles)
-    "claude-3-7-sonnet-20250219": "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-    # Claude 3.5 (can use inference profiles for cross-region)
-    "claude-3-5-sonnet-20241022": "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "claude-3-5-sonnet-20240620": "bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-    "claude-3-5-haiku-20241022": "bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0",
-    # Claude 3 (can use inference profiles for cross-region)
-    "claude-3-opus-20240229": "bedrock/us.anthropic.claude-3-opus-20240229-v1:0",
-    "claude-3-sonnet-20240229": "bedrock/us.anthropic.claude-3-sonnet-20240229-v1:0",
-    "claude-3-haiku-20240307": "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0",
-}
+# Cache for dynamically fetched inference profiles
+_bedrock_profiles_cache: dict[str, dict[str, str]] = {}  # region -> model_map
+
+
+def _fetch_bedrock_inference_profiles(region: str | None) -> dict[str, str]:
+    """Fetch available Bedrock inference profiles from AWS API.
+
+    Uses boto3 list_inference_profiles() to get all available profiles
+    for the given region, then builds a model map.
+
+    Args:
+        region: AWS region (e.g., "us-east-1", "eu-central-1")
+
+    Returns:
+        Model map: anthropic_model_name -> bedrock inference profile ID
+
+    Raises:
+        ImportError: If boto3 is not installed
+        Exception: If API call fails
+    """
+
+    import boto3
+
+    region = region or "us-east-1"
+
+    # Check cache first
+    if region in _bedrock_profiles_cache:
+        return _bedrock_profiles_cache[region]
+
+    model_map: dict[str, str] = {}
+
+    bedrock_client = boto3.client("bedrock", region_name=region)
+    response = bedrock_client.list_inference_profiles(typeEquals="SYSTEM_DEFINED")
+
+    for profile in response.get("inferenceProfileSummaries", []):
+        profile_id = profile.get("inferenceProfileId", "")
+
+        # Only process Anthropic Claude profiles
+        if "anthropic" not in profile_id.lower():
+            continue
+
+        # Extract the standard model name from the profile ID
+        # e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0" -> "claude-sonnet-4-20250514"
+        normalized = _normalize_bedrock_profile_id(profile_id)
+        if normalized:
+            model_map[normalized] = f"bedrock/{profile_id}"
+
+    # Handle pagination if needed
+    while response.get("nextToken"):
+        response = bedrock_client.list_inference_profiles(
+            typeEquals="SYSTEM_DEFINED", nextToken=response["nextToken"]
+        )
+        for profile in response.get("inferenceProfileSummaries", []):
+            profile_id = profile.get("inferenceProfileId", "")
+            if "anthropic" not in profile_id.lower():
+                continue
+            normalized = _normalize_bedrock_profile_id(profile_id)
+            if normalized:
+                model_map[normalized] = f"bedrock/{profile_id}"
+
+    logger.info(f"Fetched {len(model_map)} Bedrock inference profiles for region {region}")
+
+    # Cache the result
+    _bedrock_profiles_cache[region] = model_map
+    return model_map
+
+
+def _normalize_bedrock_profile_id(profile_id: str) -> str | None:
+    """Extract standard Anthropic model name from Bedrock profile ID.
+
+    Args:
+        profile_id: e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0"
+                    or "anthropic.claude-sonnet-4-20250514-v1:0"
+                    or "claude-sonnet-4-20250514"
+
+    Returns:
+        Normalized name like "claude-sonnet-4-20250514", or None if not parseable
+    """
+    import re
+
+    # Strip "bedrock/" prefix if present
+    if profile_id.startswith("bedrock/"):
+        profile_id = profile_id[8:]
+
+    # Strip region prefix (us., eu., apac.)
+    for prefix in ["us.", "eu.", "apac."]:
+        if profile_id.startswith(prefix):
+            profile_id = profile_id[len(prefix) :]
+            break
+
+    # Strip "anthropic." prefix
+    if profile_id.startswith("anthropic."):
+        profile_id = profile_id[10:]
+
+    # Must be a Claude model
+    if not profile_id.startswith("claude"):
+        return None
+
+    # Strip version suffix (-v1:0, -v2:0, etc.)
+    normalized = re.sub(r"-v\d+:\d+$", "", profile_id)
+    return normalized if normalized else None
+
+
+# Legacy static map - kept for non-Bedrock providers
+_BEDROCK_MODEL_MAP: dict[str, str] = {}
 
 _VERTEX_MODEL_MAP = {
     "claude-3-5-sonnet-20241022": "vertex_ai/claude-3-5-sonnet-v2@20241022",
@@ -168,23 +251,38 @@ class LiteLLMBackend(Backend):
 
         # Get provider config from registry
         self._config = get_provider_config(provider)
-        self._model_map = self._config.model_map
 
-        # Provider-specific setup
-        if provider == "bedrock" and region:
+        # For Bedrock, fetch model map dynamically from AWS API
+        if provider == "bedrock":
+            self._model_map = _fetch_bedrock_inference_profiles(region)
             litellm.set_verbose = False  # Reduce noise
+        else:
+            self._model_map = self._config.model_map
 
-        logger.info(f"LiteLLM backend initialized (provider={provider})")
+        logger.info(f"LiteLLM backend initialized (provider={provider}, region={region})")
 
     @property
     def name(self) -> str:
         return f"litellm-{self.provider}"
 
     def map_model_id(self, anthropic_model: str) -> str:
-        """Map Anthropic model ID to LiteLLM model string."""
+        """Map Anthropic model ID to LiteLLM model string.
+
+        Handles various input formats:
+        - "claude-sonnet-4-20250514" (standard Anthropic)
+        - "anthropic.claude-sonnet-4-20250514-v1:0" (Bedrock without region)
+        - "us.anthropic.claude-sonnet-4-20250514-v1:0" (Bedrock with region)
+        - "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0" (LiteLLM format)
+        """
         # Check direct mapping first
         if anthropic_model in self._model_map:
             return self._model_map[anthropic_model]
+
+        # For Bedrock, try to normalize various input formats
+        if self.provider == "bedrock":
+            normalized = _normalize_bedrock_profile_id(anthropic_model)
+            if normalized and normalized in self._model_map:
+                return self._model_map[normalized]
 
         # Pass-through providers: prepend provider prefix
         if self._config.pass_through:
