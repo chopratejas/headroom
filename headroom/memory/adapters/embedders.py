@@ -137,12 +137,12 @@ class LocalEmbedder:
             return "cpu"
 
     def _load_model(self) -> None:
-        """Load the sentence-transformers model lazily."""
+        """Load the sentence-transformers model lazily via MLModelRegistry."""
         if self._model is not None:
             return
 
         self._check_dependencies()
-        from sentence_transformers import SentenceTransformer
+        from headroom.models.ml_models import MLModelRegistry
 
         # Determine device
         if self._requested_device:
@@ -150,13 +150,13 @@ class LocalEmbedder:
         else:
             self._device = self._detect_device()
 
-        logger.info(f"Loading model {self._model_name} on device {self._device}")
-        self._model = SentenceTransformer(self._model_name, device=self._device)
+        # Use centralized registry for shared model instances
+        self._model = MLModelRegistry.get_sentence_transformer(self._model_name, self._device)
 
         # Get actual dimension from loaded model
         self._dimension = self._model.get_sentence_embedding_dimension()
         logger.info(
-            f"Model loaded: {self._model_name}, dimension={self._dimension}, device={self._device}"
+            f"Model loaded (shared): {self._model_name}, dimension={self._dimension}, device={self._device}"
         )
 
     async def embed(self, text: str) -> np.ndarray:

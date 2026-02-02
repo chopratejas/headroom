@@ -18,12 +18,6 @@ from typing import Any
 
 import torch
 from PIL import Image
-from transformers import (
-    AutoModel,
-    AutoModelForSequenceClassification,
-    AutoProcessor,
-    AutoTokenizer,
-)
 
 
 class Technique(Enum):
@@ -146,17 +140,22 @@ class TrainedRouter:
                 else:
                     model_id = self.DEFAULT_HF_MODEL
 
-            # Load classifier
-            self._tokenizer = AutoTokenizer.from_pretrained(model_id)
-            self._classifier = AutoModelForSequenceClassification.from_pretrained(model_id)
-            self._classifier.to(self.device)  # type: ignore[attr-defined]
-            self._classifier.eval()  # type: ignore[attr-defined]
+            # Use centralized registry for shared model instances
+            from headroom.models.ml_models import MLModelRegistry
+
+            self._classifier, self._tokenizer = MLModelRegistry.get_technique_router(
+                model_path=model_id,
+                device=self.device,
+            )
 
         if self.use_siglip and self._siglip_model is None:
-            self._siglip_model = AutoModel.from_pretrained(self.SIGLIP_MODEL)
-            self._siglip_processor = AutoProcessor.from_pretrained(self.SIGLIP_MODEL)
-            self._siglip_model.to(self.device)  # type: ignore[attr-defined]
-            self._siglip_model.eval()  # type: ignore[attr-defined]
+            # Use centralized registry for shared model instances
+            from headroom.models.ml_models import MLModelRegistry
+
+            self._siglip_model, self._siglip_processor = MLModelRegistry.get_siglip(
+                model_name=self.SIGLIP_MODEL,
+                device=self.device,
+            )
 
             # Pre-compute text embeddings for image analysis
             self._compute_text_embeddings()

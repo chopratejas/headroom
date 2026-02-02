@@ -595,7 +595,10 @@ class NERDetector:
             return
 
         try:
-            self._nlp = spacy.load(config.spacy_model)
+            # Use centralized registry for shared model instances
+            from headroom.models.ml_models import MLModelRegistry
+
+            self._nlp = MLModelRegistry.get_spacy(config.spacy_model)
         except OSError:
             self._load_error = (
                 f"spaCy model '{config.spacy_model}' not found. "
@@ -717,7 +720,10 @@ class SemanticDetector:
             return
 
         try:
-            self._model = SentenceTransformer(config.embedding_model)
+            # Use centralized registry for shared model instances
+            from headroom.models.ml_models import MLModelRegistry
+
+            self._model = MLModelRegistry.get_sentence_transformer(config.embedding_model)
             # Pre-compute exemplar embeddings
             self._exemplar_embeddings = self._model.encode(
                 self.DYNAMIC_EXEMPLARS,

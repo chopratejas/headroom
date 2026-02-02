@@ -1741,9 +1741,10 @@ class SemanticExtractor(BaseFeatureExtractor):
         """Extract named entities using spaCy."""
         try:
             if self._nlp is None:
-                import spacy
+                # Use centralized registry for shared model instances
+                from headroom.models.ml_models import MLModelRegistry
 
-                self._nlp = spacy.load("en_core_web_sm")
+                self._nlp = MLModelRegistry.get_spacy("en_core_web_sm")
 
             assert self._nlp is not None
             doc = self._nlp(text)
@@ -1988,10 +1989,10 @@ class EmbeddingExtractor(BaseFeatureExtractor):
                 "Install with: pip install sentence-transformers"
             )
 
-        from sentence_transformers import SentenceTransformer
+        # Use centralized registry for shared model instances
+        from headroom.models.ml_models import MLModelRegistry
 
-        logger.info(f"Loading sentence transformer: {self.model_name}")
-        self._model = SentenceTransformer(self.model_name, device=self.device)
+        self._model = MLModelRegistry.get_sentence_transformer(self.model_name, self.device)
         return self._model
 
     def extract(self, text: str, **kwargs: Any) -> EmbeddingFeatures:

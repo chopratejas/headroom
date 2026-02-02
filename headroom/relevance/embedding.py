@@ -90,13 +90,11 @@ class EmbeddingScorer(RelevanceScorer):
         Requires sentence-transformers: pip install headroom[relevance]
     """
 
-    _model_cache: dict[str, SentenceTransformer] = {}
-
     def __init__(
         self,
         model_name: str = "all-MiniLM-L6-v2",
         device: str | None = None,
-        cache_model: bool = True,
+        cache_model: bool = True,  # Kept for API compatibility, always uses registry now
     ):
         """Initialize embedding scorer.
 
@@ -107,12 +105,11 @@ class EmbeddingScorer(RelevanceScorer):
                 - "all-mpnet-base-v2": Best quality, slower
                 - "paraphrase-MiniLM-L6-v2": Good for paraphrase detection
             device: Device to use ('cpu', 'cuda', 'mps', or None for auto).
-            cache_model: If True, cache loaded models across instances.
+            cache_model: Deprecated, models are always cached via MLModelRegistry.
         """
         self.model_name = model_name
         self.device = device
         self.cache_model = cache_model
-        self._model: SentenceTransformer | None = None
         self._available: bool | None = None
 
     @classmethod
@@ -138,30 +135,16 @@ class EmbeddingScorer(RelevanceScorer):
         Raises:
             RuntimeError: If sentence-transformers is not installed.
         """
-        if self._model is not None:
-            return self._model
-
         if not self.is_available():
             raise RuntimeError(
                 "EmbeddingScorer requires sentence-transformers. "
                 "Install with: pip install headroom[relevance]"
             )
 
-        # Check cache
-        if self.cache_model and self.model_name in self._model_cache:
-            self._model = self._model_cache[self.model_name]
-            return self._model
+        # Use centralized registry for shared model instances
+        from headroom.models.ml_models import MLModelRegistry
 
-        # Load model
-        from sentence_transformers import SentenceTransformer
-
-        logger.info(f"Loading sentence transformer model: {self.model_name}")
-        self._model = SentenceTransformer(self.model_name, device=self.device)
-
-        if self.cache_model:
-            self._model_cache[self.model_name] = self._model
-
-        return self._model
+        return MLModelRegistry.get_sentence_transformer(self.model_name, self.device)
 
     def _encode(self, texts: list[str]):
         """Encode texts to embeddings.

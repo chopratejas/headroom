@@ -159,14 +159,16 @@ def compute_semantic_similarity(
     """
     try:
         import numpy as np
-        from sentence_transformers import SentenceTransformer
     except ImportError as e:
         raise ImportError(
             "sentence-transformers required for semantic similarity. "
             "Install with: pip install sentence-transformers"
         ) from e
 
-    model = SentenceTransformer(model_name)
+    # Use centralized registry for shared model instances
+    from headroom.models.ml_models import MLModelRegistry
+
+    model = MLModelRegistry.get_sentence_transformer(model_name)
 
     embeddings = model.encode([response_a, response_b])
     embedding_a, embedding_b = embeddings[0], embeddings[1]
