@@ -720,16 +720,11 @@ class TestTrainedRouterMocked:
         assert signals.is_complex == 0.3
         assert signals.has_small_details == 0.2
 
-    @patch("headroom.image.trained_router.AutoModelForSequenceClassification")
-    @patch("headroom.image.trained_router.AutoTokenizer")
-    def test_router_is_available_with_models(self, mock_tokenizer, mock_model):
+    def test_router_is_available_with_models(self):
         """Router reports available when models can load."""
-        mock_tokenizer.from_pretrained.return_value = MagicMock()
-        mock_model.from_pretrained.return_value = MagicMock()
-
         router = TrainedRouter()
 
-        # Mock _load_models to not actually load
+        # Mock _load_models to not actually load (models loaded via MLModelRegistry now)
         with patch.object(router, "_load_models"):
             assert router.is_available() is True
 
