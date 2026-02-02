@@ -18,8 +18,30 @@ from typing import Any
 
 import torch
 from PIL import Image
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from headroom.models.config import ML_MODEL_DEFAULTS
+
+
+def _extract_tensor(output: torch.Tensor | BaseModelOutputWithPooling) -> torch.Tensor:
+    """Extract tensor from model output.
+
+    Some transformers versions return BaseModelOutputWithPooling instead of
+    raw tensors from get_image_features() / get_text_features(). This helper
+    handles both cases.
+
+    Args:
+        output: Either a tensor or BaseModelOutputWithPooling object.
+
+    Returns:
+        The extracted tensor.
+    """
+    if isinstance(output, BaseModelOutputWithPooling):
+        # Use pooler_output if available, otherwise last_hidden_state[:, 0]
+        if output.pooler_output is not None:
+            return output.pooler_output
+        return output.last_hidden_state[:, 0]
+    return output
 
 
 class Technique(Enum):
@@ -184,7 +206,8 @@ class TrainedRouter:
                         padding=True,
                     )
                     inputs = {k: v.to(self.device) for k, v in inputs.items()}
-                    text_embeds = self._siglip_model.get_text_features(**inputs)
+                    text_output = self._siglip_model.get_text_features(**inputs)
+                    text_embeds = _extract_tensor(text_output)
                     text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
                     embeddings.append(text_embeds)
 
@@ -236,7 +259,8 @@ class TrainedRouter:
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            image_embeds: torch.Tensor = self._siglip_model.get_image_features(**inputs)
+            image_output = self._siglip_model.get_image_features(**inputs)
+            image_embeds = _extract_tensor(image_output)
             image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
 
         return image_embeds
