@@ -94,6 +94,11 @@ agno = [
 strands = [
     "strands-agents>=0.1.0",
 ]
+# MCP server for Claude Code integration (CCR without API access)
+mcp = [
+    "mcp>=1.0.0",
+    "httpx>=0.24.0",
+]
 # Voice filler detection (training and inference)
 voice = [
     "onnxruntime>=1.16.0",       # Fast CPU inference
@@ -150,7 +155,7 @@ dev = [
 ]
 # All optional dependencies
 all = [
-    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice,html,benchmark]",
+    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice,html,benchmark,mcp]",
 ]
 
 [project.scripts]

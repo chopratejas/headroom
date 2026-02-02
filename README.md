@@ -269,6 +269,40 @@ Memory auto-detects your provider (Anthropic, OpenAI, Gemini) and uses the appro
 
 Set `x-headroom-user-id` header for per-user memory isolation (defaults to 'default').
 
+**Claude Code Subscription Users** - Use MCP for CCR (Compress-Cache-Retrieve):
+
+If you use Claude Code with a subscription (not API key), you need MCP to enable the `headroom_retrieve` tool:
+
+```bash
+# One-time setup
+pip install "headroom-ai[mcp]"
+headroom mcp install
+
+# Every time you code
+headroom proxy          # Terminal 1
+claude                  # Terminal 2 - now has headroom_retrieve!
+```
+
+What this does:
+- Configures Claude Code to use Headroom's MCP server (`~/.claude/mcp.json`)
+- When the proxy compresses large tool outputs, Claude sees markers like `[47 items compressed... hash=abc123]`
+- Claude can call `headroom_retrieve` to get the full original content when needed
+
+Check your setup:
+```bash
+headroom mcp status
+```
+
+<details>
+<summary><b>Why MCP for subscriptions?</b></summary>
+
+- **API users** can inject custom tools directly via the Messages API
+- **Subscription users** use Claude Code's built-in tool set and can't inject tools programmatically
+- **MCP** (Model Context Protocol) is Claude's official way to extend tools - it works with subscriptions
+
+The MCP server exposes `headroom_retrieve` so Claude can request uncompressed content when the compressed summary isn't enough.
+</details>
+
 **Using AWS Bedrock, Google Vertex, or Azure?** Route through Headroom:
 
 ```bash
@@ -380,7 +414,7 @@ See the full [Agno Integration Guide](docs/agno.md) for hooks, multi-provider su
 |-----------|-------------|------|
 | **LangChain** | `HeadroomChatModel`, memory, retrievers, agents | [Guide](docs/langchain.md) |
 | **Agno** | `HeadroomAgnoModel`, hooks, multi-provider | [Guide](docs/agno.md) |
-| **MCP** | Tool output compression for Claude | [Guide](docs/ccr.md) |
+| **MCP** | Claude Code subscription support via `headroom mcp install` | [Guide](docs/mcp.md) |
 | **Any OpenAI Client** | Proxy server | [Guide](docs/proxy.md) |
 
 ---
@@ -396,6 +430,7 @@ See the full [Agno Integration Guide](docs/agno.md) for hooks, multi-provider su
 | **CacheAligner** | Stabilizes prefixes for provider caching | [Transforms](docs/transforms.md) |
 | **IntelligentContext** | Score-based context dropping with TOIN-learned importance | [Transforms](docs/transforms.md) |
 | **CCR** | Reversible compression with automatic retrieval | [CCR Guide](docs/ccr.md) |
+| **MCP Server** | Claude Code subscription support via `headroom mcp install` | [MCP Guide](docs/mcp.md) |
 | **LangChain** | Memory, retrievers, agents, streaming | [LangChain](docs/langchain.md) |
 | **Agno** | Agent framework integration with hooks | [Agno](docs/agno.md) |
 | **Text Utilities** | Opt-in compression for search/logs | [Text Compression](docs/text-compression.md) |
@@ -511,6 +546,7 @@ pip install "headroom-ai[all]"
 # Or install specific components
 pip install headroom-ai              # SDK only
 pip install "headroom-ai[proxy]"     # Proxy server
+pip install "headroom-ai[mcp]"       # MCP server for Claude Code subscriptions
 pip install "headroom-ai[langchain]" # LangChain integration
 pip install "headroom-ai[agno]"      # Agno agent framework
 pip install "headroom-ai[evals]"     # Evaluation framework
@@ -537,6 +573,7 @@ pip install "headroom-ai[llmlingua]" # ML-based compression
 | [Proxy Guide](docs/proxy.md) | Production deployment |
 | [Configuration](docs/configuration.md) | All options |
 | [CCR Guide](docs/ccr.md) | Reversible compression |
+| [MCP Guide](docs/mcp.md) | Claude Code subscription support |
 | [Metrics](docs/metrics.md) | Monitoring |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues |
 

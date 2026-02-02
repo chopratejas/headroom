@@ -40,7 +40,12 @@ def _extract_tensor(output: torch.Tensor | BaseModelOutputWithPooling) -> torch.
         # Use pooler_output if available, otherwise last_hidden_state[:, 0]
         if output.pooler_output is not None:
             return output.pooler_output
-        return output.last_hidden_state[:, 0]
+        if output.last_hidden_state is not None:
+            return output.last_hidden_state[:, 0]
+        # Fallback: shouldn't happen, but return empty tensor
+        raise ValueError(
+            "BaseModelOutputWithPooling has neither pooler_output nor last_hidden_state"
+        )
     return output
 
 
@@ -260,7 +265,7 @@ class TrainedRouter:
 
         with torch.no_grad():
             image_output = self._siglip_model.get_image_features(**inputs)
-            image_embeds = _extract_tensor(image_output)
+            image_embeds: torch.Tensor = _extract_tensor(image_output)
             image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True)
 
         return image_embeds
