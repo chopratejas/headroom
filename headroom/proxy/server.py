@@ -1546,7 +1546,7 @@ class HeadroomProxy:
                     model=model,
                     input_tokens=0,
                     output_tokens=0,
-                    tokens_saved=cached.tokens_saved_per_hit,
+                    tokens_saved=0,  # Savings already counted when response was cached
                     latency_ms=optimization_latency,
                     cached=True,
                 )
@@ -3957,7 +3957,7 @@ class HeadroomProxy:
                     model=model,
                     input_tokens=0,
                     output_tokens=0,
-                    tokens_saved=cached.tokens_saved_per_hit,
+                    tokens_saved=0,  # Savings already counted when response was cached
                     latency_ms=(time.time() - start_time) * 1000,
                     cached=True,
                 )
