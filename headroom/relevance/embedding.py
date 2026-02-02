@@ -144,7 +144,10 @@ class EmbeddingScorer(RelevanceScorer):
         # Use centralized registry for shared model instances
         from headroom.models.ml_models import MLModelRegistry
 
-        return MLModelRegistry.get_sentence_transformer(self.model_name, self.device)
+        model: SentenceTransformer = MLModelRegistry.get_sentence_transformer(
+            self.model_name, self.device
+        )
+        return model
 
     def _encode(self, texts: list[str]):
         """Encode texts to embeddings.
