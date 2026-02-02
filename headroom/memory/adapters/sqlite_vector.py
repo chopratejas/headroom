@@ -647,6 +647,45 @@ class SQLiteVectorIndex:
 
                 return self._deserialize_f32(row[0], self._dimension)
 
+    async def update_embedding(self, memory_id: str, embedding: np.ndarray) -> bool:
+        """Update the embedding for an indexed memory.
+
+        Args:
+            memory_id: The unique identifier of the memory.
+            embedding: The new embedding vector.
+
+        Returns:
+            True if updated, False if memory not found in index.
+        """
+        embedding = np.asarray(embedding, dtype=np.float32)
+        if embedding.shape[0] != self._dimension:
+            raise ValueError(
+                f"Embedding dimension {embedding.shape[0]} does not match "
+                f"index dimension {self._dimension}"
+            )
+
+        with self._lock:
+            with self._get_conn() as conn:
+                # Get rowid for the memory
+                row = conn.execute(
+                    "SELECT rowid FROM vec_metadata WHERE memory_id = ?",
+                    (memory_id,),
+                ).fetchone()
+
+                if row is None:
+                    return False
+
+                rowid = row[0]
+
+                # Update the embedding
+                conn.execute(
+                    "UPDATE vec_embeddings SET embedding = ? WHERE rowid = ?",
+                    (self._serialize_f32(embedding), rowid),
+                )
+                conn.commit()
+
+                return True
+
     def clear(self) -> None:
         """Clear all entries from the index."""
         with self._lock:
@@ -705,6 +744,6 @@ class SQLiteVectorIndex:
             with self._get_conn() as conn:
                 conn.execute("VACUUM")
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close the index (cleanup)."""
         pass  # Connection-per-request pattern, nothing to close

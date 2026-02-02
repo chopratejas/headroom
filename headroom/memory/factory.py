@@ -139,9 +139,52 @@ def _create_vector_index(config: MemoryConfig) -> VectorIndex:
         A VectorIndex implementation based on config.vector_backend.
 
     Raises:
-        ValueError: If the vector backend is not supported.
+        ValueError: If the vector backend is not supported or unavailable.
     """
-    if config.vector_backend == VectorBackend.HNSW:
+    backend = config.vector_backend
+
+    # AUTO: prefer SQLITE_VEC if available, else HNSW
+    if backend == VectorBackend.AUTO:
+        from headroom.memory.adapters import SQLITE_VEC_AVAILABLE
+
+        if SQLITE_VEC_AVAILABLE:
+            backend = VectorBackend.SQLITE_VEC
+        else:
+            backend = VectorBackend.HNSW
+
+    if backend == VectorBackend.SQLITE_VEC:
+        from headroom.memory.adapters import SQLITE_VEC_AVAILABLE
+
+        if not SQLITE_VEC_AVAILABLE:
+            raise ValueError(
+                "sqlite-vec is not available. Install with: pip install sqlite-vec\n"
+                "Or use vector_backend=VectorBackend.HNSW"
+            )
+
+        from headroom.memory.adapters.sqlite_vector import SQLiteVectorIndex
+
+        # Derive vector db path from main db path if not specified
+        if config.vector_db_path:
+            vector_db_path = config.vector_db_path
+        else:
+            # "memory.db" -> "memory_vectors.db"
+            vector_db_path = config.db_path.parent / f"{config.db_path.stem}_vectors.db"
+
+        return SQLiteVectorIndex(
+            dimension=config.vector_dimension,
+            db_path=vector_db_path,
+            page_cache_size_kb=config.vector_cache_size_kb,
+        )
+
+    if backend == VectorBackend.HNSW:
+        from headroom.memory.adapters import HNSW_AVAILABLE
+
+        if not HNSW_AVAILABLE:
+            raise ValueError(
+                "hnswlib is not available. Install with: pip install hnswlib\n"
+                "Or use vector_backend=VectorBackend.SQLITE_VEC"
+            )
+
         from headroom.memory.adapters.hnsw import HNSWVectorIndex
 
         return HNSWVectorIndex(
@@ -149,6 +192,7 @@ def _create_vector_index(config: MemoryConfig) -> VectorIndex:
             ef_construction=config.hnsw_ef_construction,
             m=config.hnsw_m,
             ef_search=config.hnsw_ef_search,
+            max_entries=config.hnsw_max_entries,
         )
 
     raise ValueError(f"Unknown vector backend: {config.vector_backend}")

@@ -10,6 +10,14 @@ import pytest
 
 from headroom.memory.tracker import MemoryTracker
 
+# Check HNSW availability for skipping tests
+try:
+    from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+    HNSW_AVAILABLE = _check_hnswlib_available()
+except ImportError:
+    HNSW_AVAILABLE = False
+
 
 class TestCompressionStoreMemoryTracking:
     """Tests for CompressionStore memory tracking integration."""
@@ -211,6 +219,7 @@ class TestGraphStoreMemoryTracking:
         assert final_stats.entry_count == 100
 
 
+@pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
 class TestHNSWVectorIndexMemoryTracking:
     """Tests for HNSWVectorIndex memory tracking integration."""
 

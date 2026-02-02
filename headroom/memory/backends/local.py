@@ -2,7 +2,8 @@
 
 Provides a fully local memory backend using embedded databases:
 - SQLite for memory storage
-- HNSW for vector search
+- SQLite-vec for vector search (bounded, persistent) - preferred
+- HNSW for vector search (fallback if sqlite-vec unavailable)
 - FTS5 for text search
 - SQLite graph for relationships (bounded memory, persistent)
 
@@ -64,9 +65,9 @@ class LocalBackend:
 
     This backend provides a fully local memory system with:
     - SQLite for memory storage (MemoryStore)
-    - HNSW for vector search (VectorIndex)
+    - SQLite-vec for vector search (VectorIndex) - bounded, persistent
     - FTS5 for text search (TextIndex)
-    - In-memory graph for relationships (GraphStore)
+    - SQLite graph for relationships (GraphStore) - bounded, persistent
 
     All operations are performed locally with no network calls,
     making it suitable for:

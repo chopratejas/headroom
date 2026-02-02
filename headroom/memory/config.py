@@ -2,7 +2,7 @@
 
 Provides configuration options for all pluggable components:
 - Storage backends (SQLite, future: PostgreSQL, DynamoDB)
-- Vector index backends (HNSW, future: FAISS, Pinecone)
+- Vector index backends (SQLITE_VEC recommended, HNSW fallback)
 - Text index backends (FTS5, future: Elasticsearch)
 - Embedder backends (local sentence-transformers, OpenAI, Ollama)
 - Caching options
@@ -26,8 +26,9 @@ class StoreBackend(Enum):
 class VectorBackend(Enum):
     """Supported vector index backends."""
 
-    HNSW = "hnsw"
-    # Future: FAISS = "faiss", PINECONE = "pinecone"
+    AUTO = "auto"  # Auto-select: SQLITE_VEC if available, else HNSW
+    SQLITE_VEC = "sqlite_vec"  # SQLite-based, bounded memory, recommended
+    HNSW = "hnsw"  # hnswlib-based, unbounded unless max_entries set
 
 
 class TextBackend(Enum):
@@ -57,11 +58,16 @@ class MemoryConfig:
         store_backend: Which storage backend to use for memory persistence.
         db_path: Path to the database file (for file-based backends like SQLite).
 
-        vector_backend: Which vector index backend to use for similarity search.
+        vector_backend: Which vector index backend to use (AUTO, SQLITE_VEC, HNSW).
+            AUTO (default) selects SQLITE_VEC if available, else HNSW.
         vector_dimension: Dimension of embedding vectors.
+        vector_db_path: Path to vector index database (for SQLITE_VEC). Derived from
+            db_path if None.
+        vector_cache_size_kb: SQLite page cache size for vector index (8MB default).
         hnsw_ef_construction: HNSW index build-time accuracy parameter.
         hnsw_m: HNSW maximum number of connections per node.
         hnsw_ef_search: HNSW search-time accuracy parameter.
+        hnsw_max_entries: Maximum entries for HNSW (None = unbounded).
 
         text_backend: Which text index backend to use for full-text search.
 
@@ -90,11 +96,16 @@ class MemoryConfig:
     db_path: Path = field(default_factory=lambda: Path("headroom_memory.db"))
 
     # Vector index
-    vector_backend: VectorBackend = VectorBackend.HNSW
+    vector_backend: VectorBackend = VectorBackend.AUTO  # Auto-select best available
     vector_dimension: int = 384
+    vector_db_path: Path | None = (
+        None  # For SQLite-based vector index (derived from db_path if None)
+    )
+    vector_cache_size_kb: int = 8192  # SQLite page cache size (8MB default)
     hnsw_ef_construction: int = 200
     hnsw_m: int = 16
     hnsw_ef_search: int = 50
+    hnsw_max_entries: int | None = None  # Max entries for HNSW (None = unbounded)
 
     # Text index
     text_backend: TextBackend = TextBackend.FTS5

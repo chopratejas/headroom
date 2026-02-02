@@ -24,6 +24,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Check HNSW availability for skipping tests
+try:
+    from headroom.memory.adapters.hnsw import _check_hnswlib_available
+
+    HNSW_AVAILABLE = _check_hnswlib_available()
+except ImportError:
+    HNSW_AVAILABLE = False
+
 
 def get_process_memory_mb() -> float:
     """Get current process memory in MB."""
@@ -124,6 +132,7 @@ class TestMemorySystemIntegration:
         print(f"\nTotal tracked memory: {report.total_tracked_mb:.4f} MB")
         print(f"Process RSS: {report.process.rss_mb:.1f} MB")
 
+    @pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
     @pytest.mark.asyncio
     async def test_hnsw_vector_index_memory_growth(self):
         """Test that HNSW vector index memory is tracked as vectors are added."""
@@ -450,6 +459,7 @@ class TestCombinedMemoryTracking:
         MemoryTracker.reset()
         reset_batch_context_store()
 
+    @pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
     @pytest.mark.asyncio
     async def test_all_components_memory_tracking(self):
         """Test memory tracking with all components active."""
@@ -563,6 +573,7 @@ class TestCombinedMemoryTracking:
         total_from_components = sum(c.size_bytes for c in report.components.values())
         assert report.total_tracked_bytes == total_from_components
 
+    @pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not available")
     @pytest.mark.asyncio
     async def test_memory_budget_enforcement(self):
         """Test that budget enforcement works correctly."""
