@@ -6,6 +6,7 @@ This module provides concrete implementations of the memory system's ports:
 - HNSWVectorIndex: HNSW-based vector index using hnswlib (optional)
 - LRUMemoryCache: Thread-safe LRU cache for hot memories
 - InMemoryGraphStore: In-memory graph store for knowledge graphs
+- SQLiteGraphStore: SQLite-based graph store (bounded memory, persistent)
 - LocalEmbedder: sentence-transformers embedding (local, optional)
 - OpenAIEmbedder: OpenAI API embedding (cloud, optional)
 - OllamaEmbedder: Ollama API embedding (local server, optional)
@@ -19,6 +20,7 @@ from headroom.memory.adapters.cache import LRUMemoryCache
 from headroom.memory.adapters.fts5 import FTS5TextIndex
 from headroom.memory.adapters.graph import InMemoryGraphStore
 from headroom.memory.adapters.sqlite import SQLiteMemoryStore
+from headroom.memory.adapters.sqlite_graph import SQLiteGraphStore
 
 # Check for optional dependencies availability
 # Note: We don't import from hnsw.py here because hnswlib may crash with
@@ -83,6 +85,7 @@ __all__ = [
     "FTS5TextIndex",
     "InMemoryGraphStore",
     "LRUMemoryCache",
+    "SQLiteGraphStore",
     "SQLiteMemoryStore",
     # Optional adapters (lazy-loaded)
     "HNSWVectorIndex",
