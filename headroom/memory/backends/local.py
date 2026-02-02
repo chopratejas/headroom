@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from headroom.memory.adapters.graph_models import Entity, Relationship, Subgraph
 from headroom.memory.models import Memory
 from headroom.memory.ports import MemorySearchResult
+from headroom.models.config import ML_MODEL_DEFAULTS
 
 if TYPE_CHECKING:
     from headroom.memory.adapters.graph import InMemoryGraphStore
@@ -51,8 +52,10 @@ class LocalBackendConfig:
 
     db_path: str = "memory.db"
     graph_db_path: str | None = None  # Derived from db_path if not specified
-    embedder_model: str = "all-MiniLM-L6-v2"
-    vector_dimension: int = 384
+    embedder_model: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.sentence_transformer)
+    vector_dimension: int = field(
+        default_factory=lambda: ML_MODEL_DEFAULTS.sentence_transformer_dim
+    )
     graph_persist: bool = True  # Use SQLiteGraphStore (bounded, persistent)
     graph_cache_size_kb: int = 8192  # 8MB default
     cache_enabled: bool = True

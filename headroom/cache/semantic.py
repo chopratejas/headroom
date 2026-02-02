@@ -39,8 +39,10 @@ import hashlib
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+from headroom.models.config import ML_MODEL_DEFAULTS
 
 from .base import (
     BaseCacheOptimizer,
@@ -90,7 +92,7 @@ class SemanticCacheConfig:
     use_exact_matching: bool = True
 
     # Embedding model (if using embeddings)
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.sentence_transformer)
 
 
 class SemanticCache:

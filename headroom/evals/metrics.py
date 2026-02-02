@@ -143,7 +143,7 @@ def compute_rouge_l(response_a: str, response_b: str) -> float:
 def compute_semantic_similarity(
     response_a: str,
     response_b: str,
-    model_name: str = "all-MiniLM-L6-v2",
+    model_name: str | None = None,
 ) -> float:
     """Compute semantic similarity using sentence embeddings.
 
@@ -152,7 +152,7 @@ def compute_semantic_similarity(
     Args:
         response_a: First response
         response_b: Second response
-        model_name: Sentence transformer model to use
+        model_name: Sentence transformer model to use. Uses config default if None.
 
     Returns:
         Cosine similarity between embeddings (0.0 to 1.0)

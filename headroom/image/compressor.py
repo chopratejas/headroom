@@ -67,11 +67,9 @@ class ImageCompressor:
         device: Device for inference ('cuda', 'cpu', or None for auto)
     """
 
-    DEFAULT_MODEL = "chopratejas/technique-router"
-
     def __init__(
         self,
-        model_id: str = DEFAULT_MODEL,
+        model_id: str | None = None,
         use_siglip: bool = True,
         device: str | None = None,
     ):

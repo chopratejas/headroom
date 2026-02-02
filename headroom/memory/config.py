@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from headroom.models.config import ML_MODEL_DEFAULTS
+
 
 class StoreBackend(Enum):
     """Supported memory store backends."""
@@ -112,7 +114,7 @@ class MemoryConfig:
 
     # Embedder
     embedder_backend: EmbedderBackend = EmbedderBackend.LOCAL
-    embedder_model: str = "all-MiniLM-L6-v2"
+    embedder_model: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.sentence_transformer)
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
 

@@ -210,16 +210,14 @@ class TestMemoryIntegration:
         assert john_entity is not None
         assert john_entity.entity_type == "person"
 
-        # Verify relationships were added
-        # Get all relationships by counting via primary storage
-        all_rels = [r for r in graph._relationships.values() if r.user_id == user_id]
-        assert len(all_rels) >= 3, f"Expected at least 3 relationships, got {len(all_rels)}"
+        # Verify relationships were added by querying via public API
+        from headroom.memory.adapters.graph_models import RelationshipDirection
 
-        # Verify specific relationship exists (John -> Netflix)
+        # Verify John has outgoing relationships
         john_id = john_entity.id
-        john_outgoing_rel_ids = graph._relationships_by_source.get(john_id, set())
-        assert len(john_outgoing_rel_ids) >= 3, (
-            "Expected John to have at least 3 outgoing relationships"
+        john_rels = await graph.get_relationships(john_id, RelationshipDirection.OUTGOING)
+        assert len(john_rels) >= 3, (
+            f"Expected John to have at least 3 outgoing relationships, got {len(john_rels)}"
         )
 
         await backend.close()

@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
 
+from headroom.models.config import ML_MODEL_DEFAULTS
+
 # Optional imports - graceful degradation
 _SPACY_AVAILABLE = False
 _SENTENCE_TRANSFORMERS_AVAILABLE = False
@@ -220,13 +222,13 @@ class DetectorConfig:
     min_entropy_length: int = 8
 
     # Tier 2: NER config
-    spacy_model: str = "en_core_web_sm"
+    spacy_model: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.spacy)
     ner_entity_types: list[str] = field(
         default_factory=lambda: ["DATE", "TIME", "MONEY", "PERSON", "ORG", "GPE"]
     )
 
     # Tier 3: Semantic config
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = field(default_factory=lambda: ML_MODEL_DEFAULTS.sentence_transformer)
     semantic_threshold: float = 0.7
 
     # General
