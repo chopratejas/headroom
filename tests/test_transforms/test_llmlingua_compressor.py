@@ -141,7 +141,7 @@ class TestLLMLinguaConfig:
         """Default config values are sensible."""
         config = LLMLinguaConfig()
 
-        assert config.model_name == "microsoft/llmlingua-2-xlm-roberta-large-meetingbank"
+        assert config.model_name == "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
         assert config.device == "auto"
         assert config.target_compression_rate == 0.3
         assert config.min_tokens_for_compression == 100
