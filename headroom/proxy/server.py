@@ -139,8 +139,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("headroom.proxy")
 
-# Maximum request body size (10MB)
-MAX_REQUEST_BODY_SIZE = 10 * 1024 * 1024
+# Maximum request body size (100MB - increased to support image-heavy requests)
+MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
 
 # =============================================================================
