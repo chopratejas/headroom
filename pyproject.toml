@@ -165,6 +165,10 @@ Changelog = "https://github.com/chopratejas/headroom/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["headroom"]
+# Include non-Python files (dashboard templates, etc.)
+artifacts = [
+    "headroom/dashboard/templates/*.html",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
