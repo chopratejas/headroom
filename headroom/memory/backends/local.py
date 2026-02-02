@@ -4,7 +4,7 @@ Provides a fully local memory backend using embedded databases:
 - SQLite for memory storage
 - HNSW for vector search
 - FTS5 for text search
-- In-memory graph for relationships
+- SQLite graph for relationships (bounded memory, persistent)
 
 No network calls required, fast startup, suitable for development and
 single-process production deployments.
@@ -12,18 +12,22 @@ single-process production deployments.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from headroom.memory.adapters.graph import InMemoryGraphStore
 from headroom.memory.adapters.graph_models import Entity, Relationship, Subgraph
 from headroom.memory.models import Memory
 from headroom.memory.ports import MemorySearchResult
 
 if TYPE_CHECKING:
+    from headroom.memory.adapters.graph import InMemoryGraphStore
+    from headroom.memory.adapters.sqlite_graph import SQLiteGraphStore
     from headroom.memory.core import HierarchicalMemory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,18 +35,25 @@ class LocalBackendConfig:
     """Configuration for local backend.
 
     Attributes:
-        db_path: Path to the SQLite database file.
+        db_path: Path to the SQLite database file for memories.
+        graph_db_path: Path to the SQLite database file for graph. If None,
+                      derives from db_path (e.g., "memory.db" -> "memory_graph.db").
         embedder_model: Name of the sentence-transformers model for embeddings.
         vector_dimension: Dimension of embedding vectors (must match embedder model).
-        graph_persist: Whether to persist graph to SQLite (not yet implemented).
+        graph_persist: If True, use SQLiteGraphStore (bounded, persistent).
+                      If False, use InMemoryGraphStore (unbounded, volatile).
+        graph_cache_size_kb: SQLite page cache size for graph store in KB.
+                            Higher = more memory, faster queries. Default: 8192 (8MB).
         cache_enabled: Whether to enable memory caching.
         cache_max_size: Maximum number of entries in the cache.
     """
 
     db_path: str = "memory.db"
+    graph_db_path: str | None = None  # Derived from db_path if not specified
     embedder_model: str = "all-MiniLM-L6-v2"
     vector_dimension: int = 384
-    graph_persist: bool = True  # Persist graph to SQLite (future feature)
+    graph_persist: bool = True  # Use SQLiteGraphStore (bounded, persistent)
+    graph_cache_size_kb: int = 8192  # 8MB default
     cache_enabled: bool = True
     cache_max_size: int = 1000
 
@@ -97,13 +108,14 @@ class LocalBackend:
         self._config = config or LocalBackendConfig()
         self._initialized = False
         self._hierarchical_memory: HierarchicalMemory | None = None
-        self._graph: InMemoryGraphStore | None = None
+        self._graph: InMemoryGraphStore | SQLiteGraphStore | None = None
 
     async def _ensure_initialized(self) -> None:
         """Ensure the backend is initialized with all components.
 
-        Creates the HierarchicalMemory system and InMemoryGraphStore
-        on first use.
+        Creates the HierarchicalMemory system and graph store on first use.
+        Uses SQLiteGraphStore (bounded, persistent) when graph_persist=True,
+        or InMemoryGraphStore (unbounded, volatile) when graph_persist=False.
         """
         if not self._initialized:
             from headroom.memory import HierarchicalMemory, MemoryConfig
@@ -117,7 +129,33 @@ class LocalBackend:
             )
 
             self._hierarchical_memory = await HierarchicalMemory.create(mem_config)
-            self._graph = InMemoryGraphStore()
+
+            # Choose graph store based on config
+            if self._config.graph_persist:
+                from headroom.memory.adapters.sqlite_graph import SQLiteGraphStore
+
+                # Derive graph db path from main db path if not specified
+                if self._config.graph_db_path:
+                    graph_db_path = self._config.graph_db_path
+                else:
+                    # "memory.db" -> "memory_graph.db"
+                    db_path = Path(self._config.db_path)
+                    graph_db_path = str(db_path.parent / f"{db_path.stem}_graph{db_path.suffix}")
+
+                self._graph = SQLiteGraphStore(
+                    db_path=graph_db_path,
+                    page_cache_size_kb=self._config.graph_cache_size_kb,
+                )
+                logger.info(
+                    f"LocalBackend: Using SQLiteGraphStore at {graph_db_path} "
+                    f"(cache: {self._config.graph_cache_size_kb}KB)"
+                )
+            else:
+                from headroom.memory.adapters.graph import InMemoryGraphStore
+
+                self._graph = InMemoryGraphStore()
+                logger.info("LocalBackend: Using InMemoryGraphStore (unbounded)")
+
             self._initialized = True
 
     # =========================================================================
@@ -520,7 +558,7 @@ class LocalBackend:
         """Whether this backend supports knowledge graph operations.
 
         Returns:
-            True, as this backend uses InMemoryGraphStore.
+            True, as this backend uses SQLiteGraphStore (default) or InMemoryGraphStore.
         """
         return True
 
@@ -546,11 +584,12 @@ class LocalBackend:
     # Graph Operations
     # =========================================================================
 
-    async def get_graph(self) -> InMemoryGraphStore:
+    async def get_graph(self) -> InMemoryGraphStore | SQLiteGraphStore:
         """Get the underlying graph store.
 
         Returns:
-            The InMemoryGraphStore instance.
+            The graph store instance (SQLiteGraphStore if graph_persist=True,
+            InMemoryGraphStore otherwise).
         """
         await self._ensure_initialized()
         assert self._graph is not None
