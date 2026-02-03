@@ -1564,7 +1564,7 @@ class HeadroomProxy:
 
         # Count original tokens
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
+        original_tokens = tokenizer.count_messages(messages)
 
         # Apply optimization
         transforms_applied = []
@@ -1583,9 +1583,9 @@ class HeadroomProxy:
                 if result.messages != messages:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
-                    optimized_tokens = sum(
-                        tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
-                    )
+                    # Use pipeline's token counts for consistency with pipeline logs
+                    original_tokens = result.tokens_before
+                    optimized_tokens = result.tokens_after
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
 
@@ -2219,11 +2219,6 @@ class HeadroomProxy:
                 compressed_requests.append(batch_req)
                 continue
 
-            # Count original tokens
-            tokenizer = get_tokenizer(model)
-            original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
-            total_original_tokens += original_tokens
-
             # Apply optimization
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
@@ -2234,9 +2229,10 @@ class HeadroomProxy:
                 )
 
                 optimized_messages = result.messages
-                optimized_tokens = sum(
-                    tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
-                )
+                # Use pipeline's token counts for consistency with pipeline logs
+                original_tokens = result.tokens_before
+                optimized_tokens = result.tokens_after
+                total_original_tokens += original_tokens
                 total_optimized_tokens += optimized_tokens
                 tokens_saved = original_tokens - optimized_tokens
                 total_tokens_saved += tokens_saved
@@ -2667,11 +2663,6 @@ class HeadroomProxy:
                 compressed_requests.append(batch_req)
                 continue
 
-            # Count original tokens
-            tokenizer = get_tokenizer(model)
-            original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
-            total_original_tokens += original_tokens
-
             # Apply optimization
             try:
                 # Default context limit for most models
@@ -2685,9 +2676,10 @@ class HeadroomProxy:
                 )
 
                 optimized_messages = result.messages
-                optimized_tokens = sum(
-                    tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
-                )
+                # Use pipeline's token counts for consistency with pipeline logs
+                original_tokens = result.tokens_before
+                optimized_tokens = result.tokens_after
+                total_original_tokens += original_tokens
                 total_optimized_tokens += optimized_tokens
                 tokens_saved = original_tokens - optimized_tokens
                 total_tokens_saved += tokens_saved
@@ -3971,7 +3963,7 @@ class HeadroomProxy:
 
         # Token counting
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
+        original_tokens = tokenizer.count_messages(messages)
 
         # Optimization
         transforms_applied = []
@@ -3989,9 +3981,9 @@ class HeadroomProxy:
                 if result.messages != messages:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
-                    optimized_tokens = sum(
-                        tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
-                    )
+                    # Use pipeline's token counts for consistency with pipeline logs
+                    original_tokens = result.tokens_before
+                    optimized_tokens = result.tokens_after
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
 
@@ -4476,12 +4468,6 @@ class HeadroomProxy:
                     total_requests += 1
                     continue
 
-                # Count original tokens
-                original_tokens = sum(
-                    tokenizer.count_text(str(m.get("content", ""))) for m in messages
-                )
-                total_original_tokens += original_tokens
-
                 # Compress messages using the OpenAI pipeline
                 if self.config.optimize:
                     try:
@@ -4492,16 +4478,20 @@ class HeadroomProxy:
                             model_limit=context_limit,
                         )
                         compressed_messages = result.messages
+                        # Use pipeline's token counts for consistency with pipeline logs
+                        original_tokens = result.tokens_before
+                        compressed_tokens = result.tokens_after
                     except Exception as e:
                         logger.warning(f"[{request_id}] Compression failed for line {i}: {e}")
                         compressed_messages = messages
+                        original_tokens = tokenizer.count_messages(messages)
+                        compressed_tokens = original_tokens
                 else:
                     compressed_messages = messages
+                    original_tokens = tokenizer.count_messages(messages)
+                    compressed_tokens = original_tokens
 
-                # Count compressed tokens
-                compressed_tokens = sum(
-                    tokenizer.count_text(str(m.get("content", ""))) for m in compressed_messages
-                )
+                total_original_tokens += original_tokens
                 total_compressed_tokens += compressed_tokens
                 tokens_saved = original_tokens - compressed_tokens
 
@@ -4758,7 +4748,7 @@ class HeadroomProxy:
 
         # Token counting on converted messages
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
+        original_tokens = tokenizer.count_messages(messages)
 
         # Note: We pass through to OpenAI without optimization for now
         # The Responses API has different semantics that may not work well with compression
@@ -4974,7 +4964,7 @@ class HeadroomProxy:
 
         # Token counting
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
+        original_tokens = tokenizer.count_messages(messages)
 
         # Optimization
         transforms_applied: list[str] = []
@@ -4993,9 +4983,9 @@ class HeadroomProxy:
                 if result.messages != messages:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
-                    optimized_tokens = sum(
-                        tokenizer.count_text(str(m.get("content", ""))) for m in optimized_messages
-                    )
+                    # Use pipeline's token counts for consistency with pipeline logs
+                    original_tokens = result.tokens_before
+                    optimized_tokens = result.tokens_after
             except Exception as e:
                 logger.warning(f"[{request_id}] Gemini optimization failed: {e}")
 
@@ -5268,7 +5258,7 @@ class HeadroomProxy:
 
         # Token counting (original)
         tokenizer = get_tokenizer(model)
-        original_tokens = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
+        original_tokens = tokenizer.count_messages(messages)
 
         # Apply compression using the same pipeline as generateContent
         transforms_applied: list[str] = []
