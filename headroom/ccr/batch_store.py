@@ -221,17 +221,22 @@ class BatchContextStore:
 
         logger.debug(f"Cleaned up {to_remove} oldest batch contexts")
 
-    def stats(self) -> dict[str, Any]:
-        """Get store statistics."""
-        return {
-            "total_contexts": len(self._contexts),
-            "max_contexts": self._max_contexts,
-            "ttl_seconds": self._ttl,
-            "providers": self._count_by_provider(),
-        }
+    async def stats(self) -> dict[str, Any]:
+        """Get store statistics.
 
-    def _count_by_provider(self) -> dict[str, int]:
-        """Count contexts by provider."""
+        Thread-safe: acquires lock before accessing contexts dict to prevent
+        RuntimeError from concurrent modification during iteration.
+        """
+        async with self._lock:
+            return {
+                "total_contexts": len(self._contexts),
+                "max_contexts": self._max_contexts,
+                "ttl_seconds": self._ttl,
+                "providers": self._count_by_provider_locked(),
+            }
+
+    def _count_by_provider_locked(self) -> dict[str, int]:
+        """Count contexts by provider. Must be called with lock held."""
         counts: dict[str, int] = {}
         for ctx in self._contexts.values():
             counts[ctx.provider] = counts.get(ctx.provider, 0) + 1
@@ -240,6 +245,9 @@ class BatchContextStore:
     def get_memory_stats(self) -> ComponentStats:
         """Get memory statistics for the MemoryTracker.
 
+        Thread-safe: takes a snapshot of contexts dict to prevent RuntimeError
+        from concurrent modification during iteration. Dict copy is atomic in CPython.
+
         Returns:
             ComponentStats with current memory usage.
         """
@@ -247,10 +255,14 @@ class BatchContextStore:
 
         from ..memory.tracker import ComponentStats
 
+        # Take atomic snapshot to prevent RuntimeError during iteration
+        # dict.copy() is atomic in CPython due to GIL
+        contexts_snapshot = self._contexts.copy()
+
         # Calculate size
         size_bytes = sys.getsizeof(self._contexts)
 
-        for batch_id, ctx in self._contexts.items():
+        for batch_id, ctx in contexts_snapshot.items():
             size_bytes += len(batch_id)
             size_bytes += sys.getsizeof(ctx)
 

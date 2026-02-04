@@ -203,13 +203,17 @@ class CCRToolInjector:
     # - Generic: any [... compressed ... hash=xxx] pattern
     _marker_patterns: list[re.Pattern] = field(
         default_factory=lambda: [
+            # All patterns require exactly 24 hex characters for hash validation
+            # CCR uses SHA256 truncated to 24 hex chars (96 bits) for collision resistance
+            # Requiring exact length prevents hash spoofing attacks with shorter hashes
+            #
             # Standard format: [N <type> compressed to M. Retrieve more: hash=xxx]
             # Matches items, lines, matches, or any other type
-            re.compile(r"\[(\d+) \w+ compressed to (\d+)\. Retrieve more: hash=([a-f0-9]+)\]"),
+            re.compile(r"\[(\d+) \w+ compressed to (\d+)\. Retrieve more: hash=([a-f0-9]{24})\]"),
             # Legacy format without "to M" or "Retrieve more:" (old TextCompressor)
-            re.compile(r"\[(\d+) \w+ compressed\. hash=([a-f0-9]+)\]"),
-            # Generic fallback: any compression marker with hash (8+ chars)
-            re.compile(r"\[.*?compressed.*?hash=([a-f0-9]{8,})\]", re.IGNORECASE),
+            re.compile(r"\[(\d+) \w+ compressed\. hash=([a-f0-9]{24})\]"),
+            # Generic fallback: any compression marker with hash (exactly 24 chars)
+            re.compile(r"\[.*?compressed.*?hash=([a-f0-9]{24})\]", re.IGNORECASE),
         ]
     )
 
@@ -455,5 +459,14 @@ def parse_tool_call(
 
     hash_key = input_data.get("hash")
     query = input_data.get("query")
+
+    # Validate hash format: must be exactly 24 hex characters
+    # This prevents hash spoofing attacks with malformed hashes
+    if hash_key is not None:
+        if not isinstance(hash_key, str) or len(hash_key) != 24:
+            return None, None
+        # Validate hex characters only
+        if not all(c in "0123456789abcdef" for c in hash_key.lower()):
+            return None, None
 
     return hash_key, query
