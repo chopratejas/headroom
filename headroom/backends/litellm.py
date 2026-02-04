@@ -198,6 +198,15 @@ PROVIDER_REGISTRY: dict[str, ProviderConfig] = {
         uses_region=True,
         env_vars=["AZURE_API_KEY", "AZURE_API_BASE"],
     ),
+    "databricks": ProviderConfig(
+        name="databricks",
+        display_name="Databricks",
+        model_map={},  # Pass through - Databricks uses custom model names
+        pass_through=True,
+        uses_region=False,
+        env_vars=["DATABRICKS_API_KEY", "DATABRICKS_API_BASE"],
+        model_format_hint="databricks-meta-llama-3-1-70b-instruct, databricks-dbrx-instruct, etc.",
+    ),
 }
 
 
@@ -599,3 +608,134 @@ class LiteLLMBackend(Backend):
     async def close(self) -> None:  # noqa: B027
         """Clean up (no-op for LiteLLM)."""
         pass
+
+    async def send_openai_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> BackendResponse:
+        """Send OpenAI-format message via LiteLLM.
+
+        Unlike send_message(), this takes OpenAI-format input and returns
+        OpenAI-format output (no Anthropic conversion).
+
+        Args:
+            body: OpenAI chat completion request body
+            headers: Request headers (ignored, auth from env vars)
+
+        Returns:
+            BackendResponse with OpenAI-format body
+        """
+        original_model = body.get("model", "gpt-4")
+        litellm_model = self.map_model_id(original_model)
+
+        try:
+            # Build kwargs - messages already in OpenAI format
+            kwargs: dict[str, Any] = {
+                "model": litellm_model,
+                "messages": body.get("messages", []),
+            }
+
+            # Pass through OpenAI parameters
+            for param in [
+                "max_tokens",
+                "temperature",
+                "top_p",
+                "stop",
+                "tools",
+                "tool_choice",
+                "response_format",
+                "seed",
+                "n",
+            ]:
+                if param in body:
+                    kwargs[param] = body[param]
+
+            # Provider-specific config
+            if self.provider == "bedrock" and self.region:
+                kwargs["aws_region_name"] = self.region
+            elif self.provider == "databricks":
+                # Databricks uses env vars for auth
+                pass
+
+            logger.debug(f"LiteLLM OpenAI request: model={litellm_model}")
+
+            # Make the call
+            response = await acompletion(**kwargs)
+
+            # Convert ModelResponse to dict (OpenAI format)
+            response_dict = {
+                "id": response.id,
+                "object": "chat.completion",
+                "created": response.created,
+                "model": original_model,
+                "choices": [
+                    {
+                        "index": c.index,
+                        "message": {
+                            "role": c.message.role,
+                            "content": c.message.content,
+                            **(
+                                {
+                                    "tool_calls": [
+                                        {
+                                            "id": tc.id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": tc.function.name,
+                                                "arguments": tc.function.arguments,
+                                            },
+                                        }
+                                        for tc in c.message.tool_calls
+                                    ]
+                                }
+                                if c.message.tool_calls
+                                else {}
+                            ),
+                        },
+                        "finish_reason": c.finish_reason,
+                    }
+                    for c in response.choices
+                ],
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                },
+            }
+
+            return BackendResponse(
+                body=response_dict,
+                status_code=200,
+                headers={"content-type": "application/json"},
+            )
+
+        except Exception as e:
+            logger.error(f"LiteLLM OpenAI error: {e}")
+
+            # Map to OpenAI error format
+            error_type = "api_error"
+            status_code = 500
+
+            error_str = str(e).lower()
+            if "authentication" in error_str or "credentials" in error_str:
+                error_type = "invalid_api_key"
+                status_code = 401
+            elif "rate" in error_str or "limit" in error_str:
+                error_type = "rate_limit_exceeded"
+                status_code = 429
+            elif "not found" in error_str:
+                error_type = "model_not_found"
+                status_code = 404
+
+            return BackendResponse(
+                body={
+                    "error": {
+                        "message": str(e),
+                        "type": error_type,
+                        "code": error_type,
+                    }
+                },
+                status_code=status_code,
+                error=str(e),
+            )

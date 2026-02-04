@@ -45,9 +45,44 @@ from typing import Any
 from ..config import DEFAULT_EXCLUDE_TOOLS, TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
-from .content_detector import ContentType, detect_content_type
+from .content_detector import ContentType, DetectionResult, detect_content_type
 
 logger = logging.getLogger(__name__)
+
+# Use Magika-based detector if available, fallback to regex
+_magika_detector = None
+_USE_MAGIKA = False
+try:
+    from ..compression.detector import get_detector
+
+    _magika_detector = get_detector(prefer_magika=True)
+    _USE_MAGIKA = True
+    logger.info("ContentRouter: Using Magika ML-based content detection")
+except ImportError:
+    logger.debug("Magika not available, using regex-based detection")
+
+
+def _detect_content(content: str) -> DetectionResult:
+    """Detect content type using Magika if available, else regex fallback."""
+    if _USE_MAGIKA and _magika_detector:
+        result = _magika_detector.detect(content)
+        # Map Magika ContentType to router's expected format
+        type_map = {
+            "json": ContentType.JSON_ARRAY,
+            "code": ContentType.SOURCE_CODE,
+            "log": ContentType.BUILD_OUTPUT,
+            "markdown": ContentType.PLAIN_TEXT,
+            "text": ContentType.PLAIN_TEXT,
+            "unknown": ContentType.PLAIN_TEXT,
+        }
+        mapped_type = type_map.get(result.content_type.value, ContentType.PLAIN_TEXT)
+        return DetectionResult(
+            content_type=mapped_type,
+            confidence=result.confidence,
+            metadata={"language": result.language, "raw_label": result.raw_label},
+        )
+    else:
+        return detect_content_type(content)
 
 
 def _create_content_signature(
@@ -595,7 +630,7 @@ class ContentRouter(Transform):
             return CompressionStrategy.MIXED
 
         # 2. Detect content type from content itself
-        detection = detect_content_type(content)
+        detection = _detect_content(content)
         return self._strategy_from_detection(detection)
 
     def _strategy_from_detection(self, detection: Any) -> CompressionStrategy:
@@ -1183,7 +1218,7 @@ class ContentRouter(Transform):
                 continue
 
             # Detect content type for protection decisions
-            detection = detect_content_type(content)
+            detection = _detect_content(content)
             is_code = detection.content_type == ContentType.SOURCE_CODE
 
             # Protection 2: Don't compress recent CODE
