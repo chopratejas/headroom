@@ -54,7 +54,7 @@ class TestCCRToolInjector:
             {"role": "user", "content": "Find errors"},
             {
                 "role": "tool",
-                "content": '[{"id": 1}]\n[100 items compressed to 10. Retrieve more: hash=abc123def456]',
+                "content": '[{"id": 1}]\n[100 items compressed to 10. Retrieve more: hash=abc123def456abc123def456]',
             },
         ]
 
@@ -62,7 +62,7 @@ class TestCCRToolInjector:
         hashes = injector.scan_for_markers(messages)
 
         assert len(hashes) == 1
-        assert "abc123def456" in hashes
+        assert "abc123def456abc123def456" in hashes
         assert injector.has_compressed_content
 
     def test_scan_for_markers_multiple_hashes(self):
@@ -70,11 +70,11 @@ class TestCCRToolInjector:
         messages = [
             {
                 "role": "tool",
-                "content": "[50 items compressed to 5. Retrieve more: hash=aaa111111111]",
+                "content": "[50 items compressed to 5. Retrieve more: hash=aaa111111111aaa111111111]",
             },
             {
                 "role": "tool",
-                "content": "[200 items compressed to 20. Retrieve more: hash=bbb222222222]",
+                "content": "[200 items compressed to 20. Retrieve more: hash=bbb222222222bbb222222222]",
             },
         ]
 
@@ -82,19 +82,19 @@ class TestCCRToolInjector:
         hashes = injector.scan_for_markers(messages)
 
         assert len(hashes) == 2
-        assert "aaa111111111" in hashes
-        assert "bbb222222222" in hashes
+        assert "aaa111111111aaa111111111" in hashes
+        assert "bbb222222222bbb222222222" in hashes
 
     def test_scan_no_duplicates(self):
         """Scanner deduplicates repeated hashes."""
         messages = [
             {
                 "role": "tool",
-                "content": "[100 items compressed to 10. Retrieve more: hash=aabbcc123456]",
+                "content": "[100 items compressed to 10. Retrieve more: hash=aabbcc123456aabbcc123456]",
             },
             {
                 "role": "assistant",
-                "content": "I see [100 items compressed to 10. Retrieve more: hash=aabbcc123456]",
+                "content": "I see [100 items compressed to 10. Retrieve more: hash=aabbcc123456aabbcc123456]",
             },
         ]
 
@@ -117,7 +117,7 @@ class TestCCRToolInjector:
                 "content": [
                     {
                         "type": "tool_result",
-                        "content": "[100 items compressed to 10. Retrieve more: hash=b10cf0a2b3c4]",
+                        "content": "[100 items compressed to 10. Retrieve more: hash=b10cf0a2b3c4b10cf0a2b3c4]",
                     },
                 ],
             },
@@ -126,14 +126,14 @@ class TestCCRToolInjector:
         injector = CCRToolInjector()
         hashes = injector.scan_for_markers(messages)
 
-        assert "b10cf0a2b3c4" in hashes
+        assert "b10cf0a2b3c4b10cf0a2b3c4" in hashes
 
     def test_inject_tool_when_compression_detected(self):
         """Tool is injected when compression markers are found."""
         messages = [
             {
                 "role": "tool",
-                "content": "[100 items compressed to 10. Retrieve more: hash=abc123def456]",
+                "content": "[100 items compressed to 10. Retrieve more: hash=abc123def456abc123def456]",
             },
         ]
 
@@ -150,7 +150,7 @@ class TestCCRToolInjector:
         messages = [
             {
                 "role": "tool",
-                "content": "[100 items compressed to 10. Retrieve more: hash=e1e2e3f4f5f6]",
+                "content": "[100 items compressed to 10. Retrieve more: hash=e1e2e3f4f5f6e1e2e3f4f5f6]",
             },
         ]
         existing_tools = [{"name": "other_tool", "input_schema": {}}]
@@ -169,7 +169,7 @@ class TestCCRToolInjector:
         messages = [
             {
                 "role": "tool",
-                "content": "[100 items compressed to 10. Retrieve more: hash=aac123456789]",
+                "content": "[100 items compressed to 10. Retrieve more: hash=aac123456789aac123456789]",
             },
         ]
         # Tool already present (e.g., from MCP)
@@ -187,7 +187,7 @@ class TestCCRToolInjector:
         messages = [
             {
                 "role": "tool",
-                "content": "[100 items compressed to 10. Retrieve more: hash=bbc456789012]",
+                "content": "[100 items compressed to 10. Retrieve more: hash=bbc456789012bbc456789012]",
             },
         ]
         # OpenAI format tool already present
@@ -222,7 +222,7 @@ class TestCCRToolInjector:
             {"role": "system", "content": "You are helpful."},
             {
                 "role": "tool",
-                "content": "[100 items compressed to 10. Retrieve more: hash=abc123def456]",
+                "content": "[100 items compressed to 10. Retrieve more: hash=abc123def456abc123def456]",
             },
         ]
 
@@ -231,7 +231,7 @@ class TestCCRToolInjector:
         updated = injector.inject_into_system_message(messages)
 
         assert "Compressed Context Available" in updated[0]["content"]
-        assert "abc123def456" in updated[0]["content"]
+        assert "abc123def456abc123def456" in updated[0]["content"]
 
     def test_process_request_full_flow(self):
         """process_request handles complete injection flow."""
@@ -240,7 +240,7 @@ class TestCCRToolInjector:
             {"role": "user", "content": "Search for errors"},
             {
                 "role": "tool",
-                "content": "[500 items compressed to 25. Retrieve more: hash=f011f10abcde]",
+                "content": "[500 items compressed to 25. Retrieve more: hash=f011f10abcdef011f10abcde]",
             },
         ]
 
@@ -266,12 +266,12 @@ class TestParseToolCall:
         tool_call = {
             "id": "toolu_123",
             "name": CCR_TOOL_NAME,
-            "input": {"hash": "abc123", "query": "errors"},
+            "input": {"hash": "abc123def456abc123def456", "query": "errors"},
         }
 
         hash_key, query = parse_tool_call(tool_call, "anthropic")
 
-        assert hash_key == "abc123"
+        assert hash_key == "abc123def456abc123def456"
         assert query == "errors"
 
     def test_parse_openai_format(self):
@@ -280,13 +280,13 @@ class TestParseToolCall:
             "id": "call_123",
             "function": {
                 "name": CCR_TOOL_NAME,
-                "arguments": json.dumps({"hash": "def456", "query": None}),
+                "arguments": json.dumps({"hash": "def456abc123def456abc123", "query": None}),
             },
         }
 
         hash_key, query = parse_tool_call(tool_call, "openai")
 
-        assert hash_key == "def456"
+        assert hash_key == "def456abc123def456abc123"
         assert query is None
 
     def test_parse_non_ccr_tool(self):
@@ -314,6 +314,65 @@ class TestParseToolCall:
         hash_key, query = parse_tool_call(tool_call, "openai")
 
         assert hash_key is None
+
+
+class TestHashSecurityValidation:
+    """Test hash validation security measures.
+
+    CCR hashes must be exactly 24 hex characters (96 bits of SHA256).
+    This prevents hash spoofing attacks with shorter or malformed hashes.
+    """
+
+    def test_rejects_short_hash(self):
+        """Rejects hash that's too short (potential spoofing attack)."""
+        tool_call = {
+            "name": CCR_TOOL_NAME,
+            "input": {"hash": "abc123"},  # Only 6 chars
+        }
+
+        hash_key, query = parse_tool_call(tool_call, "anthropic")
+        assert hash_key is None  # Rejected
+
+    def test_rejects_long_hash(self):
+        """Rejects hash that's too long."""
+        tool_call = {
+            "name": CCR_TOOL_NAME,
+            "input": {"hash": "abc123def456abc123def456abc123"},  # 30 chars
+        }
+
+        hash_key, query = parse_tool_call(tool_call, "anthropic")
+        assert hash_key is None  # Rejected
+
+    def test_rejects_non_hex_characters(self):
+        """Rejects hash with non-hex characters."""
+        tool_call = {
+            "name": CCR_TOOL_NAME,
+            "input": {"hash": "abc123xyz456abc123xyz456"},  # Contains xyz
+        }
+
+        hash_key, query = parse_tool_call(tool_call, "anthropic")
+        assert hash_key is None  # Rejected
+
+    def test_accepts_valid_24_char_hash(self):
+        """Accepts properly formatted 24-char hex hash."""
+        tool_call = {
+            "name": CCR_TOOL_NAME,
+            "input": {"hash": "abc123def456abc123def456"},
+        }
+
+        hash_key, query = parse_tool_call(tool_call, "anthropic")
+        assert hash_key == "abc123def456abc123def456"
+
+    def test_accepts_uppercase_hex(self):
+        """Accepts uppercase hex characters (normalized to lowercase internally)."""
+        tool_call = {
+            "name": CCR_TOOL_NAME,
+            "input": {"hash": "ABC123DEF456ABC123DEF456"},
+        }
+
+        hash_key, query = parse_tool_call(tool_call, "anthropic")
+        # Note: validation accepts uppercase since we use .lower() for hex check
+        assert hash_key == "ABC123DEF456ABC123DEF456"
 
 
 class TestSystemInstructions:
@@ -364,7 +423,7 @@ class TestAlternativeMarkerFormats:
         messages = [
             {
                 "role": "assistant",
-                "content": "Build output:\n[500 lines compressed to 50. Retrieve more: hash=aabbccddeeff00112233]",
+                "content": "Build output:\n[500 lines compressed to 50. Retrieve more: hash=aabbccddeeff001122334455]",
             },
         ]
 
@@ -372,14 +431,14 @@ class TestAlternativeMarkerFormats:
         hashes = injector.scan_for_markers(messages)
 
         assert len(hashes) == 1
-        assert "aabbccddeeff00112233" in hashes
+        assert "aabbccddeeff001122334455" in hashes
 
     def test_searchcompressor_format(self):
         """Detects SearchCompressor marker format (matches)."""
         messages = [
             {
                 "role": "assistant",
-                "content": "Search results:\n[100 matches compressed to 10. Retrieve more: hash=1122334455667788]",
+                "content": "Search results:\n[100 matches compressed to 10. Retrieve more: hash=112233445566778899001122]",
             },
         ]
 
@@ -387,22 +446,22 @@ class TestAlternativeMarkerFormats:
         hashes = injector.scan_for_markers(messages)
 
         assert len(hashes) == 1
-        assert "1122334455667788" in hashes
+        assert "112233445566778899001122" in hashes
 
     def test_mixed_compressor_formats(self):
         """Detects multiple marker formats in same conversation."""
         messages = [
             {
                 "role": "assistant",
-                "content": "Search results:\n[50 matches compressed to 5. Retrieve more: hash=aaaa11111111]",
+                "content": "Search results:\n[50 matches compressed to 5. Retrieve more: hash=aaaa11111111aaaa11111111]",
             },
             {
                 "role": "assistant",
-                "content": "Build logs:\n[200 lines compressed to 20. Retrieve more: hash=bbbb22222222]",
+                "content": "Build logs:\n[200 lines compressed to 20. Retrieve more: hash=bbbb22222222bbbb22222222]",
             },
             {
                 "role": "assistant",
-                "content": "Database:\n[1000 items compressed to 100. Retrieve more: hash=cccc33333333]",
+                "content": "Database:\n[1000 items compressed to 100. Retrieve more: hash=cccc33333333cccc33333333]",
             },
         ]
 
@@ -410,9 +469,9 @@ class TestAlternativeMarkerFormats:
         hashes = injector.scan_for_markers(messages)
 
         assert len(hashes) == 3
-        assert "aaaa11111111" in hashes
-        assert "bbbb22222222" in hashes
-        assert "cccc33333333" in hashes
+        assert "aaaa11111111aaaa11111111" in hashes
+        assert "bbbb22222222bbbb22222222" in hashes
+        assert "cccc33333333cccc33333333" in hashes
 
     def test_generic_compressed_marker(self):
         """Detects generic compression markers via fallback pattern."""

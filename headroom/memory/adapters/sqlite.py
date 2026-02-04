@@ -10,6 +10,7 @@ Provides persistent storage for Memory objects with full support for:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,27 @@ import numpy as np
 
 from ..models import Memory, ScopeLevel
 from ..ports import MemoryFilter
+
+# Regex pattern for safe metadata keys: alphanumeric, underscores, hyphens only
+# This prevents JSON path injection attacks via malicious key names
+_SAFE_METADATA_KEY_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_\-]*$")
+
+
+def _validate_metadata_key(key: str) -> bool:
+    """Validate that a metadata key is safe for use in JSON path expressions.
+
+    Prevents JSON path injection by ensuring keys contain only safe characters.
+    Valid keys: start with letter or underscore, contain only alphanumeric, underscore, hyphen.
+
+    Args:
+        key: The metadata key to validate.
+
+    Returns:
+        True if the key is safe, False otherwise.
+    """
+    if not key or len(key) > 255:
+        return False
+    return _SAFE_METADATA_KEY_PATTERN.match(key) is not None
 
 
 class SQLiteMemoryStore:
@@ -481,9 +503,14 @@ class SQLiteMemoryStore:
             else:
                 conditions.append("promoted_from IS NULL")
 
-        # Metadata filtering
+        # Metadata filtering with key validation to prevent JSON path injection
         if filter.metadata_filters:
             for key, value in filter.metadata_filters.items():
+                # Validate key to prevent JSON path injection attacks
+                # Invalid keys are silently skipped to avoid breaking legitimate queries
+                # while blocking malicious attempts like "'] OR 1=1--"
+                if not _validate_metadata_key(key):
+                    continue
                 # Use JSON extraction for metadata filtering
                 conditions.append(f"json_extract(metadata, '$.{key}') = ?")
                 params.append(json.dumps(value) if not isinstance(value, str) else value)
@@ -523,12 +550,14 @@ class SQLiteMemoryStore:
             ORDER BY {order_column} {order_direction}
         """
 
-        # Add pagination
+        # Add pagination using parameterized queries to prevent injection
         if filter.limit is not None:
-            query += f" LIMIT {filter.limit}"
+            query += " LIMIT ?"
+            params.append(filter.limit)
 
         if filter.offset > 0:
-            query += f" OFFSET {filter.offset}"
+            query += " OFFSET ?"
+            params.append(filter.offset)
 
         with self._get_conn() as conn:
             cursor = conn.execute(query, params)

@@ -155,7 +155,7 @@ class TestCCRToolCallParsing:
                     "type": "tool_use",
                     "id": "tool_123",
                     "name": CCR_TOOL_NAME,
-                    "input": {"hash": "abc123"},
+                    "input": {"hash": "abc123def456abc123def456"},
                 }
             ]
         }
@@ -164,7 +164,7 @@ class TestCCRToolCallParsing:
 
         assert len(ccr_calls) == 1
         assert ccr_calls[0].tool_call_id == "tool_123"
-        assert ccr_calls[0].hash_key == "abc123"
+        assert ccr_calls[0].hash_key == "abc123def456abc123def456"
         assert ccr_calls[0].query is None
         assert len(other_calls) == 0
 
@@ -178,7 +178,7 @@ class TestCCRToolCallParsing:
                     "type": "tool_use",
                     "id": "tool_456",
                     "name": CCR_TOOL_NAME,
-                    "input": {"hash": "def456", "query": "authentication error"},
+                    "input": {"hash": "def456abc123def456abc123", "query": "authentication error"},
                 }
             ]
         }
@@ -186,7 +186,7 @@ class TestCCRToolCallParsing:
         ccr_calls, other_calls = handler._parse_ccr_tool_calls(response, "anthropic")
 
         assert len(ccr_calls) == 1
-        assert ccr_calls[0].hash_key == "def456"
+        assert ccr_calls[0].hash_key == "def456abc123def456abc123"
         assert ccr_calls[0].query == "authentication error"
 
     def test_parse_mixed_tool_calls(self):
@@ -199,7 +199,7 @@ class TestCCRToolCallParsing:
                     "type": "tool_use",
                     "id": "tool_1",
                     "name": CCR_TOOL_NAME,
-                    "input": {"hash": "abc123"},
+                    "input": {"hash": "abc123def456abc123def456"},
                 },
                 {
                     "type": "tool_use",
