@@ -117,6 +117,29 @@ class Backend(ABC):
         """
         ...
 
+    async def send_openai_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> BackendResponse:
+        """Send an OpenAI-format message request.
+
+        Unlike send_message(), this takes OpenAI-format input and returns
+        OpenAI-format output (no Anthropic conversion). Optional - only
+        implemented by backends that support OpenAI-compatible APIs.
+
+        Args:
+            body: Request body in OpenAI chat completion format.
+            headers: Request headers.
+
+        Returns:
+            BackendResponse with body in OpenAI chat completion format.
+
+        Raises:
+            NotImplementedError: If backend doesn't support OpenAI format.
+        """
+        raise NotImplementedError(f"{self.name} backend does not support OpenAI format")
+
     async def close(self) -> None:  # noqa: B027
         """Clean up resources (e.g., close HTTP clients)."""
         pass

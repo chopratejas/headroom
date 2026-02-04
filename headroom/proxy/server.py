@@ -4015,6 +4015,60 @@ class HeadroomProxy:
         body["messages"] = optimized_messages
         if tools is not None:
             body["tools"] = tools
+
+        # Route through LiteLLM backend if configured (Databricks, Bedrock, etc.)
+        if self.anthropic_backend is not None:
+            try:
+                # Use the backend's OpenAI-format method
+                backend_response = await self.anthropic_backend.send_openai_message(body, headers)
+
+                if backend_response.error:
+                    return JSONResponse(
+                        status_code=backend_response.status_code,
+                        content=backend_response.body,
+                    )
+
+                # Track metrics
+                total_latency = (time.time() - start_time) * 1000
+                usage = backend_response.body.get("usage", {})
+                output_tokens = usage.get("completion_tokens", 0)
+                total_input_tokens = usage.get("prompt_tokens", optimized_tokens)
+
+                await self.metrics.record_request(
+                    provider=self.anthropic_backend.name,
+                    model=model,
+                    input_tokens=total_input_tokens,
+                    output_tokens=output_tokens,
+                    tokens_saved=tokens_saved,
+                    latency_ms=total_latency,
+                    cached=False,
+                    overhead_ms=optimization_latency,
+                )
+
+                if tokens_saved > 0:
+                    logger.info(
+                        f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
+                        f"(saved {tokens_saved:,} tokens) via {self.anthropic_backend.name}"
+                    )
+
+                return JSONResponse(
+                    status_code=backend_response.status_code,
+                    content=backend_response.body,
+                )
+            except Exception as e:
+                logger.error(f"[{request_id}] Backend error: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "error": {
+                            "message": str(e),
+                            "type": "api_error",
+                            "code": "backend_error",
+                        }
+                    },
+                )
+
+        # Direct OpenAI API (no backend configured)
         url = f"{self.OPENAI_API_URL}/v1/chat/completions"
 
         try:
@@ -4195,6 +4249,59 @@ class HeadroomProxy:
             status_code=response.status_code,
             headers=response_headers,
         )
+
+    # =========================================================================
+    # Databricks Native API
+    # =========================================================================
+
+    async def handle_databricks_invocations(
+        self,
+        request: Request,
+        model: str,
+    ) -> Response | StreamingResponse:
+        """Handle Databricks native /serving-endpoints/{model}/invocations endpoint.
+
+        This enables using the Databricks CLI directly with Headroom:
+            databricks serving-endpoints query <model> --profile HEADROOM --json '{"messages": [...]}'
+
+        The request/response format is identical to OpenAI chat completions,
+        so we inject the model from the path and delegate to handle_openai_chat.
+        """
+        request_id = await self._next_request_id()
+
+        try:
+            body = await request.json()
+        except Exception as e:
+            logger.error(f"[{request_id}] Failed to parse Databricks request body: {e}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {"message": f"Invalid JSON: {e}", "type": "invalid_request_error"}
+                },
+            )
+
+        # Inject model from path into body (Databricks CLI passes model in URL, not body)
+        body["model"] = model
+
+        logger.info(f"[{request_id}] Databricks invocation: model={model}")
+
+        # Create a new request with the modified body
+        # We reuse the OpenAI chat handler since the format is identical
+        from starlette.requests import Request as StarletteRequest
+
+        # Build new scope with the body already parsed
+        scope = dict(request.scope)
+
+        # Create a simple receive function that returns our modified body
+        body_bytes = json.dumps(body).encode()
+
+        async def receive():
+            return {"type": "http.request", "body": body_bytes}
+
+        modified_request = StarletteRequest(scope, receive)
+
+        # Delegate to the OpenAI chat handler (same format)
+        return await self.handle_openai_chat(modified_request)
 
     # =========================================================================
     # OpenAI Batch API with Compression
@@ -6185,6 +6292,21 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def gemini_count_tokens(request: Request, model: str):
         """Gemini countTokens API with compression applied."""
         return await proxy.handle_gemini_count_tokens(request, model)
+
+    # =========================================================================
+    # Databricks Native Endpoints
+    # =========================================================================
+
+    @app.post("/serving-endpoints/{model}/invocations")
+    async def databricks_invocations(request: Request, model: str):
+        """Databricks native serving endpoint - compatible with Databricks CLI.
+
+        This allows using the Databricks CLI directly with Headroom proxy:
+            databricks serving-endpoints query <model> --profile HEADROOM --json '{"messages": [...]}'
+
+        The request format is identical to OpenAI chat completions.
+        """
+        return await proxy.handle_databricks_invocations(request, model)
 
     # =========================================================================
     # Passthrough Endpoints (no compression needed)
