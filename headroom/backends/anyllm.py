@@ -1,0 +1,476 @@
+"""any-llm backend for Headroom.
+
+Talk to 38+ LLM providers (OpenAI, Mistral, Groq, Ollama, Bedrock, etc.)
+through a single interface. Auth and format translation handled automatically.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections.abc import AsyncIterator
+from typing import Any
+
+from .base import Backend, BackendResponse, StreamEvent
+
+logger = logging.getLogger(__name__)
+
+try:
+    from any_llm import acompletion
+
+    ANYLLM_AVAILABLE = True
+except ImportError:
+    ANYLLM_AVAILABLE = False
+    acompletion = None  # type: ignore
+
+
+class AnyLLMBackend(Backend):
+    """Backend using any-llm for multi-provider support."""
+
+    def __init__(
+        self,
+        provider: str = "openai",
+        api_key: str | None = None,
+        api_base: str | None = None,
+    ):
+        if not ANYLLM_AVAILABLE:
+            raise ImportError(
+                "any-llm-sdk is required for AnyLLMBackend. "
+                "Install with: pip install 'any-llm-sdk[all]'"
+            )
+
+        self.provider = provider.lower()
+        self.api_key = api_key
+        self.api_base = api_base
+
+        logger.info(f"any-llm backend initialized (provider={provider})")
+
+    @property
+    def name(self) -> str:
+        return f"anyllm-{self.provider}"
+
+    def map_model_id(self, model: str) -> str:
+        """Pass through model name - any-llm handles provider-specific naming."""
+        return model
+
+    def supports_model(self, model: str) -> bool:
+        """any-llm supports any model the provider supports."""
+        return True
+
+    def _convert_messages_for_anyllm(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert Anthropic message format to OpenAI/any-llm format."""
+        converted = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if isinstance(content, str):
+                converted.append({"role": role, "content": content})
+                continue
+
+            if isinstance(content, list):
+                text_parts = []
+                has_complex_content = False
+
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") in ("tool_use", "tool_result", "image"):
+                            has_complex_content = True
+                            break
+
+                if not has_complex_content and text_parts:
+                    converted.append({"role": role, "content": "\n".join(text_parts)})
+                else:
+                    openai_content = self._convert_content_blocks(content)
+                    converted.append({"role": role, "content": openai_content})
+
+        return converted
+
+    def _convert_content_blocks(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
+        """Convert Anthropic content blocks to OpenAI format."""
+        openai_blocks = []
+
+        for block in blocks:
+            block_type = block.get("type")
+
+            if block_type == "text":
+                openai_blocks.append({"type": "text", "text": block.get("text", "")})
+
+            elif block_type == "image":
+                source = block.get("source", {})
+                if source.get("type") == "base64":
+                    media_type = source.get("media_type", "image/png")
+                    data = source.get("data", "")
+                    openai_blocks.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{media_type};base64,{data}"},
+                        }
+                    )
+                elif source.get("type") == "url":
+                    openai_blocks.append(
+                        {"type": "image_url", "image_url": {"url": source.get("url", "")}}
+                    )
+
+        if len(openai_blocks) == 1 and openai_blocks[0].get("type") == "text":
+            return openai_blocks[0]["text"]
+
+        return openai_blocks if openai_blocks else ""
+
+    def _to_anthropic_response(
+        self,
+        anyllm_response: Any,
+        original_model: str,
+    ) -> dict[str, Any]:
+        """Convert any-llm/OpenAI response to Anthropic format."""
+        msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+        choice = anyllm_response.choices[0]
+        message = choice.message
+
+        content = []
+        if message.content:
+            content.append({"type": "text", "text": message.content})
+
+        if hasattr(message, "tool_calls") and message.tool_calls:
+            for tc in message.tool_calls:
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "input": tc.function.arguments,
+                    }
+                )
+
+        stop_reason_map = {
+            "stop": "end_turn",
+            "length": "max_tokens",
+            "tool_calls": "tool_use",
+            "content_filter": "end_turn",
+        }
+        finish_reason = getattr(choice, "finish_reason", "stop") or "stop"
+        stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(anyllm_response, "usage") and anyllm_response.usage:
+            usage = {
+                "input_tokens": getattr(anyllm_response.usage, "prompt_tokens", 0) or 0,
+                "output_tokens": getattr(anyllm_response.usage, "completion_tokens", 0) or 0,
+            }
+
+        return {
+            "id": msg_id,
+            "type": "message",
+            "role": "assistant",
+            "content": content,
+            "model": original_model,
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "usage": usage,
+        }
+
+    async def send_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> BackendResponse:
+        """Send message via any-llm."""
+        original_model = body.get("model", "gpt-4o")
+
+        try:
+            messages = self._convert_messages_for_anyllm(body.get("messages", []))
+
+            kwargs: dict[str, Any] = {
+                "model": original_model,
+                "provider": self.provider,
+                "messages": messages,
+                "stream": False,
+            }
+
+            if "max_tokens" in body:
+                kwargs["max_tokens"] = body["max_tokens"]
+            if "temperature" in body:
+                kwargs["temperature"] = body["temperature"]
+            if "top_p" in body:
+                kwargs["top_p"] = body["top_p"]
+            if "stop_sequences" in body:
+                kwargs["stop"] = body["stop_sequences"]
+
+            if "system" in body:
+                system = body["system"]
+                if isinstance(system, str):
+                    kwargs["messages"].insert(0, {"role": "system", "content": system})
+                elif isinstance(system, list):
+                    system_text = " ".join(
+                        s.get("text", "") if isinstance(s, dict) else str(s) for s in system
+                    )
+                    kwargs["messages"].insert(0, {"role": "system", "content": system_text})
+
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.api_base:
+                kwargs["api_base"] = self.api_base
+
+            logger.debug(f"any-llm request: provider={self.provider}, model={original_model}")
+
+            response = await acompletion(**kwargs)
+            anthropic_response = self._to_anthropic_response(response, original_model)
+
+            return BackendResponse(
+                body=anthropic_response,
+                status_code=200,
+                headers={"content-type": "application/json"},
+            )
+
+        except Exception as e:
+            logger.error(f"any-llm error: {e}")
+
+            error_type = "api_error"
+            status_code = 500
+
+            error_str = str(e).lower()
+            if "authentication" in error_str or "api_key" in error_str or "api key" in error_str:
+                error_type = "authentication_error"
+                status_code = 401
+            elif "rate" in error_str or "limit" in error_str:
+                error_type = "rate_limit_error"
+                status_code = 429
+            elif "not found" in error_str or "model" in error_str:
+                error_type = "not_found_error"
+                status_code = 404
+
+            return BackendResponse(
+                body={
+                    "type": "error",
+                    "error": {"type": error_type, "message": str(e)},
+                },
+                status_code=status_code,
+                error=str(e),
+            )
+
+    async def stream_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream message via any-llm."""
+        original_model = body.get("model", "gpt-4o")
+
+        try:
+            messages = self._convert_messages_for_anyllm(body.get("messages", []))
+
+            kwargs: dict[str, Any] = {
+                "model": original_model,
+                "provider": self.provider,
+                "messages": messages,
+                "stream": True,
+            }
+
+            if "max_tokens" in body:
+                kwargs["max_tokens"] = body["max_tokens"]
+            if "temperature" in body:
+                kwargs["temperature"] = body["temperature"]
+            if "system" in body:
+                system = body["system"]
+                if isinstance(system, str):
+                    kwargs["messages"].insert(0, {"role": "system", "content": system})
+
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.api_base:
+                kwargs["api_base"] = self.api_base
+
+            msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+            yield StreamEvent(
+                event_type="message_start",
+                data={
+                    "type": "message_start",
+                    "message": {
+                        "id": msg_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": original_model,
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                    },
+                },
+            )
+
+            yield StreamEvent(
+                event_type="content_block_start",
+                data={
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+
+            response = await acompletion(**kwargs)
+            output_tokens = 0
+
+            async for chunk in response:
+                if hasattr(chunk, "choices") and chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if hasattr(delta, "content") and delta.content:
+                        yield StreamEvent(
+                            event_type="content_block_delta",
+                            data={
+                                "type": "content_block_delta",
+                                "index": 0,
+                                "delta": {"type": "text_delta", "text": delta.content},
+                            },
+                        )
+                        output_tokens += 1
+
+            yield StreamEvent(
+                event_type="content_block_stop",
+                data={"type": "content_block_stop", "index": 0},
+            )
+
+            yield StreamEvent(
+                event_type="message_delta",
+                data={
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "usage": {"output_tokens": output_tokens},
+                },
+            )
+
+            yield StreamEvent(
+                event_type="message_stop",
+                data={"type": "message_stop"},
+            )
+
+        except Exception as e:
+            logger.error(f"any-llm streaming error: {e}")
+            yield StreamEvent(
+                event_type="error",
+                data={
+                    "type": "error",
+                    "error": {"type": "api_error", "message": str(e)},
+                },
+            )
+
+    async def send_openai_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> BackendResponse:
+        """Send OpenAI-format message via any-llm (no conversion)."""
+        original_model = body.get("model", "gpt-4o")
+
+        try:
+            kwargs: dict[str, Any] = {
+                "model": original_model,
+                "provider": self.provider,
+                "messages": body.get("messages", []),
+                "stream": False,
+            }
+
+            for param in [
+                "max_tokens",
+                "temperature",
+                "top_p",
+                "stop",
+                "tools",
+                "tool_choice",
+                "response_format",
+                "seed",
+                "n",
+            ]:
+                if param in body:
+                    kwargs[param] = body[param]
+
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.api_base:
+                kwargs["api_base"] = self.api_base
+
+            logger.debug(f"any-llm OpenAI request: provider={self.provider}, model={original_model}")
+
+            response = await acompletion(**kwargs)
+
+            response_dict = {
+                "id": response.id,
+                "object": "chat.completion",
+                "created": response.created,
+                "model": original_model,
+                "choices": [
+                    {
+                        "index": c.index,
+                        "message": {
+                            "role": c.message.role,
+                            "content": c.message.content,
+                            **(
+                                {
+                                    "tool_calls": [
+                                        {
+                                            "id": tc.id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": tc.function.name,
+                                                "arguments": tc.function.arguments,
+                                            },
+                                        }
+                                        for tc in c.message.tool_calls
+                                    ]
+                                }
+                                if c.message.tool_calls
+                                else {}
+                            ),
+                        },
+                        "finish_reason": c.finish_reason,
+                    }
+                    for c in response.choices
+                ],
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                    "total_tokens": response.usage.total_tokens if response.usage else 0,
+                },
+            }
+
+            return BackendResponse(
+                body=response_dict,
+                status_code=200,
+                headers={"content-type": "application/json"},
+            )
+
+        except Exception as e:
+            logger.error(f"any-llm OpenAI error: {e}")
+
+            error_type = "api_error"
+            status_code = 500
+
+            error_str = str(e).lower()
+            if "authentication" in error_str or "api_key" in error_str:
+                error_type = "invalid_api_key"
+                status_code = 401
+            elif "rate" in error_str or "limit" in error_str:
+                error_type = "rate_limit_exceeded"
+                status_code = 429
+            elif "not found" in error_str:
+                error_type = "model_not_found"
+                status_code = 404
+
+            return BackendResponse(
+                body={
+                    "error": {
+                        "message": str(e),
+                        "type": error_type,
+                        "code": error_type,
+                    }
+                },
+                status_code=status_code,
+                error=str(e),
+            )
+
+    async def close(self) -> None:
+        """Clean up (no-op for any-llm)."""
+        pass

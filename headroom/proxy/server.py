@@ -57,7 +57,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom import __version__
-from headroom.backends import LiteLLMBackend
+from headroom.backends import AnyLLMBackend, LiteLLMBackend
 from headroom.backends.base import Backend
 from headroom.cache.compression_feedback import get_compression_feedback
 from headroom.cache.compression_store import get_compression_store
@@ -213,11 +213,13 @@ class ProxyConfig:
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
 
-    # Backend: "anthropic" (direct API), "bedrock" (AWS Bedrock), or "litellm-*" (via LiteLLM)
+    # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     # LiteLLM backends: "litellm-bedrock", "litellm-vertex", "litellm-azure", etc.
+    # any-llm backends: "anyllm" with --anyllm-provider (openai, mistral, groq, etc.)
     backend: str = "anthropic"
     bedrock_region: str = "us-west-2"  # AWS region for Bedrock/LiteLLM
     bedrock_profile: str | None = None  # AWS profile (optional)
+    anyllm_provider: str = "openai"  # any-llm provider (openai, mistral, groq, etc.)
 
     # Optimization
     optimize: bool = True
@@ -1080,28 +1082,41 @@ class HeadroomProxy:
         # HTTP client
         self.http_client: httpx.AsyncClient | None = None
 
-        # Backend for Anthropic API (direct or via LiteLLM)
-        # Supports: "anthropic" (direct), "bedrock", "vertex", or "litellm-<provider>"
+        # Backend for Anthropic API (direct, LiteLLM, or any-llm)
+        # Supports: "anthropic" (direct), "bedrock", "vertex", "litellm-<provider>", or "anyllm"
         self.anthropic_backend: Backend | None = None
         if config.backend != "anthropic":
-            # Normalize backend name: "bedrock" -> "litellm-bedrock"
             backend = config.backend
-            if not backend.startswith("litellm-"):
-                backend = f"litellm-{backend}"
-            provider = backend.replace("litellm-", "")
 
-            try:
-                self.anthropic_backend = LiteLLMBackend(
-                    provider=provider,
-                    region=config.bedrock_region,
-                )
-                logger.info(
-                    f"LiteLLM backend enabled (provider={provider}, region={config.bedrock_region})"
-                )
-            except ImportError as e:
-                logger.warning(f"LiteLLM backend not available: {e}")
-            except Exception as e:
-                logger.error(f"Failed to initialize LiteLLM backend: {e}")
+            # Handle any-llm backend
+            if backend == "anyllm" or backend.startswith("anyllm-"):
+                provider = config.anyllm_provider
+                try:
+                    self.anthropic_backend = AnyLLMBackend(provider=provider)
+                    logger.info(f"any-llm backend enabled (provider={provider})")
+                except ImportError as e:
+                    logger.warning(f"any-llm backend not available: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to initialize any-llm backend: {e}")
+            else:
+                # Handle LiteLLM backend
+                # Normalize backend name: "bedrock" -> "litellm-bedrock"
+                if not backend.startswith("litellm-"):
+                    backend = f"litellm-{backend}"
+                provider = backend.replace("litellm-", "")
+
+                try:
+                    self.anthropic_backend = LiteLLMBackend(
+                        provider=provider,
+                        region=config.bedrock_region,
+                    )
+                    logger.info(
+                        f"LiteLLM backend enabled (provider={provider}, region={config.bedrock_region})"
+                    )
+                except ImportError as e:
+                    logger.warning(f"LiteLLM backend not available: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to initialize LiteLLM backend: {e}")
 
         # Request counter for IDs
         self._request_counter = 0
@@ -6527,6 +6542,8 @@ def run_server(
     # Backend status - use provider registry for display info
     if config.backend == "anthropic":
         backend_status = "ANTHROPIC (direct API)"
+    elif config.backend == "anyllm" or config.backend.startswith("anyllm-"):
+        backend_status = f"{config.anyllm_provider.title()} via any-llm"
     else:
         from headroom.backends.litellm import get_provider_config
 
@@ -6637,12 +6654,12 @@ if __name__ == "__main__":
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})"
     )
 
-    # Backend (anthropic direct, bedrock, or openrouter)
+    # Backend (anthropic direct, bedrock, openrouter, or anyllm)
     parser.add_argument(
         "--backend",
-        choices=["anthropic", "bedrock", "openrouter"],
+        choices=["anthropic", "bedrock", "openrouter", "anyllm"],
         default="anthropic",
-        help="Backend for Anthropic API: 'anthropic' (direct), 'bedrock' (AWS), or 'openrouter' (OpenRouter)",
+        help="Backend for Anthropic API: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter', or 'anyllm' (any-llm)",
     )
     parser.add_argument(
         "--bedrock-region",
@@ -6656,6 +6673,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--openrouter-api-key",
         help="OpenRouter API key (or set OPENROUTER_API_KEY env var)",
+    )
+    parser.add_argument(
+        "--anyllm-provider",
+        default="openai",
+        help="any-llm provider: openai, anthropic, mistral, groq, ollama, bedrock, etc. (default: openai)",
     )
 
     # Connection pool (scalability)
@@ -6791,6 +6813,7 @@ if __name__ == "__main__":
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),
         bedrock_profile=args.bedrock_profile or os.environ.get("AWS_PROFILE"),
+        anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", args.anyllm_provider),
         optimize=optimize,
         min_tokens_to_crush=_get_env_int("HEADROOM_MIN_TOKENS", args.min_tokens),
         max_items_after_crush=_get_env_int("HEADROOM_MAX_ITEMS", args.max_items),

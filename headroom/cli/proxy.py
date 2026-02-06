@@ -73,8 +73,13 @@ from .main import main
     default="anthropic",
     help=(
         "API backend: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter' (OpenRouter), "
-        "or 'litellm-<provider>' (e.g., litellm-vertex)"
+        "'anyllm' (any-llm), or 'litellm-<provider>' (e.g., litellm-vertex)"
     ),
+)
+@click.option(
+    "--anyllm-provider",
+    default="openai",
+    help="Provider for any-llm backend: openai, mistral, groq, ollama, etc. (default: openai)",
 )
 @click.option(
     "--region",
@@ -114,6 +119,7 @@ def proxy(
     no_memory_context: bool,
     memory_top_k: int,
     backend: str,
+    anyllm_provider: str,
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
@@ -166,10 +172,11 @@ def proxy(
         memory_inject_tools=not no_memory_tools,
         memory_inject_context=not no_memory_context,
         memory_top_k=memory_top_k,
-        # Backend (Anthropic direct, Bedrock, or LiteLLM)
+        # Backend (Anthropic direct, Bedrock, LiteLLM, or any-llm)
         backend=backend,
         bedrock_region=bedrock_region or region,
         bedrock_profile=bedrock_profile,
+        anyllm_provider=anyllm_provider,
     )
 
     memory_status = "DISABLED"
@@ -180,8 +187,15 @@ def proxy(
     backend_status = "Anthropic (direct API)"
     backend_section = ""
 
-    if config.backend != "anthropic":
-        # Get provider config from registry
+    if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
+        # any-llm backend
+        backend_status = f"{anyllm_provider.title()} via any-llm"
+        backend_section = """
+  Set credentials for your provider (e.g., OPENAI_API_KEY, MISTRAL_API_KEY)
+  Providers: https://mozilla-ai.github.io/any-llm/providers/
+"""
+    elif config.backend != "anthropic":
+        # LiteLLM backend
         from headroom.backends.litellm import get_provider_config
 
         provider = config.backend.replace("litellm-", "")
