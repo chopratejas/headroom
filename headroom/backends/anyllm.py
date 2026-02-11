@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from .base import Backend, BackendResponse, StreamEvent
 
@@ -118,7 +118,7 @@ class AnyLLMBackend(Backend):
                     )
 
         if len(openai_blocks) == 1 and openai_blocks[0].get("type") == "text":
-            return openai_blocks[0]["text"]
+            return str(openai_blocks[0]["text"])
 
         return openai_blocks if openai_blocks else ""
 
@@ -278,10 +278,10 @@ class AnyLLMBackend(Backend):
                 },
             )
 
-            response = await self.llm.acompletion(**kwargs)
+            stream_response = await self.llm.acompletion(**kwargs)
             output_tokens = 0
 
-            async for chunk in response:
+            async for chunk in cast(AsyncIterator[Any], stream_response):
                 if hasattr(chunk, "choices") and chunk.choices:
                     delta = chunk.choices[0].delta
                     if hasattr(delta, "content") and delta.content:
@@ -351,45 +351,45 @@ class AnyLLMBackend(Backend):
 
             logger.debug(f"any-llm OpenAI request: provider={self.provider}, model={original_model}")
 
-            response = await self.llm.acompletion(**kwargs)
+            response: Any = await self.llm.acompletion(**kwargs)
 
-            response_dict = {
+            tool_calls_list: list[dict[str, Any]] = []
+            for c in response.choices:
+                if c.message.tool_calls:
+                    for tc in c.message.tool_calls:
+                        tc_dict: dict[str, Any] = {"id": tc.id, "type": "function"}
+                        if hasattr(tc, "function") and tc.function:
+                            tc_dict["function"] = {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                        tool_calls_list.append(tc_dict)
+
+            choices = []
+            for c in response.choices:
+                msg: dict[str, Any] = {
+                    "role": c.message.role,
+                    "content": c.message.content,
+                }
+                if c.message.tool_calls:
+                    msg["tool_calls"] = tool_calls_list
+                choices.append({
+                    "index": c.index,
+                    "message": msg,
+                    "finish_reason": c.finish_reason,
+                })
+
+            usage = response.usage
+            response_dict: dict[str, Any] = {
                 "id": response.id,
                 "object": "chat.completion",
                 "created": response.created,
                 "model": original_model,
-                "choices": [
-                    {
-                        "index": c.index,
-                        "message": {
-                            "role": c.message.role,
-                            "content": c.message.content,
-                            **(
-                                {
-                                    "tool_calls": [
-                                        {
-                                            "id": tc.id,
-                                            "type": "function",
-                                            "function": {
-                                                "name": tc.function.name,
-                                                "arguments": tc.function.arguments,
-                                            },
-                                        }
-                                        for tc in c.message.tool_calls
-                                    ]
-                                }
-                                if c.message.tool_calls
-                                else {}
-                            ),
-                        },
-                        "finish_reason": c.finish_reason,
-                    }
-                    for c in response.choices
-                ],
+                "choices": choices,
                 "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                    "total_tokens": response.usage.total_tokens if response.usage else 0,
+                    "prompt_tokens": usage.prompt_tokens if usage else 0,
+                    "completion_tokens": usage.completion_tokens if usage else 0,
+                    "total_tokens": usage.total_tokens if usage else 0,
                 },
             }
 
@@ -419,6 +419,7 @@ class AnyLLMBackend(Backend):
             error_type = "model_not_found" if openai_format else "not_found_error"
             status_code = 404
 
+        body: dict[str, Any]
         if openai_format:
             body = {"error": {"message": str(e), "type": error_type, "code": error_type}}
         else:
