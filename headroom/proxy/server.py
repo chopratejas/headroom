@@ -539,9 +539,28 @@ class CostTracker:
         self._total_savings_usd: float = 0
         self._last_prune_time: datetime = datetime.now()
 
+    # Cache resolved model names to avoid repeated litellm lookups.
+    # This is critical: litellm.cost_per_token() is synchronous and can block
+    # the async event loop if it triggers I/O (lazy model info download).
+    _resolved_model_cache: dict[str, str] = {}
+
+    @classmethod
+    def _resolve_litellm_model(cls, model: str) -> str:
+        """Resolve model name to one LiteLLM recognizes, adding provider prefix if needed.
+
+        Results are cached per model name to avoid blocking the event loop
+        with repeated synchronous litellm lookups.
+        """
+        if model in cls._resolved_model_cache:
+            return cls._resolved_model_cache[model]
+
+        resolved = cls._resolve_litellm_model_uncached(model)
+        cls._resolved_model_cache[model] = resolved
+        return resolved
+
     @staticmethod
-    def _resolve_litellm_model(model: str) -> str:
-        """Resolve model name to one LiteLLM recognizes, adding provider prefix if needed."""
+    def _resolve_litellm_model_uncached(model: str) -> str:
+        """Uncached resolution — called once per unique model name."""
         if not LITELLM_AVAILABLE:
             return model
 
@@ -3686,6 +3705,27 @@ class HeadroomProxy:
                         # No memory tool calls, yield original buffered chunks
                         for chunk in buffered_chunks:
                             yield chunk
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                logger.error(f"[{request_id}] Connection error to upstream API: {e}")
+                error_event = {
+                    "type": "error",
+                    "error": {
+                        "type": "connection_error",
+                        "message": f"Failed to connect to upstream API: {e}",
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"[{request_id}] HTTP error from upstream API: {e}")
+                # Forward the upstream error response
+                yield e.response.content
+            except Exception as e:
+                logger.error(f"[{request_id}] Unexpected streaming error: {e}")
+                error_event = {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": str(e)},
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             finally:
                 # Record metrics after stream completes
                 total_latency = (time.time() - start_time) * 1000
