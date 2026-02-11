@@ -292,6 +292,10 @@ class ContentRouterConfig:
     # Set to None to use DEFAULT_EXCLUDE_TOOLS, or provide custom set
     exclude_tools: set[str] | None = None
 
+    # Per-tool compression profiles (tool_name → CompressionProfile)
+    # Set to None to use DEFAULT_TOOL_PROFILES from config
+    tool_profiles: dict[str, Any] | None = None
+
 
 # Patterns for detecting mixed content
 _CODE_FENCE_PATTERN = re.compile(r"^```(\w*)\s*$", re.MULTILINE)
@@ -588,6 +592,7 @@ class ContentRouter(Transform):
         content: str,
         context: str = "",
         question: str | None = None,
+        bias: float = 1.0,
     ) -> RouterCompressionResult:
         """Compress content using optimal strategy based on content detection.
 
@@ -596,6 +601,7 @@ class ContentRouter(Transform):
             context: Optional context for relevance-aware compression.
             question: Optional question for QA-aware compression. When provided,
                 tokens relevant to answering this question are preserved.
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
             RouterCompressionResult with compressed content and routing metadata.
@@ -612,9 +618,9 @@ class ContentRouter(Transform):
         strategy = self._determine_strategy(content)
 
         if strategy == CompressionStrategy.MIXED:
-            return self._compress_mixed(content, context, question)
+            return self._compress_mixed(content, context, question, bias=bias)
         else:
-            return self._compress_pure(content, strategy, context, question)
+            return self._compress_pure(content, strategy, context, question, bias=bias)
 
     def _determine_strategy(self, content: str) -> CompressionStrategy:
         """Determine the compression strategy from content analysis.
@@ -668,6 +674,7 @@ class ContentRouter(Transform):
         content: str,
         context: str,
         question: str | None = None,
+        bias: float = 1.0,
     ) -> RouterCompressionResult:
         """Compress mixed content by splitting and routing sections.
 
@@ -675,6 +682,7 @@ class ContentRouter(Transform):
             content: Mixed content to compress.
             context: User context for relevance.
             question: Optional question for QA-aware compression.
+            bias: Compression bias multiplier.
 
         Returns:
             RouterCompressionResult with reassembled content.
@@ -698,7 +706,12 @@ class ContentRouter(Transform):
             # Compress section
             original_tokens = len(section.content.split())
             compressed_content, compressed_tokens = self._apply_strategy_to_content(
-                section.content, strategy, context, section.language, question
+                section.content,
+                strategy,
+                context,
+                section.language,
+                question,
+                bias=bias,
             )
 
             # Preserve code fence markers
@@ -730,6 +743,7 @@ class ContentRouter(Transform):
         strategy: CompressionStrategy,
         context: str,
         question: str | None = None,
+        bias: float = 1.0,
     ) -> RouterCompressionResult:
         """Compress pure (non-mixed) content.
 
@@ -738,6 +752,7 @@ class ContentRouter(Transform):
             strategy: Selected strategy.
             context: User context.
             question: Optional question for QA-aware compression.
+            bias: Compression bias multiplier.
 
         Returns:
             RouterCompressionResult.
@@ -745,7 +760,7 @@ class ContentRouter(Transform):
         original_tokens = len(content.split())
 
         compressed, compressed_tokens = self._apply_strategy_to_content(
-            content, strategy, context, question=question
+            content, strategy, context, question=question, bias=bias
         )
 
         return RouterCompressionResult(
@@ -769,6 +784,7 @@ class ContentRouter(Transform):
         context: str,
         language: str | None = None,
         question: str | None = None,
+        bias: float = 1.0,
     ) -> tuple[str, int]:
         """Apply a compression strategy to content.
 
@@ -778,6 +794,7 @@ class ContentRouter(Transform):
             context: User context.
             language: Language hint for code.
             question: Optional question for QA-aware compression.
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
             Tuple of (compressed_content, compressed_token_count).
@@ -804,14 +821,14 @@ class ContentRouter(Transform):
                 if self.config.enable_smart_crusher:
                     crusher = self._get_smart_crusher()
                     if crusher:
-                        result = crusher.crush(content, query=context)
+                        result = crusher.crush(content, query=context, bias=bias)
                         return result.compressed, len(result.compressed.split())
 
             elif strategy == CompressionStrategy.SEARCH:
                 if self.config.enable_search_compressor:
                     compressor = self._get_search_compressor()
                     if compressor:
-                        result = compressor.compress(content, context=context)
+                        result = compressor.compress(content, context=context, bias=bias)
                         compressed, compressed_tokens = (
                             result.compressed,
                             len(result.compressed.split()),
@@ -821,7 +838,7 @@ class ContentRouter(Transform):
                 if self.config.enable_log_compressor:
                     compressor = self._get_log_compressor()
                     if compressor:
-                        result = compressor.compress(content)
+                        result = compressor.compress(content, bias=bias)
                         compressed, compressed_tokens = (
                             result.compressed,
                             result.compressed_line_count,
@@ -1184,11 +1201,17 @@ class ContentRouter(Transform):
         for i, message in enumerate(messages):
             role = message.get("role", "")
             content = message.get("content", "")
+            bias = 1.0  # Default bias, may be overridden for tool messages
 
             # Handle list content (Anthropic format with content blocks)
             if isinstance(content, list):
                 transformed_message = self._process_content_blocks(
-                    message, content, context, transforms_applied, excluded_tool_ids
+                    message,
+                    content,
+                    context,
+                    transforms_applied,
+                    excluded_tool_ids,
+                    tool_name_map=tool_name_map,
                 )
                 transformed_messages.append(transformed_message)
                 continue
@@ -1205,6 +1228,9 @@ class ContentRouter(Transform):
                     transformed_messages.append(message)
                     transforms_applied.append("router:excluded:tool")
                     continue
+                # Look up tool-specific compression bias for OpenAI tool messages
+                tool_name = tool_name_map.get(tool_call_id, "")
+                bias = self._get_tool_bias(tool_name) if tool_name else 1.0
 
             # Protection 1: Never compress user messages
             if self.config.skip_user_messages and role == "user":
@@ -1239,7 +1265,9 @@ class ContentRouter(Transform):
                 continue
 
             # Route and compress based on content detection
-            result = self.compress(content, context=context)
+            # Use tool-specific bias for tool messages, default 1.0 for others
+            msg_bias = bias if role == "tool" else 1.0
+            result = self.compress(content, context=context, bias=msg_bias)
 
             if result.compression_ratio < 0.9:
                 transformed_messages.append({**message, "content": result.compressed})
@@ -1261,6 +1289,27 @@ class ContentRouter(Transform):
             warnings=warnings,
         )
 
+    def _get_tool_bias(self, tool_name: str) -> float:
+        """Look up compression bias for a tool name.
+
+        Checks user-configured profiles first, then DEFAULT_TOOL_PROFILES.
+        Returns 1.0 (moderate) if no profile is configured.
+        """
+        from ..config import DEFAULT_TOOL_PROFILES
+
+        # Check user-configured profiles
+        if self.config.tool_profiles:
+            profile = self.config.tool_profiles.get(tool_name)
+            if profile:
+                return float(profile.bias)
+
+        # Check default profiles
+        profile = DEFAULT_TOOL_PROFILES.get(tool_name)
+        if profile:
+            return profile.bias
+
+        return 1.0  # Default: moderate
+
     def _process_content_blocks(
         self,
         message: dict[str, Any],
@@ -1268,6 +1317,7 @@ class ContentRouter(Transform):
         context: str,
         transforms_applied: list[str],
         excluded_tool_ids: set[str],
+        tool_name_map: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Process content blocks (Anthropic format) for tool_result compression.
 
@@ -1279,6 +1329,8 @@ class ContentRouter(Transform):
             content_blocks: List of content blocks.
             context: Context for compression.
             transforms_applied: List to append transform names to.
+            excluded_tool_ids: Tool IDs to skip compression for.
+            tool_name_map: Mapping from tool_call_id to tool_name for profile lookup.
 
         Returns:
             Transformed message with compressed content blocks.
@@ -1302,12 +1354,16 @@ class ContentRouter(Transform):
                     transforms_applied.append("router:excluded:tool")
                     continue
 
+                # Look up tool-specific compression bias
+                tool_name = (tool_name_map or {}).get(tool_use_id, "")
+                bias = self._get_tool_bias(tool_name) if tool_name else 1.0
+
                 tool_content = block.get("content", "")
 
                 # Only process string content
                 if isinstance(tool_content, str) and len(tool_content) > 500:
                     # Compress using content detection (will auto-detect JSON arrays, etc.)
-                    result = self.compress(tool_content, context=context)
+                    result = self.compress(tool_content, context=context, bias=bias)
                     if result.compression_ratio < 0.9:
                         new_blocks.append({**block, "content": result.compressed})
                         transforms_applied.append(

@@ -176,12 +176,13 @@ class LogCompressor:
         """
         self.config = config or LogCompressorConfig()
 
-    def compress(self, content: str, context: str = "") -> LogCompressionResult:
+    def compress(self, content: str, context: str = "", bias: float = 1.0) -> LogCompressionResult:
         """Compress log output.
 
         Args:
             content: Raw log output.
             context: User query context (unused for now).
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
             LogCompressionResult with compressed output and metadata.
@@ -204,8 +205,8 @@ class LogCompressor:
         # Parse and categorize lines
         log_lines = self._parse_lines(lines)
 
-        # Select important lines
-        selected = self._select_lines(log_lines)
+        # Select important lines (with adaptive sizing)
+        selected = self._select_lines(log_lines, bias=bias)
 
         # Format output with summaries
         compressed, stats = self._format_output(selected, log_lines)
@@ -319,9 +320,21 @@ class LogCompressor:
 
         return min(1.0, score)
 
-    def _select_lines(self, log_lines: list[LogLine]) -> list[LogLine]:
-        """Select important lines to keep."""
+    def _select_lines(self, log_lines: list[LogLine], bias: float = 1.0) -> list[LogLine]:
+        """Select important lines to keep using adaptive sizing."""
+        from .adaptive_sizer import compute_optimal_k
+
         selected: list[LogLine] = []
+
+        # Compute adaptive line budget from the FULL log output
+        # This determines "how many lines of value exist" across the entire log
+        all_line_strings = [line.content for line in log_lines]
+        adaptive_max = compute_optimal_k(
+            all_line_strings,
+            bias=bias,
+            min_k=10,
+            max_k=self.config.max_total_lines,
+        )
 
         # Group by category
         errors: list[LogLine] = []
@@ -381,11 +394,11 @@ class LogCompressor:
         # Sort by line number and dedupe
         selected = sorted(set(selected), key=lambda x: x.line_number)
 
-        # Limit total lines
-        if len(selected) > self.config.max_total_lines:
+        # Apply adaptive line limit
+        if len(selected) > adaptive_max:
             # Keep most important lines
             selected = sorted(selected, key=lambda x: x.score, reverse=True)
-            selected = selected[: self.config.max_total_lines]
+            selected = selected[:adaptive_max]
             selected = sorted(selected, key=lambda x: x.line_number)
 
         return selected

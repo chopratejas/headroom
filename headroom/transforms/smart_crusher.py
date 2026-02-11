@@ -1440,7 +1440,7 @@ class SmartCrusher(Transform):
             CompressionStrategy.SMART_SAMPLE: AnchorDataPattern.GENERIC,
         }.get(strategy, AnchorDataPattern.GENERIC)
 
-    def crush(self, content: str, query: str = "") -> CrushResult:
+    def crush(self, content: str, query: str = "", bias: float = 1.0) -> CrushResult:
         """Crush content string directly (for use by ContentRouter).
 
         This is a simplified interface for compressing a single content string,
@@ -1449,12 +1449,13 @@ class SmartCrusher(Transform):
         Args:
             content: JSON string content to compress.
             query: Query context for relevance-based compression.
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
             CrushResult with compressed content and metadata.
         """
         compressed, was_modified, analysis_info = self._smart_crush_content(
-            content, query_context=query
+            content, query_context=query, bias=bias
         )
         return CrushResult(
             compressed=compressed,
@@ -2088,7 +2089,11 @@ class SmartCrusher(Transform):
         return " ".join(context_parts)
 
     def _smart_crush_content(
-        self, content: str, query_context: str = "", tool_name: str | None = None
+        self,
+        content: str,
+        query_context: str = "",
+        tool_name: str | None = None,
+        bias: float = 1.0,
     ) -> tuple[str, bool, str]:
         """
         Apply smart crushing to content.
@@ -2100,6 +2105,7 @@ class SmartCrusher(Transform):
             content: Content to crush (JSON or plain text).
             query_context: Context string from user messages for relevance scoring.
             tool_name: Name of the tool that produced this output.
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
             Tuple of (crushed_content, was_modified, analysis_info).
@@ -2113,7 +2119,7 @@ class SmartCrusher(Transform):
 
         # Recursively process and crush arrays
         crushed, info, ccr_markers = self._process_value(
-            parsed, query_context=query_context, tool_name=tool_name
+            parsed, query_context=query_context, tool_name=tool_name, bias=bias
         )
 
         result = safe_json_dumps(crushed, indent=None)
@@ -2132,7 +2138,12 @@ class SmartCrusher(Transform):
         return result, was_modified, info
 
     def _process_value(
-        self, value: Any, depth: int = 0, query_context: str = "", tool_name: str | None = None
+        self,
+        value: Any,
+        depth: int = 0,
+        query_context: str = "",
+        tool_name: str | None = None,
+        bias: float = 1.0,
     ) -> tuple[Any, str, list[tuple[str, int, int]]]:
         """Recursively process a value, crushing arrays where appropriate.
 
@@ -2148,7 +2159,9 @@ class SmartCrusher(Transform):
             # Must have enough items AND all items must be dicts (not mixed types)
             all_dicts = value and all(isinstance(item, dict) for item in value)
             if len(value) >= self.config.min_items_to_analyze and all_dicts:
-                crushed, strategy, ccr_hash = self._crush_array(value, query_context, tool_name)
+                crushed, strategy, ccr_hash = self._crush_array(
+                    value, query_context, tool_name, bias=bias
+                )
                 info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
 
                 # Track CCR marker for later injection
@@ -2161,7 +2174,7 @@ class SmartCrusher(Transform):
                 processed = []
                 for item in value:
                     p_item, p_info, p_markers = self._process_value(
-                        item, depth + 1, query_context, tool_name
+                        item, depth + 1, query_context, tool_name, bias=bias
                     )
                     processed.append(p_item)
                     if p_info:
@@ -2174,7 +2187,7 @@ class SmartCrusher(Transform):
             processed_dict: dict[str, Any] = {}
             for k, v in value.items():
                 p_val, p_info, p_markers = self._process_value(
-                    v, depth + 1, query_context, tool_name
+                    v, depth + 1, query_context, tool_name, bias=bias
                 )
                 processed_dict[k] = p_val
                 if p_info:
@@ -2186,7 +2199,11 @@ class SmartCrusher(Transform):
             return value, "", []
 
     def _crush_array(
-        self, items: list[dict], query_context: str = "", tool_name: str | None = None
+        self,
+        items: list[dict],
+        query_context: str = "",
+        tool_name: str | None = None,
+        bias: float = 1.0,
     ) -> tuple[list, str, str | None]:
         """Crush an array using statistical analysis and relevance scoring.
 
@@ -2199,17 +2216,34 @@ class SmartCrusher(Transform):
         Feedback-aware: Uses learned patterns to adjust compression aggressiveness.
         High retrieval rate for a tool → compress less aggressively.
 
+        Args:
+            items: List of dict items to compress.
+            query_context: Context string from user messages for relevance scoring.
+            tool_name: Name of the tool that produced this output.
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
+
         Returns:
             Tuple of (crushed_items, strategy_info, ccr_hash).
             ccr_hash is the hash for retrieval if CCR is enabled, None otherwise.
         """
-        # BOUNDARY CHECK: If already at or below max_items, no compression needed
-        if len(items) <= self.config.max_items_after_crush:
-            return items, "none:at_limit", None
+        # BOUNDARY CHECK: Use adaptive sizing instead of hardcoded limit
+        # compute_optimal_k handles trivial cases (n <= 8 → keep all)
+        from .adaptive_sizer import compute_optimal_k
+
+        item_strings = [json.dumps(item, default=str) for item in items]
+        adaptive_k = compute_optimal_k(
+            item_strings,
+            bias=bias,
+            min_k=3,
+            max_k=self.config.max_items_after_crush if self.config.max_items_after_crush else None,
+        )
+
+        if len(items) <= adaptive_k:
+            return items, "none:adaptive_at_limit", None
 
         # Get feedback hints if enabled
         # THREAD-SAFETY: Use a local effective_max_items instead of mutating shared config
-        effective_max_items = self.config.max_items_after_crush
+        effective_max_items = adaptive_k
         hints_applied = False
         toin_hint_applied = False
 

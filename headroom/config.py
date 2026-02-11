@@ -348,22 +348,58 @@ class AnchorConfig:
 
 
 # Default tools to exclude from compression (local file/code tools)
-# These tools return precise content (line numbers, paths, code) where
-# exact fidelity matters. Web tools are NOT excluded - they benefit from
-# compression and can use CCR for retrieval if needed.
+# Read: Returns exact file content needed for Edit tool's old_string matching.
+#   Compressing would break the edit workflow.
+# Glob: Returns compact file path lists used for navigation. Low token count,
+#   not worth compressing.
+# Grep/Bash are NOT excluded - their outputs (search results, build logs,
+# test output) are ideal compression targets for SearchCompressor/LogCompressor,
+# and CCR provides safe retrieval if the LLM needs more detail.
 DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
         "Glob",
-        "Grep",
-        "Bash",
         # Lowercase variants for case-insensitive matching
         "read",
         "glob",
-        "grep",
-        "bash",
     }
 )
+
+
+@dataclass
+class CompressionProfile:
+    """Per-tool compression bias applied to statistically-determined K.
+
+    Instead of hardcoding max_items=15, the adaptive sizer computes the optimal K
+    via information saturation (Kneedle on unique bigram coverage). This profile
+    applies a bias multiplier: >1 keeps more items (conservative), <1 keeps fewer
+    (aggressive).
+    """
+
+    bias: float = 1.0  # 0.7=aggressive, 1.0=moderate, 1.5=conservative
+    min_k: int = 3  # Never keep fewer than this
+    max_k: int | None = None  # Cap (None = no cap, let statistics decide)
+
+
+# Named presets for convenience
+PROFILE_PRESETS: dict[str, CompressionProfile] = {
+    "conservative": CompressionProfile(bias=1.5, min_k=5),
+    "moderate": CompressionProfile(bias=1.0, min_k=3),
+    "aggressive": CompressionProfile(bias=0.7, min_k=3),
+}
+
+# Default per-tool profiles: tools not listed here use moderate (bias=1.0)
+DEFAULT_TOOL_PROFILES: dict[str, CompressionProfile] = {
+    # Search results: keep more matches for accuracy
+    "Grep": PROFILE_PRESETS["conservative"],
+    "grep": PROFILE_PRESETS["conservative"],
+    # Logs/output: balanced compression
+    "Bash": PROFILE_PRESETS["moderate"],
+    "bash": PROFILE_PRESETS["moderate"],
+    # Web pages are verbose, compress aggressively
+    "WebFetch": PROFILE_PRESETS["aggressive"],
+    "webfetch": PROFILE_PRESETS["aggressive"],
+}
 
 
 @dataclass

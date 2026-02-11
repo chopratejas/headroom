@@ -106,12 +106,14 @@ class SearchCompressor:
         self,
         content: str,
         context: str = "",
+        bias: float = 1.0,
     ) -> SearchCompressionResult:
         """Compress search results.
 
         Args:
             content: Raw grep/ripgrep output.
             context: User query context for relevance scoring.
+            bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
             SearchCompressionResult with compressed output and metadata.
@@ -135,8 +137,8 @@ class SearchCompressor:
         # Score matches by relevance
         self._score_matches(file_matches, context)
 
-        # Select top matches per file
-        selected = self._select_matches(file_matches)
+        # Select top matches per file (with adaptive sizing)
+        selected = self._select_matches(file_matches, bias=bias)
 
         # Format compressed output
         compressed, summaries = self._format_output(selected, file_matches)
@@ -235,8 +237,11 @@ class SearchCompressor:
     def _select_matches(
         self,
         file_matches: dict[str, FileMatches],
+        bias: float = 1.0,
     ) -> dict[str, FileMatches]:
-        """Select top matches per file and globally."""
+        """Select top matches per file and globally using adaptive sizing."""
+        from .adaptive_sizer import compute_optimal_k
+
         selected: dict[str, FileMatches] = {}
 
         # Sort files by total match score (highest first)
@@ -249,9 +254,22 @@ class SearchCompressor:
         # Limit number of files
         sorted_files = sorted_files[: self.config.max_files]
 
+        # Compute adaptive total matches limit
+        all_match_strings = [
+            f"{file_path}:{m.line_number}:{m.content}"
+            for file_path, fm in sorted_files
+            for m in fm.matches
+        ]
+        adaptive_total = compute_optimal_k(
+            all_match_strings,
+            bias=bias,
+            min_k=5,
+            max_k=self.config.max_total_matches,
+        )
+
         total_selected = 0
         for file_path, fm in sorted_files:
-            if total_selected >= self.config.max_total_matches:
+            if total_selected >= adaptive_total:
                 break
 
             # Sort matches by score
@@ -261,7 +279,7 @@ class SearchCompressor:
             file_selected: list[SearchMatch] = []
             remaining_slots = min(
                 self.config.max_matches_per_file,
-                self.config.max_total_matches - total_selected,
+                adaptive_total - total_selected,
             )
 
             # Always include first and last if configured

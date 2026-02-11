@@ -247,6 +247,9 @@ class ProxyConfig:
     # Code-aware compression (ON by default if installed)
     code_aware_enabled: bool = True  # Enable AST-based code compression
 
+    # Per-tool compression profiles (parsed from CLI/env)
+    tool_profiles: dict[str, Any] | None = None
+
     # Smart content routing (routes each message to optimal compressor)
     smart_routing: bool = True  # Use ContentRouter for intelligent compression
 
@@ -536,6 +539,39 @@ class CostTracker:
         self._total_savings_usd: float = 0
         self._last_prune_time: datetime = datetime.now()
 
+    @staticmethod
+    def _resolve_litellm_model(model: str) -> str:
+        """Resolve model name to one LiteLLM recognizes, adding provider prefix if needed."""
+        if not LITELLM_AVAILABLE:
+            return model
+
+        # Try as-is first
+        try:
+            litellm.cost_per_token(model=model, prompt_tokens=1, completion_tokens=0)
+            return model
+        except Exception:
+            pass
+
+        # Try with provider prefix
+        prefixes = {
+            "claude-": "anthropic/",
+            "gpt-": "openai/",
+            "o1-": "openai/",
+            "o3-": "openai/",
+            "o4-": "openai/",
+            "gemini-": "google/",
+        }
+        for pattern, prefix in prefixes.items():
+            if model.startswith(pattern):
+                prefixed = f"{prefix}{model}"
+                try:
+                    litellm.cost_per_token(model=prefixed, prompt_tokens=1, completion_tokens=0)
+                    return prefixed
+                except Exception:
+                    break
+
+        return model
+
     def estimate_cost(
         self,
         model: str,
@@ -558,6 +594,9 @@ class CostTracker:
             return None
 
         try:
+            # Resolve model name (adds provider prefix if needed, e.g. claude-opus-4-6 → anthropic/claude-opus-4-6)
+            resolved_model = self._resolve_litellm_model(model)
+
             # cost_per_token returns (total_input_cost, total_output_cost) for the given token counts
             # Despite the name, it returns total cost not per-token cost
 
@@ -570,14 +609,14 @@ class CostTracker:
 
             # Get cost for regular (non-cached) input tokens
             input_cost, _ = litellm.cost_per_token(
-                model=model,
+                model=resolved_model,
                 prompt_tokens=regular_input,
                 completion_tokens=0,
             )
 
             # Get cost for output tokens
             _, output_cost = litellm.cost_per_token(
-                model=model,
+                model=resolved_model,
                 prompt_tokens=0,
                 completion_tokens=output_tokens,
             )
@@ -585,7 +624,7 @@ class CostTracker:
             # Get model info for cache pricing
             model_info: dict[str, Any] = {}
             try:
-                model_info = dict(litellm.get_model_info(model))
+                model_info = dict(litellm.get_model_info(resolved_model))
             except Exception:
                 pass
 
@@ -598,7 +637,7 @@ class CostTracker:
                 else:
                     # Fallback: most providers charge ~10% of input price for cache reads
                     cache_read_full_cost, _ = litellm.cost_per_token(
-                        model=model,
+                        model=resolved_model,
                         prompt_tokens=cache_read_tokens,
                         completion_tokens=0,
                     )
@@ -613,7 +652,7 @@ class CostTracker:
                 else:
                     # Fallback: most providers charge ~125% of input price for cache writes
                     cache_write_full_cost, _ = litellm.cost_per_token(
-                        model=model,
+                        model=resolved_model,
                         prompt_tokens=cache_write_tokens,
                         completion_tokens=0,
                     )
@@ -999,6 +1038,7 @@ class HeadroomProxy:
             router_config = ContentRouterConfig(
                 enable_llmlingua=config.llmlingua_enabled,
                 enable_code_aware=config.code_aware_enabled,
+                tool_profiles=config.tool_profiles,
             )
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=True)),
@@ -2023,12 +2063,13 @@ class HeadroomProxy:
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
                     )
+                    # original_cost: what it would have cost without compression
+                    # Use only original_tokens at regular input rate — no cache params,
+                    # since caching is orthogonal to compression savings
                     original_cost = self.cost_tracker.estimate_cost(
                         model,
                         original_tokens,
                         output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -4128,11 +4169,12 @@ class HeadroomProxy:
                         output_tokens,
                         cache_read_tokens=cache_read_tokens,
                     )
+                    # original_cost: what it would have cost without compression
+                    # No cache params — caching is orthogonal to compression savings
                     original_cost = self.cost_tracker.estimate_cost(
                         model,
                         original_tokens,
                         output_tokens,
-                        cache_read_tokens=cache_read_tokens,
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -5183,11 +5225,12 @@ class HeadroomProxy:
                         output_tokens,
                         cache_read_tokens=cache_read_tokens,
                     )
+                    # original_cost: what it would have cost without compression
+                    # No cache params — caching is orthogonal to compression savings
                     original_cost = self.cost_tracker.estimate_cost(
                         model,
                         original_tokens,
                         output_tokens,
-                        cache_read_tokens=cache_read_tokens,
                     )
                     if cost_usd and original_cost:
                         savings_usd = original_cost - cost_usd
@@ -6627,6 +6670,45 @@ def _get_env_str(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _parse_tool_profiles(cli_profiles: list[str]) -> dict[str, Any]:
+    """Parse tool profiles from CLI args and HEADROOM_TOOL_PROFILES env var.
+
+    Format: ToolName:level (e.g., Grep:conservative, Bash:moderate)
+    Env var format: comma-separated (e.g., "Grep:conservative,Bash:moderate")
+
+    Returns:
+        Dict mapping tool names to CompressionProfile instances.
+    """
+    from headroom.config import PROFILE_PRESETS, CompressionProfile
+
+    profiles: dict[str, CompressionProfile] = {}
+    raw_entries: list[str] = list(cli_profiles)
+
+    # Also check env var
+    env_val = os.environ.get("HEADROOM_TOOL_PROFILES", "")
+    if env_val:
+        raw_entries.extend(e.strip() for e in env_val.split(",") if e.strip())
+
+    for entry in raw_entries:
+        if ":" not in entry:
+            logger.warning("Invalid tool profile format (expected ToolName:level): %s", entry)
+            continue
+        tool_name, level = entry.split(":", 1)
+        tool_name = tool_name.strip()
+        level = level.strip().lower()
+
+        if level in PROFILE_PRESETS:
+            profiles[tool_name] = PROFILE_PRESETS[level]
+        else:
+            logger.warning(
+                "Unknown profile level '%s' for tool '%s'. Use: conservative, moderate, aggressive",
+                level,
+                tool_name,
+            )
+
+    return profiles
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Headroom Proxy Server")
 
@@ -6690,6 +6772,13 @@ if __name__ == "__main__":
     parser.add_argument("--no-optimize", action="store_true", help="Disable optimization")
     parser.add_argument("--min-tokens", type=int, default=500, help="Min tokens to crush")
     parser.add_argument("--max-items", type=int, default=50, help="Max items after crush")
+    parser.add_argument(
+        "--tool-profile",
+        action="append",
+        default=[],
+        help="Per-tool compression profile: ToolName:level (e.g., Grep:conservative, Bash:moderate, WebFetch:aggressive). "
+        "Can be specified multiple times. Also settable via HEADROOM_TOOL_PROFILES env var.",
+    )
 
     # Caching
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
@@ -6783,6 +6872,9 @@ if __name__ == "__main__":
     if hasattr(args, "openrouter_api_key") and args.openrouter_api_key:
         os.environ["OPENROUTER_API_KEY"] = args.openrouter_api_key
 
+    # Parse per-tool compression profiles from CLI and env var
+    tool_profiles = _parse_tool_profiles(args.tool_profile)
+
     config = ProxyConfig(
         host=_get_env_str("HEADROOM_HOST", args.host),
         port=_get_env_int("HEADROOM_PORT", args.port),
@@ -6814,6 +6906,7 @@ if __name__ == "__main__":
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", args.max_connections),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),
         http2=not args.no_http2 and _get_env_bool("HEADROOM_HTTP2", True),
+        tool_profiles=tool_profiles if tool_profiles else None,
     )
 
     # Get worker and concurrency settings
