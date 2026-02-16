@@ -37,9 +37,11 @@ import hashlib
 import heapq
 import json
 import logging
+import os
 import re
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -823,9 +825,64 @@ class CompressionStore:
                     logger.debug("TOIN record_retrieval failed", exc_info=True)
 
 
+# Request-scoped store (for multi-tenant SaaS: one store per request/tenant)
+_request_ccr_store: ContextVar[CompressionStore | None] = ContextVar(
+    "headroom_request_ccr_store", default=None
+)
+
 # Global store instance (lazy initialization)
 _compression_store: CompressionStore | None = None
 _store_lock = threading.Lock()
+
+
+def set_request_compression_store(store: CompressionStore | None) -> None:
+    """Set the compression store for the current request context.
+
+    Used by middleware (e.g. SaaS) to provide a tenant-scoped store.
+    When set, get_compression_store() returns this store instead of the global one.
+
+    Args:
+        store: CompressionStore to use for this request, or None to clear.
+    """
+    _request_ccr_store.set(store)
+
+
+def clear_request_compression_store() -> None:
+    """Clear the request-scoped compression store."""
+    _request_ccr_store.set(None)
+
+
+def _create_default_ccr_backend() -> CompressionStoreBackend | None:
+    """Create a CCR backend from env (e.g. HEADROOM_CCR_BACKEND=redis).
+
+    Loads adapters via setuptools entry point 'headroom.ccr_backend'.
+    Returns None to use default InMemoryBackend.
+    """
+    backend_type = (os.environ.get("HEADROOM_CCR_BACKEND") or "").strip().lower()
+    if not backend_type or backend_type == "memory":
+        return None
+    try:
+        from importlib.metadata import entry_points
+
+        all_eps = entry_points(group="headroom.ccr_backend")
+        ep = next((e for e in all_eps if e.name == backend_type), None)
+        if ep is None:
+            logger.warning(
+                "HEADROOM_CCR_BACKEND=%s but no entry point headroom.ccr_backend[%s]",
+                backend_type,
+                backend_type,
+            )
+            return None
+        fn = ep.load()
+        kwargs = {
+            "url": os.environ.get("HEADROOM_REDIS_URL", ""),
+            "tenant_prefix": os.environ.get("HEADROOM_CCR_TENANT_PREFIX", ""),
+        }
+        backend: CompressionStoreBackend = fn(**kwargs)
+        return backend
+    except Exception as e:
+        logger.warning("Failed to load CCR backend %s: %s", backend_type, e)
+        return None
 
 
 def get_compression_store(
@@ -833,31 +890,36 @@ def get_compression_store(
     default_ttl: int = 300,
     backend: CompressionStoreBackend | None = None,
 ) -> CompressionStore:
-    """Get the global compression store instance.
+    """Get the compression store instance.
 
-    Uses lazy initialization with singleton pattern.
+    If a request-scoped store was set (e.g. by SaaS middleware), returns it.
+    Otherwise uses lazy-initialized global singleton. Backend can be supplied
+    explicitly or created from env (HEADROOM_CCR_BACKEND) when building the global.
 
     Args:
-        max_entries: Maximum entries (only used on first call).
-        default_ttl: Default TTL (only used on first call).
-        backend: Custom storage backend (only used on first call).
-                 Defaults to InMemoryBackend if not provided.
+        max_entries: Maximum entries (only used on first call for global store).
+        default_ttl: Default TTL (only used on first call for global store).
+        backend: Custom storage backend (only used on first call for global store).
+                 Defaults to InMemoryBackend if not provided; env backend used if backend is None.
 
     Returns:
-        Global CompressionStore instance.
+        Request-scoped CompressionStore if set, else global CompressionStore instance.
     """
-    global _compression_store
+    request_store = _request_ccr_store.get()
+    if request_store is not None:
+        return request_store
 
+    global _compression_store
     if _compression_store is None:
         with _store_lock:
-            # Double-check after acquiring lock
             if _compression_store is None:
+                if backend is None:
+                    backend = _create_default_ccr_backend()
                 _compression_store = CompressionStore(
                     max_entries=max_entries,
                     default_ttl=default_ttl,
                     backend=backend,
                 )
-
     return _compression_store
 
 
