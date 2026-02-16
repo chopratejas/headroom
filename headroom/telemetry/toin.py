@@ -346,14 +346,31 @@ class ToolIntelligenceNetwork:
     Thread-safe for concurrent access.
     """
 
-    def __init__(self, config: TOINConfig | None = None):
+    def __init__(
+        self,
+        config: TOINConfig | None = None,
+        backend: Any | None = None,
+    ):
         """Initialize TOIN.
 
         Args:
             config: Configuration options.
+            backend: Storage backend implementing TOINBackend protocol.
+                     If None, creates a FileSystemTOINBackend from config.storage_path.
+                     Pass a custom backend for Redis, PostgreSQL, etc.
         """
+        from .backends import FileSystemTOINBackend
+
         self._config = config or TOINConfig()
         self._lock = threading.RLock()  # RLock for reentrant locking (save calls export_patterns)
+
+        # Storage backend
+        if backend is not None:
+            self._backend = backend
+        elif self._config.storage_path:
+            self._backend = FileSystemTOINBackend(self._config.storage_path)
+        else:
+            self._backend = None
 
         # Pattern database: structure_hash -> ToolPattern
         self._patterns: dict[str, ToolPattern] = {}
@@ -367,9 +384,9 @@ class ToolIntelligenceNetwork:
         self._last_save_time = time.time()
         self._dirty = False
 
-        # Load existing data
-        if self._config.storage_path:
-            self._load_from_disk()
+        # Load existing data from backend
+        if self._backend is not None:
+            self._load_from_backend()
 
     def _generate_stable_instance_id(self) -> str:
         """Generate a stable instance ID that doesn't change across restarts.
@@ -1464,76 +1481,43 @@ class ToolIntelligenceNetwork:
         self._update_recommendations(existing)
 
     def save(self) -> None:
-        """Save TOIN data to disk with atomic write.
-
-        Uses a temporary file and rename to ensure atomicity.
-        If the write fails, the original file is preserved.
+        """Save TOIN data via the storage backend.
 
         HIGH FIX: Serialize under lock but write outside lock to prevent
         blocking other threads during slow file I/O.
         """
-        if not self._config.storage_path:
+        if self._backend is None:
             return
-
-        import tempfile
 
         # Step 1: Serialize under lock (fast in-memory operation)
         with self._lock:
             data = self.export_patterns()
 
         # Step 2: Write outside lock (slow I/O operation)
-        path = Path(self._config.storage_path)
-
         try:
-            # Create parent directories if needed
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Serialize to string (outside lock but before file ops)
-            json_data = json.dumps(data, indent=2)
-
-            # Write to temporary file first (atomic write pattern)
-            # Use same directory to ensure same filesystem for rename
-            fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".toin_", suffix=".tmp")
-            try:
-                with open(fd, "w") as f:
-                    f.write(json_data)
-
-                # Atomic rename (on POSIX systems)
-                Path(tmp_path).replace(path)
-
-            except Exception:
-                # Clean up temp file on failure
-                try:
-                    Path(tmp_path).unlink()
-                except OSError:
-                    pass
-                raise
+            self._backend.save(data)
 
             # Step 3: Update state under lock (fast)
             with self._lock:
                 self._dirty = False
                 self._last_save_time = time.time()
 
-        except OSError as e:
+        except Exception as e:
             # Log error but don't crash - TOIN should be resilient
-            logger.warning(f"Failed to save TOIN data: {e}")
+            logger.warning("Failed to save TOIN data: %s", e)
 
-    def _load_from_disk(self) -> None:
-        """Load TOIN data from disk."""
-        if not self._config.storage_path:
-            return
-
-        path = Path(self._config.storage_path)
-        if not path.exists():
+    def _load_from_backend(self) -> None:
+        """Load TOIN data from the storage backend."""
+        if self._backend is None:
             return
 
         try:
-            with open(path) as f:
-                data = json.load(f)
-            self.import_patterns(data)
-            self._dirty = False
-        except (json.JSONDecodeError, OSError):
-            pass  # Start fresh if corrupted
+            data = self._backend.load()
+            if data:
+                self.import_patterns(data)
+                self._dirty = False
+        except Exception as e:
+            logger.warning("Failed to load TOIN data from backend: %s", e)
 
     def _maybe_auto_save(self) -> None:
         """Auto-save if enough time has passed.
@@ -1543,7 +1527,7 @@ class ToolIntelligenceNetwork:
         The save() method already acquires the lock, and we use RLock so
         it's safe to hold the lock when calling save().
         """
-        if not self._config.storage_path or not self._config.auto_save_interval:
+        if self._backend is None or not self._config.auto_save_interval:
             return
 
         # Check under lock to prevent race conditions
@@ -1567,12 +1551,51 @@ class ToolIntelligenceNetwork:
 _toin_instance: ToolIntelligenceNetwork | None = None
 _toin_lock = threading.Lock()
 
+# Environment variable for custom TOIN backend
+TOIN_BACKEND_ENV_VAR = "HEADROOM_TOIN_BACKEND"
+
+
+def _create_default_toin_backend() -> Any:
+    """Create a TOIN backend from env (e.g. HEADROOM_TOIN_BACKEND=redis).
+
+    Loads adapters via setuptools entry point 'headroom.toin_backend'.
+    Returns None to use default FileSystemTOINBackend.
+    """
+    backend_type = (os.environ.get(TOIN_BACKEND_ENV_VAR) or "").strip().lower()
+    if not backend_type or backend_type == "filesystem":
+        return None
+    try:
+        from importlib.metadata import entry_points
+
+        all_eps = entry_points(group="headroom.toin_backend")
+        ep = next((e for e in all_eps if e.name == backend_type), None)
+        if ep is None:
+            logger.warning(
+                "HEADROOM_TOIN_BACKEND=%s but no entry point headroom.toin_backend[%s]",
+                backend_type,
+                backend_type,
+            )
+            return None
+        fn = ep.load()
+        kwargs = {
+            "url": os.environ.get("HEADROOM_TOIN_URL", ""),
+            "tenant_prefix": os.environ.get("HEADROOM_TOIN_TENANT_PREFIX", ""),
+        }
+        return fn(**kwargs)
+    except Exception as e:
+        logger.warning("Failed to load TOIN backend %s: %s", backend_type, e)
+        return None
+
 
 def get_toin(config: TOINConfig | None = None) -> ToolIntelligenceNetwork:
     """Get the global TOIN instance.
 
     Thread-safe singleton pattern. Always acquires lock to avoid subtle
     race conditions in double-checked locking on non-CPython implementations.
+
+    On first call, checks HEADROOM_TOIN_BACKEND env var. If set, loads the
+    backend via setuptools entry point 'headroom.toin_backend'. Otherwise
+    uses the default FileSystemTOINBackend.
 
     Args:
         config: Configuration (only used on first call). If the instance
@@ -1587,7 +1610,8 @@ def get_toin(config: TOINConfig | None = None) -> ToolIntelligenceNetwork:
     # implementations. The overhead is negligible since we only construct once.
     with _toin_lock:
         if _toin_instance is None:
-            _toin_instance = ToolIntelligenceNetwork(config)
+            backend = _create_default_toin_backend()
+            _toin_instance = ToolIntelligenceNetwork(config, backend=backend)
         elif config is not None:
             # Warn when config is silently ignored
             logger.warning(
