@@ -2159,6 +2159,16 @@ class HeadroomProxy:
                 response_headers.pop("content-encoding", None)
                 response_headers.pop("content-length", None)  # Length changed after decompression
 
+                # Inject Headroom compression metrics (for SaaS metering)
+                response_headers["x-headroom-tokens-before"] = str(original_tokens)
+                response_headers["x-headroom-tokens-after"] = str(optimized_tokens)
+                response_headers["x-headroom-tokens-saved"] = str(tokens_saved)
+                response_headers["x-headroom-model"] = model
+                if transforms_applied:
+                    response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
+                if cache_hit:
+                    response_headers["x-headroom-cached"] = "true"
+
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
@@ -4249,6 +4259,16 @@ class HeadroomProxy:
                 response_headers = dict(response.headers)
                 response_headers.pop("content-encoding", None)
                 response_headers.pop("content-length", None)  # Length changed after decompression
+
+                # Inject Headroom compression metrics (for SaaS metering)
+                response_headers["x-headroom-tokens-before"] = str(original_tokens)
+                response_headers["x-headroom-tokens-after"] = str(optimized_tokens)
+                response_headers["x-headroom-tokens-saved"] = str(tokens_saved)
+                response_headers["x-headroom-model"] = model
+                if transforms_applied:
+                    response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
+                if cache_read_tokens > 0:
+                    response_headers["x-headroom-cached"] = "true"
 
                 return Response(
                     content=response.content,
