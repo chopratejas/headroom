@@ -89,6 +89,37 @@ You don't need to replace it. Drop Headroom into your existing stack:
 
 ---
 
+## Does It Actually Work?
+
+**100 production log entries. One critical error buried at position 67.**
+
+|  | Baseline | Headroom |
+|--|----------|----------|
+| Input tokens | 10,144 | 1,260 |
+| Correct answers | **4/4** | **4/4** |
+
+Both responses: *"payment-gateway, error PG-5523, fix: Increase max_connections to 500, 1,847 transactions affected."*
+
+**87.6% fewer tokens. Same answer.** Run it: `python examples/needle_in_haystack_test.py`
+
+<details>
+<summary><b>What Headroom kept</b></summary>
+
+From 100 log entries, SmartCrusher kept 6: first 3 (boundary), the FATAL error at position 67 (anomaly detection), and last 2 (recency). The error was automatically preserved — not by keyword matching, but by statistical analysis of field variance.
+</details>
+
+### Accuracy Benchmarks
+
+| Benchmark | Metric | Result | Compression |
+|-----------|--------|--------|------------|
+| [Scrapinghub Extraction](https://huggingface.co/datasets/allenai/scrapinghub-article-extraction-benchmark) | Recall | **98.2%** | 94.9% |
+| Multi-Tool Agent (4 tools) | Accuracy | **100%** | 76.3% |
+| SmartCrusher (JSON) | Accuracy | **100%** | 87.6% |
+
+Full methodology: [Benchmarks](docs/benchmarks.md) | Run yourself: `python -m headroom.evals quick`
+
+---
+
 ## How It Works
 
 ```
@@ -99,22 +130,21 @@ Your App → Headroom → LLM Provider
      → SmartCrusher (JSON) | CodeCompressor (code) | LLMLingua (text)
    IntelligentContext: score-based token fitting
    CCR: stores originals for retrieval if LLM needs more
+   Query Echo: re-injects user question for fresh attention after compression
 ```
 
-Headroom never throws data away. It compresses aggressively and retrieves precisely.
+Headroom never throws data away. It compresses aggressively and retrieves precisely. When it compresses 500 items to 20, it tells the LLM *what was omitted* ("87 passed, 2 failed, 1 error") so the LLM knows when to ask for more.
 
----
+### Verified on Real Workloads
 
-## Verified Performance
-
-| Scenario | Tokens Before | Tokens After | Savings |
-|----------|--------------|-------------|---------|
+| Scenario | Before | After | Savings |
+|----------|--------|-------|---------|
 | Code search (100 results) | 17,765 | 1,408 | **92%** |
 | SRE incident debugging | 65,694 | 5,118 | **92%** |
 | Codebase exploration | 78,502 | 41,254 | **47%** |
 | GitHub issue triage | 54,174 | 14,761 | **73%** |
 
-**Overhead**: 1-5ms. **Accuracy**: [benchmarked](docs/benchmarks.md) across 12+ datasets.
+**Overhead**: 1-5ms compression latency.
 
 ---
 
@@ -138,10 +168,12 @@ Headroom never throws data away. It compresses aggressively and retrieves precis
 | Feature | What it does |
 |---------|-------------|
 | **Content Router** | Auto-detects content type, routes to optimal compressor |
-| **SmartCrusher** | Statistically compresses JSON arrays (tool outputs, API responses) |
-| **CodeCompressor** | AST-aware code compression (Python, JS, Go, Rust, Java) |
+| **SmartCrusher** | Statistically compresses JSON arrays — preserves errors, anomalies, boundaries |
+| **CodeCompressor** | AST-aware compression for Python, JS, Go, Rust, Java, C++ |
 | **LLMLingua-2** | ML-based 20x text compression |
 | **CCR** | Reversible compression — LLM retrieves originals when needed |
+| **Compression Summaries** | Tells the LLM what was omitted ("3 errors, 12 failures") |
+| **Query Echo** | Re-injects user question after compressed data for better attention |
 | **CacheAligner** | Stabilizes prefixes for provider KV cache hits |
 | **IntelligentContext** | Score-based context management with learned importance |
 | **Image Compression** | 40-90% token reduction via trained ML router |
