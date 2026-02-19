@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +102,7 @@ def _get_stats(store: SQLiteMemoryStore) -> dict[str, Any]:
         stats["by_scope"] = by_scope
 
         # Count by age buckets
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         by_age: dict[str, int] = {}
 
         one_day_ago = (now - timedelta(days=1)).isoformat()
@@ -302,7 +302,7 @@ def list_memories(
 
             if since_duration:
                 duration = parse_duration(since_duration)
-                cutoff = datetime.utcnow() - duration
+                cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - duration
                 filter_kwargs["created_after"] = cutoff
 
             mem_filter = MemoryFilter(**filter_kwargs)
@@ -692,7 +692,7 @@ def prune_memories(
 
         if older_than:
             duration = parse_duration(older_than)
-            cutoff = datetime.utcnow() - duration
+            cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - duration
             filter_kwargs["created_before"] = cutoff
 
         if scope:

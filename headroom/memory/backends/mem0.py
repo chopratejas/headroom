@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from headroom.memory.models import Memory
@@ -217,10 +217,18 @@ class Mem0Backend:
 
         # Parse timestamps
         created_at_str = metadata.get("created_at")
-        created_at = datetime.fromisoformat(created_at_str) if created_at_str else datetime.utcnow()
+        created_at = (
+            datetime.fromisoformat(created_at_str)
+            if created_at_str
+            else datetime.now(timezone.utc).replace(tzinfo=None)
+        )
 
         valid_from_str = metadata.get("valid_from")
-        valid_from = datetime.fromisoformat(valid_from_str) if valid_from_str else datetime.utcnow()
+        valid_from = (
+            datetime.fromisoformat(valid_from_str)
+            if valid_from_str
+            else datetime.now(timezone.utc).replace(tzinfo=None)
+        )
 
         valid_until_str = metadata.get("valid_until")
         valid_until = datetime.fromisoformat(valid_until_str) if valid_until_str else None

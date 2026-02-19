@@ -17,7 +17,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -960,7 +960,7 @@ class MockBackend:
         )
         self._memories[new_memory.id] = new_memory
         old_memory.superseded_by = new_memory.id
-        old_memory.valid_until = datetime.utcnow()
+        old_memory.valid_until = datetime.now(timezone.utc).replace(tzinfo=None)
         return new_memory
 
     async def delete_memory(

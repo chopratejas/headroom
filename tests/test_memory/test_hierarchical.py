@@ -22,7 +22,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import asyncio
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -113,7 +113,11 @@ class TestMemoryModel:
         current = Memory(content="test", user_id="alice")
         assert current.is_current is True
 
-        superseded = Memory(content="test", user_id="alice", valid_until=datetime.utcnow())
+        superseded = Memory(
+            content="test",
+            user_id="alice",
+            valid_until=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
         assert superseded.is_current is False
 
     def test_memory_serialization(self, sample_embedding):
@@ -555,7 +559,7 @@ class TestIntegration:
 
         # Supersede
         new_memory = Memory(content="New preference", user_id="alice")
-        supersede_time = datetime.utcnow()
+        supersede_time = datetime.now(timezone.utc).replace(tzinfo=None)
         await store.supersede(original.id, new_memory, supersede_time)
 
         # Query at a point when original was valid (after its valid_from, before supersession)

@@ -119,7 +119,7 @@ PRODUCT_CATALOG = json.dumps(
 
 CODE_FILE = '''"""User authentication service with JWT tokens."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import jwt
 from pydantic import BaseModel
@@ -155,9 +155,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc).replace(tzinfo=None) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
@@ -215,7 +215,7 @@ class RateLimiter:
 
     def is_allowed(self, client_id: str) -> bool:
         """Check if a request from client_id is allowed."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = now - timedelta(seconds=self.window_seconds)
 
         if client_id not in self._requests:

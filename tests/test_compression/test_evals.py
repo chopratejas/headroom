@@ -121,7 +121,7 @@ This module provides JWT-based authentication with role-based access control.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Any
 
 import jwt
@@ -181,16 +181,16 @@ def create_access_token(
         >>> print(token)  # eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
     """
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc).replace(tzinfo=None) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
 
     payload = {
         "sub": user_id,
         "exp": expire,
         "roles": roles or [],
         "permissions": permissions or [],
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc).replace(tzinfo=None),
     }
 
     encoded_jwt = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -313,7 +313,7 @@ class RateLimiter:
         Returns:
             True if request is allowed, False if rate limited.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = now - timedelta(seconds=self.window_size)
 
         # Clean old entries

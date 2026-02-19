@@ -231,9 +231,7 @@ class TestLiteLLMCallback:
             ],
         }
 
-        result = asyncio.get_event_loop().run_until_complete(
-            callback.async_pre_call_hook("key", data, "completion")
-        )
+        result = asyncio.run(callback.async_pre_call_hook("key", data, "completion"))
         assert result is data
 
     def test_callback_ignores_non_completion(self):
@@ -245,7 +243,5 @@ class TestLiteLLMCallback:
         callback = HeadroomCallback()
         data = {"messages": [{"role": "user", "content": "hi"}]}
 
-        result = asyncio.get_event_loop().run_until_complete(
-            callback.async_pre_call_hook("key", data, "embedding")
-        )
+        result = asyncio.run(callback.async_pre_call_hook("key", data, "embedding"))
         assert result is data

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -606,7 +606,7 @@ class SQLiteMemoryStore:
             ValueError: If the old memory is not found.
         """
         if supersede_time is None:
-            supersede_time = datetime.utcnow()
+            supersede_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # Get the old memory
         old_memory = await self.get(old_memory_id)

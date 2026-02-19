@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # Marker format for Headroom modifications
@@ -69,7 +69,7 @@ def compute_prefix_hash(messages: list[dict[str, Any]], prefix_count: int | None
 def format_timestamp(dt: datetime | None = None) -> str:
     """Format datetime as ISO8601 string."""
     if dt is None:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc).replace(tzinfo=None)
     return dt.isoformat() + "Z"
 
 

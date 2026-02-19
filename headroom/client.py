@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from .cache import (
@@ -388,7 +388,7 @@ class HeadroomClient:
     ) -> Any:
         """Internal implementation of create."""
         request_id = generate_request_id()
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
         mode = HeadroomMode(headroom_mode) if headroom_mode else self._default_mode
 
         tokenizer = self._get_tokenizer(model)
