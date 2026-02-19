@@ -45,40 +45,47 @@
 pip install "headroom-ai[all]"
 ```
 
+### Simplest: Proxy (zero code changes)
+
+```bash
+headroom proxy --port 8787
+```
+
+```bash
+# Claude Code — just set the base URL
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+# Cursor, Continue, any OpenAI-compatible tool
+OPENAI_BASE_URL=http://localhost:8787/v1 cursor
+```
+
+Works with any language, any tool, any framework. One env var. **[Proxy docs](docs/proxy.md)**
+
+### Python: One function
+
 ```python
 from headroom import compress
 
-messages = [
-    {"role": "user", "content": "What caused the outage?"},
-    {"role": "tool", "content": huge_log_output, "tool_call_id": "call_1"},
-]
-
 result = compress(messages, model="claude-sonnet-4-5-20250929")
-# result.messages → same format, 50-90% fewer tokens
-# result.tokens_saved → 8,000
-# result.compression_ratio → 0.87
-
 response = client.messages.create(model="claude-sonnet-4-5-20250929", messages=result.messages)
+print(f"Saved {result.tokens_saved} tokens ({result.compression_ratio:.0%})")
 ```
 
-**Same answer. 87% fewer tokens.**
+Works with any Python LLM client — Anthropic, OpenAI, LiteLLM, httpx, anything.
 
----
+### Already have a proxy or gateway?
 
-## How to Use Headroom
+You don't need to replace it. Drop Headroom into your existing stack:
 
-Headroom is a compression library, not just a proxy. Use whichever integration fits your stack:
+| Your setup | Add Headroom | One-liner |
+|------------|-------------|-----------|
+| **LiteLLM** | Callback | `litellm.callbacks = [HeadroomCallback()]` |
+| **Any Python proxy** | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
+| **Any Python app** | `compress()` | `result = compress(messages, model="gpt-4o")` |
+| **Agno agents** | Wrap model | `HeadroomAgnoModel(your_model)` |
+| **LangChain** | Wrap model | `HeadroomChatModel(your_llm)` *(experimental)* |
 
-| You have... | Use this | Code |
-|-------------|----------|------|
-| Any Python app | `compress()` | `result = compress(messages, model="gpt-4o")` |
-| LiteLLM | Callback | `litellm.callbacks = [HeadroomCallback()]` |
-| Python proxy (FastAPI) | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
-| Claude Code / Cursor | Proxy | `ANTHROPIC_BASE_URL=http://localhost:8787 claude` |
-| Agno agents | Wrap model | `HeadroomAgnoModel(your_model)` |
-| LangChain | Wrap model | `HeadroomChatModel(your_llm)` *(experimental)* |
-
-**Already have a proxy?** You don't need another one. See the **[Integration Guide](docs/integration-guide.md)** for detailed setup with LiteLLM, ASGI middleware, and direct `compress()` usage.
+**[Full Integration Guide](docs/integration-guide.md)** — detailed setup for LiteLLM, ASGI middleware, compress(), and every framework.
 
 ---
 
