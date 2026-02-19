@@ -353,18 +353,6 @@ class AnyLLMBackend(Backend):
 
             response: Any = await self.llm.acompletion(**kwargs)
 
-            tool_calls_list: list[dict[str, Any]] = []
-            for c in response.choices:
-                if c.message.tool_calls:
-                    for tc in c.message.tool_calls:
-                        tc_dict: dict[str, Any] = {"id": tc.id, "type": "function"}
-                        if hasattr(tc, "function") and tc.function:
-                            tc_dict["function"] = {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            }
-                        tool_calls_list.append(tc_dict)
-
             choices = []
             for c in response.choices:
                 msg: dict[str, Any] = {
@@ -372,7 +360,23 @@ class AnyLLMBackend(Backend):
                     "content": c.message.content,
                 }
                 if c.message.tool_calls:
-                    msg["tool_calls"] = tool_calls_list
+                    msg["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            **(
+                                {
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    }
+                                }
+                                if hasattr(tc, "function") and tc.function
+                                else {}
+                            ),
+                        }
+                        for tc in c.message.tool_calls
+                    ]
                 choices.append({
                     "index": c.index,
                     "message": msg,
