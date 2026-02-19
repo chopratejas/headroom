@@ -5322,6 +5322,16 @@ class HeadroomProxy:
                 response_headers.pop("content-encoding", None)
                 response_headers.pop("content-length", None)
 
+                # Inject Headroom compression metrics (for SaaS metering)
+                response_headers["x-headroom-tokens-before"] = str(original_tokens)
+                response_headers["x-headroom-tokens-after"] = str(optimized_tokens)
+                response_headers["x-headroom-tokens-saved"] = str(tokens_saved)
+                response_headers["x-headroom-model"] = model
+                if transforms_applied:
+                    response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
+                if cache_read_tokens > 0:
+                    response_headers["x-headroom-cached"] = "true"
+
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
@@ -6562,11 +6572,27 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     # Passthrough - route to correct backend based on headers
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
     async def passthrough(request: Request, path: str):
-        # Anthropic SDK always sends anthropic-version header and uses x-api-key for auth
-        # OpenAI SDK uses Authorization: Bearer for auth
+        # Allow explicit base URL override (for Azure, custom endpoints, etc.)
+        custom_base = request.headers.get("x-headroom-base-url")
+        if custom_base:
+            return await proxy.handle_passthrough(request, custom_base.rstrip("/"))
+
+        # Anthropic: sends anthropic-version header and x-api-key
         if request.headers.get("anthropic-version") or request.headers.get("x-api-key"):
             base_url = proxy.ANTHROPIC_API_URL
+        # Gemini: sends x-goog-api-key
+        elif request.headers.get("x-goog-api-key"):
+            base_url = proxy.GEMINI_API_URL
+        # Azure OpenAI: sends api-key header (not x-api-key)
+        elif request.headers.get("api-key"):
+            # Azure requires explicit base URL (varies per deployment)
+            azure_base = request.headers.get("x-headroom-base-url", "")
+            if azure_base:
+                base_url = azure_base.rstrip("/")
+            else:
+                base_url = proxy.OPENAI_API_URL  # Fallback
         else:
+            # Default: OpenAI
             base_url = proxy.OPENAI_API_URL
         return await proxy.handle_passthrough(request, base_url)
 

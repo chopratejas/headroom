@@ -2127,11 +2127,22 @@ class SmartCrusher(Transform):
 
         # CCR: Inject retrieval markers if compression happened and CCR is enabled
         if was_modified and ccr_markers and self._ccr_config.inject_retrieval_marker:
-            for ccr_hash, original_count, compressed_count in ccr_markers:
+            for marker_data in ccr_markers:
+                if len(marker_data) == 4:
+                    ccr_hash, original_count, compressed_count, dropped_summary = marker_data
+                else:
+                    ccr_hash, original_count, compressed_count = marker_data
+                    dropped_summary = ""
+                summary_str = f" Omitted: {dropped_summary}." if dropped_summary else ""
+                # Escape { } in summary to prevent .format() errors
+                safe_summary = summary_str.replace("{", "{{").replace("}", "}}")
+                ttl_seconds = getattr(self._ccr_config, "store_ttl_seconds", 300)
                 marker = self._ccr_config.marker_template.format(
                     original_count=original_count,
                     compressed_count=compressed_count,
                     hash=ccr_hash,
+                    summary=safe_summary,
+                    ttl_minutes=max(1, ttl_seconds // 60),
                 )
                 result += marker
 
@@ -2149,24 +2160,24 @@ class SmartCrusher(Transform):
 
         Returns:
             Tuple of (processed_value, info_string, ccr_markers).
-            ccr_markers is a list of (hash, original_count, compressed_count) tuples.
+            ccr_markers is a list of (hash, original_count, compressed_count, summary) tuples.
         """
         info_parts = []
-        ccr_markers: list[tuple[str, int, int]] = []
+        ccr_markers: list[tuple] = []
 
         if isinstance(value, list):
             # Check if this array should be crushed
             # Must have enough items AND all items must be dicts (not mixed types)
             all_dicts = value and all(isinstance(item, dict) for item in value)
             if len(value) >= self.config.min_items_to_analyze and all_dicts:
-                crushed, strategy, ccr_hash = self._crush_array(
+                crushed, strategy, ccr_hash, dropped_summary = self._crush_array(
                     value, query_context, tool_name, bias=bias
                 )
                 info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
 
-                # Track CCR marker for later injection
+                # Track CCR marker for later injection (with summary)
                 if ccr_hash:
-                    ccr_markers.append((ccr_hash, len(value), len(crushed)))
+                    ccr_markers.append((ccr_hash, len(value), len(crushed), dropped_summary))
 
                 return crushed, ",".join(info_parts), ccr_markers
             else:
@@ -2204,7 +2215,7 @@ class SmartCrusher(Transform):
         query_context: str = "",
         tool_name: str | None = None,
         bias: float = 1.0,
-    ) -> tuple[list, str, str | None]:
+    ) -> tuple[list, str, str | None, str]:
         """Crush an array using statistical analysis and relevance scoring.
 
         IMPORTANT: If crushability analysis determines it's not safe to crush
@@ -2223,8 +2234,9 @@ class SmartCrusher(Transform):
             bias: Compression bias multiplier (>1 = keep more, <1 = keep fewer).
 
         Returns:
-            Tuple of (crushed_items, strategy_info, ccr_hash).
+            Tuple of (crushed_items, strategy_info, ccr_hash, dropped_summary).
             ccr_hash is the hash for retrieval if CCR is enabled, None otherwise.
+            dropped_summary is a categorical summary of what was dropped.
         """
         # BOUNDARY CHECK: Use adaptive sizing instead of hardcoded limit
         # compute_optimal_k handles trivial cases (n <= 8 → keep all)
@@ -2239,7 +2251,7 @@ class SmartCrusher(Transform):
         )
 
         if len(items) <= adaptive_k:
-            return items, "none:adaptive_at_limit", None
+            return items, "none:adaptive_at_limit", None, ""
 
         # Get feedback hints if enabled
         # THREAD-SAFETY: Use a local effective_max_items instead of mutating shared config
@@ -2264,7 +2276,7 @@ class SmartCrusher(Transform):
         )
 
         if toin_hint.skip_compression:
-            return items, f"skip:toin({toin_hint.reason})", None
+            return items, f"skip:toin({toin_hint.reason})", None, ""
 
         # Apply TOIN recommendations if from network or local learning
         toin_preserve_fields: list[str] = []
@@ -2313,7 +2325,7 @@ class SmartCrusher(Transform):
 
             # Check if hints recommend skipping compression
             if hints.skip_compression:
-                return items, f"skip:feedback({hints.reason})", None
+                return items, f"skip:feedback({hints.reason})", None, ""
 
             # Adjust max_items based on feedback
             if hints.suggested_items is not None:
@@ -2339,7 +2351,7 @@ class SmartCrusher(Transform):
                 reason = ""
                 if analysis.crushability:
                     reason = f"skip:{analysis.crushability.reason}"
-                return items, reason, None
+                return items, reason, None, ""
 
             # Apply TOIN strategy recommendation if available
             # TOIN learns which strategies work best from cross-user patterns
@@ -2356,7 +2368,7 @@ class SmartCrusher(Transform):
             if toin_compression_level:
                 if toin_compression_level == "none":
                     # Don't compress - return original
-                    return items, "skip:toin_level_none", None
+                    return items, "skip:toin_level_none", None, ""
                 elif toin_compression_level == "conservative":
                     # Be conservative - keep more items
                     effective_max_items = max(effective_max_items, min(50, len(items) // 2))
@@ -2453,9 +2465,18 @@ class SmartCrusher(Transform):
             elif hints_applied:
                 strategy_info += f"(feedback:{effective_max_items})"
 
+            # Generate categorical summary of dropped items (use indices, not identity)
+            from .compression_summary import summarize_dropped_items
+
+            dropped_summary = summarize_dropped_items(
+                items,
+                result,
+                kept_indices=set(plan.keep_indices),
+            )
+
             # Clean up temporary instance variable
             self._current_field_semantics = None
-            return result, strategy_info, ccr_hash
+            return result, strategy_info, ccr_hash, dropped_summary
 
         except Exception:
             # Clean up temporary instance variable

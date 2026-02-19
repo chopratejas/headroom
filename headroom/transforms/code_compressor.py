@@ -559,10 +559,22 @@ class CodeAwareCompressor(Transform):
             if self.config.enable_ccr and ratio < 0.8:
                 cache_key = self._store_in_ccr(code, compressed, original_tokens)
                 if cache_key:
-                    # Add standard CCR marker format for CCRToolInjector detection
+                    # Generate summary from AST data (language-agnostic)
+                    from .compression_summary import summarize_compressed_code
+
+                    code_summary = summarize_compressed_code(
+                        structure.function_bodies,
+                        len(structure.function_bodies),
+                    )
+                    summary_str = f" {code_summary}." if code_summary else ""
+
+                    # Add CCR marker (hash without quotes, matches CCRToolInjector regex)
+                    ttl_min = max(1, getattr(self.config, "ccr_ttl_seconds", 300) // 60)
                     compressed += (
-                        f"\n# [{original_tokens} items compressed to {compressed_tokens}. "
-                        f"Retrieve more: hash={cache_key}]"
+                        f"\n# [{original_tokens - compressed_tokens} tokens compressed."
+                        f"{summary_str}"
+                        f" Retrieve more: hash={cache_key}."
+                        f" Expires in {ttl_min}m.]"
                     )
 
             return CodeCompressionResult(
