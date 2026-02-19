@@ -183,17 +183,13 @@ def _get_pipeline() -> Any:
         if _pipeline is not None:
             return _pipeline
 
-        from headroom.transforms import ContentRouter, SmartCrusher, TransformPipeline
+        from headroom.transforms import TransformPipeline
 
-        _pipeline = TransformPipeline(
-            transforms=[
-                ContentRouter(),
-                SmartCrusher(),
-            ],
-            # No provider needed — pipeline uses tokenizer registry which
-            # auto-detects the right tokenizer per model:
-            # OpenAI → tiktoken (exact), Anthropic → calibrated estimation,
-            # Open models → HuggingFace (if installed)
-        )
+        # Default pipeline: CacheAligner → ContentRouter → IntelligentContext
+        # CacheAligner: stabilizes prefix for provider KV cache hits
+        # ContentRouter: routes to the right compressor per content type
+        #   (SmartCrusher for JSON, CodeCompressor for code, LLMLingua for text)
+        # IntelligentContext: enforces token limits with score-based dropping
+        _pipeline = TransformPipeline()
         logger.debug("Headroom compression pipeline initialized")
         return _pipeline
