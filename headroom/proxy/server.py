@@ -313,6 +313,9 @@ class ProxyConfig:
     memory_neo4j_user: str = "neo4j"
     memory_neo4j_password: str = "password"
 
+    # Compression Hooks (for SaaS and advanced customization)
+    hooks: Any = None  # CompressionHooks instance, or None for default behavior
+
 
 # =============================================================================
 # Caching
@@ -1625,6 +1628,21 @@ class HeadroomProxy:
         tokenizer = get_tokenizer(model)
         original_tokens = tokenizer.count_messages(messages)
 
+        # Hook: pre_compress — let hooks modify messages before compression
+        if self.config.hooks:
+            from headroom.hooks import CompressContext
+            from headroom.transforms.query_echo import extract_user_query
+
+            _hook_ctx = CompressContext(
+                model=model,
+                user_query=extract_user_query(messages),
+                provider="anthropic",
+            )
+            try:
+                messages = self.config.hooks.pre_compress(messages, _hook_ctx)
+            except Exception as e:
+                logger.debug(f"[{request_id}] pre_compress hook error: {e}")
+
         # Apply optimization
         transforms_applied = []
         optimized_messages = messages
@@ -1637,6 +1655,9 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    biases=self.config.hooks.compute_biases(messages, _hook_ctx)
+                    if self.config.hooks
+                    else None,
                 )
 
                 if result.messages != messages:
@@ -1650,6 +1671,28 @@ class HeadroomProxy:
 
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
+
+        # Hook: post_compress — let hooks observe compression results
+        if self.config.hooks and tokens_saved > 0:
+            from headroom.hooks import CompressEvent
+
+            try:
+                self.config.hooks.post_compress(
+                    CompressEvent(
+                        tokens_before=original_tokens,
+                        tokens_after=optimized_tokens,
+                        tokens_saved=tokens_saved,
+                        compression_ratio=tokens_saved / original_tokens
+                        if original_tokens > 0
+                        else 0,
+                        transforms_applied=transforms_applied,
+                        model=model,
+                        user_query=_hook_ctx.user_query if self.config.hooks else "",
+                        provider="anthropic",
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[{request_id}] post_compress hook error: {e}")
 
         # CCR Tool Injection: Inject retrieval tool if compression occurred
         tools = body.get("tools")
@@ -4065,6 +4108,18 @@ class HeadroomProxy:
         tokenizer = get_tokenizer(model)
         original_tokens = tokenizer.count_messages(messages)
 
+        # Hook: pre_compress
+        _hook_biases = None
+        if self.config.hooks:
+            from headroom.hooks import CompressContext
+
+            _hook_ctx = CompressContext(model=model, provider="openai")
+            try:
+                messages = self.config.hooks.pre_compress(messages, _hook_ctx)
+                _hook_biases = self.config.hooks.compute_biases(messages, _hook_ctx)
+            except Exception as e:
+                logger.debug(f"[{request_id}] Hook error: {e}")
+
         # Optimization
         transforms_applied = []
         optimized_messages = messages
@@ -4077,11 +4132,11 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    biases=_hook_biases,
                 )
                 if result.messages != messages:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
-                    # Use pipeline's token counts for consistency with pipeline logs
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
             except Exception as e:
@@ -4089,6 +4144,27 @@ class HeadroomProxy:
 
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
+
+        # Hook: post_compress
+        if self.config.hooks and tokens_saved > 0:
+            from headroom.hooks import CompressEvent
+
+            try:
+                self.config.hooks.post_compress(
+                    CompressEvent(
+                        tokens_before=original_tokens,
+                        tokens_after=optimized_tokens,
+                        tokens_saved=tokens_saved,
+                        compression_ratio=tokens_saved / original_tokens
+                        if original_tokens > 0
+                        else 0,
+                        transforms_applied=transforms_applied,
+                        model=model,
+                        provider="openai",
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"[{request_id}] post_compress hook error: {e}")
 
         # CCR Tool Injection: Inject retrieval tool if compression occurred
         tools = body.get("tools")

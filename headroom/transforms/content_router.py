@@ -1173,6 +1173,7 @@ class ContentRouter(Transform):
         """
         tokens_before = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
         context = kwargs.get("context", "")
+        hook_biases: dict[int, float] = kwargs.get("biases") or {}
 
         # Build tool name map for exclusion checking
         tool_name_map = self._build_tool_name_map(messages)
@@ -1265,8 +1266,10 @@ class ContentRouter(Transform):
                 continue
 
             # Route and compress based on content detection
-            # Use tool-specific bias for tool messages, default 1.0 for others
+            # Merge tool-specific bias with hook-provided bias (multiplicative)
             msg_bias = bias if role == "tool" else 1.0
+            if i in hook_biases:
+                msg_bias *= hook_biases[i]
             result = self.compress(content, context=context, bias=msg_bias)
 
             if result.compression_ratio < 0.9:
