@@ -123,14 +123,25 @@ class TransformPipeline:
         return transforms
 
     def _get_tokenizer(self, model: str) -> Tokenizer:
-        """Get tokenizer for model using provider."""
-        if self._provider is None:
-            raise ValueError(
-                "Provider is required for token counting. "
-                "Pass a provider to TransformPipeline or HeadroomClient."
-            )
-        token_counter = self._provider.get_token_counter(model)
-        return Tokenizer(token_counter, model)
+        """Get tokenizer for model.
+
+        Uses provider's tokenizer if available, otherwise falls back to
+        the tokenizer registry which auto-detects the best backend per model:
+        - OpenAI models: tiktoken (exact)
+        - Anthropic models: calibrated estimation (~3.5 chars/token)
+        - Open models: HuggingFace tokenizer (if installed)
+        - Unknown models: character-based estimation
+        """
+        if self._provider is not None:
+            token_counter = self._provider.get_token_counter(model)
+            return Tokenizer(token_counter, model)
+
+        # No provider — use the tokenizer registry (auto-detects per model)
+        # TokenCounter from tokenizers and providers have the same interface
+        # (count_text, count_messages) but are different Protocol types.
+        from headroom.tokenizers import get_tokenizer
+
+        return Tokenizer(get_tokenizer(model), model)  # type: ignore[arg-type]
 
     def apply(
         self,

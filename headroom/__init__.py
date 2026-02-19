@@ -219,4 +219,15 @@ __all__ = [
     "HierarchicalMemory",
     "MemoryConfig",
     "EmbedderBackend",
+    # One-function API
+    "compress",
+    "CompressResult",
+    # Hooks
+    "CompressionHooks",
+    "CompressContext",
+    "CompressEvent",
 ]
+
+# One-function compression API
+from headroom.compress import CompressResult, compress  # noqa: E402
+from headroom.hooks import CompressContext, CompressEvent, CompressionHooks  # noqa: E402
