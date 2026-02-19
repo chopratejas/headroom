@@ -2,15 +2,24 @@
 
 import json
 
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.routing import Route
-from starlette.testclient import TestClient
+import pytest
 
 from headroom.compress import CompressResult, compress
 from headroom.hooks import CompressionHooks
-from headroom.integrations.asgi import CompressionMiddleware
+
+try:
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from headroom.integrations.asgi import CompressionMiddleware
+
+    HAS_STARLETTE = True
+except ImportError:
+    HAS_STARLETTE = False
+
 
 # =============================================================================
 # Tests: compress() function
@@ -51,7 +60,6 @@ class TestCompressFunction:
             {"role": "tool", "content": big_data, "tool_call_id": "call_1"},
         ]
         result = compress(messages, model="gpt-4o")
-        # Should have compressed the tool output
         assert result.tokens_after <= result.tokens_before
         assert len(result.messages) == 2
 
@@ -104,7 +112,7 @@ class TestCompressResultFields:
 
 
 # =============================================================================
-# Tests: ASGI CompressionMiddleware
+# Tests: ASGI CompressionMiddleware (requires starlette)
 # =============================================================================
 
 
@@ -136,6 +144,7 @@ def _make_asgi_app(middleware_kwargs=None):
     return app
 
 
+@pytest.mark.skipif(not HAS_STARLETTE, reason="starlette not installed")
 class TestASGIMiddleware:
     def test_non_llm_paths_passthrough(self):
         app = _make_asgi_app()
@@ -185,11 +194,10 @@ class TestASGIMiddleware:
         assert resp.status_code == 200
 
     def test_get_requests_passthrough(self):
-        """GET requests to LLM paths pass through (no body to compress)."""
+        """GET requests to LLM paths pass through."""
         app = _make_asgi_app()
         client = TestClient(app)
         resp = client.get("/v1/chat/completions")
-        # Will 405 because route only accepts POST, but middleware shouldn't crash
         assert resp.status_code in (200, 405)
 
 
@@ -226,7 +234,6 @@ class TestLiteLLMCallback:
         result = asyncio.get_event_loop().run_until_complete(
             callback.async_pre_call_hook("key", data, "completion")
         )
-        # Data should be modified in place
         assert result is data
 
     def test_callback_ignores_non_completion(self):
@@ -241,4 +248,4 @@ class TestLiteLLMCallback:
         result = asyncio.get_event_loop().run_until_complete(
             callback.async_pre_call_hook("key", data, "embedding")
         )
-        assert result is data  # Unchanged
+        assert result is data
