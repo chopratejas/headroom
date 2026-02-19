@@ -122,18 +122,45 @@ Full methodology: [Benchmarks](docs/benchmarks.md) | Run yourself: `python -m he
 
 ## How It Works
 
-```
-Your App → Headroom → LLM Provider
-              ↓
-   CacheAligner: stabilizes prefix for KV cache hits
-   ContentRouter: routes to optimal compressor per content type
-     → SmartCrusher (JSON) | CodeCompressor (code) | LLMLingua (text)
-   IntelligentContext: score-based token fitting
-   CCR: stores originals for retrieval if LLM needs more
-   Query Echo: re-injects user question for fresh attention after compression
+```mermaid
+flowchart LR
+  App["Your App"] --> H["Headroom"] --> LLM["LLM Provider"]
+  LLM --> Resp["Response"]
 ```
 
-Headroom never throws data away. It compresses aggressively and retrieves precisely. When it compresses 500 items to 20, it tells the LLM *what was omitted* ("87 passed, 2 failed, 1 error") so the LLM knows when to ask for more.
+### Inside Headroom
+
+```mermaid
+flowchart TB
+  subgraph Pipeline["Transform Pipeline"]
+    CA["1. CacheAligner\nStabilizes prefix for KV cache"]
+    CR["2. ContentRouter\nDetects content type, picks compressor"]
+    IC["3. IntelligentContext\nScore-based token fitting"]
+    QE["4. Query Echo\nRe-injects user question"]
+    CA --> CR --> IC --> QE
+  end
+
+  subgraph Compressors["ContentRouter dispatches to"]
+    SC["SmartCrusher\nJSON arrays"]
+    CC["CodeCompressor\nAST-aware code"]
+    LL["LLMLingua\nML-based text"]
+  end
+
+  subgraph CCR["CCR: Compress-Cache-Retrieve"]
+    Store[("Compressed\nStore")]
+    Tool["headroom_retrieve"]
+    Tool <--> Store
+  end
+
+  CR --> Compressors
+  SC -. "stores originals +\nsummary of what's omitted" .-> Store
+  QE --> LLM["LLM Provider"]
+  LLM -. "retrieves when\nit needs more" .-> Tool
+```
+
+> Headroom never throws data away. It compresses aggressively and retrieves precisely.
+> When it compresses 500 items to 20, it tells the LLM *what was omitted*
+> ("87 passed, 2 failed, 1 error") so the LLM knows when to ask for more.
 
 ### Verified on Real Workloads
 
