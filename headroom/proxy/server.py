@@ -1777,6 +1777,15 @@ class HeadroomProxy:
                                 f"[{request_id}] Memory: Added beta header: {key}={headers[key]}"
                             )
 
+        # Query Echo: re-inject user's question after compressed tool outputs
+        # Helps LLM attend to the question after reading dense compressed data
+        if tokens_saved > 0:
+            from headroom.transforms.query_echo import extract_user_query, inject_query_echo
+
+            user_query = extract_user_query(messages)  # From original messages
+            if inject_query_echo(optimized_messages, user_query, tokens_saved, original_tokens):
+                logger.debug(f"[{request_id}] Query echo injected after compression")
+
         # Update body
         body["messages"] = optimized_messages
         if tools is not None:
@@ -4103,6 +4112,14 @@ class HeadroomProxy:
                         f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
                     )
 
+        # Query Echo: re-inject user's question after compressed tool outputs
+        if tokens_saved > 0:
+            from headroom.transforms.query_echo import extract_user_query, inject_query_echo
+
+            user_query = extract_user_query(messages)
+            if inject_query_echo(optimized_messages, user_query, tokens_saved, original_tokens):
+                logger.debug(f"[{request_id}] Query echo injected after compression")
+
         body["messages"] = optimized_messages
         if tools is not None:
             body["tools"] = tools
@@ -5200,6 +5217,14 @@ class HeadroomProxy:
 
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
+
+        # Query Echo: re-inject user's question after compressed tool outputs
+        if tokens_saved > 0:
+            from headroom.transforms.query_echo import extract_user_query, inject_query_echo
+
+            user_query = extract_user_query(messages)
+            if inject_query_echo(optimized_messages, user_query, tokens_saved, original_tokens):
+                logger.debug(f"[{request_id}] Query echo injected after Gemini compression")
 
         # Convert back to Gemini format if optimized
         if optimized_messages != messages:

@@ -349,7 +349,7 @@ class TestSmartCrusherTOINIntegration:
         len(toin._patterns)
 
         # Crush the array
-        result, info, markers = crusher._crush_array(
+        result, info, markers, _summary = crusher._crush_array(
             items, query_context="test query", tool_name="test_tool"
         )
 
@@ -418,7 +418,7 @@ class TestAllFixesIntegrated:
         ]
 
         # Step 1: Compress
-        result, info, markers = crusher._crush_array(
+        result, info, markers, _summary = crusher._crush_array(
             items, query_context="find status", tool_name="api_response"
         )
 

@@ -165,36 +165,6 @@ class TestSummaryHelpfulness:
 
     def test_code_summary_helps_identify_functions(self):
         """LLM can identify which functions were removed from compressed code."""
-        original_code = '''
-class PaymentProcessor:
-    """Processes payments via Stripe."""
-
-    def __init__(self, api_key: str):
-        self.stripe = stripe.Client(api_key)
-        self.retry_count = 3
-
-    def charge(self, amount: float, currency: str, token: str) -> dict:
-        for attempt in range(self.retry_count):
-            try:
-                return self.stripe.charges.create(
-                    amount=int(amount * 100),
-                    currency=currency,
-                    source=token,
-                )
-            except stripe.RateLimitError:
-                time.sleep(2 ** attempt)
-        raise PaymentError("Max retries exceeded")
-
-    def refund(self, charge_id: str, amount: float = None) -> dict:
-        params = {"charge": charge_id}
-        if amount:
-            params["amount"] = int(amount * 100)
-        return self.stripe.refunds.create(**params)
-
-    def get_balance(self) -> float:
-        balance = self.stripe.balance.retrieve()
-        return balance.available[0].amount / 100
-'''
         compressed_code = '''
 class PaymentProcessor:
     """Processes payments via Stripe."""
@@ -215,9 +185,15 @@ class PaymentProcessor:
         # [2 lines omitted]
         pass
 '''
-        from headroom.transforms.compression_summary import summarize_removed_code
+        from headroom.transforms.compression_summary import summarize_compressed_code
 
-        code_summary = summarize_removed_code(original_code, compressed_code)
+        # Use AST-based summary (language-agnostic)
+        bodies = [
+            ("def charge(self, amount: float, currency: str, token: str) -> dict:", "...", 10),
+            ("def refund(self, charge_id: str, amount: float = None) -> dict:", "...", 20),
+            ("def get_balance(self) -> float:", "...", 30),
+        ]
+        code_summary = summarize_compressed_code(bodies, 3)
 
         prompt = f"Here is a compressed Python file:\n\n```python\n{compressed_code}\n```\n\n"
         if code_summary:
