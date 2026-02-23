@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **any-llm backend** - Route requests through 38+ LLM providers (OpenAI, Mistral, Groq, Ollama, etc.) via [any-llm](https://mozilla-ai.github.io/any-llm/providers/)
+  - Enable with `--backend anyllm --anyllm-provider <provider>`
+  - Install with: `pip install 'headroom-ai[anyllm]'`
 - Production-ready proxy server with caching, rate limiting, and metrics
 - CLI command `headroom proxy` to start the proxy server
 - **IntelligentContextManager** (semantic-aware context management)

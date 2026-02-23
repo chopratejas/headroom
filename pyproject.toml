@@ -86,6 +86,10 @@ llmlingua = [
 code = [
     "tree-sitter-language-pack>=0.10.0",
 ]
+# any-llm multi-provider backend (requires Python 3.11+)
+anyllm = [
+    "any-llm-sdk>=1.0.0",
+]
 # Agno agent framework integration
 agno = [
     "agno>=1.0.0",
