@@ -349,7 +349,9 @@ class AnyLLMBackend(Backend):
                 if param in body:
                     kwargs[param] = body[param]
 
-            logger.debug(f"any-llm OpenAI request: provider={self.provider}, model={original_model}")
+            logger.debug(
+                f"any-llm OpenAI request: provider={self.provider}, model={original_model}"
+            )
 
             response: Any = await self.llm.acompletion(**kwargs)
 
@@ -377,11 +379,13 @@ class AnyLLMBackend(Backend):
                         }
                         for tc in c.message.tool_calls
                     ]
-                choices.append({
-                    "index": c.index,
-                    "message": msg,
-                    "finish_reason": c.finish_reason,
-                })
+                choices.append(
+                    {
+                        "index": c.index,
+                        "message": msg,
+                        "finish_reason": c.finish_reason,
+                    }
+                )
 
             usage = response.usage
             response_dict: dict[str, Any] = {
