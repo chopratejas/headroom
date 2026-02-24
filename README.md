@@ -110,13 +110,38 @@ From 100 log entries, SmartCrusher kept 6: first 3 (boundary), the FATAL error a
 
 ### Accuracy Benchmarks
 
-| Benchmark | Metric | Result | Compression |
-|-----------|--------|--------|------------|
-| [Scrapinghub Extraction](https://huggingface.co/datasets/allenai/scrapinghub-article-extraction-benchmark) | Recall | **98.2%** | 94.9% |
-| Multi-Tool Agent (4 tools) | Accuracy | **100%** | 76.3% |
-| SmartCrusher (JSON) | Accuracy | **100%** | 87.6% |
+Headroom is evaluated on real OSS benchmarks — compression preserves accuracy.
 
-Full methodology: [Benchmarks](docs/benchmarks.md) | Run yourself: `python -m headroom.evals quick`
+**Standard Benchmarks** — Baseline (direct to API) vs Headroom (through proxy):
+
+| Benchmark | Category | N | Baseline | Headroom | Delta |
+|-----------|----------|---|----------|----------|-------|
+| [GSM8K](https://huggingface.co/datasets/openai/gsm8k) | Math | 100 | 0.870 | 0.870 | **0.000** |
+| [TruthfulQA](https://huggingface.co/datasets/truthfulqa/truthful_qa) | Factual | 100 | 0.530 | 0.560 | **+0.030** |
+
+**Compression Benchmarks** — Accuracy after compression + CCR (full stack):
+
+| Benchmark | Category | N | Accuracy | Compression | Method |
+|-----------|----------|---|----------|-------------|--------|
+| [SQuAD v2](https://huggingface.co/datasets/rajpurkar/squad_v2) | QA | 100 | **97%** | 19% | Before/After |
+| [BFCL](https://huggingface.co/datasets/gorilla-llm/Berkeley-Function-Calling-Leaderboard) | Tool/Function | 100 | **97%** | 32% | LLM-as-Judge |
+| Tool Outputs (built-in) | Agent | 8 | **100%** | 20% | Before/After |
+| CCR Needle Retention | Lossless | 50 | **100%** | 77% | Exact Match |
+
+Run it yourself:
+
+```bash
+# Quick smoke test (8 cases, ~10s)
+python -m headroom.evals quick -n 8 --provider openai --model gpt-4o-mini
+
+# Full Tier 1 suite (~$3, ~15 min)
+python -m headroom.evals suite --tier 1 -o eval_results/
+
+# CI mode (exit 1 on regression)
+python -m headroom.evals suite --tier 1 --ci
+```
+
+Full methodology: [Benchmarks](docs/benchmarks.md) | [Evals Framework](headroom/evals/README.md)
 
 ---
 
@@ -141,7 +166,7 @@ flowchart TB
   end
 
   subgraph Compressors["ContentRouter dispatches to"]
-    SC["SmartCrusher\nJSON arrays"]
+    SC["SmartCrusher\nAny JSON type"]
     CC["CodeCompressor\nAST-aware code"]
     LL["LLMLingua\nML-based text"]
   end
@@ -171,7 +196,7 @@ flowchart TB
 | Codebase exploration | 78,502 | 41,254 | **47%** |
 | GitHub issue triage | 54,174 | 14,761 | **73%** |
 
-**Overhead**: 1-5ms compression latency.
+**Overhead**: 15-200ms compression latency (net positive for Sonnet/Opus). Full data: [Latency Benchmarks](docs/LATENCY_BENCHMARKS.md)
 
 ---
 
@@ -195,7 +220,7 @@ flowchart TB
 | Feature | What it does |
 |---------|-------------|
 | **Content Router** | Auto-detects content type, routes to optimal compressor |
-| **SmartCrusher** | Statistically compresses JSON arrays — preserves errors, anomalies, boundaries |
+| **SmartCrusher** | Universal JSON compression — arrays of dicts, strings, numbers, mixed types, nested objects |
 | **CodeCompressor** | AST-aware compression for Python, JS, Go, Rust, Java, C++ |
 | **LLMLingua-2** | ML-based 20x text compression |
 | **CCR** | Reversible compression — LLM retrieves originals when needed |
@@ -206,7 +231,6 @@ flowchart TB
 | **Image Compression** | 40-90% token reduction via trained ML router |
 | **Memory** | Persistent memory across conversations |
 | **Compression Hooks** | Customize compression with pre/post hooks |
-| **Query Echo** | Re-injects user question after compressed data for better attention |
 
 ---
 
@@ -225,12 +249,12 @@ headroom proxy --backend openrouter                     # OpenRouter (400+ model
 
 ```bash
 pip install headroom-ai                # Core library
-pip install "headroom-ai[all]"         # Everything (recommended)
+pip install "headroom-ai[all]"         # Everything including evals (recommended)
 pip install "headroom-ai[proxy]"       # Proxy server
 pip install "headroom-ai[mcp]"         # MCP for Claude Code
 pip install "headroom-ai[agno]"        # Agno integration
 pip install "headroom-ai[langchain]"   # LangChain (experimental)
-pip install "headroom-ai[evals]"       # Evaluation framework
+pip install "headroom-ai[evals]"       # Evaluation framework only
 ```
 
 Python 3.10+
@@ -246,6 +270,8 @@ Python 3.10+
 | [Architecture](docs/ARCHITECTURE.md) | How the pipeline works |
 | [CCR Guide](docs/ccr.md) | Reversible compression |
 | [Benchmarks](docs/benchmarks.md) | Accuracy validation |
+| [Latency Benchmarks](docs/LATENCY_BENCHMARKS.md) | Compression overhead & cost-benefit analysis |
+| [Limitations](docs/LIMITATIONS.md) | When compression helps, when it doesn't |
 | [Evals Framework](headroom/evals/README.md) | Prove compression preserves accuracy |
 | [Memory](docs/memory.md) | Persistent memory |
 | [Agno](docs/agno.md) | Agno agent framework |

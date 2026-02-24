@@ -1,0 +1,62 @@
+name: Evaluation Suite
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday 6am UTC
+  workflow_dispatch:       # Manual trigger
+  pull_request:
+    paths:
+      - 'headroom/transforms/**'
+      - 'headroom/evals/**'
+      - 'headroom/compress.py'
+
+jobs:
+  # Fast smoke test on PRs touching compression code (~$0.05, ~2 min)
+  smoke-test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[all]"
+      - name: Run CCR round-trip (zero cost)
+        run: |
+          python -c "
+          from headroom.evals.runners.compression_only import CompressionOnlyRunner
+          runner = CompressionOnlyRunner()
+          cases = runner.generate_ccr_test_cases(n=50)
+          result = runner.evaluate_ccr_lossless(cases)
+          print(f'CCR Round-trip: {result.passed_cases}/{result.total_cases} passed')
+          assert result.passed, f'CCR failures: {result.errors}'
+          "
+      - name: Run built-in tool output eval
+        run: python -m headroom.evals quick -n 8 --provider openai --model gpt-4o-mini
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  # Full Tier 1 suite, weekly or manual (~$3-5, ~30-45 min)
+  weekly-suite:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -e ".[all]"
+      - name: Run Tier 1 evaluation suite
+        run: python -m headroom.evals suite --tier 1 --ci -o eval_results/
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_number }}
+          path: eval_results/

@@ -176,6 +176,53 @@ Tokens Saved:           {total_original - total_compressed:,} ({(total_original 
         print(f"Results saved to: {args.output}")
 
 
+def cmd_suite(args: argparse.Namespace) -> None:
+    """Run tiered evaluation suite."""
+    from headroom.evals.reports.report_card import save_reports
+    from headroom.evals.suite_runner import SuiteRunner
+
+    tiers = list(range(1, args.tier + 1))
+
+    print("=" * 60)
+    print("HEADROOM EVALUATION SUITE")
+    print("=" * 60)
+    print(f"Model: {args.model}")
+    print(f"Tiers: {tiers}")
+    print(f"Budget: ${args.budget:.2f}")
+    print(f"Port: {args.port}")
+    print("=" * 60)
+
+    runner = SuiteRunner(
+        model=args.model,
+        tiers=tiers,
+        budget_usd=args.budget,
+        headroom_port=args.port,
+        auto_start_proxy=not args.no_proxy,
+    )
+
+    result = runner.run()
+
+    # Save reports
+    if args.output:
+        paths = save_reports(result, args.output)
+        print("\nReports saved:")
+        for fmt, path in paths.items():
+            print(f"  {fmt}: {path}")
+
+    # CI mode: exit 1 if any benchmark failed
+    if args.ci and not result.all_passed:
+        failed = [b.name for b in result.benchmarks if not b.passed]
+        print(f"\nCI FAILURE: {len(failed)} benchmark(s) failed: {', '.join(failed)}")
+        sys.exit(1)
+
+    if result.all_passed:
+        print("\nAll benchmarks PASSED.")
+    else:
+        failed = [b.name for b in result.benchmarks if not b.passed]
+        print(f"\nWARNING: {len(failed)} benchmark(s) failed: {', '.join(failed)}")
+        sys.exit(1)
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     """Generate HTML report from results."""
     import json
@@ -321,6 +368,14 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Load API keys from .env
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(
         description="Headroom Evaluation Framework - Prove compression preserves accuracy",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -333,6 +388,9 @@ Examples:
   python -m headroom.evals benchmark --dataset hotpotqa -n 50
   python -m headroom.evals benchmark --dataset rag      # Run all RAG datasets
   python -m headroom.evals benchmark --dataset all      # Run ALL datasets
+  python -m headroom.evals suite --tier 1               # Run Tier 1 suite (~$3)
+  python -m headroom.evals suite --tier 2               # Run Tiers 1+2 (~$8)
+  python -m headroom.evals suite --tier 1 --ci          # CI mode (exit 1 on fail)
   python -m headroom.evals report -i results.json       # Generate HTML report
 
 Available datasets by category:
@@ -342,7 +400,7 @@ Available datasets by category:
   Code:         codesearchnet, humaneval
 
 Install dependencies:
-  pip install headroom-ai[evals]
+  pip install headroom-ai[all]
 """,
     )
 
@@ -373,6 +431,27 @@ Install dependencies:
     bench_parser.add_argument("--semantic", action="store_true", help="Enable semantic similarity")
     bench_parser.add_argument("-o", "--output", help="Output file for results (JSON)")
     bench_parser.set_defaults(func=cmd_benchmark)
+
+    # Suite command
+    suite_parser = subparsers.add_parser(
+        "suite", help="Run tiered evaluation suite (the main entrypoint)"
+    )
+    suite_parser.add_argument(
+        "--tier",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        help="Max tier to run: 1=core (~$3), 2=extended (~$8), 3=full (~$17)",
+    )
+    suite_parser.add_argument("--model", default="gpt-4o-mini", help="Model (default: gpt-4o-mini)")
+    suite_parser.add_argument(
+        "--budget", type=float, default=20.0, help="Budget in USD (default: $20)"
+    )
+    suite_parser.add_argument("--port", type=int, default=8787, help="Headroom proxy port")
+    suite_parser.add_argument("--ci", action="store_true", help="CI mode: exit 1 on any failure")
+    suite_parser.add_argument("--no-proxy", action="store_true", help="Don't auto-start proxy")
+    suite_parser.add_argument("-o", "--output", help="Output directory for reports")
+    suite_parser.set_defaults(func=cmd_suite)
 
     # Report command
     report_parser = subparsers.add_parser("report", help="Generate HTML report")

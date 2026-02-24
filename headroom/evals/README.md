@@ -1,333 +1,260 @@
 # Headroom Evaluation Framework
 
-**Prove that compression preserves LLM accuracy through rigorous before/after testing.**
+**Prove that compression preserves LLM accuracy through rigorous OSS benchmarks.**
+
+## Results
+
+### Standard Benchmarks — "No Accuracy Loss"
+
+| Benchmark | Category | N | Baseline | Headroom | Delta |
+|-----------|----------|---|----------|----------|-------|
+| [GSM8K](https://huggingface.co/datasets/openai/gsm8k) | Math | 100 | 0.870 | 0.870 | **0.000** |
+| [TruthfulQA](https://huggingface.co/datasets/truthfulqa/truthful_qa) | Factual | 100 | 0.530 | 0.560 | **+0.030** |
+
+### Compression Benchmarks — "Big Savings, Accuracy Preserved"
+
+| Benchmark | Category | N | Accuracy | Compression | Method |
+|-----------|----------|---|----------|-------------|--------|
+| [SQuAD v2](https://huggingface.co/datasets/rajpurkar/squad_v2) | QA | 100 | **97%** | 19% | Before/After |
+| [BFCL](https://huggingface.co/datasets/gorilla-llm/Berkeley-Function-Calling-Leaderboard) | Tool/Function | 100 | **97%** | 32% | LLM-as-Judge |
+| Tool Outputs (built-in) | Agent | 8 | **100%** | 20% | Before/After + Proxy |
+| CCR Needle Retention | Lossless | 50 | **100%** | 77% | Exact Match |
+
+Model: `gpt-4o-mini` | Suite cost: ~$3 | Duration: ~15 min
 
 ## Installation
 
 ```bash
-pip install headroom-ai[evals]
+pip install "headroom-ai[all]"    # Everything including evals (recommended)
+pip install "headroom-ai[evals]"  # Evaluation framework only
 ```
-
-This installs:
-- `datasets` - HuggingFace datasets for benchmark data
-- `sentence-transformers` - Semantic similarity computation
-- `numpy` & `scikit-learn` - ML metrics
-- `anthropic` & `openai` - LLM API clients
 
 ## Quick Start
 
-### CLI Usage
+### Run the Evaluation Suite
 
 ```bash
-# Quick sanity check (5 samples, uses Anthropic Claude)
-python -m headroom.evals quick
+# Quick smoke test (8 cases, ~10s)
+python -m headroom.evals quick -n 8 --provider openai --model gpt-4o-mini
+
+# Full Tier 1 suite (~$3, ~15 min) — requires proxy running
+python -m headroom.evals suite --tier 1 -o eval_results/
+
+# Extended suite (Tiers 1+2, ~$8, ~1 hr)
+python -m headroom.evals suite --tier 2 -o eval_results/
+
+# CI mode — exit 1 on any regression
+python -m headroom.evals suite --tier 1 --ci
 
 # List all available datasets
 python -m headroom.evals list
-
-# Run benchmark on specific dataset
-python -m headroom.evals benchmark --dataset hotpotqa -n 50
-
-# Run all RAG datasets
-python -m headroom.evals benchmark --dataset rag
-
-# Run ALL datasets (comprehensive)
-python -m headroom.evals benchmark --dataset all -o results.json
-
-# Generate HTML report
-python -m headroom.evals report -i results.json
 ```
+
+### Running with the Proxy (Recommended)
+
+For the most accurate evaluation, run through the Headroom proxy which provides
+the full stack: compression + CCR retrieval + cache alignment.
+
+```bash
+# Terminal 1: Start the proxy
+headroom proxy --port 8787
+
+# Terminal 2: Run evals (auto-detects proxy)
+python -m headroom.evals suite --tier 1 -o eval_results/
+```
+
+Without the proxy, the eval runner falls back to local compression only (no CCR).
 
 ### Python API
 
 ```python
-from headroom.evals import run_quick_eval, BeforeAfterRunner, LLMConfig
-from headroom.evals import load_hotpotqa, load_squad, load_tool_output_samples
+from headroom.evals.suite_runner import SuiteRunner
+from headroom.evals.reports.report_card import save_reports
 
-# Quick evaluation
-results = run_quick_eval(n_samples=5)
-print(results.summary())
+# Run Tier 1 suite
+runner = SuiteRunner(model="gpt-4o-mini", tiers=[1])
+result = runner.run()
 
-# Custom evaluation
-runner = BeforeAfterRunner(
-    llm_config=LLMConfig(provider="anthropic", model="claude-sonnet-4-20250514"),
-    use_semantic_similarity=True,
-)
-
-# Load a dataset
-suite = load_hotpotqa(n=100)
-
-# Run evaluation
-results = runner.run(suite, progress_callback=lambda cur, tot, r: print(f"{cur}/{tot}"))
-print(results.summary())
+# Save Markdown, JSON, and HTML reports
+save_reports(result, "eval_results/")
 ```
 
-## The Before/After Evaluation Pattern
+## Evaluation Tiers
 
-This framework proves compression accuracy through a simple but rigorous pattern:
+### Tier 1: Core Report Card (~$3, ~15 min)
+
+| Benchmark | Runner | What It Tests |
+|-----------|--------|---------------|
+| GSM8K | lm-eval harness | Math reasoning accuracy |
+| TruthfulQA | lm-eval harness | Factual accuracy |
+| MMLU | lm-eval harness | 57-subject knowledge |
+| ARC-Challenge | lm-eval harness | Science reasoning |
+| HumanEval | lm-eval harness | Code generation |
+| SQuAD v2 | Before/After | Reading comprehension with compression |
+| BFCL | LLM-as-Judge | Function calling with compressed schemas |
+| Tool Outputs | Before/After + Proxy | Agent tool output compression |
+| CCR Needle Retention | Compression-only | Lossless anomaly preservation |
+
+### Tier 2: Extended (~$5 more, ~30 min)
+
+| Benchmark | Runner | What It Tests |
+|-----------|--------|---------------|
+| HotpotQA | Before/After | Multi-hop QA with compressed passages |
+| MS MARCO | Before/After | RAG with compressed search results |
+| CodeSearchNet | Before/After | Code understanding after compression |
+| Info Retention | Compression-only | Probe fact survival in compressed output |
+
+### Tier 3: Deep Dive (~$9 more, ~45 min)
+
+| Benchmark | Runner | What It Tests |
+|-----------|--------|---------------|
+| HellaSwag | lm-eval harness | Commonsense reasoning |
+| NarrativeQA | Before/After | Long narrative comprehension |
+| TriviaQA | Before/After | Factoid QA at scale |
+
+## Evaluation Methods
+
+### Before/After (Default)
+
+Compares LLM responses on original vs. compressed context:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    BEFORE/AFTER EVAL                        │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   Original Context ────────┐                                │
-│   (e.g., 10,000 tokens)    │                                │
-│                            ▼                                │
-│                      ┌─────────┐                            │
-│                      │   LLM   │───► Response A             │
-│                      └─────────┘                            │
-│                            ▲                                │
-│   Compressed Context ──────┘                                │
-│   (e.g., 3,000 tokens)     │                                │
-│                            ▼                                │
-│                      ┌─────────┐                            │
-│                      │   LLM   │───► Response B             │
-│                      └─────────┘                            │
-│                                                             │
-│   Compare A vs B:                                           │
-│   • F1 Score (token overlap)                               │
-│   • Semantic Similarity (embedding cosine)                  │
-│   • Ground Truth Match (if available)                       │
-│   • Exact Match (normalized)                               │
-│                                                             │
-│   Result: PASS if responses are functionally equivalent     │
-│           FAIL if compression lost critical information     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+Original Context ──► LLM ──► Response A
+                                         ├─► Compare (F1, semantic sim, GT match)
+Compressed Context ──► LLM ──► Response B
 ```
+
+When the Headroom proxy is running, the "compressed" path goes through the full
+stack (compression + CCR tool injection + cache alignment), which is the real
+production experience.
+
+### LLM-as-Judge (for BFCL, tool use)
+
+Uses an LLM judge to compare the compressed response against ground truth
+semantically. This handles cases where the same correct answer can be expressed
+in different formats (function call JSON vs natural language computation).
+
+```
+Compressed Context ──► LLM ──► Response ──► LLM Judge ──► Score 1-5
+                                                  ▲
+                                          Ground Truth
+```
+
+Score >= 3 ("partially correct or better") = PASS. This means the compressed
+context preserved enough information for the LLM to reach the right answer.
+
+### Compression-Only (Zero Cost)
+
+Tests compression quality without any LLM API calls:
+- **CCR Needle Retention**: Compress JSON arrays, verify errors/anomalies survive
+- **Information Retention**: Compress and check if probe facts are preserved
 
 ## Available Datasets
 
-### RAG / Retrieval (5 datasets)
+### RAG / Retrieval
 
 | Dataset | Description | Default N |
 |---------|-------------|-----------|
-| `hotpotqa` | Multi-hop QA requiring reasoning over multiple Wikipedia passages | 100 |
+| `hotpotqa` | Multi-hop QA over multiple Wikipedia passages | 100 |
 | `natural_questions` | Real Google search questions with Wikipedia answers | 100 |
 | `triviaqa` | Large-scale trivia QA with evidence documents | 100 |
 | `msmarco` | Real Bing search queries with relevant passages | 100 |
-| `squad` | SQuAD v2 reading comprehension with extractive answers | 100 |
+| `squad` | SQuAD v2 reading comprehension | 100 |
 
-### Long Context (2 datasets)
+### Tool Use
+
+| Dataset | Description | Default N |
+|---------|-------------|-----------|
+| `bfcl` | Berkeley Function Calling Leaderboard | 100 |
+| `toolbench` | Real-world API tool usage scenarios | 100 |
+| `tool_outputs` | Built-in realistic tool outputs (JSON, logs, etc.) | 8 |
+
+### Long Context
 
 | Dataset | Description | Default N |
 |---------|-------------|-----------|
 | `longbench` | Long context understanding (4K-128K tokens) | 50 |
-| `narrativeqa` | Story comprehension requiring narrative understanding | 100 |
+| `narrativeqa` | Story comprehension | 100 |
 
-### Tool Use (3 datasets)
-
-| Dataset | Description | Default N |
-|---------|-------------|-----------|
-| `bfcl` | Berkeley Function Calling Leaderboard - API schemas | 100 |
-| `toolbench` | Real-world API tool usage scenarios | 100 |
-| `tool_outputs` | Built-in realistic tool outputs (JSON, logs, etc.) | 8 |
-
-### Code (2 datasets)
+### Code
 
 | Dataset | Description | Default N |
 |---------|-------------|-----------|
-| `codesearchnet` | Code snippets with natural language descriptions | 100 |
-| `humaneval` | Hand-crafted programming problems (OpenAI) | 164 |
+| `codesearchnet` | Code snippets with descriptions | 100 |
+| `humaneval` | Programming problems (OpenAI) | 164 |
 
 ## Metrics
 
-### F1 Score
-Token-level overlap between original and compressed responses.
-```
-F1 = 2 * (precision * recall) / (precision + recall)
-```
-A score of 1.0 means identical tokens, 0.0 means no overlap.
-
-### Semantic Similarity
-Cosine similarity between sentence embeddings (using `all-MiniLM-L6-v2`).
-Range: 0.0 to 1.0, where 1.0 = semantically identical.
-
-### Exact Match
-Boolean indicating if responses are identical after normalization.
-
-### Ground Truth Match
-Checks if the compressed response contains the known correct answer.
-
-### Accuracy Preserved
-Overall verdict: `True` if ANY of:
-- F1 > 0.7
-- Semantic Similarity > 0.85
-- Contains Ground Truth
-
-## Programmatic Usage
-
-### Loading Datasets
-
-```python
-from headroom.evals import (
-    load_hotpotqa,
-    load_natural_questions,
-    load_triviaqa,
-    load_msmarco,
-    load_squad,
-    load_longbench,
-    load_narrativeqa,
-    load_bfcl,
-    load_toolbench,
-    load_codesearchnet,
-    load_humaneval,
-    load_tool_output_samples,
-    load_dataset_by_name,
-    list_available_datasets,
-)
-
-# Load specific dataset
-suite = load_hotpotqa(n=50)
-
-# Load by name (useful for dynamic loading)
-suite = load_dataset_by_name("msmarco", n=100)
-
-# List all datasets by category
-datasets = list_available_datasets()
-# {'rag': ['hotpotqa', 'natural_questions', ...], 'tool_use': [...], ...}
-```
-
-### Custom Datasets
-
-```python
-from headroom.evals import EvalCase, EvalSuite, load_custom_dataset
-
-# Create custom cases
-cases = [
-    EvalCase(
-        id="my_case_001",
-        context="Long document content here...",
-        query="What is the main point?",
-        ground_truth="The main point is X",
-        metadata={"source": "my_data"},
-    ),
-]
-suite = EvalSuite(name="MyDataset", cases=cases)
-
-# Or load from JSONL file
-suite = load_custom_dataset("my_data.jsonl")
-```
-
-JSONL format:
-```json
-{"id": "case_001", "context": "...", "query": "...", "ground_truth": "..."}
-{"id": "case_002", "context": "...", "query": "...", "ground_truth": "..."}
-```
-
-### Configuring the Runner
-
-```python
-from headroom.evals import BeforeAfterRunner, LLMConfig
-from headroom.transforms import SmartCrusherConfig
-
-runner = BeforeAfterRunner(
-    llm_config=LLMConfig(
-        provider="anthropic",  # or "openai", "ollama"
-        model="claude-sonnet-4-20250514",
-        temperature=0.0,  # Deterministic for reproducibility
-        max_tokens=1024,
-    ),
-    crusher_config=SmartCrusherConfig(
-        target_ratio=0.5,
-        preserve_structure=True,
-    ),
-    use_semantic_similarity=True,  # Requires sentence-transformers
-)
-```
-
-### Computing Metrics Directly
-
-```python
-from headroom.evals import (
-    compute_f1,
-    compute_exact_match,
-    compute_semantic_similarity,
-    compute_answer_equivalence,
-    compute_rouge_l,
-    compute_information_recall,
-)
-
-# Compare two responses
-f1 = compute_f1("The answer is 42", "The answer is forty-two")
-exact = compute_exact_match("yes", "YES")  # True (normalized)
-semantic = compute_semantic_similarity("The cat sat", "A feline was sitting")
-
-# Comprehensive equivalence check
-result = compute_answer_equivalence(
-    response_a="The capital is Paris",
-    response_b="Paris is the capital",
-    ground_truth="Paris",
-)
-# {'exact_match': False, 'f1_score': 0.8, 'semantic_similarity': 0.95, 'equivalent': True}
-
-# Information recall (check if facts survived compression)
-recall = compute_information_recall(
-    original_context="John Smith was born in 1990 in New York",
-    compressed_context="J. Smith born 1990 NY",
-    probe_facts=["John Smith", "1990", "New York"],
-)
-# {'recall': 0.67, 'facts_lost': ['John Smith']}
-```
+| Metric | Description | Pass Threshold |
+|--------|-------------|----------------|
+| F1 Score | Token overlap between responses | > 0.7 |
+| Semantic Similarity | Embedding cosine similarity | > 0.85 |
+| Ground Truth Match | Answer present in response | True |
+| LLM Judge Score | 1-5 semantic correctness scale | >= 3 |
+| Accuracy Preserved | Any of the above passes | True |
 
 ## CI/CD Integration
 
-```bash
-# Run quick eval and fail if accuracy < 90%
-python -m headroom.evals quick -n 10
-
-# Exit code: 0 if accuracy >= 90%, 1 otherwise
-```
-
 ```yaml
-# GitHub Actions example
-- name: Run Compression Evals
-  run: |
-    pip install headroom-ai[evals]
-    python -m headroom.evals quick -n 20
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+# .github/workflows/eval.yml
+name: Evaluation Suite
+
+on:
+  pull_request:
+    paths: ['headroom/transforms/**', 'headroom/evals/**']
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e ".[all]"
+      - name: CCR Round-trip (zero cost)
+        run: |
+          python -c "
+          from headroom.evals.runners.compression_only import CompressionOnlyRunner
+          r = CompressionOnlyRunner()
+          result = r.evaluate_ccr_lossless(r.generate_ccr_test_cases(50))
+          assert result.passed, f'CCR failures: {result.errors}'
+          print(f'CCR: {result.passed_cases}/{result.total_cases} PASS')
+          "
+      - name: Quick eval
+        run: python -m headroom.evals quick -n 8 --provider openai --model gpt-4o-mini
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
 ## Environment Variables
 
-- `ANTHROPIC_API_KEY` - Required for Anthropic Claude models
-- `OPENAI_API_KEY` - Required for OpenAI models
-- No key needed for Ollama (local models)
+Set in `.env` at project root (auto-loaded by the suite runner):
 
-## Interpretation Guide
-
-### Ideal Results
 ```
-Accuracy Preservation: 95%+
-Average F1: 0.85+
-Average Semantic Similarity: 0.90+
-Compression Ratio: 40-70%
+OPENAI_API_KEY=sk-...      # Required for OpenAI models
+ANTHROPIC_API_KEY=sk-ant-... # Required for Anthropic models
 ```
-
-### Warning Signs
-- Accuracy < 90% → Compression may be too aggressive
-- F1 < 0.7 → Significant token loss
-- Semantic Similarity < 0.85 → Meaning drift
-
-### Troubleshooting
-1. **Low accuracy on specific dataset**: Try adjusting `target_ratio` in SmartCrusherConfig
-2. **Semantic similarity unavailable**: Install `sentence-transformers`
-3. **Dataset loading fails**: Ensure `datasets` package is installed
 
 ## Architecture
 
 ```
 headroom/evals/
-├── __init__.py          # Public API exports
-├── __main__.py          # CLI entry point
-├── core.py              # EvalCase, EvalResult, EvalSuite
-├── datasets.py          # Dataset loaders (HF + built-in)
-├── metrics.py           # F1, semantic similarity, etc.
+├── __init__.py              # Public API
+├── __main__.py              # CLI (quick, list, benchmark, suite, report)
+├── core.py                  # EvalCase, EvalResult, EvalSuite
+├── datasets.py              # 12 dataset loaders (HuggingFace + built-in)
+├── metrics.py               # F1, semantic similarity, ROUGE-L, BLEU
+├── cost_tracker.py          # API spend tracking + budget enforcement
+├── suite_runner.py          # Tiered suite orchestrator (16 benchmarks)
+├── comprehensive_benchmark.py  # EleutherAI lm-eval harness wrapper
 ├── runners/
-│   ├── __init__.py
-│   └── before_after.py  # BeforeAfterRunner
-└── reports/
-    └── __init__.py
+│   ├── before_after.py      # Before/After + LLM-as-Judge + proxy support
+│   └── compression_only.py  # Zero-cost CCR + info retention evals
+├── reports/
+│   └── report_card.py       # Markdown, JSON, HTML report generation
+└── memory/
+    ├── judge.py             # LLM-as-judge (OpenAI, Anthropic, LiteLLM)
+    └── runner*.py           # Memory-specific evaluation
 ```

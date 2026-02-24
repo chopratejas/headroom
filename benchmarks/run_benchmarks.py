@@ -22,7 +22,8 @@ Usage:
     python benchmarks/run_benchmarks.py --save-baseline baseline.json
 
 Available Suites:
-    all         - Run all benchmark suites
+    all         - Run all benchmark suites (transforms + relevance)
+    latency     - Compression overhead & cost-benefit analysis (standalone)
     transforms  - SmartCrusher, CacheAligner, RollingWindow
     relevance   - BM25Scorer, HybridScorer
     crusher     - SmartCrusher only
@@ -46,6 +47,7 @@ BENCHMARK_SUITES = {
         "benchmarks/bench_transforms.py",
         "benchmarks/bench_relevance.py",
     ],
+    "latency": [],  # Standalone script: python benchmarks/bench_latency.py
     "transforms": [
         "benchmarks/bench_transforms.py",
     ],
@@ -334,6 +336,18 @@ def main() -> int:
 
     # Handle save-baseline as alias
     json_output = args.json or args.save_baseline
+
+    # Latency suite is a standalone script, not pytest-benchmark
+    if args.suite == "latency":
+        cmd = [sys.executable, "benchmarks/bench_latency.py"]
+        if args.output:
+            cmd.extend(["--output", args.output])
+        if json_output:
+            cmd.extend(["--json", json_output])
+        if args.verbose:
+            cmd.append("-v")
+        print("Delegating to latency benchmark script...")
+        return subprocess.run(cmd).returncode
 
     # Run benchmarks
     exit_code, results = run_benchmarks(

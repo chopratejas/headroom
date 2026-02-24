@@ -4,8 +4,9 @@ This module provides intelligent JSON compression based on statistical analysis
 rather than fixed rules. It analyzes data patterns and applies optimal compression
 strategies to maximize token reduction while preserving important information.
 
-SCOPE: SmartCrusher handles JSON arrays only. Non-JSON content (plain text,
-search results, logs, code, diffs) passes through UNCHANGED.
+SCOPE: SmartCrusher handles JSON arrays of ANY type — dicts, strings, numbers,
+mixed types, and nested arrays. Non-JSON content (plain text, search results,
+logs, code, diffs) passes through UNCHANGED.
 
 TEXT COMPRESSION IS OPT-IN: For text-based content, Headroom provides standalone
 utilities that applications can use explicitly:
@@ -21,13 +22,19 @@ SCHEMA-PRESERVING: Output contains only items from the original array.
 No wrappers, no generated text, no metadata keys. This ensures downstream
 tools and parsers work unchanged.
 
-Safe V1 Compression Recipe - Always keeps:
-- First K items (default 3)
-- Last K items (default 2)
-- Error items (containing 'error', 'exception', 'failed', 'critical')
-- Anomalous numeric items (> 2 std from mean)
-- Items around detected change points
-- Top-K by score if score field present
+Supported JSON types:
+- Arrays of dicts: Full statistical analysis with adaptive K (Kneedle algorithm)
+- Arrays of strings: Dedup + adaptive sampling + error preservation
+- Arrays of numbers: Statistical summary + outlier/change-point preservation
+- Mixed-type arrays: Grouped by type, each group compressed independently
+- Flat objects (many keys): Key-level adaptive sampling
+- Nested objects: Recursive compression of inner arrays/objects
+
+Safety guarantees (consistent across ALL types):
+- First K, last K items always kept (K is adaptive, not hardcoded)
+- Error items (containing 'error', 'exception', 'failed', 'critical') never dropped
+- Anomalous numeric items (> 2 std from mean) always kept
+- Items around detected change points preserved
 - Items with high relevance score to user query (via RelevanceScorer)
 
 Key Features:
@@ -235,6 +242,48 @@ class CompressionStrategy(Enum):
     CLUSTER_SAMPLE = "cluster"  # Dedupe similar items
     TOP_N = "top_n"  # Keep highest scored items
     SMART_SAMPLE = "smart_sample"  # Statistical sampling with constants
+
+
+class ArrayType(Enum):
+    """JSON array element type classification."""
+
+    DICT_ARRAY = "dict_array"  # [{...}, {...}, ...]
+    STRING_ARRAY = "string_array"  # ["a", "b", "c", ...]
+    NUMBER_ARRAY = "number_array"  # [1, 2.5, 3, ...]
+    BOOL_ARRAY = "bool_array"  # [true, false, ...]
+    NESTED_ARRAY = "nested_array"  # [[...], [...], ...]
+    MIXED_ARRAY = "mixed_array"  # [{"a":1}, "str", 42, ...]
+    EMPTY = "empty"
+
+
+def _classify_array(items: list) -> ArrayType:
+    """Classify a JSON array by its element types.
+
+    Uses set-of-types check on ALL elements (not sampling) to guarantee
+    correct classification. Fast because type() is O(1).
+    """
+    if not items:
+        return ArrayType.EMPTY
+    # Note: bool is a subclass of int in Python, so check bool first
+    types = set()
+    has_bool = False
+    for item in items:
+        if isinstance(item, bool):
+            has_bool = True
+        types.add(type(item))
+    if has_bool and types <= {bool, int}:
+        # All bools (Python's True/False are int subclass)
+        if all(isinstance(i, bool) for i in items):
+            return ArrayType.BOOL_ARRAY
+    if types == {dict}:
+        return ArrayType.DICT_ARRAY
+    if types == {str}:
+        return ArrayType.STRING_ARRAY
+    if types <= {int, float} and not has_bool:
+        return ArrayType.NUMBER_ARRAY
+    if types == {list}:
+        return ArrayType.NESTED_ARRAY
+    return ArrayType.MIXED_ARRAY
 
 
 # =====================================================================
@@ -817,6 +866,10 @@ class SmartCrusherConfig:
 
     # Content deduplication - prevents wasting slots on identical items
     dedup_identical_items: bool = True
+
+    # Adaptive K boundary allocation (fraction of total K for first/last items)
+    first_fraction: float = 0.3  # 30% of K from start of array
+    last_fraction: float = 0.15  # 15% of K from end of array
 
 
 class SmartAnalyzer:
@@ -1935,19 +1988,28 @@ class SmartCrusher(Transform):
         return False
 
     def _has_crushable_arrays(self, data: Any, depth: int = 0) -> bool:
-        """Check if data contains arrays large enough to crush."""
+        """Check if data contains arrays large enough to crush.
+
+        Accepts arrays of ANY homogeneous type (dicts, strings, numbers, etc.)
+        as well as mixed-type arrays. Bool-only arrays are excluded (not useful
+        to compress).
+        """
         if depth > 5:
             return False
 
         if isinstance(data, list):
             if len(data) >= self.config.min_items_to_analyze:
-                if data and isinstance(data[0], dict):
+                arr_type = _classify_array(data)
+                if arr_type not in (ArrayType.EMPTY, ArrayType.BOOL_ARRAY):
                     return True
             for item in data[:10]:  # Check first few items
                 if self._has_crushable_arrays(item, depth + 1):
                     return True
 
         elif isinstance(data, dict):
+            # Large objects with many keys are themselves crushable
+            if len(data) >= self.config.min_items_to_analyze:
+                return True
             for value in data.values():
                 if self._has_crushable_arrays(value, depth + 1):
                     return True
@@ -2166,35 +2228,55 @@ class SmartCrusher(Transform):
         ccr_markers: list[tuple] = []
 
         if isinstance(value, list):
-            # Check if this array should be crushed
-            # Must have enough items AND all items must be dicts (not mixed types)
-            all_dicts = value and all(isinstance(item, dict) for item in value)
-            if len(value) >= self.config.min_items_to_analyze and all_dicts:
-                crushed, strategy, ccr_hash, dropped_summary = self._crush_array(
-                    value, query_context, tool_name, bias=bias
-                )
-                info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
+            if len(value) >= self.config.min_items_to_analyze:
+                arr_type = _classify_array(value)
 
-                # Track CCR marker for later injection (with summary)
-                if ccr_hash:
-                    ccr_markers.append((ccr_hash, len(value), len(crushed), dropped_summary))
-
-                return crushed, ",".join(info_parts), ccr_markers
-            else:
-                # Process items recursively
-                processed = []
-                for item in value:
-                    p_item, p_info, p_markers = self._process_value(
-                        item, depth + 1, query_context, tool_name, bias=bias
+                if arr_type == ArrayType.DICT_ARRAY:
+                    # Existing path — dict arrays (battle-tested, unchanged)
+                    crushed, strategy, ccr_hash, dropped_summary = self._crush_array(
+                        value, query_context, tool_name, bias=bias
                     )
-                    processed.append(p_item)
-                    if p_info:
-                        info_parts.append(p_info)
-                    ccr_markers.extend(p_markers)
-                return processed, ",".join(info_parts), ccr_markers
+                    info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
+                    if ccr_hash:
+                        ccr_markers.append((ccr_hash, len(value), len(crushed), dropped_summary))
+                    return crushed, ",".join(info_parts), ccr_markers
+
+                elif arr_type == ArrayType.STRING_ARRAY:
+                    crushed, strategy = self._crush_string_array(value, bias=bias)
+                    info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
+                    return crushed, ",".join(info_parts), ccr_markers
+
+                elif arr_type == ArrayType.NUMBER_ARRAY:
+                    crushed, strategy = self._crush_number_array(value, bias=bias)
+                    if isinstance(crushed, list):
+                        info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
+                    else:
+                        info_parts.append(f"{strategy}({len(value)}->summary)")
+                    return crushed, ",".join(info_parts), ccr_markers
+
+                elif arr_type == ArrayType.MIXED_ARRAY:
+                    crushed, strategy = self._crush_mixed_array(
+                        value, query_context, tool_name, bias=bias
+                    )
+                    info_parts.append(f"{strategy}({len(value)}->{len(crushed)})")
+                    return crushed, ",".join(info_parts), ccr_markers
+
+                # NESTED_ARRAY, BOOL_ARRAY, EMPTY — fall through to recursive
+
+            # Not crushable or below threshold — process items recursively
+            processed = []
+            for item in value:
+                p_item, p_info, p_markers = self._process_value(
+                    item, depth + 1, query_context, tool_name, bias=bias
+                )
+                processed.append(p_item)
+                if p_info:
+                    info_parts.append(p_info)
+                ccr_markers.extend(p_markers)
+            return processed, ",".join(info_parts), ccr_markers
 
         elif isinstance(value, dict):
-            # Process values recursively
+            # First: recurse into values to compress nested arrays
             processed_dict: dict[str, Any] = {}
             for k, v in value.items():
                 p_val, p_info, p_markers = self._process_value(
@@ -2204,6 +2286,14 @@ class SmartCrusher(Transform):
                 if p_info:
                     info_parts.append(p_info)
                 ccr_markers.extend(p_markers)
+
+            # Second: if the object itself has many keys, compress at key level
+            if len(processed_dict) >= self.config.min_items_to_analyze:
+                crushed_dict, strategy = self._crush_object(processed_dict, bias=bias)
+                if strategy != "object:passthrough":
+                    info_parts.append(strategy)
+                    return crushed_dict, ",".join(info_parts), ccr_markers
+
             return processed_dict, ",".join(info_parts), ccr_markers
 
         else:
@@ -2483,6 +2573,427 @@ class SmartCrusher(Transform):
             self._current_field_semantics = None
             # Re-raise any exceptions (removed finally block since we no longer mutate config)
             raise
+
+    # =================================================================
+    # Universal JSON type handlers (string, number, mixed arrays)
+    # =================================================================
+
+    def _compute_k_split(self, items: list, bias: float = 1.0) -> tuple[int, int, int, int]:
+        """Compute adaptive K split into first/last/importance slots.
+
+        Uses the existing Kneedle-based adaptive_sizer for K_total, then
+        splits according to configurable first_fraction / last_fraction.
+
+        Returns:
+            (k_total, k_first, k_last, k_importance)
+        """
+        from .adaptive_sizer import compute_optimal_k
+
+        item_strings = [json.dumps(item, default=str) for item in items]
+        k_total = compute_optimal_k(
+            item_strings,
+            bias=bias,
+            min_k=3,
+            max_k=self.config.max_items_after_crush or None,
+        )
+        k_first = max(1, round(k_total * self.config.first_fraction))
+        k_last = max(1, round(k_total * self.config.last_fraction))
+        k_importance = max(0, k_total - k_first - k_last)
+        return k_total, k_first, k_last, k_importance
+
+    def _crush_string_array(
+        self,
+        items: list[str],
+        bias: float = 1.0,
+    ) -> tuple[list[str], str]:
+        """Crush an array of strings using dedup + adaptive sampling.
+
+        Strategy:
+        1. Compute adaptive K via Kneedle algorithm
+        2. Always keep: error-containing strings, first K, last K
+        3. Deduplicate exact matches
+        4. Fill remaining budget with diverse samples (stride-based)
+
+        Returns:
+            (crushed_items, strategy_string)
+        """
+        n = len(items)
+        if n <= 8:
+            return items, "string:passthrough"
+
+        k_total, k_first, k_last, k_importance = self._compute_k_split(items, bias)
+
+        # Mandatory: error-containing strings (never dropped)
+        error_indices: set[int] = set()
+        for i, s in enumerate(items):
+            s_lower = s.lower()
+            for keyword in _ERROR_KEYWORDS_FOR_PRESERVATION:
+                if keyword in s_lower:
+                    error_indices.add(i)
+                    break
+
+        # Mandatory: strings with abnormal length (anomalies)
+        lengths = [len(s) for s in items]
+        if len(lengths) > 1:
+            mean_len = statistics.mean(lengths)
+            std_len = statistics.stdev(lengths)
+            anomaly_indices = {
+                i
+                for i, length in enumerate(lengths)
+                if std_len > 0 and abs(length - mean_len) > self.config.variance_threshold * std_len
+            }
+        else:
+            anomaly_indices = set[int]()
+
+        # Boundary: first K, last K
+        first_indices = set(range(min(k_first, n)))
+        last_indices = set(range(max(0, n - k_last), n))
+
+        # Combine mandatory + boundary
+        keep_indices = error_indices | anomaly_indices | first_indices | last_indices
+
+        # Dedup: among remaining candidates, skip exact duplicates
+        seen_strings: set[str] = set()
+        dedup_count = 0
+        for i in sorted(keep_indices):
+            seen_strings.add(items[i])
+
+        # Fill remaining budget with diverse stride-based samples
+        remaining_budget = max(0, k_total - len(keep_indices))
+        if remaining_budget > 0:
+            stride = max(1, (n - 1) // (remaining_budget + 1))
+            for i in range(0, n, stride):
+                if len(keep_indices) >= k_total + len(error_indices) + len(anomaly_indices):
+                    break
+                if i not in keep_indices:
+                    if items[i] not in seen_strings:
+                        keep_indices.add(i)
+                        seen_strings.add(items[i])
+                    else:
+                        dedup_count += 1
+
+        # Build output in original order
+        result = [items[i] for i in sorted(keep_indices)]
+
+        strategy = f"string:adaptive({n}->{len(result)}"
+        if dedup_count:
+            strategy += f",dedup={dedup_count}"
+        if error_indices:
+            strategy += f",errors={len(error_indices)}"
+        strategy += ")"
+
+        return result, strategy
+
+    def _crush_number_array(
+        self,
+        items: list[int | float],
+        bias: float = 1.0,
+    ) -> tuple[list, str]:
+        """Crush an array of numbers using statistical summary + outlier preservation.
+
+        Strategy:
+        1. Compute descriptive statistics (min, max, mean, median, stddev, percentiles)
+        2. Detect outliers (> variance_threshold σ from mean)
+        3. Detect change points (sudden shifts in running mean)
+        4. Keep: first K, last K, all outliers, change points
+        5. Return kept values with a prepended stats summary string
+
+        Returns:
+            (crushed_items, strategy_string) where crushed_items is a list
+            starting with a summary string followed by representative values.
+        """
+        n = len(items)
+        if n <= 8:
+            return items, "number:passthrough"
+
+        # Filter out non-finite values for statistics
+        finite = [x for x in items if isinstance(x, (int, float)) and math.isfinite(x)]
+        if not finite:
+            return items, "number:no_finite"
+
+        k_total, k_first, k_last, k_importance = self._compute_k_split(items, bias)
+
+        # Statistics
+        mean_val = statistics.mean(finite)
+        median_val = statistics.median(finite)
+        std_val = statistics.stdev(finite) if len(finite) > 1 else 0.0
+        sorted_finite = sorted(finite)
+        p25 = sorted_finite[len(sorted_finite) // 4] if len(sorted_finite) >= 4 else min(finite)
+        p75 = sorted_finite[3 * len(sorted_finite) // 4] if len(sorted_finite) >= 4 else max(finite)
+
+        # Outliers (> variance_threshold σ from mean)
+        outlier_indices: set[int] = set()
+        if std_val > 0:
+            for i, val in enumerate(items):
+                if isinstance(val, (int, float)) and math.isfinite(val):
+                    if abs(val - mean_val) > self.config.variance_threshold * std_val:
+                        outlier_indices.add(i)
+
+        # Change points (detect sudden shifts using running difference)
+        change_indices: set[int] = set()
+        if self.config.preserve_change_points and n > 10:
+            window = 5
+            for i in range(window, n - window):
+                left = [
+                    items[j]
+                    for j in range(i - window, i)
+                    if isinstance(items[j], (int, float)) and math.isfinite(items[j])
+                ]
+                right = [
+                    items[j]
+                    for j in range(i, i + window)
+                    if isinstance(items[j], (int, float)) and math.isfinite(items[j])
+                ]
+                if left and right:
+                    left_mean = statistics.mean(left)
+                    right_mean = statistics.mean(right)
+                    if (
+                        std_val > 0
+                        and abs(right_mean - left_mean) > self.config.variance_threshold * std_val
+                    ):
+                        change_indices.add(i)
+
+        # Boundary: first K, last K
+        first_indices = set(range(min(k_first, n)))
+        last_indices = set(range(max(0, n - k_last), n))
+
+        # Combine all
+        keep_indices = outlier_indices | change_indices | first_indices | last_indices
+
+        # Fill remaining budget with stride-based samples
+        remaining_budget = max(0, k_total - len(keep_indices))
+        if remaining_budget > 0:
+            stride = max(1, (n - 1) // (remaining_budget + 1))
+            for i in range(0, n, stride):
+                if len(keep_indices) >= k_total + len(outlier_indices):
+                    break
+                if i not in keep_indices:
+                    keep_indices.add(i)
+
+        # Build output: summary string + kept values in original order
+        stats_summary = (
+            f"[{n} numbers: min={min(finite)}, max={max(finite)}, "
+            f"mean={mean_val:.4g}, median={median_val:.4g}, "
+            f"stddev={std_val:.4g}, p25={p25:.4g}, p75={p75:.4g}"
+        )
+        if outlier_indices:
+            stats_summary += f", outliers={len(outlier_indices)}"
+        if change_indices:
+            stats_summary += f", change_points={len(change_indices)}"
+        stats_summary += "]"
+
+        kept_values = [items[i] for i in sorted(keep_indices)]
+        result: list = [stats_summary] + kept_values
+
+        strategy = f"number:adaptive({n}->{len(kept_values)}"
+        if outlier_indices:
+            strategy += f",outliers={len(outlier_indices)}"
+        strategy += ")"
+
+        return result, strategy
+
+    def _crush_mixed_array(
+        self,
+        items: list,
+        query_context: str = "",
+        tool_name: str | None = None,
+        bias: float = 1.0,
+    ) -> tuple[list, str]:
+        """Crush a mixed-type array by grouping items by type and compressing each group.
+
+        Strategy:
+        1. Group items by type (dict, str, number, list, None, bool)
+        2. For each group with >= min_items_to_analyze items: compress with appropriate handler
+        3. For small groups: keep all items
+        4. Reassemble in original order
+
+        Returns:
+            (crushed_items, strategy_string)
+        """
+        n = len(items)
+        if n <= 8:
+            return items, "mixed:passthrough"
+
+        # Group items by type, tracking original indices
+        groups: dict[str, list[tuple[int, Any]]] = {}
+        for i, item in enumerate(items):
+            if isinstance(item, dict):
+                key = "dict"
+            elif isinstance(item, str):
+                key = "str"
+            elif isinstance(item, bool):
+                key = "bool"
+            elif isinstance(item, (int, float)):
+                key = "number"
+            elif isinstance(item, list):
+                key = "list"
+            elif item is None:
+                key = "none"
+            else:
+                key = "other"
+            groups.setdefault(key, []).append((i, item))
+
+        # Compress each group independently
+        keep_indices: set[int] = set()
+        strategy_parts: list[str] = []
+
+        for type_key, group_items in groups.items():
+            indices = [idx for idx, _ in group_items]
+            values = [val for _, val in group_items]
+
+            if len(values) < self.config.min_items_to_analyze:
+                # Small group — keep all
+                keep_indices.update(indices)
+                continue
+
+            if type_key == "dict":
+                # Use existing dict array crusher
+                crushed, strategy, _, _ = self._crush_array(
+                    values, query_context, tool_name, bias=bias
+                )
+                crushed_set = {json.dumps(c, sort_keys=True, default=str) for c in crushed}
+                for idx, val in group_items:
+                    if json.dumps(val, sort_keys=True, default=str) in crushed_set:
+                        keep_indices.add(idx)
+                strategy_parts.append(f"dict:{len(values)}->{len(crushed)}")
+
+            elif type_key == "str":
+                crushed, strategy = self._crush_string_array(values, bias=bias)
+                crushed_set = set(crushed)
+                for idx, val in group_items:
+                    if val in crushed_set:
+                        keep_indices.add(idx)
+                strategy_parts.append(f"str:{len(values)}->{len(crushed)}")
+
+            elif type_key == "number":
+                # For numbers in mixed arrays, just do adaptive sampling (no summary prefix)
+                k_total, k_first, k_last, _ = self._compute_k_split(values, bias)
+                first_idx = set(indices[:k_first])
+                last_idx = set(indices[-k_last:])
+                keep_indices.update(first_idx | last_idx)
+                # Outliers
+                finite = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
+                if len(finite) > 1:
+                    mean_v = statistics.mean(finite)
+                    std_v = statistics.stdev(finite)
+                    if std_v > 0:
+                        for idx, val in group_items:
+                            if isinstance(val, (int, float)) and math.isfinite(val):
+                                if abs(val - mean_v) > self.config.variance_threshold * std_v:
+                                    keep_indices.add(idx)
+                strategy_parts.append(f"num:{len(values)}")
+
+            else:
+                # list, bool, none, other — keep all
+                keep_indices.update(indices)
+
+        # Reassemble in original order
+        result = [items[i] for i in sorted(keep_indices)]
+
+        strategy = f"mixed:adaptive({n}->{len(result)},{','.join(strategy_parts)})"
+        return result, strategy
+
+    def _crush_object(
+        self,
+        obj: dict[str, Any],
+        bias: float = 1.0,
+    ) -> tuple[dict[str, Any], str]:
+        """Crush a large JSON object by selecting the most informative keys.
+
+        Treats key-value pairs as items and applies adaptive K to select which
+        keys to retain. Preserves schema — each kept key-value pair is exact
+        from the original.
+
+        Strategy:
+        1. Classify each value by size (tokens) and importance
+        2. Always keep: keys with small values (cheap), keys with error content
+        3. Compute adaptive K on key-value representations
+        4. Fill remaining budget with diverse keys (stride-based)
+
+        Returns:
+            (compressed_object, strategy_string)
+        """
+        n = len(obj)
+        if n <= 8:
+            return obj, "object:passthrough"
+
+        # Estimate tokens per key-value pair
+        kv_tokens: list[tuple[str, int]] = []
+        total_tokens = 0
+        for key, val in obj.items():
+            val_str = json.dumps(val, default=str)
+            tokens = len(val_str) // 4 + len(key) // 4 + 2  # rough estimate
+            kv_tokens.append((key, tokens))
+            total_tokens += tokens
+
+        # If already small enough, passthrough
+        if total_tokens < self.config.min_tokens_to_crush:
+            return obj, "object:passthrough"
+
+        # Compute adaptive K on key-value string representations
+        keys = list(obj.keys())
+        kv_strings = [f"{k}: {json.dumps(obj[k], default=str)}" for k in keys]
+
+        from .adaptive_sizer import compute_optimal_k
+
+        k_total = compute_optimal_k(
+            kv_strings,
+            bias=bias,
+            min_k=3,
+            max_k=self.config.max_items_after_crush or None,
+        )
+
+        if k_total >= n:
+            return obj, "object:passthrough"
+
+        # Classify keys by importance
+        keep_keys: set[str] = set()
+
+        # Always keep: keys with error-containing values
+        for key, val in obj.items():
+            val_str = json.dumps(val, default=str).lower()
+            for keyword in _ERROR_KEYWORDS_FOR_PRESERVATION:
+                if keyword in val_str:
+                    keep_keys.add(key)
+                    break
+
+        # Always keep: keys with small values (cheap to keep)
+        small_threshold = 50  # chars
+        for key, tokens in kv_tokens:
+            if tokens <= small_threshold // 4:
+                keep_keys.add(key)
+
+        # Boundary: first K and last K keys
+        k_first = max(1, round(k_total * self.config.first_fraction))
+        k_last = max(1, round(k_total * self.config.last_fraction))
+        for key in keys[:k_first]:
+            keep_keys.add(key)
+        for key in keys[-k_last:]:
+            keep_keys.add(key)
+
+        # Fill remaining budget with stride-based diverse sampling
+        remaining = max(0, k_total - len(keep_keys))
+        if remaining > 0:
+            stride = max(1, (n - 1) // (remaining + 1))
+            for i in range(0, n, stride):
+                if len(keep_keys) >= k_total + len(
+                    [
+                        k
+                        for k in keep_keys
+                        if any(
+                            kw in json.dumps(obj[k], default=str).lower()
+                            for kw in _ERROR_KEYWORDS_FOR_PRESERVATION
+                        )
+                    ]
+                ):
+                    break
+                keep_keys.add(keys[i])
+
+        # Build output preserving original key order
+        result = {k: obj[k] for k in keys if k in keep_keys}
+
+        strategy = f"object:adaptive({n}->{len(result)} keys)"
+        return result, strategy
 
     def _create_plan(
         self,

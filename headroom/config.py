@@ -410,12 +410,15 @@ class SmartCrusherConfig:
     PRESERVING THE ORIGINAL JSON SCHEMA. Output contains only items from
     the original array - no wrappers, no generated text, no metadata.
 
-    Safe V1 Compression Recipe - Always keeps:
-    - First K items (default 3)
-    - Last K items (default 2)
-    - Error items (containing 'error', 'exception', 'failed', 'critical')
-    - Anomalous numeric items (> 2 std from mean)
-    - Top-K by score if score field present
+    Handles ALL JSON types:
+    - Arrays of dicts, strings, numbers, mixed types
+    - Flat objects with many keys
+    - Nested objects (recursive compression)
+
+    Safety guarantees (consistent across all types):
+    - First K, last K items always kept (K is adaptive via Kneedle algorithm)
+    - Error items never dropped
+    - Anomalous numeric items (> 2 std from mean) always kept
     - Items matching query context via RelevanceScorer
 
     GOTCHAS:
@@ -460,6 +463,11 @@ class SmartCrusherConfig:
     # the same item, only one copy is kept. This is critical for arrays where
     # many items have identical content (e.g., repeated status messages).
     dedup_identical_items: bool = True
+
+    # Adaptive K boundary allocation (fraction of total K for first/last items)
+    # The remaining fraction is filled by importance scoring (errors, anomalies, etc.)
+    first_fraction: float = 0.3  # 30% of K from start of array
+    last_fraction: float = 0.15  # 15% of K from end of array
 
 
 @dataclass

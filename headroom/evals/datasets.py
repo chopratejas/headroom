@@ -532,27 +532,38 @@ def load_bfcl(
     Returns:
         EvalSuite with BFCL cases
     """
-    _check_datasets_installed()
-    from datasets import load_dataset
+    import urllib.request
 
-    dataset_name = f"BFCL_v3_live_{category}"
+    base_url = "https://huggingface.co/datasets/gorilla-llm/Berkeley-Function-Calling-Leaderboard/resolve/main"
+    data_file = f"BFCL_v3_{category}.json"
+    gt_file = f"possible_answer/BFCL_v3_{category}.json"
 
+    # Download questions + function schemas (JSONL)
     try:
-        ds = load_dataset(
-            "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
-            dataset_name,
-            split="train",
-            trust_remote_code=True,
-        )
+        raw = urllib.request.urlopen(f"{base_url}/{data_file}").read().decode("utf-8")
+        items = [json.loads(line) for line in raw.strip().split("\n") if line.strip()]
     except Exception as e:
-        raise ValueError(f"Failed to load BFCL dataset '{dataset_name}': {e}") from e
+        raise ValueError(f"Failed to download BFCL dataset '{data_file}': {e}") from e
+
+    # Download ground truth (JSONL, keyed by id)
+    gt_by_id: dict[str, str] = {}
+    try:
+        gt_raw = urllib.request.urlopen(f"{base_url}/{gt_file}").read().decode("utf-8")
+        for line in gt_raw.strip().split("\n"):
+            if line.strip():
+                obj = json.loads(line)
+                gt_by_id[obj["id"]] = json.dumps(obj.get("ground_truth", []))
+    except Exception:
+        pass  # Ground truth is optional
 
     cases: list[EvalCase] = []
-    for i, item in enumerate(ds):
+    for i, item in enumerate(items):
         if i >= n:
             break
 
-        # Extract question from nested structure
+        item_id = item.get("id", f"bfcl_{category}_{i}")
+
+        # Extract question from nested structure: [[{"role":"user","content":"..."}]]
         question = ""
         if item.get("question"):
             try:
@@ -564,20 +575,22 @@ def load_bfcl(
         functions = item.get("function", [])
         context = json.dumps(functions, indent=2) if functions else ""
 
-        # Ground truth function call
-        ground_truth = item.get("ground_truth", [])
-        gt_str = json.dumps(ground_truth) if ground_truth else None
+        if not context or len(context) < 10:
+            continue
+
+        # Ground truth
+        gt_str = gt_by_id.get(item_id)
 
         cases.append(
             EvalCase(
-                id=f"bfcl_{category}_{i}",
+                id=item_id,
                 context=context,
                 query=question,
                 ground_truth=gt_str,
                 metadata={
                     "source": "BFCL",
                     "category": category,
-                    "num_functions": len(functions),
+                    "num_functions": len(functions) if isinstance(functions, list) else 0,
                 },
             )
         )
