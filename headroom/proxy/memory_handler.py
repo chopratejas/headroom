@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -68,6 +68,12 @@ class MemoryConfig:
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
+    # Memory Bridge (bidirectional markdown <-> Headroom sync)
+    bridge_enabled: bool = False
+    bridge_md_paths: list[str] = field(default_factory=list)
+    bridge_md_format: str = "auto"
+    bridge_auto_import: bool = False
+    bridge_export_path: str = ""
 
 
 class MemoryHandler:
@@ -93,6 +99,8 @@ class MemoryHandler:
         self._native_memory_dir: Path | None = None
         if config.use_native_tool:
             self._init_native_memory_dir()
+        # Memory Bridge
+        self._bridge: Any = None  # MemoryBridge, lazy imported
 
     def _init_native_memory_dir(self) -> None:
         """Initialize native memory directory."""
@@ -162,6 +170,35 @@ class MemoryHandler:
             raise ValueError(f"Unknown memory backend: {self.config.backend}")
 
         self._initialized = True
+
+        # Auto-import from Memory Bridge if configured
+        if self.config.bridge_enabled and self.config.bridge_auto_import:
+            await self._init_and_import_bridge()
+
+    async def _init_and_import_bridge(self) -> None:
+        """Initialize the Memory Bridge and run auto-import."""
+        if self._bridge is not None:
+            return
+        try:
+            from headroom.memory.bridge import MemoryBridge
+            from headroom.memory.bridge_config import BridgeConfig, MarkdownFormat
+
+            bridge_config = BridgeConfig(
+                md_paths=[Path(p) for p in self.config.bridge_md_paths],
+                md_format=MarkdownFormat(self.config.bridge_md_format),
+                auto_import_on_startup=True,
+                export_path=Path(self.config.bridge_export_path)
+                if self.config.bridge_export_path
+                else None,
+            )
+            self._bridge = MemoryBridge(bridge_config, self._backend)
+            stats = await self._bridge.import_from_markdown()
+            logger.info(
+                f"Memory Bridge: Auto-imported {stats.sections_imported} sections "
+                f"({stats.sections_skipped_duplicate} duplicates skipped)"
+            )
+        except Exception as e:
+            logger.warning(f"Memory Bridge: Auto-import failed: {e}")
 
     def _get_memory_tools(self) -> list[dict[str, Any]]:
         """Get memory tool definitions (cached)."""

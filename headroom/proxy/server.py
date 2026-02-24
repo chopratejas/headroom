@@ -33,7 +33,7 @@ import random
 import sys
 import time
 from collections import OrderedDict, defaultdict, deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -314,6 +314,12 @@ class ProxyConfig:
     memory_neo4j_uri: str = "neo4j://localhost:7687"
     memory_neo4j_user: str = "neo4j"
     memory_neo4j_password: str = "password"
+    # Memory Bridge (bidirectional markdown <-> Headroom sync)
+    memory_bridge_enabled: bool = False
+    memory_bridge_md_paths: list[str] = field(default_factory=list)
+    memory_bridge_md_format: str = "auto"
+    memory_bridge_auto_import: bool = False
+    memory_bridge_export_path: str = ""
 
     # Compression Hooks (for SaaS and advanced customization)
     hooks: Any = None  # CompressionHooks instance, or None for default behavior
@@ -1241,6 +1247,11 @@ class HeadroomProxy:
                 neo4j_uri=config.memory_neo4j_uri,
                 neo4j_user=config.memory_neo4j_user,
                 neo4j_password=config.memory_neo4j_password,
+                bridge_enabled=config.memory_bridge_enabled,
+                bridge_md_paths=config.memory_bridge_md_paths,
+                bridge_md_format=config.memory_bridge_md_format,
+                bridge_auto_import=config.memory_bridge_auto_import,
+                bridge_export_path=config.memory_bridge_export_path,
             )
             self.memory_handler = MemoryHandler(memory_config)
 

@@ -61,6 +61,12 @@ from headroom.memory.adapters.graph import InMemoryGraphStore
 # =============================================================================
 # LocalBackend is always available (no optional dependencies)
 from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
+
+# =============================================================================
+# Memory Bridge (markdown <-> Headroom bidirectional sync)
+# =============================================================================
+from headroom.memory.bridge import ImportStats, MemoryBridge, SyncStats
+from headroom.memory.bridge_config import BridgeConfig, MarkdownFormat
 from headroom.memory.config import (
     EmbedderBackend,
     MemoryConfig,
@@ -275,4 +281,12 @@ __all__ = [
     # Use with optimized=True in with_memory_tools() for best performance
     "DirectMem0Adapter",
     "DirectMem0Config",
+    # =========================================================================
+    # Memory Bridge (markdown <-> Headroom bidirectional sync)
+    # =========================================================================
+    "MemoryBridge",
+    "BridgeConfig",
+    "MarkdownFormat",
+    "ImportStats",
+    "SyncStats",
 ]
