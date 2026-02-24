@@ -85,14 +85,14 @@ class Mem0Config:
 
     mode: str = "local"
 
-    # Neo4j settings
-    neo4j_uri: str = "neo4j://localhost:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = "password"
+    # Neo4j settings (overridable via HEADROOM_NEO4J_URI, etc.)
+    neo4j_uri: str = ""
+    neo4j_user: str = ""
+    neo4j_password: str = ""
 
-    # Qdrant settings
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    # Qdrant settings (overridable via HEADROOM_QDRANT_HOST, HEADROOM_QDRANT_PORT)
+    qdrant_host: str = ""
+    qdrant_port: int = 0
 
     # Embedding settings
     embedder_model: str = "text-embedding-3-small"
@@ -103,6 +103,23 @@ class Mem0Config:
     # Feature flags
     enable_graph: bool = True
     async_writes: bool = False  # If True, saves return immediately
+
+
+    def __post_init__(self) -> None:
+        """Resolve defaults from environment variables."""
+        import os
+
+        if not self.neo4j_uri:
+            self.neo4j_uri = os.environ.get("HEADROOM_NEO4J_URI", "neo4j://localhost:7687")
+        if not self.neo4j_user:
+            self.neo4j_user = os.environ.get("HEADROOM_NEO4J_USER", "neo4j")
+        if not self.neo4j_password:
+            self.neo4j_password = os.environ.get("HEADROOM_NEO4J_PASSWORD", "password")
+        if not self.qdrant_host:
+            self.qdrant_host = os.environ.get("HEADROOM_QDRANT_HOST", "localhost")
+        if not self.qdrant_port:
+            port_str = os.environ.get("HEADROOM_QDRANT_PORT", "6333")
+            self.qdrant_port = int(port_str)
 
 
 class DirectMem0Adapter:

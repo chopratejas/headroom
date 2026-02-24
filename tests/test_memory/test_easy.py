@@ -123,6 +123,34 @@ class TestMemoryInitialization:
         assert mem.backend_type == "local"
         assert not mem._initialized  # Lazy initialization
 
+    def test_qdrant_env_vars(self, monkeypatch):
+        """Test that Qdrant/Neo4j settings can be configured via environment variables."""
+        monkeypatch.setenv("HEADROOM_QDRANT_HOST", "qdrant.example.com")
+        monkeypatch.setenv("HEADROOM_QDRANT_PORT", "16333")
+        monkeypatch.setenv("HEADROOM_NEO4J_URI", "neo4j://neo4j.example.com:7687")
+        monkeypatch.setenv("HEADROOM_NEO4J_USER", "admin")
+        monkeypatch.setenv("HEADROOM_NEO4J_PASSWORD", "secret")
+
+        mem = Memory(backend="qdrant-neo4j")
+        assert mem._qdrant_host == "qdrant.example.com"
+        assert mem._qdrant_port == 16333
+        assert mem._neo4j_uri == "neo4j://neo4j.example.com:7687"
+        assert mem._neo4j_user == "admin"
+        assert mem._neo4j_password == "secret"
+
+    def test_explicit_args_override_env_vars(self, monkeypatch):
+        """Test that explicit arguments take priority over environment variables."""
+        monkeypatch.setenv("HEADROOM_QDRANT_HOST", "env-host")
+        monkeypatch.setenv("HEADROOM_QDRANT_PORT", "9999")
+
+        mem = Memory(
+            backend="qdrant-neo4j",
+            qdrant_host="explicit-host",
+            qdrant_port=7777,
+        )
+        assert mem._qdrant_host == "explicit-host"
+        assert mem._qdrant_port == 7777
+
     def test_explicit_local_backend(self, temp_db_path):
         """Test explicit local backend initialization."""
         mem = Memory(backend="local", db_path=temp_db_path)

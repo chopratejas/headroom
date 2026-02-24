@@ -33,6 +33,7 @@ Backends:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -93,11 +94,11 @@ class Memory:
         self,
         backend: str = "local",
         db_path: str | Path | None = None,
-        qdrant_host: str = "localhost",
-        qdrant_port: int = 6333,
-        neo4j_uri: str = "neo4j://localhost:7687",
-        neo4j_user: str = "neo4j",
-        neo4j_password: str = "password",
+        qdrant_host: str | None = None,
+        qdrant_port: int | None = None,
+        neo4j_uri: str | None = None,
+        neo4j_user: str | None = None,
+        neo4j_password: str | None = None,
     ) -> None:
         self._backend_type = backend
         self._backend: Any = None
@@ -111,12 +112,33 @@ class Memory:
             db_path = default_dir / "memory.db"
         self._db_path = Path(db_path)
 
-        # Config for qdrant-neo4j backend
-        self._qdrant_host = qdrant_host
-        self._qdrant_port = qdrant_port
-        self._neo4j_uri = neo4j_uri
-        self._neo4j_user = neo4j_user
-        self._neo4j_password = neo4j_password
+        # Config for qdrant-neo4j backend.
+        # Priority: explicit argument > environment variable > hardcoded default.
+        self._qdrant_host = (
+            qdrant_host
+            or os.environ.get("HEADROOM_QDRANT_HOST")
+            or "localhost"
+        )
+        self._qdrant_port = (
+            qdrant_port
+            or int(os.environ.get("HEADROOM_QDRANT_PORT", "0"))
+            or 6333
+        )
+        self._neo4j_uri = (
+            neo4j_uri
+            or os.environ.get("HEADROOM_NEO4J_URI")
+            or "neo4j://localhost:7687"
+        )
+        self._neo4j_user = (
+            neo4j_user
+            or os.environ.get("HEADROOM_NEO4J_USER")
+            or "neo4j"
+        )
+        self._neo4j_password = (
+            neo4j_password
+            or os.environ.get("HEADROOM_NEO4J_PASSWORD")
+            or "password"
+        )
 
     async def _ensure_initialized(self) -> None:
         """Initialize the backend on first use."""
