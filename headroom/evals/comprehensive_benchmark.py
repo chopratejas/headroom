@@ -271,6 +271,7 @@ def run_lm_eval(
         **os.environ,
         "TOKENIZERS_PARALLELISM": "false",
         "HF_ALLOW_CODE_EVAL": "1",  # Required for humaneval/mbpp tasks
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "no-key-required"),
     }
     result = subprocess.run(
         cmd,

@@ -549,6 +549,40 @@ class SuiteRunner:
                                 )
                             )
                             continue
+
+                        # Skip benchmarks incompatible with openai-chat-completions
+                        # MMLU and ARC-Challenge require loglikelihood which chat
+                        # completions APIs don't support.
+                        # HumanEval code_eval metric is not supported on Windows.
+                        _LOGLIKELIHOOD_TASKS = {"mmlu", "arc_challenge", "hellaswag"}
+                        _CODE_EVAL_TASKS = {"humaneval", "mbpp"}
+                        task_names = set(spec.lm_eval_tasks or [])
+                        skip_reason = None
+                        if task_names & _LOGLIKELIHOOD_TASKS:
+                            skip_reason = (
+                                "requires loglikelihood (incompatible with "
+                                "openai-chat-completions)"
+                            )
+                        elif sys.platform == "win32" and (task_names & _CODE_EVAL_TASKS):
+                            skip_reason = (
+                                "code_eval metric not supported on Windows"
+                            )
+                        if skip_reason:
+                            print(f"  SKIPPED: {skip_reason}")
+                            results.append(
+                                BenchmarkRunResult(
+                                    name=spec.name,
+                                    category=spec.category,
+                                    tier=spec.tier,
+                                    error=skip_reason,
+                                    passed=False,
+                                    n_samples=0,
+                                    model=spec.model or self.model,
+                                    metric_name=spec.primary_metric,
+                                )
+                            )
+                            continue
+
                         raw = self._run_lm_eval_benchmark(spec, tracker)
                         results.append(
                             BenchmarkRunResult(

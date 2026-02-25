@@ -134,7 +134,7 @@ class BeforeAfterRunner:
 
         return openai.OpenAI(
             base_url=f"{self.llm_config.headroom_proxy_url}/v1",
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
+            api_key=os.environ.get("OPENAI_API_KEY", "no-key-required"),
         )
 
     def _call_llm_via_proxy(self, context: str, query: str) -> str:
