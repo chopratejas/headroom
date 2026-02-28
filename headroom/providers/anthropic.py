@@ -487,11 +487,11 @@ class AnthropicProvider(Provider):
                 info = litellm_get_model_info(model)
                 if info:
                     if "max_input_tokens" in info and info["max_input_tokens"] is not None:
-                        limit = info["max_input_tokens"]
+                        limit = int(info["max_input_tokens"])
                         self._context_limits[model] = limit
                         return limit
                     if "max_tokens" in info and info["max_tokens"] is not None:
-                        limit = info["max_tokens"]
+                        limit = int(info["max_tokens"])
                         self._context_limits[model] = limit
                         return limit
             except Exception as e:

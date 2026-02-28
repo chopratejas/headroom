@@ -79,7 +79,7 @@ def _check_langchain_available() -> None:
         )
 
 
-def _tool_call_args_to_json(tc: dict[str, Any]) -> str:
+def _tool_call_args_to_json(tc: dict[str, Any] | Any) -> str:
     """Normalize tool call arguments to JSON string for OpenAI format.
 
     LangChain can provide 'args' (dict) or 'arguments' (str) depending on source.

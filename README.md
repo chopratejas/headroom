@@ -61,6 +61,16 @@ OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 
 Works with any language, any tool, any framework. One env var. **[Proxy docs](docs/proxy.md)**
 
+### Failure Learning (new)
+
+```bash
+headroom learn                   # Analyze past Claude Code sessions, show recommendations
+headroom learn --apply           # Write learnings to CLAUDE.md and MEMORY.md
+headroom learn --all --apply     # Learn across all your projects
+```
+
+Reads your conversation history, finds every failed tool call, correlates it with what eventually succeeded, and writes specific corrections into your project files. Next session starts smarter. **[Learn docs](docs/learn.md)**
+
 ### Python: One function
 
 ```python
@@ -231,6 +241,8 @@ flowchart TB
 | **Image Compression** | 40-90% token reduction via trained ML router |
 | **Memory** | Persistent memory across conversations |
 | **Compression Hooks** | Customize compression with pre/post hooks |
+| **Read Lifecycle** | Detects stale/superseded Read outputs, replaces with CCR markers |
+| **`headroom learn`** | Analyzes past failures, writes project-specific learnings to CLAUDE.md/MEMORY.md |
 
 ---
 
@@ -276,6 +288,7 @@ Python 3.10+
 | [Memory](docs/memory.md) | Persistent memory |
 | [Agno](docs/agno.md) | Agno agent framework |
 | [MCP](docs/mcp.md) | Claude Code subscriptions |
+| [Learn](docs/learn.md) | Offline failure learning for coding agents |
 | [Configuration](docs/configuration.md) | All options |
 
 ---

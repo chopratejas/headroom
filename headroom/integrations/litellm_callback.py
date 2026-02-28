@@ -69,7 +69,7 @@ class HeadroomCallback:
         self._api_url = (
             api_url or os.environ.get("HEADROOM_API_URL", "").strip() or _DEFAULT_CLOUD_URL
         ).rstrip("/")
-        self._client = None  # Lazy-initialized httpx.AsyncClient
+        self._client: Any = None  # Lazy-initialized httpx.AsyncClient
 
     @property
     def total_tokens_saved(self) -> int:
