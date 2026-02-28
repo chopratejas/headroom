@@ -79,6 +79,22 @@ def _check_langchain_available() -> None:
         )
 
 
+def _tool_call_args_to_json(tc: dict[str, Any]) -> str:
+    """Normalize tool call arguments to JSON string for OpenAI format.
+
+    LangChain can provide 'args' (dict) or 'arguments' (str) depending on source.
+    """
+    if "args" in tc:
+        val = tc["args"]
+        return json.dumps(val) if isinstance(val, dict) else str(val)
+    if "arguments" in tc:
+        val = tc["arguments"]
+        return val if isinstance(val, str) else json.dumps(val)
+    if "function" in tc and isinstance(tc["function"], dict):
+        return str(tc["function"].get("arguments", "{}"))
+    return "{}"
+
+
 def langchain_available() -> bool:
     """Check if LangChain is installed."""
     return LANGCHAIN_AVAILABLE
@@ -241,11 +257,11 @@ class HeadroomChatModel(BaseChatModel):
                 if msg.tool_calls:
                     entry["tool_calls"] = [
                         {
-                            "id": tc["id"],
+                            "id": tc.get("id", ""),
                             "type": "function",
                             "function": {
-                                "name": tc["name"],
-                                "arguments": json.dumps(tc["args"]),
+                                "name": tc.get("name", ""),
+                                "arguments": _tool_call_args_to_json(tc),
                             },
                         }
                         for tc in msg.tool_calls
@@ -928,11 +944,11 @@ def optimize_messages(
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 entry["tool_calls"] = [
                     {
-                        "id": tc["id"],
+                        "id": tc.get("id", ""),
                         "type": "function",
                         "function": {
-                            "name": tc["name"],
-                            "arguments": json.dumps(tc["args"]),
+                            "name": tc.get("name", ""),
+                            "arguments": _tool_call_args_to_json(tc),
                         },
                     }
                     for tc in msg.tool_calls
