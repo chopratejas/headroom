@@ -1208,7 +1208,7 @@ wheels = [
 
 [[package]]
 name = "headroom-ai"
-version = "0.3.0"
+version = "0.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
@@ -1240,6 +1240,7 @@ all = [
     { name = "jinja2" },
     { name = "llmlingua" },
     { name = "lm-eval" },
+    { name = "mcp" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.netflix.net/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.1", source = { registry = "https://pypi.netflix.net/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "onnxruntime" },
@@ -1296,6 +1297,10 @@ llmlingua = [
     { name = "torch" },
     { name = "transformers" },
 ]
+mcp = [
+    { name = "httpx" },
+    { name = "mcp" },
+]
 memory = [
     { name = "hnswlib" },
     { name = "sqlite-vec" },
@@ -1343,17 +1348,19 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'evals'", specifier = ">=2.14.0" },
     { name = "datasets", marker = "extra == 'voice-train'", specifier = ">=2.14.0" },
     { name = "fastapi", marker = "extra == 'proxy'", specifier = ">=0.100.0" },
-    { name = "headroom-ai", extras = ["relevance", "proxy", "reports", "llmlingua", "code", "evals", "memory", "voice", "html", "benchmark"], marker = "extra == 'all'" },
+    { name = "headroom-ai", extras = ["relevance", "proxy", "reports", "llmlingua", "code", "evals", "memory", "voice", "html", "benchmark", "mcp"], marker = "extra == 'all'" },
     { name = "headroom-ai", extras = ["voice"], marker = "extra == 'voice-train'" },
     { name = "hnswlib", specifier = ">=0.8.0" },
     { name = "hnswlib", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "hnswlib", marker = "extra == 'memory'", specifier = ">=0.8.0" },
+    { name = "httpx", marker = "extra == 'mcp'", specifier = ">=0.24.0" },
     { name = "httpx", extras = ["http2"], marker = "extra == 'proxy'", specifier = ">=0.24.0" },
     { name = "jinja2", marker = "extra == 'reports'", specifier = ">=3.0.0" },
     { name = "langchain-ollama", marker = "extra == 'dev'", specifier = ">=0.2.0" },
     { name = "litellm", specifier = ">=1.0.0" },
     { name = "llmlingua", marker = "extra == 'llmlingua'", specifier = ">=0.2.0" },
     { name = "lm-eval", marker = "extra == 'benchmark'", specifier = ">=0.4.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "numpy", marker = "extra == 'evals'", specifier = ">=1.24.0" },
     { name = "numpy", marker = "extra == 'relevance'", specifier = ">=1.24.0" },
@@ -5076,6 +5083,10 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
+    { url = "https://pypi.netflix.net/packages/19819580139/torch-2.10.0-2-cp310-none-macosx_11_0_arm64.whl", hash = "sha256:2b980edd8d7c0a68c4e951ee1856334a43193f98730d97408fbd148c1a933313", size = 79411457 },
+    { url = "https://pypi.netflix.net/packages/19819580140/torch-2.10.0-2-cp311-none-macosx_11_0_arm64.whl", hash = "sha256:418997cb02d0a0f1497cf6a09f63166f9f5df9f3e16c8a716ab76a72127c714f", size = 79423467 },
+    { url = "https://pypi.netflix.net/packages/19819580141/torch-2.10.0-2-cp312-none-macosx_11_0_arm64.whl", hash = "sha256:13ec4add8c3faaed8d13e0574f5cd4a323c11655546f91fbe6afa77b57423574", size = 79498202 },
+    { url = "https://pypi.netflix.net/packages/19819580142/torch-2.10.0-2-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:e521c9f030a3774ed770a9c011751fb47c4d12029a3d6522116e48431f2ff89e", size = 79498254 },
     { url = "https://pypi.netflix.net/packages/19646079874/torch-2.10.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:5276fa790a666ee8becaffff8acb711922252521b28fbce5db7db5cf9cb2026d", size = 145992962 },
     { url = "https://pypi.netflix.net/packages/19646073760/torch-2.10.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:aaf663927bcd490ae971469a624c322202a2a1e68936eb952535ca4cd3b90444", size = 915599237 },
     { url = "https://pypi.netflix.net/packages/19646080742/torch-2.10.0-cp310-cp310-win_amd64.whl", hash = "sha256:a4be6a2a190b32ff5c8002a0977a25ea60e64f7ba46b1be37093c141d9c49aeb", size = 113720931 },

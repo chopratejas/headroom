@@ -3,40 +3,39 @@
 Drop-in middleware for FastAPI, Starlette, LiteLLM proxy, or any ASGI app.
 Intercepts LLM requests, compresses messages, forwards the smaller payload.
 
+Local mode (compression runs in-process):
+
+    from headroom.integrations.asgi import CompressionMiddleware
+    app.add_middleware(CompressionMiddleware)
+
+Cloud mode (managed CCR, TOIN, analytics via Headroom Cloud):
+
+    app.add_middleware(CompressionMiddleware, api_key="hdr_xxx")
+
 Usage with LiteLLM proxy:
 
     from litellm.proxy.proxy_server import app
     from headroom.integrations.asgi import CompressionMiddleware
 
-    app.add_middleware(CompressionMiddleware)
+    app.add_middleware(CompressionMiddleware)  # local
+    # OR
+    app.add_middleware(CompressionMiddleware, api_key="hdr_xxx")  # cloud
 
-Usage with any FastAPI app:
-
-    from fastapi import FastAPI
-    from headroom.integrations.asgi import CompressionMiddleware
-
-    app = FastAPI()
-    app.add_middleware(CompressionMiddleware)
-    # Your existing routes...
-
-Configuration:
-
-    app.add_middleware(
-        CompressionMiddleware,
-        min_tokens=500,        # Only compress if messages > 500 tokens
-        model_limit=200000,    # Context window size
-    )
+Cloud mode requires httpx: pip install httpx
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_CLOUD_URL = "https://api.headroomlabs.ai"
 
 # Paths that contain LLM messages to compress
 _LLM_PATHS = (
@@ -50,13 +49,16 @@ _LLM_PATHS = (
 class CompressionMiddleware:
     """ASGI middleware that compresses LLM request messages.
 
-    Intercepts POST requests to LLM endpoints, compresses the messages
-    using Headroom's full pipeline, and forwards the smaller payload.
+    Two modes:
+    - Local (default): Compresses in-process using headroom.compress().
+    - Cloud (api_key set): Calls Headroom Cloud API for managed compression
+      with org-scoped CCR, TOIN learning, and analytics dashboards.
 
     Response headers include compression metrics:
     - x-headroom-tokens-before: original token count
     - x-headroom-tokens-after: compressed token count
     - x-headroom-tokens-saved: tokens removed
+    - x-headroom-compressed: "true" if compression occurred
     """
 
     def __init__(
@@ -65,11 +67,25 @@ class CompressionMiddleware:
         min_tokens: int = 500,
         model_limit: int = 200000,
         hooks: Any = None,
+        api_key: str | None = None,
+        api_url: str | None = None,
     ) -> None:
         self.app = app
         self._min_tokens = min_tokens
         self._model_limit = model_limit
         self._hooks = hooks
+
+        # Cloud mode: if api_key is set, compress via Headroom Cloud API
+        self._api_key = api_key or os.environ.get("HEADROOM_API_KEY", "").strip() or None
+        self._api_url = (
+            api_url or os.environ.get("HEADROOM_API_URL", "").strip() or _DEFAULT_CLOUD_URL
+        ).rstrip("/")
+        self._client = None  # Lazy-initialized httpx.AsyncClient
+
+    @property
+    def cloud_mode(self) -> bool:
+        """Whether cloud compression is enabled."""
+        return self._api_key is not None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -106,32 +122,33 @@ class CompressionMiddleware:
 
         # Parse and compress
         tokens_saved = 0
+        tokens_before = 0
+        tokens_after = 0
         try:
             body_json = json.loads(full_body)
             messages = body_json.get("messages", [])
             model = body_json.get("model", "")
 
             if messages:
-                from headroom.compress import compress
+                if self._api_key:
+                    result = await self._cloud_compress(messages, model)
+                else:
+                    result = self._local_compress(messages, model)
 
-                result = compress(
-                    messages=messages,
-                    model=model or "claude-sonnet-4-5-20250929",
-                    model_limit=self._model_limit,
-                    hooks=self._hooks,
-                )
-
-                if result.tokens_saved > 0:
-                    body_json["messages"] = result.messages
+                if result and result.get("tokens_saved", 0) > 0:
+                    body_json["messages"] = result["messages"]
                     full_body = json.dumps(body_json).encode("utf-8")
-                    tokens_saved = result.tokens_saved
+                    tokens_saved = result["tokens_saved"]
+                    tokens_before = result.get("tokens_before", 0)
+                    tokens_after = result.get("tokens_after", 0)
 
                     logger.info(
-                        "Headroom: %d→%d tokens (saved %d, %.0f%%)",
-                        result.tokens_before,
-                        result.tokens_after,
-                        result.tokens_saved,
-                        result.compression_ratio * 100,
+                        "Headroom%s: %d→%d tokens (saved %d, %.0f%%)",
+                        " Cloud" if self._api_key else "",
+                        tokens_before,
+                        tokens_after,
+                        tokens_saved,
+                        result.get("compression_ratio", 0) * 100,
                     )
 
         except (json.JSONDecodeError, TypeError, KeyError) as e:
@@ -153,8 +170,63 @@ class CompressionMiddleware:
             if message["type"] == "http.response.start" and tokens_saved > 0:
                 headers = list(message.get("headers", []))
                 headers.append((b"x-headroom-compressed", b"true"))
+                headers.append((b"x-headroom-tokens-before", str(tokens_before).encode()))
+                headers.append((b"x-headroom-tokens-after", str(tokens_after).encode()))
                 headers.append((b"x-headroom-tokens-saved", str(tokens_saved).encode()))
                 message = {**message, "headers": headers}
             await send(message)
 
         await self.app(scope, modified_receive, metrics_send)
+
+    def _local_compress(self, messages: list[dict], model: str) -> dict[str, Any] | None:
+        """Compress locally using headroom.compress()."""
+        from headroom.compress import compress
+
+        result = compress(
+            messages=messages,
+            model=model or "claude-sonnet-4-5-20250929",
+            model_limit=self._model_limit,
+            hooks=self._hooks,
+        )
+        return {
+            "messages": result.messages,
+            "tokens_before": result.tokens_before,
+            "tokens_after": result.tokens_after,
+            "tokens_saved": result.tokens_saved,
+            "compression_ratio": result.compression_ratio,
+        }
+
+    async def _cloud_compress(self, messages: list[dict], model: str) -> dict[str, Any] | None:
+        """Compress via Headroom Cloud API (managed CCR, TOIN, analytics)."""
+        if self._client is None:
+            try:
+                import httpx
+            except ImportError as e:
+                raise ImportError(
+                    "httpx is required for Headroom Cloud mode: pip install httpx"
+                ) from e
+            self._client = httpx.AsyncClient(timeout=30.0)
+
+        client = self._client
+        assert client is not None
+        resp = await client.post(
+            f"{self._api_url}/v1/saas/compress",
+            headers={
+                "X-Headroom-Key": self._api_key,
+                "Content-Type": "application/json",
+            },
+            content=json.dumps(
+                {
+                    "messages": messages,
+                    "model": model or "claude-sonnet-4-5-20250929",
+                    "model_limit": self._model_limit,
+                }
+            ),
+        )
+
+        if resp.status_code != 200:
+            logger.warning("Headroom Cloud API error: %d %s", resp.status_code, resp.text[:200])
+            return None
+
+        result: dict[str, Any] = resp.json()
+        return result
