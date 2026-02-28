@@ -365,6 +365,34 @@ DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# Tool names recognized as Read/Edit/Write for lifecycle tracking
+_READ_TOOL_NAMES: frozenset[str] = frozenset({"Read", "read"})
+_EDIT_TOOL_NAMES: frozenset[str] = frozenset({"Edit", "edit"})
+_WRITE_TOOL_NAMES: frozenset[str] = frozenset({"Write", "write"})
+_MUTATING_TOOL_NAMES: frozenset[str] = _EDIT_TOOL_NAMES | _WRITE_TOOL_NAMES
+
+
+@dataclass
+class ReadLifecycleConfig:
+    """Event-driven Read lifecycle management.
+
+    Detects stale and superseded Read outputs in the conversation and replaces
+    them with compact markers + CCR hashes. Fresh Reads are never touched.
+
+    A Read is STALE when the file was subsequently edited (content is factually
+    wrong). A Read is SUPERSEDED when the file was subsequently re-Read (content
+    is redundant). Both are provably safe to compress.
+
+    Operates as a pre-processing pass before ContentRouter, independent of
+    tool exclusion logic. Read remains in DEFAULT_EXCLUDE_TOOLS — fresh Read
+    outputs still bypass ContentRouter compression.
+    """
+
+    enabled: bool = False  # Opt-in; default preserves backward-compatible behavior
+    compress_stale: bool = True  # Replace Reads of files that were later edited
+    compress_superseded: bool = True  # Replace Reads of files that were later re-Read
+    min_size_bytes: int = 512  # Skip tiny Read outputs (not worth the overhead)
+
 
 @dataclass
 class CompressionProfile:
