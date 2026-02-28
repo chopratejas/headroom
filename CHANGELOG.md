@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`headroom learn`** — Offline failure learning for coding agents
+  - Analyzes past conversation history (Claude Code, extensible to Cursor/Codex)
+  - **Success correlation**: for each failure, finds what succeeded after and extracts the specific correction
+  - 5 analyzers: Environment, Structure, Command Patterns, Retry Prevention, Cross-Session
+  - Writes specific learnings to CLAUDE.md (stable project facts) and MEMORY.md (session patterns)
+  - Generic architecture: tool-agnostic `ToolCall` model, pluggable Scanner/Writer adapters
+  - Dry-run by default, `--apply` to write, `--all` for all projects
+  - Example output: "FirstClassEntity.java is not at axion-formats/ — actually at axion-scala-common/"
+- **Read Lifecycle Management** — Event-driven compression of stale/superseded Read outputs
+  - Detects when a Read output becomes stale (file was edited after) or superseded (file was re-read)
+  - Replaces stale/superseded content with compact CCR markers, stores originals for retrieval
+  - 75% of Read output bytes are provably stale or redundant (from real-world analysis of 66K tool calls)
+  - Fresh Reads (latest read, no subsequent edit) are never touched — Edit safety preserved
+  - Opt-in via `ReadLifecycleConfig(enabled=True)`, disabled by default
+  - Handles both OpenAI and Anthropic message formats
 - **any-llm backend** - Route requests through 38+ LLM providers (OpenAI, Mistral, Groq, Ollama, etc.) via [any-llm](https://mozilla-ai.github.io/any-llm/providers/)
   - Enable with `--backend anyllm --anyllm-provider <provider>`
   - Install with: `pip install 'headroom-ai[anyllm]'`
