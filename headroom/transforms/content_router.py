@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from ..config import DEFAULT_EXCLUDE_TOOLS, TransformResult
+from ..config import DEFAULT_EXCLUDE_TOOLS, ReadLifecycleConfig, TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
 from .content_detector import ContentType, DetectionResult, detect_content_type
@@ -291,6 +291,9 @@ class ContentRouterConfig:
     # Tools to exclude from compression (output passed through unmodified)
     # Set to None to use DEFAULT_EXCLUDE_TOOLS, or provide custom set
     exclude_tools: set[str] | None = None
+
+    # Read lifecycle management (stale/superseded detection)
+    read_lifecycle: ReadLifecycleConfig = field(default_factory=ReadLifecycleConfig)
 
     # Per-tool compression profiles (tool_name → CompressionProfile)
     # Set to None to use DEFAULT_TOOL_PROFILES from config
@@ -1171,6 +1174,23 @@ class ContentRouter(Transform):
         Returns:
             TransformResult with routed and compressed messages.
         """
+        # Pre-process: Read lifecycle management (stale/superseded detection)
+        if self.config.read_lifecycle.enabled:
+            from .read_lifecycle import ReadLifecycleManager
+
+            lifecycle_mgr = ReadLifecycleManager(
+                self.config.read_lifecycle,
+                compression_store=kwargs.get("compression_store"),
+            )
+            lifecycle_result = lifecycle_mgr.apply(messages)
+            messages = lifecycle_result.messages
+            # lifecycle transforms tracked separately, merged at the end
+            lifecycle_transforms = lifecycle_result.transforms_applied
+            lifecycle_ccr_hashes = lifecycle_result.ccr_hashes
+        else:
+            lifecycle_transforms = []
+            lifecycle_ccr_hashes = []
+
         tokens_before = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
         context = kwargs.get("context", "")
         hook_biases: dict[int, float] = kwargs.get("biases") or {}
@@ -1284,11 +1304,13 @@ class ContentRouter(Transform):
             tokenizer.count_text(str(m.get("content", ""))) for m in transformed_messages
         )
 
+        all_transforms = lifecycle_transforms + transforms_applied
         return TransformResult(
             messages=transformed_messages,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
-            transforms_applied=transforms_applied if transforms_applied else ["router:noop"],
+            transforms_applied=all_transforms if all_transforms else ["router:noop"],
+            markers_inserted=lifecycle_ccr_hashes,
             warnings=warnings,
         )
 
