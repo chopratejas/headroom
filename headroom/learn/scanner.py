@@ -356,3 +356,152 @@ def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:
 
     # If we've exhausted parts, check if current path exists
     return base if base.exists() else None
+
+
+# =============================================================================
+# Codex Scanner (OpenAI Codex CLI)
+# =============================================================================
+
+
+class CodexScanner(ConversationScanner):
+    """Reads OpenAI Codex CLI session logs from ~/.codex/sessions/.
+
+    Codex stores sessions as JSON files with:
+    - session.id, session.timestamp, session.instructions
+    - items[]: array of message/function_call/function_call_output/reasoning objects
+
+    function_call items have: name, call_id, arguments (JSON string)
+    function_call_output items have: call_id, output (string or JSON string)
+    """
+
+    def __init__(self, codex_dir: Path | None = None):
+        self.codex_dir = codex_dir or Path.home() / ".codex"
+        self.sessions_dir = self.codex_dir / "sessions"
+
+    def discover_projects(self) -> list[ProjectInfo]:
+        """Codex doesn't organize by project — return a single 'codex' project.
+
+        Codex sessions aren't scoped to projects. We treat all sessions as one
+        project and use the cwd from session data (if available) to group later.
+        """
+        if not self.sessions_dir.exists():
+            return []
+
+        session_files = list(self.sessions_dir.glob("*.json"))
+        if not session_files:
+            return []
+
+        # Check for global AGENTS.md
+        agents_md = self.codex_dir / "AGENTS.md"
+        instructions_md = self.codex_dir / "instructions.md"
+
+        return [
+            ProjectInfo(
+                name="codex",
+                project_path=Path.cwd(),  # Codex doesn't track project paths
+                data_path=self.sessions_dir,
+                context_file=agents_md if agents_md.exists() else None,
+                memory_file=instructions_md if instructions_md.exists() else None,
+            )
+        ]
+
+    def scan_project(self, project: ProjectInfo) -> list[SessionData]:
+        """Scan all Codex session JSON files."""
+        sessions = []
+        for json_path in sorted(project.data_path.glob("*.json")):
+            session = self._scan_session(json_path)
+            if session and session.tool_calls:
+                sessions.append(session)
+        return sessions
+
+    def _scan_session(self, json_path: Path) -> SessionData | None:
+        """Parse a single Codex session file."""
+        try:
+            with open(json_path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.debug("Failed to read Codex session %s: %s", json_path, e)
+            return None
+
+        session_info = data.get("session", {})
+        session_id = session_info.get("id", json_path.stem)
+        items = data.get("items", [])
+
+        if not items:
+            return None
+
+        # Build call_id → (name, input) map from function_call items
+        func_calls: dict[str, tuple[str, dict]] = {}
+        tool_calls: list[ToolCall] = []
+        msg_index = 0
+
+        for item in items:
+            msg_index += 1
+            item_type = item.get("type", "")
+
+            if item_type == "function_call":
+                call_id = item.get("call_id", "")
+                name = item.get("name", "")
+                # Parse arguments (JSON string or list)
+                raw_args = item.get("arguments", "")
+                if isinstance(raw_args, str):
+                    try:
+                        parsed = json.loads(raw_args)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = {"raw": raw_args}
+                elif isinstance(raw_args, dict):
+                    parsed = raw_args
+                else:
+                    parsed = {"raw": str(raw_args)}
+
+                # Codex uses "shell" as the tool name with command in args
+                # Normalize: extract command for consistency with other scanners
+                if name == "shell" and "command" in parsed:
+                    cmd = parsed["command"]
+                    if isinstance(cmd, list):
+                        # Codex passes commands as ["bash", "-lc", "actual command"]
+                        parsed["command"] = cmd[-1] if cmd else ""
+                    name = "Bash"  # Normalize to match Claude Code tool names
+
+                if call_id:
+                    func_calls[call_id] = (name, parsed)
+
+            elif item_type == "function_call_output":
+                call_id = item.get("call_id", "")
+                output_raw = item.get("output", "")
+
+                if call_id not in func_calls:
+                    continue
+
+                name, inp = func_calls[call_id]
+
+                # Output may be JSON string with "output" field
+                if isinstance(output_raw, str):
+                    try:
+                        parsed_out = json.loads(output_raw)
+                        if isinstance(parsed_out, dict) and "output" in parsed_out:
+                            result_content = str(parsed_out["output"])
+                        else:
+                            result_content = output_raw
+                    except (json.JSONDecodeError, TypeError):
+                        result_content = output_raw
+                else:
+                    result_content = str(output_raw)
+
+                is_err = is_error_content(result_content)
+                error_cat = classify_error(result_content) if is_err else ErrorCategory.UNKNOWN
+
+                tool_calls.append(
+                    ToolCall(
+                        name=name,
+                        tool_call_id=call_id,
+                        input_data=inp,
+                        output=result_content,
+                        is_error=is_err,
+                        error_category=error_cat,
+                        msg_index=msg_index,
+                        output_bytes=len(result_content.encode("utf-8")),
+                    )
+                )
+
+        return SessionData(session_id=session_id, tool_calls=tool_calls)
