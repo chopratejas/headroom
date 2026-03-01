@@ -171,12 +171,17 @@ def _analyze_structure(
     # 1. Path corrections: wrong path → correct path (from success correlation)
     path_corrections: dict[str, Counter[str]] = defaultdict(Counter)
     for c in corrections:
-        if c.tool_name not in ("Read", "read"):
-            continue
         if c.error_category != ErrorCategory.FILE_NOT_FOUND:
             continue
-        failed_path = c.failed_input.get("file_path", "")
-        success_path = c.success_input.get("file_path", "")
+        # Extract file paths from Read tool or from Bash commands (Codex uses shell for everything)
+        if c.tool_name in ("Read", "read"):
+            failed_path = c.failed_input.get("file_path", "")
+            success_path = c.success_input.get("file_path", "")
+        elif c.tool_name in ("Bash", "bash"):
+            failed_path = _extract_path_from_command(c.failed_input.get("command", ""))
+            success_path = _extract_path_from_command(c.success_input.get("command", ""))
+        else:
+            continue
         if failed_path and success_path and failed_path != success_path:
             path_corrections[failed_path][success_path] += 1
 
@@ -585,6 +590,7 @@ def _analyze_cross_session(sessions: list[SessionData]) -> list[str]:
 
 _PYTHON_CMD_RE = re.compile(
     r"^((?:source\s+\S+\s*&&\s*)?(?:\.venv/bin/)?(?:python3?|uv run python|uv run|/opt/nflx/python))"
+    r"(?:\s|$|-)"  # Must be followed by space, end, or dash (python3 -c, python -)
 )
 
 
@@ -608,6 +614,22 @@ def _extract_command_signature(cmd: str) -> str:
     if "\n" in cmd:
         cmd = cmd.split("\n")[0]
     return cmd[:60]
+
+
+def _extract_path_from_command(cmd: str) -> str:
+    """Extract a file path from a shell command (cat, sed, head, etc.)."""
+    cmd = cmd.strip()
+    # Look for path-like tokens (containing / and ending in a file extension)
+    path_re = re.compile(r"""(?:^|[\s'"])(/[^\s'"]+\.\w+)""")
+    match = path_re.search(cmd)
+    if match:
+        return match.group(1)
+    # Also try: last token that looks like a path
+    tokens = cmd.split()
+    for token in reversed(tokens):
+        if "/" in token and not token.startswith("-"):
+            return token.strip("'\"")
+    return ""
 
 
 def _shorten_path(path: str) -> str:
