@@ -156,6 +156,7 @@ dev = [
     "ollama>=0.4.0",  # For Ollama integration tests (local LLM, no API key needed)
     "langchain-ollama>=0.2.0",  # For LangChain+Ollama integration tests
     "hnswlib>=0.8.0",  # For memory system tests
+    "sqlite-vec>=0.1.6",  # Fallback vector backend for CI runners without AVX support
 ]
 # All optional dependencies
 all = [
