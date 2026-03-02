@@ -219,6 +219,39 @@ client = HeadroomClient(
 
 ## Import/Installation Issues
 
+### "pip install fails with C++ compilation error"
+
+**Symptom**: Installation fails with an error like:
+
+```
+RuntimeError: Unsupported compiler -- at least C++11 support is needed!
+ERROR: Failed building wheel for hnswlib
+```
+
+**Cause**: `headroom-ai` depends on `hnswlib`, a C++ extension that must be compiled from source. Slim environments (Docker slim images, minimal CI runners) lack the required build tools.
+
+**Solutions**:
+
+```bash
+# Linux / Debian-based (including Docker)
+apt-get install -y build-essential && pip install headroom-ai
+
+# macOS (Xcode command line tools)
+xcode-select --install && pip install headroom-ai
+```
+
+In a Dockerfile, install and remove build tools in one layer to keep the image slim:
+
+```dockerfile
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && pip install "headroom-ai[proxy]" \
+    && apt-get purge -y build-essential && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+---
+
 ### "ModuleNotFoundError: No module named 'headroom'"
 
 ```bash
