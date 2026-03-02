@@ -21,7 +21,7 @@ lsof -i :8787
 headroom proxy --port 8788
 
 # 3. Check for missing dependencies
-pip install "headroom[proxy]"
+pip install "headroom-ai[proxy]"
 
 # 4. Run with debug logging
 headroom proxy --log-level debug
@@ -223,13 +223,13 @@ client = HeadroomClient(
 
 ```bash
 # 1. Check it's installed in the right environment
-pip show headroom
+pip show headroom-ai
 
 # 2. If using virtual environment, ensure it's activated
 source venv/bin/activate  # or equivalent
 
 # 3. Reinstall
-pip install --upgrade headroom
+pip install --upgrade headroom-ai
 ```
 
 ### "ImportError: cannot import name 'X' from 'headroom'"
@@ -256,13 +256,13 @@ from headroom import (
 
 ```bash
 # For proxy server
-pip install "headroom[proxy]"
+pip install "headroom-ai[proxy]"
 
 # For embedding-based relevance scoring
-pip install "headroom[relevance]"
+pip install "headroom-ai[relevance]"
 
 # For everything
-pip install "headroom[all]"
+pip install "headroom-ai[all]"
 ```
 
 ---
