@@ -8,13 +8,13 @@ Get Headroom running in 5 minutes with these copy-paste examples.
 
 ```bash
 # Core only (minimal dependencies)
-pip install headroom
+pip install headroom-ai
 
 # With proxy server
-pip install "headroom[proxy]"
+pip install "headroom-ai[proxy]"
 
 # Everything
-pip install "headroom[all]"
+pip install "headroom-ai[all]"
 ```
 
 ---
