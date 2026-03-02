@@ -248,7 +248,12 @@ Or with Docker:
 
 ```dockerfile
 FROM python:3.11-slim
-RUN pip install headroom[proxy]
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && pip install "headroom-ai[proxy]" \
+    && apt-get purge -y build-essential && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 EXPOSE 8787
 CMD ["headroom", "proxy", "--host", "0.0.0.0"]
 ```
+
+> **Note:** `build-essential` is required at install time because `headroom-ai` includes `hnswlib`, a C++ extension that must be compiled from source. It is removed after installation to keep the image slim.
