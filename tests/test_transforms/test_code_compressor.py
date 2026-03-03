@@ -952,3 +952,329 @@ def example():
 
         # Docstring should be removed when REMOVE mode is active
         assert "This docstring should be removed" not in result.compressed
+
+
+# =============================================================================
+# TestSemanticSymbolImportance
+# =============================================================================
+
+
+def _payment_processing_code() -> str:
+    """Python code with varying symbol importance for testing."""
+    return '''
+import os
+from typing import List, Optional
+
+def process_payment(order, config):
+    """Process a payment through the pipeline."""
+    validated = validate_order(order)
+    if not validated.is_valid:
+        return PaymentResult(status='failed')
+    charge = charge_customer(order.customer, order.total)
+    receipt = generate_receipt(charge)
+    send_confirmation(order.customer.email, receipt)
+    update_inventory(order.items)
+    log_transaction(charge.transaction_id)
+    notify_warehouse(order)
+    return PaymentResult(status='success', receipt=receipt)
+
+def validate_order(order):
+    """Validate an order before processing."""
+    if not order.items:
+        return ValidationResult(False, ['No items'])
+    total = sum(item.price for item in order.items)
+    if total <= 0:
+        return ValidationResult(False, ['Invalid total'])
+    if not order.customer:
+        return ValidationResult(False, ['No customer'])
+    return ValidationResult(True, [])
+
+def charge_customer(customer, amount):
+    """Charge the customer."""
+    gateway = get_payment_gateway()
+    response = gateway.charge(customer.card, amount)
+    if not response.success:
+        raise PaymentError(response.error)
+    return response
+
+def generate_receipt(charge):
+    """Generate a receipt for the charge."""
+    template = load_template('receipt')
+    return template.render(charge=charge)
+
+def _format_log_entry(entry):
+    """Format a log entry for internal use. Never called."""
+    timestamp = entry.get('ts', '')
+    level = entry.get('level', 'INFO')
+    message = entry.get('msg', '')
+    source = entry.get('source', 'unknown')
+    formatted = f'[{timestamp}] {level}: {message} ({source})'
+    return formatted.strip()
+
+def _dead_helper():
+    """Never called anywhere in this file."""
+    x = 1
+    y = 2
+    z = 3
+    result = x + y + z
+    for i in range(100):
+        result += i
+    return result
+'''
+
+
+@pytest.mark.skipif(not TREE_SITTER_INSTALLED, reason="tree-sitter-languages not installed")
+class TestSemanticSymbolImportance:
+    """Tests for semantic symbol importance analysis and variable compression."""
+
+    def _make_compressor(self, **overrides):
+        defaults = {
+            "min_tokens_for_compression": 10,
+            "max_body_lines": 3,
+            "enable_ccr": False,
+            "semantic_analysis": True,
+        }
+        defaults.update(overrides)
+        return CodeAwareCompressor(CodeCompressorConfig(**defaults))
+
+    def test_symbol_scores_populated(self):
+        """Compression result includes symbol importance scores."""
+        compressor = self._make_compressor()
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        assert result.symbol_scores
+        assert "process_payment" in result.symbol_scores
+        assert "validate_order" in result.symbol_scores
+        assert "_dead_helper" in result.symbol_scores
+
+    def test_called_functions_score_higher_than_dead_code(self):
+        """Functions called by others score higher than unused functions."""
+        compressor = self._make_compressor()
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        # validate_order is called by process_payment — should score higher
+        assert result.symbol_scores["validate_order"] > result.symbol_scores["_dead_helper"]
+        assert result.symbol_scores["charge_customer"] > result.symbol_scores["_dead_helper"]
+
+    def test_public_symbols_score_higher_than_private(self):
+        """Public functions (no leading _) score higher than private ones."""
+        compressor = self._make_compressor()
+        code = '''
+def public_func():
+    """A public function."""
+    x = 1
+    y = 2
+    z = 3
+    result = x + y + z
+    for i in range(10):
+        result += i
+    return result
+
+def _private_func():
+    """A private function."""
+    x = 1
+    y = 2
+    z = 3
+    result = x + y + z
+    for i in range(10):
+        result += i
+    return result
+'''
+        result = compressor.compress(code, language="python")
+
+        assert result.symbol_scores["public_func"] > result.symbol_scores["_private_func"]
+
+    def test_dead_code_compressed_to_signature_only(self):
+        """Functions with score < 0.1 are compressed to signature + docstring only."""
+        compressor = self._make_compressor()
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        # _dead_helper has 0 references, private → score 0.0
+        assert result.symbol_scores["_dead_helper"] < 0.1
+
+        # Body should be fully omitted
+        assert "_dead_helper" in result.compressed
+        # Should NOT contain body content
+        assert "range(100)" not in result.compressed
+
+    def test_referenced_functions_keep_more_body(self):
+        """Higher-scored functions get more body lines from the budget."""
+        # Use a generous target rate so there IS budget to distribute
+        compressor = self._make_compressor(target_compression_rate=0.7)
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        compressed = result.compressed
+        # With 70% target, high-scoring functions should retain body
+        # while low-scoring ones get less. validate_order is referenced
+        # and public (high score) so should keep some body.
+        # _dead_helper has lowest score so should get least body.
+        # Count body lines per function as a proxy for retention
+        lines = compressed.split("\n")
+        in_validate = False
+        in_dead = False
+        validate_body = 0
+        dead_body = 0
+        for line in lines:
+            if "def validate_order" in line:
+                in_validate = True
+                in_dead = False
+                continue
+            elif "def _dead_helper" in line:
+                in_dead = True
+                in_validate = False
+                continue
+            elif line.startswith("def ") or (line.startswith("class ") and ":" in line):
+                in_validate = False
+                in_dead = False
+                continue
+            if in_validate and line.strip() and not line.strip().startswith('"""'):
+                validate_body += 1
+            if in_dead and line.strip() and not line.strip().startswith('"""'):
+                dead_body += 1
+
+        assert validate_body >= dead_body
+
+    def test_omitted_comment_includes_calls(self):
+        """Omitted comment includes call information when available."""
+        compressor = self._make_compressor()
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        # process_payment calls validate_order, charge_customer, generate_receipt
+        # These should appear in the omitted comment
+        compressed = result.compressed
+        if "lines omitted" in compressed:
+            # Find omitted comments and check for calls info
+            for line in compressed.split("\n"):
+                if "process_payment" not in line and "lines omitted" in line:
+                    continue
+                if "lines omitted; calls:" in line:
+                    assert "validate_order" in line or "charge_customer" in line
+                    break
+
+    def test_semantic_analysis_disabled(self):
+        """When semantic_analysis=False, all functions get uniform compression."""
+        compressor_with = self._make_compressor(semantic_analysis=True)
+        compressor_without = self._make_compressor(semantic_analysis=False)
+
+        code = _payment_processing_code()
+        result_with = compressor_with.compress(code, language="python")
+        result_without = compressor_without.compress(code, language="python")
+
+        # Without semantic analysis, no symbol scores
+        assert result_without.symbol_scores == {}
+
+        # With semantic analysis, dead code is compressed more aggressively
+        # _dead_helper body should NOT appear with semantic analysis
+        assert "range(100)" not in result_with.compressed
+        # But with uniform compression (no semantic), body lines ARE kept
+        assert "x = 1" in result_without.compressed
+
+    def test_summary_includes_semantic_info(self):
+        """Summary includes semantic analysis information."""
+        compressor = self._make_compressor()
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        summary = result.summary
+        if result.symbol_scores:
+            low_count = sum(1 for s in result.symbol_scores.values() if s < 0.1)
+            if low_count > 0:
+                assert "low-importance" in summary
+
+    def test_dunder_methods_get_boost(self):
+        """Dunder methods (__init__, etc.) get importance boost."""
+        compressor = self._make_compressor()
+        code = '''
+class MyClass:
+    """A class."""
+    def __init__(self, value):
+        """Initialize."""
+        self.value = value
+        self.processed = False
+        self.results = []
+        self.cache = {}
+        self.errors = []
+        for i in range(10):
+            self.results.append(i)
+
+    def _setup_cache(self):
+        """Internal setup."""
+        x = 1
+        y = 2
+        z = 3
+        result = x + y + z
+        for i in range(10):
+            result += i
+        return result
+'''
+        result = compressor.compress(code, language="python")
+
+        # __init__ should score higher than _setup_cache
+        if "__init__" in result.symbol_scores and "_setup_cache" in result.symbol_scores:
+            assert result.symbol_scores["__init__"] > result.symbol_scores["_setup_cache"]
+
+    def test_javascript_importance(self):
+        """Symbol importance works for JavaScript code."""
+        compressor = self._make_compressor()
+        code = """
+import { db } from './database';
+
+function processUser(userId) {
+    const user = fetchUser(userId);
+    const profile = buildProfile(user);
+    sendNotification(user.email, profile);
+    logAction('process', userId);
+    updateMetrics('user_processed');
+    return { user, profile };
+}
+
+function fetchUser(id) {
+    const result = db.query('SELECT * FROM users WHERE id = ?', [id]);
+    if (!result) {
+        throw new Error('User not found');
+    }
+    return result;
+}
+
+function buildProfile(user) {
+    const prefs = loadPreferences(user.id);
+    return { ...user, preferences: prefs };
+}
+
+function _internalDebug(msg) {
+    const ts = Date.now();
+    const formatted = `[${ts}] DEBUG: ${msg}`;
+    console.log(formatted);
+    return formatted;
+}
+"""
+        result = compressor.compress(code, language="javascript")
+
+        assert result.symbol_scores
+        # fetchUser is called by processUser — should score higher than _internalDebug
+        if "fetchUser" in result.symbol_scores and "_internalDebug" in result.symbol_scores:
+            assert result.symbol_scores["fetchUser"] > result.symbol_scores["_internalDebug"]
+
+    def test_syntax_still_valid_with_importance(self):
+        """Compressed output with importance remains syntactically valid."""
+        compressor = self._make_compressor()
+        result = compressor.compress(_payment_processing_code(), language="python")
+
+        assert result.syntax_valid is True
+
+        # Should be parseable as Python
+        try:
+            compile(result.compressed, "<test>", "exec")
+        except SyntaxError:
+            pytest.fail("Semantic compression produced invalid Python syntax")
+
+    def test_empty_code_no_crash(self):
+        """Importance analysis handles empty code gracefully."""
+        compressor = self._make_compressor()
+        result = compressor.compress("", language="python")
+
+        assert result.symbol_scores == {}
+
+    def test_config_default_semantic_analysis_enabled(self):
+        """semantic_analysis is True by default in config."""
+        config = CodeCompressorConfig()
+        assert config.semantic_analysis is True

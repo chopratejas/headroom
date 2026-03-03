@@ -228,6 +228,9 @@ class CodeCompressorConfig:
     language_hint: str | None = None
     fallback_to_llmlingua: bool = True
 
+    # Semantic analysis (symbol importance scoring)
+    semantic_analysis: bool = True
+
     # CCR integration
     enable_ccr: bool = True
     ccr_ttl: int = 300  # 5 minutes
@@ -273,6 +276,9 @@ class CodeCompressionResult:
     # CCR
     cache_key: str | None = None
 
+    # Semantic analysis
+    symbol_scores: dict[str, float] = field(default_factory=dict)
+
     @property
     def tokens_saved(self) -> int:
         """Number of tokens saved by compression."""
@@ -288,6 +294,12 @@ class CodeCompressionResult:
     @property
     def summary(self) -> str:
         """Human-readable summary of compression."""
+        analysis_note = ""
+        if self.symbol_scores:
+            high = sum(1 for s in self.symbol_scores.values() if s >= 0.7)
+            low = sum(1 for s in self.symbol_scores.values() if s < 0.1)
+            if high or low:
+                analysis_note = f" Semantic: {high} high-importance, {low} low-importance."
         return (
             f"Compressed {self.language.value} code: "
             f"{self.original_tokens:,}→{self.compressed_tokens:,} tokens "
@@ -295,6 +307,7 @@ class CodeCompressionResult:
             f"Kept {self.preserved_imports} imports, "
             f"{self.preserved_signatures} signatures, "
             f"compressed {self.compressed_bodies} bodies."
+            f"{analysis_note}"
         )
 
 
@@ -391,6 +404,21 @@ def detect_language(code: str) -> tuple[CodeLanguage, float]:
     return best_lang, confidence
 
 
+@dataclass
+class _SymbolAnalysis:
+    """Result of intra-file symbol importance analysis.
+
+    All dicts are keyed by qualified name (e.g., 'ClassName.method')
+    to avoid collisions between identically-named methods in different classes.
+    """
+
+    scores: dict[str, float] = field(default_factory=dict)
+    calls: dict[str, set[str]] = field(default_factory=dict)
+    ref_counts: dict[str, int] = field(default_factory=dict)
+    body_line_counts: dict[str, int] = field(default_factory=dict)
+    bare_names: dict[str, str] = field(default_factory=dict)  # qname -> short_name
+
+
 class CodeAwareCompressor(Transform):
     """AST-preserving compression for source code.
 
@@ -446,6 +474,289 @@ class CodeAwareCompressor(Transform):
             startup overhead when the compressor isn't used.
         """
         self.config = config or CodeCompressorConfig()
+        self._symbol_analysis: _SymbolAnalysis | None = None
+        self._body_limits: dict[str, int] | None = None
+
+    # =========================================================================
+    # Symbol importance analysis
+    # =========================================================================
+
+    def _analyze_symbol_importance(
+        self,
+        root: Any,
+        code: str,
+        language: CodeLanguage,
+        context: str = "",
+    ) -> _SymbolAnalysis:
+        """Analyze symbol importance using distribution-based scoring.
+
+        Collects raw signals (reference count, fan-out, visibility, context match,
+        convention importance) per symbol, then normalizes using min-max scaling
+        so scores are relative within the file. This adapts to any file structure:
+        utility libraries, test files, orchestrators, etc.
+
+        Returns _SymbolAnalysis with normalized scores (0.0-1.0) per symbol.
+        """
+        if not self.config.semantic_analysis:
+            return _SymbolAnalysis()
+
+        definition_types = {
+            "function_definition",  # Python
+            "class_definition",  # Python
+            "function_declaration",  # JS, Go
+            "class_declaration",  # JS, Java
+            "method_definition",  # JS
+            "method_declaration",  # Go, Java
+            "function_item",  # Rust
+        }
+
+        # Use qualified keys (ClassName.method) to avoid collisions
+        # between methods with the same name in different classes.
+        # bare_names maps qualified keys back to short names for display/matching.
+        definitions: dict[str, Any] = {}  # qualified_name -> node
+        bare_names: dict[str, str] = {}  # qualified_name -> short_name
+        all_identifiers: dict[str, int] = {}  # short_name -> count
+        function_calls: dict[str, set[str]] = {}
+
+        def collect_definitions(node: Any, parent_name: str = "") -> None:
+            if node.type in definition_types:
+                short_name = self._get_definition_name(node)
+                if short_name:
+                    qualified = f"{parent_name}.{short_name}" if parent_name else short_name
+                    definitions[qualified] = node
+                    bare_names[qualified] = short_name
+                    # Recurse into this definition to find nested defs
+                    for child in node.children:
+                        collect_definitions(child, parent_name=qualified)
+                    return
+            for child in node.children:
+                collect_definitions(child, parent_name)
+
+        def collect_identifiers(node: Any) -> None:
+            if node.type in ("identifier", "property_identifier", "type_identifier"):
+                text = node.text
+                name = text.decode("utf-8") if isinstance(text, bytes) else str(text)
+                all_identifiers[name] = all_identifiers.get(name, 0) + 1
+            for child in node.children:
+                collect_identifiers(child)
+
+        def collect_calls_in_function(func_node: Any, func_qname: str) -> None:
+            func_short = bare_names[func_qname]
+            # Collect short names of other defined symbols this function references
+            defined_short_names = set(bare_names.values())
+            calls: set[str] = set()
+
+            def walk(node: Any) -> None:
+                if node.type in ("identifier", "property_identifier"):
+                    text = node.text
+                    name = text.decode("utf-8") if isinstance(text, bytes) else str(text)
+                    if name in defined_short_names and name != func_short:
+                        calls.add(name)
+                for child in node.children:
+                    walk(child)
+
+            walk(func_node)
+            function_calls[func_qname] = calls
+
+        # Pass 1: Collect definitions with qualified names
+        collect_definitions(root)
+
+        if not definitions:
+            return _SymbolAnalysis()
+
+        # Pass 2: Collect all identifiers (by short name, since code uses short names)
+        collect_identifiers(root)
+
+        # Pass 3: Collect call relationships and body sizes
+        body_line_counts: dict[str, int] = {}
+        for qname, node in definitions.items():
+            collect_calls_in_function(node, qname)
+            node_text = code[node.start_byte : node.end_byte]
+            body_line_counts[qname] = max(1, len(node_text.split("\n")) - 2)
+
+        # Reference counts: use short name counts, subtract 1 per definition with that name
+        # (multiple definitions with the same short name each contribute -1)
+        short_name_def_count: dict[str, int] = {}
+        for short in bare_names.values():
+            short_name_def_count[short] = short_name_def_count.get(short, 0) + 1
+
+        ref_counts: dict[str, int] = {}
+        for qname in definitions:
+            short = bare_names[qname]
+            count = all_identifiers.get(short, 0)
+            ref_counts[qname] = max(0, count - short_name_def_count.get(short, 1))
+
+        # Raw importance signals per symbol
+        # Context matching: split into words AND check as substring for multi-word names
+        context_lower = context.lower() if context else ""
+        context_words = set(re.split(r"[\s,;:.()\[\]{}\"']+", context_lower)) if context else set()
+        context_words.discard("")
+
+        raw_signals: dict[str, float] = {}
+        for qname in definitions:
+            short = bare_names[qname]
+            refs = ref_counts.get(qname, 0)
+            fan_out = len(function_calls.get(qname, set()))
+            is_public = self._is_public_symbol(short, language)
+
+            raw = float(refs)
+            raw += 1.0 if is_public else 0.0
+            raw += fan_out * 0.5
+
+            # Convention importance (language-specific)
+            if language == CodeLanguage.PYTHON:
+                if short.startswith("__") and short.endswith("__"):
+                    raw += 2.0
+            elif language == CodeLanguage.GO:
+                if short[0].isupper():
+                    raw += 1.0
+
+            # Context boost: match whole symbol name against context words,
+            # or check if multi-word symbol appears as substring in context
+            if context_words:
+                name_lower = short.lower()
+                if name_lower in context_words or (
+                    len(name_lower) > 3 and name_lower in context_lower
+                ):
+                    raw += 3.0
+
+            raw_signals[qname] = raw
+
+        # Normalize to 0-1 using min-max scaling (distribution-based)
+        values = list(raw_signals.values())
+        min_val = min(values)
+        max_val = max(values)
+        range_val = max_val - min_val
+
+        if range_val > 0:
+            scores = {name: round((v - min_val) / range_val, 3) for name, v in raw_signals.items()}
+        else:
+            # All symbols have equal importance (test files, utility libraries)
+            scores = dict.fromkeys(raw_signals, 0.5)
+
+        return _SymbolAnalysis(
+            scores=scores,
+            calls=function_calls,
+            ref_counts=ref_counts,
+            body_line_counts=body_line_counts,
+            bare_names=bare_names,
+        )
+
+    def _get_definition_name(self, node: Any) -> str | None:
+        """Extract the name identifier from a definition AST node."""
+        for child in node.children:
+            if child.type in ("identifier", "name", "type_identifier", "property_identifier"):
+                text = child.text
+                return text.decode("utf-8") if isinstance(text, bytes) else str(text)
+        return None
+
+    def _is_public_symbol(self, name: str, language: CodeLanguage) -> bool:
+        """Heuristic for whether a symbol is public/exported."""
+        if not name:
+            return False
+        if language == CodeLanguage.GO:
+            return name[0].isupper()
+        return not name.startswith("_")
+
+    def _allocate_body_budget(self, analysis: _SymbolAnalysis, code: str) -> dict[str, int]:
+        """Allocate body line budget across functions using target_compression_rate.
+
+        Instead of hardcoded tiers, distributes a total body line budget
+        proportionally to each symbol's importance score. The budget is
+        derived from target_compression_rate and accounts for fixed overhead
+        (imports, signatures) that are always preserved.
+
+        Returns dict mapping symbol name to max body lines to keep.
+        """
+        if not analysis.scores or not analysis.body_line_counts:
+            return {}
+
+        scores = analysis.scores
+        body_sizes = analysis.body_line_counts
+        target_rate = self.config.target_compression_rate
+
+        total_lines = len(code.strip().split("\n"))
+        total_body_lines = sum(body_sizes.values())
+        fixed_lines = max(0, total_lines - total_body_lines)
+
+        # Body budget = target total output - fixed overhead
+        target_total = total_lines * target_rate
+        body_budget = max(0.0, target_total - fixed_lines)
+
+        if total_body_lines == 0:
+            return {}
+
+        # Score floor: even lowest-scored symbols get a minimal allocation
+        # so the LLM sees they exist (vs just `pass`)
+        score_floor = 0.05
+
+        # Weight = score * body_size (larger important functions get more budget)
+        weights: dict[str, float] = {}
+        for name in scores:
+            score = max(scores.get(name, 0.5), score_floor)
+            size = body_sizes.get(name, 0)
+            weights[name] = score * size
+
+        total_weight = sum(weights.values())
+
+        if total_weight == 0:
+            # Edge case: distribute evenly
+            per_func = max(0, int(body_budget / max(len(scores), 1)))
+            return {name: min(per_func, body_sizes.get(name, 0)) for name in scores}
+
+        limits: dict[str, int] = {}
+        for qname in scores:
+            allocation = body_budget * weights[qname] / total_weight
+            max_lines = body_sizes.get(qname, 0)
+            limit = min(int(round(allocation)), max_lines)
+            limits[qname] = limit
+            # Also store by short name so _get_body_limit can find it.
+            # On collision, keep the higher limit (more generous).
+            short = analysis.bare_names.get(qname, qname)
+            if short not in limits or limit > limits[short]:
+                limits[short] = limit
+
+        return limits
+
+    def _get_body_limit(self, func_name: str | None) -> int:
+        """Look up the allocated body line limit for a function.
+
+        Falls back to max_body_lines if no budget allocation was computed.
+        max_body_lines always acts as a hard cap — budget allocation can give
+        a function FEWER lines but never MORE than max_body_lines.
+        """
+        if self._body_limits and func_name and func_name in self._body_limits:
+            return min(self._body_limits[func_name], self.config.max_body_lines)
+        return self.config.max_body_lines
+
+    def _make_omitted_comment(
+        self,
+        func_name: str | None,
+        omitted_count: int,
+        indent: str,
+        comment_prefix: str = "#",
+    ) -> str:
+        """Build omitted comment with call information from analysis."""
+        calls_info = ""
+        if self._symbol_analysis and func_name:
+            # Try both short name and as-is (qualified name) for lookup
+            for key in (
+                func_name,
+                *(k for k in self._symbol_analysis.calls if k.endswith(f".{func_name}")),
+            ):
+                if key in self._symbol_analysis.calls:
+                    called = self._symbol_analysis.calls[key]
+                    if called:
+                        sorted_calls = sorted(called)[:5]
+                        calls_info = "; calls: " + ", ".join(sorted_calls)
+                        if len(called) > 5:
+                            calls_info += f" +{len(called) - 5} more"
+                    break
+        return f"{indent}{comment_prefix} [{omitted_count} lines omitted{calls_info}]"
+
+    # =========================================================================
+    # Core compression
+    # =========================================================================
 
     def compress(
         self,
@@ -532,7 +843,9 @@ class CodeAwareCompressor(Transform):
 
         # Parse and compress
         try:
-            compressed, structure = self._compress_with_ast(code, detected_lang, context)
+            compressed, structure, symbol_scores = self._compress_with_ast(
+                code, detected_lang, context
+            )
             compressed_tokens = len(compressed.split())
 
             # Verify syntax validity
@@ -590,6 +903,7 @@ class CodeAwareCompressor(Transform):
                 compressed_bodies=len(structure.function_bodies),
                 syntax_valid=syntax_valid,
                 cache_key=cache_key,
+                symbol_scores=symbol_scores,
             )
 
         except Exception as e:
@@ -612,8 +926,8 @@ class CodeAwareCompressor(Transform):
         code: str,
         language: CodeLanguage,
         context: str,
-    ) -> tuple[str, CodeStructure]:
-        """Compress code using AST parsing.
+    ) -> tuple[str, CodeStructure, dict[str, float]]:
+        """Compress code using AST parsing with symbol importance analysis.
 
         Args:
             code: Source code.
@@ -621,7 +935,7 @@ class CodeAwareCompressor(Transform):
             context: User context for relevance.
 
         Returns:
-            Tuple of (compressed code, extracted structure).
+            Tuple of (compressed code, extracted structure, symbol scores).
         """
         # Get parser for language
         parser = _get_parser(language.value)
@@ -629,6 +943,11 @@ class CodeAwareCompressor(Transform):
         # Parse code
         tree = parser.parse(bytes(code, "utf-8"))
         root = tree.root_node
+
+        # Analyze symbol importance and allocate compression budget
+        analysis = self._analyze_symbol_importance(root, code, language, context)
+        self._symbol_analysis = analysis
+        self._body_limits = self._allocate_body_budget(analysis, code)
 
         # Extract structure based on language
         if language == CodeLanguage.PYTHON:
@@ -647,7 +966,18 @@ class CodeAwareCompressor(Transform):
         # Assemble compressed code
         compressed = self._assemble_compressed(structure, language)
 
-        return compressed, structure
+        # Expose scores with short names for the public API
+        symbol_scores: dict[str, float] = {}
+        if analysis.scores:
+            for qname, score in analysis.scores.items():
+                short = analysis.bare_names.get(qname, qname)
+                # On collision, keep the higher score (more generous)
+                if short not in symbol_scores or score > symbol_scores[short]:
+                    symbol_scores[short] = score
+        self._symbol_analysis = None
+        self._body_limits = None
+
+        return compressed, structure, symbol_scores
 
     def _extract_python_structure(self, root: Any, code: str) -> CodeStructure:
         """Extract structure from Python AST."""
@@ -706,12 +1036,16 @@ class CodeAwareCompressor(Transform):
         return structure
 
     def _extract_definition(self, node: Any, code: str, lines: list[str]) -> str:
-        """Extract a function/class definition with compressed body."""
+        """Extract a function/class definition with budget-aware compressed body."""
         node_text = self._get_node_text(node, code)
         node_lines = node_text.split("\n")
 
-        if len(node_lines) <= self.config.max_body_lines + 2:
-            # Small enough, keep as is
+        # Look up allocated body line limit for this symbol
+        func_name = self._get_definition_name(node)
+        body_limit = self._get_body_limit(func_name)
+
+        # Check if small enough to keep as-is
+        if len(node_lines) <= body_limit + 2:
             return node_text
 
         # Find signature (first line(s) until colon)
@@ -732,7 +1066,7 @@ class CodeAwareCompressor(Transform):
 
         if not found_colon:
             # Couldn't parse signature, return truncated
-            return "\n".join(node_lines[: self.config.max_body_lines]) + "\n    # ..."
+            return "\n".join(node_lines[: max(body_limit, 1)]) + "\n    # ..."
 
         signature = "\n".join(signature_lines)
 
@@ -780,15 +1114,20 @@ class CodeAwareCompressor(Transform):
         body_lines = node_lines[body_start:]
         total_body = len(body_lines)
 
-        # Determine indentation
+        # Keep body lines based on budget-allocated limit
+        keep_lines = min(body_limit, len(body_lines))
+
+        # Determine indentation from the first omitted line, not the first body line.
+        # This handles nested structures correctly: if the cut falls inside a nested
+        # method definition, the pass/omitted comment use the inner indent level.
         indent = "    "
         if body_lines:
-            first_non_empty = next((line for line in body_lines if line.strip()), "")
+            omitted_part = body_lines[keep_lines:] if keep_lines < len(body_lines) else body_lines
+            first_non_empty = next((line for line in omitted_part if line.strip()), "")
+            if not first_non_empty:
+                first_non_empty = next((line for line in body_lines if line.strip()), "")
             if first_non_empty:
                 indent = first_non_empty[: len(first_non_empty) - len(first_non_empty.lstrip())]
-
-        # Keep first few lines of body and add placeholder
-        keep_lines = min(self.config.max_body_lines, len(body_lines))
         compressed_body = body_lines[:keep_lines]
 
         result_parts = [signature]
@@ -803,8 +1142,7 @@ class CodeAwareCompressor(Transform):
 
         if total_body > keep_lines:
             omitted = total_body - keep_lines
-            # Simple, honest marker - no retrieval hints (causes hallucination)
-            result_parts.append(f"{indent}# [{omitted} lines omitted]")
+            result_parts.append(self._make_omitted_comment(func_name, omitted, indent))
             result_parts.append(f"{indent}pass")
 
         return "\n".join(result_parts)
@@ -853,11 +1191,14 @@ class CodeAwareCompressor(Transform):
         return structure
 
     def _compress_js_function(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a JavaScript function."""
+        """Compress a JavaScript function with budget-aware retention."""
         node_text = self._get_node_text(node, code)
         node_lines = node_text.split("\n")
 
-        if len(node_lines) <= self.config.max_body_lines + 2:
+        func_name = self._get_definition_name(node)
+        body_limit = self._get_body_limit(func_name)
+
+        if len(node_lines) <= body_limit + 2:
             return node_text
 
         # Find opening brace
@@ -874,11 +1215,13 @@ class CodeAwareCompressor(Transform):
 
         body_lines = node_lines[body_start:-1]  # Exclude closing brace
         total_body = len(body_lines)
-        keep_lines = min(self.config.max_body_lines, total_body)
+        keep_lines = min(body_limit, total_body)
 
         result = signature_lines + body_lines[:keep_lines]
         if total_body > keep_lines:
-            result.append(f"  // ... ({total_body - keep_lines} lines compressed)")
+            result.append(
+                self._make_omitted_comment(func_name, total_body - keep_lines, "  ", "//")
+            )
         result.append(node_lines[-1])  # Closing brace
 
         return "\n".join(result)
@@ -920,11 +1263,14 @@ class CodeAwareCompressor(Transform):
         return structure
 
     def _compress_go_function(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Go function."""
+        """Compress a Go function with budget-aware retention."""
         node_text = self._get_node_text(node, code)
         node_lines = node_text.split("\n")
 
-        if len(node_lines) <= self.config.max_body_lines + 2:
+        func_name = self._get_definition_name(node)
+        body_limit = self._get_body_limit(func_name)
+
+        if len(node_lines) <= body_limit + 2:
             return node_text
 
         # Find opening brace
@@ -938,11 +1284,13 @@ class CodeAwareCompressor(Transform):
 
         body_lines = node_lines[body_start:-1]
         total_body = len(body_lines)
-        keep_lines = min(self.config.max_body_lines, total_body)
+        keep_lines = min(body_limit, total_body)
 
         result = signature_lines + body_lines[:keep_lines]
         if total_body > keep_lines:
-            result.append(f"\t// ... ({total_body - keep_lines} lines compressed)")
+            result.append(
+                self._make_omitted_comment(func_name, total_body - keep_lines, "\t", "//")
+            )
         result.append(node_lines[-1])
 
         return "\n".join(result)
@@ -978,11 +1326,14 @@ class CodeAwareCompressor(Transform):
         return structure
 
     def _compress_rust_function(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Rust function."""
+        """Compress a Rust function with budget-aware retention."""
         node_text = self._get_node_text(node, code)
         node_lines = node_text.split("\n")
 
-        if len(node_lines) <= self.config.max_body_lines + 2:
+        func_name = self._get_definition_name(node)
+        body_limit = self._get_body_limit(func_name)
+
+        if len(node_lines) <= body_limit + 2:
             return node_text
 
         # Find opening brace
@@ -996,11 +1347,13 @@ class CodeAwareCompressor(Transform):
 
         body_lines = node_lines[body_start:-1]
         total_body = len(body_lines)
-        keep_lines = min(self.config.max_body_lines, total_body)
+        keep_lines = min(body_limit, total_body)
 
         result = signature_lines + body_lines[:keep_lines]
         if total_body > keep_lines:
-            result.append(f"    // ... ({total_body - keep_lines} lines compressed)")
+            result.append(
+                self._make_omitted_comment(func_name, total_body - keep_lines, "    ", "//")
+            )
         result.append(node_lines[-1])
 
         return "\n".join(result)
