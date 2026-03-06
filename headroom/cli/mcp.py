@@ -95,8 +95,8 @@ def mcp_install(proxy_url: str, force: bool) -> None:
     """Install Headroom MCP server into Claude Code config.
 
     \b
-    This adds headroom to ~/.claude/mcp.json so Claude Code can use
-    the headroom_retrieve tool for CCR (Compress-Cache-Retrieve).
+    This registers headroom with Claude Code so it can use the
+    headroom_retrieve tool for CCR (Compress-Cache-Retrieve).
 
     \b
     Example:
@@ -111,38 +111,81 @@ def mcp_install(proxy_url: str, force: bool) -> None:
         click.echo("Install with: pip install 'headroom-ai[mcp]'", err=True)
         raise SystemExit(1) from None
 
-    config = load_mcp_config()
-
-    # Check if already configured
-    if "headroom" in config.get("mcpServers", {}) and not force:
-        click.echo("Headroom MCP is already configured in Claude Code.")
-        click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
-        raise SystemExit(0)
-
-    # Build server config
     command = get_headroom_command()
-
-    # Add proxy URL as environment variable if non-default
-    server_config: dict = {
-        "command": command[0],
-        "args": command[1:],
-    }
-
+    env: dict[str, str] = {}
     if proxy_url != DEFAULT_PROXY_URL:
-        server_config["env"] = {"HEADROOM_PROXY_URL": proxy_url}
+        env["HEADROOM_PROXY_URL"] = proxy_url
 
-    # Update config
-    if "mcpServers" not in config:
-        config["mcpServers"] = {}
-    config["mcpServers"]["headroom"] = server_config
+    # Prefer `claude mcp add` (Claude Code CLI ≥2.x stores servers in
+    # ~/.claude/.claude.json, which is what `claude mcp list` reads).
+    claude_cli = shutil.which("claude")
+    used_claude_cli = False
+    if claude_cli:
+        import subprocess
 
-    # Save
-    save_mcp_config(config)
+        # Check if already registered
+        result = subprocess.run(
+            [claude_cli, "mcp", "get", "headroom"],
+            capture_output=True,
+            text=True,
+        )
+        already_registered = result.returncode == 0
+
+        if already_registered and not force:
+            click.echo("Headroom MCP is already configured in Claude Code.")
+            click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
+            raise SystemExit(0)
+
+        if already_registered and force:
+            subprocess.run(
+                [claude_cli, "mcp", "remove", "headroom", "-s", "user"],
+                capture_output=True,
+            )
+
+        add_cmd = [claude_cli, "mcp", "add", "headroom", "-s", "user"]
+        for k, v in env.items():
+            add_cmd += ["-e", f"{k}={v}"]
+        add_cmd += ["--", *command]
+
+        result = subprocess.run(add_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            used_claude_cli = True
+        else:
+            click.echo(
+                f"Warning: 'claude mcp add' failed ({result.stderr.strip()}), "
+                "falling back to mcp.json.",
+                err=True,
+            )
+
+    if not used_claude_cli:
+        # Fallback: write ~/.claude/mcp.json (used by older Claude Code versions
+        # and the Claude.ai desktop app).
+        config = load_mcp_config()
+
+        if "headroom" in config.get("mcpServers", {}) and not force:
+            click.echo("Headroom MCP is already configured in Claude Code.")
+            click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
+            raise SystemExit(0)
+
+        server_config: dict = {"command": command[0], "args": command[1:]}
+        if env:
+            server_config["env"] = env
+
+        if "mcpServers" not in config:
+            config["mcpServers"] = {}
+        config["mcpServers"]["headroom"] = server_config
+        save_mcp_config(config)
+
+    config_note = (
+        "Registered via: claude mcp add (scope: user)"
+        if used_claude_cli
+        else f"Configuration written to: {MCP_CONFIG_PATH}"
+    )
 
     click.echo(f"""
 ✓ Headroom MCP server installed!
 
-Configuration written to: {MCP_CONFIG_PATH}
+{config_note}
 
 Next steps:
   1. Start the Headroom proxy (if not running):

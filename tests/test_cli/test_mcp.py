@@ -39,11 +39,26 @@ def temp_claude_dir(tmp_path):
 
 @pytest.fixture
 def mock_claude_config_path(temp_claude_dir):
-    """Patch the MCP config path to use temp directory."""
+    """Patch the MCP config path to use temp directory.
+
+    Also mocks the claude CLI as absent so tests exercise the mcp.json
+    fallback path rather than the `claude mcp add` path.
+    """
+    import shutil as _shutil
+
     config_path = temp_claude_dir / "mcp.json"
+    # Capture the original function reference before patching so we don't recurse.
+    _real_which = _shutil.which
+
+    def which_no_claude(cmd):
+        if cmd == "claude":
+            return None
+        return _real_which(cmd)
+
     with patch("headroom.cli.mcp.MCP_CONFIG_PATH", config_path):
         with patch("headroom.cli.mcp.CLAUDE_CONFIG_DIR", temp_claude_dir):
-            yield config_path
+            with patch("headroom.cli.mcp.shutil.which", side_effect=which_no_claude):
+                yield config_path
 
 
 @pytest.fixture

@@ -55,7 +55,9 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
-from .tool_injection import CCR_TOOL_NAME
+# Defined inline to avoid importing the full headroom package (which loads LiteLLM
+# and makes HTTP requests to GitHub, adding 4-5 seconds to startup time).
+CCR_TOOL_NAME = "headroom_retrieve"
 
 logger = logging.getLogger("headroom.ccr.mcp")
 
