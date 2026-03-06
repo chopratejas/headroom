@@ -34,7 +34,7 @@
 ## Demo
 
 <p align="center">
-  <img src="headroom_recording.gif" alt="Headroom Demo" width="800">
+  <img src="Headroom-2.gif" alt="Headroom Demo" width="800">
 </p>
 
 ---
