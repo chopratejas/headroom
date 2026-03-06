@@ -7,6 +7,7 @@ needing API key access.
 
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -95,8 +96,8 @@ def mcp_install(proxy_url: str, force: bool) -> None:
     """Install Headroom MCP server into Claude Code config.
 
     \b
-    This adds headroom to ~/.claude/mcp.json so Claude Code can use
-    the headroom_retrieve tool for CCR (Compress-Cache-Retrieve).
+    This registers headroom with Claude Code so it can use the
+    headroom_retrieve tool for CCR (Compress-Cache-Retrieve).
 
     \b
     Example:
@@ -111,38 +112,79 @@ def mcp_install(proxy_url: str, force: bool) -> None:
         click.echo("Install with: pip install 'headroom-ai[mcp]'", err=True)
         raise SystemExit(1) from None
 
-    config = load_mcp_config()
-
-    # Check if already configured
-    if "headroom" in config.get("mcpServers", {}) and not force:
-        click.echo("Headroom MCP is already configured in Claude Code.")
-        click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
-        raise SystemExit(0)
-
-    # Build server config
     command = get_headroom_command()
-
-    # Add proxy URL as environment variable if non-default
-    server_config: dict = {
-        "command": command[0],
-        "args": command[1:],
-    }
-
+    env: dict[str, str] = {}
     if proxy_url != DEFAULT_PROXY_URL:
-        server_config["env"] = {"HEADROOM_PROXY_URL": proxy_url}
+        env["HEADROOM_PROXY_URL"] = proxy_url
 
-    # Update config
-    if "mcpServers" not in config:
-        config["mcpServers"] = {}
-    config["mcpServers"]["headroom"] = server_config
+    # Prefer `claude mcp add` (Claude Code CLI ≥2.x stores servers in
+    # ~/.claude/.claude.json, which is what `claude mcp list` reads).
+    claude_cli = shutil.which("claude")
+    used_claude_cli = False
+    if claude_cli:
+        # Check if already registered
+        result = subprocess.run(
+            [claude_cli, "mcp", "get", "headroom"],
+            capture_output=True,
+            text=True,
+        )
+        already_registered = result.returncode == 0
 
-    # Save
-    save_mcp_config(config)
+        if already_registered and not force:
+            click.echo("Headroom MCP is already configured in Claude Code.")
+            click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
+            raise SystemExit(0)
+
+        if already_registered and force:
+            subprocess.run(
+                [claude_cli, "mcp", "remove", "headroom", "-s", "user"],
+                capture_output=True,
+            )
+
+        add_cmd = [claude_cli, "mcp", "add", "headroom", "-s", "user"]
+        for k, v in env.items():
+            add_cmd += ["-e", f"{k}={v}"]
+        add_cmd += ["--", *command]
+
+        result = subprocess.run(add_cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            used_claude_cli = True
+        else:
+            click.echo(
+                f"Warning: 'claude mcp add' failed ({result.stderr.strip()}), "
+                "falling back to mcp.json.",
+                err=True,
+            )
+
+    if not used_claude_cli:
+        # Fallback: write ~/.claude/mcp.json (used by older Claude Code versions
+        # and the Claude.ai desktop app).
+        config = load_mcp_config()
+
+        if "headroom" in config.get("mcpServers", {}) and not force:
+            click.echo("Headroom MCP is already configured in Claude Code.")
+            click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
+            raise SystemExit(0)
+
+        server_config: dict = {"command": command[0], "args": command[1:]}
+        if env:
+            server_config["env"] = env
+
+        if "mcpServers" not in config:
+            config["mcpServers"] = {}
+        config["mcpServers"]["headroom"] = server_config
+        save_mcp_config(config)
+
+    config_note = (
+        "Registered via: claude mcp add (scope: user)"
+        if used_claude_cli
+        else f"Configuration written to: {MCP_CONFIG_PATH}"
+    )
 
     click.echo(f"""
 ✓ Headroom MCP server installed!
 
-Configuration written to: {MCP_CONFIG_PATH}
+{config_note}
 
 Next steps:
   1. Start the Headroom proxy (if not running):
@@ -166,30 +208,47 @@ def mcp_uninstall() -> None:
     """Remove Headroom MCP server from Claude Code config.
 
     \b
-    This removes headroom from ~/.claude/mcp.json.
-    Other MCP servers in your config are preserved.
+    Removes headroom from both the claude CLI registry (Claude Code CLI >=2.x)
+    and ~/.claude/mcp.json if present. Other MCP servers are preserved.
     """
-    if not MCP_CONFIG_PATH.exists():
-        click.echo("No MCP config found. Nothing to uninstall.")
-        raise SystemExit(0)
+    removed = False
 
-    config = load_mcp_config()
+    # Remove from claude CLI registry (Claude Code CLI >=2.x)
+    claude_cli = shutil.which("claude")
+    if claude_cli:
+        check = subprocess.run(
+            [claude_cli, "mcp", "get", "headroom"],
+            capture_output=True,
+        )
+        if check.returncode == 0:
+            rm = subprocess.run(
+                [claude_cli, "mcp", "remove", "headroom", "-s", "user"],
+                capture_output=True,
+                text=True,
+            )
+            if rm.returncode == 0:
+                click.echo("✓ Headroom MCP server removed (via claude mcp remove)")
+                removed = True
+            else:
+                click.echo(
+                    f"Warning: 'claude mcp remove' failed ({rm.stderr.strip()}).",
+                    err=True,
+                )
 
-    if "headroom" not in config.get("mcpServers", {}):
-        click.echo("Headroom MCP is not configured. Nothing to uninstall.")
-        raise SystemExit(0)
+    # Also remove from mcp.json fallback config if present
+    if MCP_CONFIG_PATH.exists():
+        config = load_mcp_config()
+        if "headroom" in config.get("mcpServers", {}):
+            del config["mcpServers"]["headroom"]
+            save_mcp_config(config)
+            click.echo(f"✓ Headroom MCP server removed from {MCP_CONFIG_PATH}")
+            removed = True
 
-    # Remove headroom
-    del config["mcpServers"]["headroom"]
-
-    # Save (or delete if empty)
-    if config.get("mcpServers"):
-        save_mcp_config(config)
-        click.echo(f"✓ Headroom MCP server removed from {MCP_CONFIG_PATH}")
-    else:
-        # Config is now empty, could delete but safer to leave empty
-        save_mcp_config(config)
-        click.echo(f"✓ Headroom MCP server removed from {MCP_CONFIG_PATH}")
+    if not removed:
+        if MCP_CONFIG_PATH.exists():
+            click.echo("Headroom MCP is not configured. Nothing to uninstall.")
+        else:
+            click.echo("No MCP config found. Nothing to uninstall.")
 
 
 @mcp.command("status")

@@ -39,11 +39,26 @@ def temp_claude_dir(tmp_path):
 
 @pytest.fixture
 def mock_claude_config_path(temp_claude_dir):
-    """Patch the MCP config path to use temp directory."""
+    """Patch the MCP config path to use temp directory.
+
+    Also mocks the claude CLI as absent so tests exercise the mcp.json
+    fallback path rather than the `claude mcp add` path.
+    """
+    import shutil as _shutil
+
     config_path = temp_claude_dir / "mcp.json"
+    # Capture the original function reference before patching so we don't recurse.
+    _real_which = _shutil.which
+
+    def which_no_claude(cmd):
+        if cmd == "claude":
+            return None
+        return _real_which(cmd)
+
     with patch("headroom.cli.mcp.MCP_CONFIG_PATH", config_path):
         with patch("headroom.cli.mcp.CLAUDE_CONFIG_DIR", temp_claude_dir):
-            yield config_path
+            with patch("headroom.cli.mcp.shutil.which", side_effect=which_no_claude):
+                yield config_path
 
 
 @pytest.fixture
@@ -383,3 +398,156 @@ class TestEndToEndFlow:
         # Status shows not configured
         result = runner.invoke(main, ["mcp", "status"])
         assert "headroom" not in result.output.lower() or "not configured" in result.output.lower()
+
+
+class TestMCPInstallWithClaudeCLI:
+    """Test mcp_install when the claude CLI is available."""
+
+    def _make_run(self, get_rc=1, add_rc=0, remove_rc=0):
+        """Return a subprocess.run mock with configurable return codes."""
+
+        def run(cmd, **kwargs):
+            if "get" in cmd:
+                return MagicMock(returncode=get_rc, stderr="")
+            if "remove" in cmd:
+                return MagicMock(returncode=remove_rc, stderr="")
+            if "add" in cmd:
+                return MagicMock(returncode=add_rc, stderr="")
+            return MagicMock(returncode=0, stderr="")
+
+        return run
+
+    def test_install_uses_claude_mcp_add(self, mock_mcp_available):
+        """When claude CLI is available, install calls claude mcp add."""
+        runner = CliRunner()
+        with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+            with patch("headroom.cli.mcp.subprocess.run", side_effect=self._make_run()) as mock_run:
+                result = runner.invoke(main, ["mcp", "install"])
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert "installed" in result.output.lower()
+        assert "claude mcp add" in result.output
+
+        # Verify claude mcp add was called
+        add_calls = [c for c in mock_run.call_args_list if "add" in c.args[0]]
+        assert len(add_calls) == 1
+        add_cmd = add_calls[0].args[0]
+        assert "headroom" in add_cmd
+        assert "-s" in add_cmd
+        assert "user" in add_cmd
+
+    def test_install_already_registered_no_force(self, mock_mcp_available):
+        """Install without --force exits cleanly when already registered via claude CLI."""
+        runner = CliRunner()
+        with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+            # get returns 0 → already registered
+            with patch("headroom.cli.mcp.subprocess.run", side_effect=self._make_run(get_rc=0)):
+                result = runner.invoke(main, ["mcp", "install"])
+
+        assert result.exit_code == 0
+        assert "already configured" in result.output.lower()
+
+    def test_install_force_calls_remove_then_add(self, mock_mcp_available):
+        """--force calls claude mcp remove before claude mcp add."""
+        runner = CliRunner()
+        calls = []
+
+        def capturing_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+            with patch("headroom.cli.mcp.subprocess.run", side_effect=capturing_run):
+                result = runner.invoke(main, ["mcp", "install", "--force"])
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        subcommands = [c[2] for c in calls]  # third element is the subcommand
+        assert "remove" in subcommands
+        assert "add" in subcommands
+        assert subcommands.index("remove") < subcommands.index("add")
+
+    def test_install_fallback_on_claude_mcp_add_failure(self, temp_claude_dir, mock_mcp_available):
+        """If claude mcp add fails, falls back to writing mcp.json."""
+        config_path = temp_claude_dir / "mcp.json"
+        with patch("headroom.cli.mcp.MCP_CONFIG_PATH", config_path):
+            with patch("headroom.cli.mcp.CLAUDE_CONFIG_DIR", temp_claude_dir):
+                with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+                    with patch(
+                        "headroom.cli.mcp.subprocess.run",
+                        side_effect=self._make_run(add_rc=1),
+                    ):
+                        runner = CliRunner()
+                        result = runner.invoke(main, ["mcp", "install"])
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        assert config_path.exists()
+        config = json.loads(config_path.read_text())
+        assert "headroom" in config["mcpServers"]
+
+    def test_install_with_custom_proxy_url_passes_e_flag(self, mock_mcp_available):
+        """Custom proxy URL is passed as -e KEY=VALUE to claude mcp add."""
+        calls = []
+
+        def capturing_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            # Return rc=1 for "get" so headroom is treated as not yet registered
+            if "get" in cmd:
+                return MagicMock(returncode=1, stderr="")
+            return MagicMock(returncode=0, stderr="")
+
+        runner = CliRunner()
+        with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+            with patch("headroom.cli.mcp.subprocess.run", side_effect=capturing_run):
+                result = runner.invoke(
+                    main, ["mcp", "install", "--proxy-url", "http://custom:9000"]
+                )
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+        add_calls = [c for c in calls if "add" in c]
+        assert len(add_calls) == 1
+        add_cmd = add_calls[0]
+        assert "-e" in add_cmd
+        env_idx = add_cmd.index("-e")
+        assert add_cmd[env_idx + 1] == "HEADROOM_PROXY_URL=http://custom:9000"
+
+
+class TestMCPUninstallWithClaudeCLI:
+    """Test mcp_uninstall when the claude CLI is available."""
+
+    def test_uninstall_calls_claude_mcp_remove(self):
+        """Uninstall calls claude mcp remove when headroom is registered."""
+        calls = []
+
+        def capturing_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return MagicMock(returncode=0, stderr="")
+
+        runner = CliRunner()
+        with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+            with patch("headroom.cli.mcp.subprocess.run", side_effect=capturing_run):
+                result = runner.invoke(main, ["mcp", "uninstall"])
+
+        assert result.exit_code == 0
+        assert "removed" in result.output.lower()
+        subcommands = [c[2] for c in calls]
+        assert "remove" in subcommands
+
+    def test_uninstall_skips_remove_when_not_registered(self):
+        """Uninstall does not call remove when headroom is not registered via claude CLI."""
+        calls = []
+
+        def capturing_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            # mcp get returns non-zero → not registered
+            if "get" in cmd:
+                return MagicMock(returncode=1, stderr="")
+            return MagicMock(returncode=0, stderr="")
+
+        runner = CliRunner()
+        with patch("headroom.cli.mcp.shutil.which", return_value="/usr/bin/claude"):
+            with patch("headroom.cli.mcp.subprocess.run", side_effect=capturing_run):
+                result = runner.invoke(main, ["mcp", "uninstall"])
+
+        assert result.exit_code == 0
+        subcommands = [c[2] for c in calls]
+        assert "remove" not in subcommands
