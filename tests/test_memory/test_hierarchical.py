@@ -754,6 +754,7 @@ class TestLocalEmbedder:
     @pytest.fixture
     def embedder(self):
         """Create a local embedder for testing."""
+        pytest.importorskip("sentence_transformers", reason="sentence-transformers not installed")
         from headroom.memory.adapters.embedders import LocalEmbedder
 
         return LocalEmbedder()

@@ -284,6 +284,19 @@ class ContentRouterConfig:
     protect_recent_code: int = 4  # Don't compress CODE in last N messages (0 = disabled)
     protect_analysis_context: bool = True  # Detect "analyze/review" intent, protect code
 
+    # Adaptive Read protection: fraction of total messages to protect from
+    # compression.  At 10 msgs, protects ~5 Reads.  At 100 msgs, protects ~10.
+    # Old Reads beyond this window become compressible even though they are
+    # in DEFAULT_EXCLUDE_TOOLS.  0.0 = always exclude all (old behavior).
+    protect_recent_reads_fraction: float = 0.5  # protect the most-recent 50% of messages
+
+    # Adaptive compression ratio: scales with context pressure.
+    # At low pressure (<30% full), use the relaxed threshold (reject marginal).
+    # At high pressure (>80% full), use the aggressive threshold (accept anything helpful).
+    # Linearly interpolates between the two.
+    min_ratio_relaxed: float = 0.85  # when context is mostly empty
+    min_ratio_aggressive: float = 0.65  # when context is nearly full
+
     # CCR (Compress-Cache-Retrieve) settings for SmartCrusher
     ccr_enabled: bool = True  # Enable CCR marker injection for reversible compression
     ccr_inject_marker: bool = True  # Add retrieval markers to compressed content
@@ -1208,21 +1221,77 @@ class ContentRouter(Transform):
             tool_id for tool_id, name in tool_name_map.items() if name in exclude_tools
         }
 
+        # --- Adaptive parameters based on context pressure ---
+        num_messages = len(messages)
+        model_limit = kwargs.get("model_limit", 0)
+
+        # Adaptive Read protection: protect a fraction of recent messages
+        if self.config.protect_recent_reads_fraction > 0:
+            # Scale: at 10 msgs protect 5, at 50 msgs protect 25, at 200 msgs protect 100
+            # But cap at a reasonable floor so very short convos still protect everything
+            read_protection_window = max(
+                4,  # always protect at least last 4 messages
+                int(num_messages * self.config.protect_recent_reads_fraction),
+            )
+        else:
+            read_protection_window = num_messages  # 0.0 = protect all (old behavior)
+
+        # Adaptive compression ratio: scale with context pressure
+        if model_limit > 0:
+            context_pressure = min(1.0, tokens_before / model_limit)
+        else:
+            context_pressure = 0.5  # default: moderate
+
+        # Linear interpolation between relaxed and aggressive thresholds
+        # pressure 0.0 → relaxed, pressure 1.0 → aggressive
+        min_ratio = (
+            self.config.min_ratio_relaxed
+            + (self.config.min_ratio_aggressive - self.config.min_ratio_relaxed) * context_pressure
+        )
+        # Clamp to [aggressive, relaxed] range
+        min_ratio = max(
+            self.config.min_ratio_aggressive,
+            min(self.config.min_ratio_relaxed, min_ratio),
+        )
+
+        if context_pressure > 0.3:
+            logger.debug(
+                "content_router adaptive: pressure=%.2f, min_ratio=%.2f, "
+                "read_protect_window=%d/%d msgs",
+                context_pressure,
+                min_ratio,
+                read_protection_window,
+                num_messages,
+            )
+
         transformed_messages: list[dict[str, Any]] = []
         transforms_applied: list[str] = []
         warnings: list[str] = []
+
+        # Routing reason counters for summary logging
+        route_counts: dict[str, int] = {
+            "excluded_tool": 0,
+            "user_msg": 0,
+            "small": 0,
+            "recent_code": 0,
+            "analysis_ctx": 0,
+            "ratio_too_high": 0,
+            "non_string": 0,
+            "content_blocks": 0,
+        }
+        compressed_details: list[str] = []  # e.g. ["code_aware:0.72", "llmlingua:0.65"]
 
         # Check for analysis intent in the most recent user message
         analysis_intent = False
         if self.config.protect_analysis_context:
             analysis_intent = self._detect_analysis_intent(messages)
 
-        num_messages = len(messages)
-
         for i, message in enumerate(messages):
             role = message.get("role", "")
             content = message.get("content", "")
             bias = 1.0  # Default bias, may be overridden for tool messages
+
+            messages_from_end = num_messages - i
 
             # Handle list content (Anthropic format with content blocks)
             if isinstance(content, list):
@@ -1233,22 +1302,37 @@ class ContentRouter(Transform):
                     transforms_applied,
                     excluded_tool_ids,
                     tool_name_map=tool_name_map,
+                    route_counts=route_counts,
+                    compressed_details=compressed_details,
+                    min_ratio=min_ratio,
+                    read_protection_window=read_protection_window,
+                    messages_from_end=messages_from_end,
                 )
                 transformed_messages.append(transformed_message)
+                route_counts["content_blocks"] += 1
                 continue
 
             # Skip non-string content (other types)
             if not isinstance(content, str):
                 transformed_messages.append(message)
+                route_counts["non_string"] += 1
                 continue
 
             # Skip OpenAI-style tool messages for excluded tools
+            # BUT: allow compression of old excluded-tool outputs beyond the
+            # adaptive protection window (age-based decay).
             if role == "tool":
                 tool_call_id = message.get("tool_call_id", "")
                 if tool_call_id in excluded_tool_ids:
-                    transformed_messages.append(message)
-                    transforms_applied.append("router:excluded:tool")
-                    continue
+                    if messages_from_end <= read_protection_window:
+                        # Recent — protect as before
+                        transformed_messages.append(message)
+                        transforms_applied.append("router:excluded:tool")
+                        route_counts["excluded_tool"] += 1
+                        continue
+                    # Old excluded-tool output — fall through to compression
+                    # (the LLM is unlikely to need exact content from this far back,
+                    # and CCR provides retrieval if it does)
                 # Look up tool-specific compression bias for OpenAI tool messages
                 tool_name = tool_name_map.get(tool_call_id, "")
                 bias = self._get_tool_bias(tool_name) if tool_name else 1.0
@@ -1257,11 +1341,13 @@ class ContentRouter(Transform):
             if self.config.skip_user_messages and role == "user":
                 transformed_messages.append(message)
                 transforms_applied.append("router:protected:user_message")
+                route_counts["user_msg"] += 1
                 continue
 
             if not content or len(content.split()) < 50:
                 # Skip small content
                 transformed_messages.append(message)
+                route_counts["small"] += 1
                 continue
 
             # Detect content type for protection decisions
@@ -1277,12 +1363,14 @@ class ContentRouter(Transform):
             ):
                 transformed_messages.append(message)
                 transforms_applied.append("router:protected:recent_code")
+                route_counts["recent_code"] += 1
                 continue
 
             # Protection 3: Don't compress CODE when analysis intent detected
             if analysis_intent and is_code:
                 transformed_messages.append(message)
                 transforms_applied.append("router:protected:analysis_context")
+                route_counts["analysis_ctx"] += 1
                 continue
 
             # Route and compress based on content detection
@@ -1292,17 +1380,48 @@ class ContentRouter(Transform):
                 msg_bias *= hook_biases[i]
             result = self.compress(content, context=context, bias=msg_bias)
 
-            if result.compression_ratio < 0.9:
+            if result.compression_ratio < min_ratio:
                 transformed_messages.append({**message, "content": result.compressed})
                 transforms_applied.append(
                     f"router:{result.strategy_used.value}:{result.compression_ratio:.2f}"
                 )
+                compressed_details.append(
+                    f"{result.strategy_used.value}:{result.compression_ratio:.2f}"
+                )
             else:
                 transformed_messages.append(message)
+                route_counts["ratio_too_high"] += 1
 
         tokens_after = sum(
             tokenizer.count_text(str(m.get("content", ""))) for m in transformed_messages
         )
+
+        # Log routing summary
+        parts = []
+        if compressed_details:
+            parts.append(f"{len(compressed_details)} compressed ({', '.join(compressed_details)})")
+        if route_counts["excluded_tool"]:
+            parts.append(f"{route_counts['excluded_tool']} excluded (Read/Glob)")
+        if route_counts["user_msg"]:
+            parts.append(f"{route_counts['user_msg']} skipped (user)")
+        if route_counts["small"]:
+            parts.append(f"{route_counts['small']} skipped (<50 words)")
+        if route_counts["recent_code"]:
+            parts.append(f"{route_counts['recent_code']} protected (recent code)")
+        if route_counts["analysis_ctx"]:
+            parts.append(f"{route_counts['analysis_ctx']} protected (analysis ctx)")
+        if route_counts["ratio_too_high"]:
+            parts.append(f"{route_counts['ratio_too_high']} unchanged (ratio>={min_ratio:.2f})")
+        if route_counts["content_blocks"]:
+            parts.append(f"{route_counts['content_blocks']} content-block msgs")
+        if route_counts["non_string"]:
+            parts.append(f"{route_counts['non_string']} non-string")
+        if parts:
+            logger.info(
+                "content_router: %d msgs — %s",
+                num_messages,
+                ", ".join(parts),
+            )
 
         all_transforms = lifecycle_transforms + transforms_applied
         return TransformResult(
@@ -1343,6 +1462,11 @@ class ContentRouter(Transform):
         transforms_applied: list[str],
         excluded_tool_ids: set[str],
         tool_name_map: dict[str, str] | None = None,
+        route_counts: dict[str, int] | None = None,
+        compressed_details: list[str] | None = None,
+        min_ratio: float = 0.85,
+        read_protection_window: int = 8,
+        messages_from_end: int = 0,
     ) -> dict[str, Any]:
         """Process content blocks (Anthropic format) for tool_result compression.
 
@@ -1356,6 +1480,11 @@ class ContentRouter(Transform):
             transforms_applied: List to append transform names to.
             excluded_tool_ids: Tool IDs to skip compression for.
             tool_name_map: Mapping from tool_call_id to tool_name for profile lookup.
+            route_counts: Optional routing reason counters to update.
+            compressed_details: Optional list to append compression details to.
+            min_ratio: Adaptive compression ratio threshold.
+            read_protection_window: Messages from end within which excluded tools are protected.
+            messages_from_end: How far this message is from the end of the conversation.
 
         Returns:
             Transformed message with compressed content blocks.
@@ -1375,9 +1504,14 @@ class ContentRouter(Transform):
                 # Check if tool is excluded from compression
                 tool_use_id = block.get("tool_use_id", "")
                 if tool_use_id in excluded_tool_ids:
-                    new_blocks.append(block)
-                    transforms_applied.append("router:excluded:tool")
-                    continue
+                    if messages_from_end <= read_protection_window:
+                        # Recent — protect as before
+                        new_blocks.append(block)
+                        transforms_applied.append("router:excluded:tool")
+                        if route_counts is not None:
+                            route_counts["excluded_tool"] += 1
+                        continue
+                    # Old excluded-tool output — fall through to compression
 
                 # Look up tool-specific compression bias
                 tool_name = (tool_name_map or {}).get(tool_use_id, "")
@@ -1389,13 +1523,23 @@ class ContentRouter(Transform):
                 if isinstance(tool_content, str) and len(tool_content) > 500:
                     # Compress using content detection (will auto-detect JSON arrays, etc.)
                     result = self.compress(tool_content, context=context, bias=bias)
-                    if result.compression_ratio < 0.9:
+                    if result.compression_ratio < min_ratio:
                         new_blocks.append({**block, "content": result.compressed})
                         transforms_applied.append(
                             f"router:tool_result:{result.strategy_used.value}"
                         )
+                        if compressed_details is not None:
+                            compressed_details.append(
+                                f"tool:{result.strategy_used.value}:{result.compression_ratio:.2f}"
+                            )
                         any_compressed = True
                         continue
+                    else:
+                        if route_counts is not None:
+                            route_counts["ratio_too_high"] += 1
+                else:
+                    if route_counts is not None:
+                        route_counts["small"] += 1
 
             # Keep block unchanged
             new_blocks.append(block)

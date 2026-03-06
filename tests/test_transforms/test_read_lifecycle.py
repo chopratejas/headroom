@@ -152,9 +152,9 @@ SMALL_CONTENT = "tiny"  # Below min_size_bytes
 class TestReadLifecycleDisabled:
     """Verify backward compatibility when disabled."""
 
-    def test_disabled_by_default(self):
-        """Default config: no changes to messages."""
-        config = ReadLifecycleConfig()
+    def test_disabled_when_explicitly_off(self):
+        """Explicitly disabled config: no changes to messages."""
+        config = ReadLifecycleConfig(enabled=False)
         assert config.enabled is False
 
         mgr = ReadLifecycleManager(config)
@@ -167,6 +167,11 @@ class TestReadLifecycleDisabled:
         assert result.messages is messages  # Same object, not copied
         assert result.reads_total == 0
         assert result.transforms_applied == []
+
+    def test_enabled_by_default(self):
+        """Default config has lifecycle enabled."""
+        config = ReadLifecycleConfig()
+        assert config.enabled is True
 
 
 class TestStaleDetection:

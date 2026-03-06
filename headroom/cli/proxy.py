@@ -29,6 +29,12 @@ from .main import main
 )
 # Code-aware compression (ON by default if installed)
 @click.option("--no-code-aware", is_flag=True, help="Disable AST-based code compression")
+# Read lifecycle (ON by default: compresses stale/superseded Read outputs)
+@click.option(
+    "--no-read-lifecycle",
+    is_flag=True,
+    help="Disable Read lifecycle management (stale/superseded Read compression)",
+)
 # Intelligent Context Management (ON by default)
 @click.option(
     "--no-intelligent-context",
@@ -110,6 +116,7 @@ def proxy(
     llmlingua_device: str,
     llmlingua_rate: float,
     no_code_aware: bool,
+    no_read_lifecycle: bool,
     no_intelligent_context: bool,
     no_intelligent_scoring: bool,
     no_compress_first: bool,
@@ -162,6 +169,8 @@ def proxy(
         llmlingua_target_rate=llmlingua_rate,
         # Code-aware: ON by default (use --no-code-aware to disable)
         code_aware_enabled=not no_code_aware,
+        # Read lifecycle: ON by default (use --no-read-lifecycle to disable)
+        read_lifecycle=not no_read_lifecycle,
         # Intelligent Context: ON by default (use --no-intelligent-context to disable)
         intelligent_context=not no_intelligent_context,
         intelligent_context_scoring=not no_intelligent_scoring,

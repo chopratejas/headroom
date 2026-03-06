@@ -79,6 +79,7 @@ from headroom.config import (
     CacheAlignerConfig,
     CCRConfig,
     IntelligentContextConfig,
+    ReadLifecycleConfig,
     RollingWindowConfig,
     SmartCrusherConfig,
 )
@@ -251,6 +252,9 @@ class ProxyConfig:
 
     # Per-tool compression profiles (parsed from CLI/env)
     tool_profiles: dict[str, Any] | None = None
+
+    # Read lifecycle management (compress stale/superseded Read outputs)
+    read_lifecycle: bool = True  # ON by default: stale/superseded are provably safe
 
     # Smart content routing (routes each message to optimal compressor)
     smart_routing: bool = True  # Use ContentRouter for intelligent compression
@@ -1069,6 +1073,7 @@ class HeadroomProxy:
                 enable_llmlingua=config.llmlingua_enabled,
                 enable_code_aware=config.code_aware_enabled,
                 tool_profiles=config.tool_profiles,
+                read_lifecycle=ReadLifecycleConfig(enabled=config.read_lifecycle),
             )
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=True)),

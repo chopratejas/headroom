@@ -388,7 +388,7 @@ class ReadLifecycleConfig:
     outputs still bypass ContentRouter compression.
     """
 
-    enabled: bool = False  # Opt-in; default preserves backward-compatible behavior
+    enabled: bool = True  # On by default: stale/superseded Reads are provably safe to compress
     compress_stale: bool = True  # Replace Reads of files that were later edited
     compress_superseded: bool = True  # Replace Reads of files that were later re-Read
     min_size_bytes: int = 512  # Skip tiny Read outputs (not worth the overhead)
