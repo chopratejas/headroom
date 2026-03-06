@@ -7,6 +7,7 @@ needing API key access.
 
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -121,8 +122,6 @@ def mcp_install(proxy_url: str, force: bool) -> None:
     claude_cli = shutil.which("claude")
     used_claude_cli = False
     if claude_cli:
-        import subprocess
-
         # Check if already registered
         result = subprocess.run(
             [claude_cli, "mcp", "get", "headroom"],
@@ -209,30 +208,47 @@ def mcp_uninstall() -> None:
     """Remove Headroom MCP server from Claude Code config.
 
     \b
-    This removes headroom from ~/.claude/mcp.json.
-    Other MCP servers in your config are preserved.
+    Removes headroom from both the claude CLI registry (Claude Code CLI >=2.x)
+    and ~/.claude/mcp.json if present. Other MCP servers are preserved.
     """
-    if not MCP_CONFIG_PATH.exists():
-        click.echo("No MCP config found. Nothing to uninstall.")
-        raise SystemExit(0)
+    removed = False
 
-    config = load_mcp_config()
+    # Remove from claude CLI registry (Claude Code CLI >=2.x)
+    claude_cli = shutil.which("claude")
+    if claude_cli:
+        check = subprocess.run(
+            [claude_cli, "mcp", "get", "headroom"],
+            capture_output=True,
+        )
+        if check.returncode == 0:
+            rm = subprocess.run(
+                [claude_cli, "mcp", "remove", "headroom", "-s", "user"],
+                capture_output=True,
+                text=True,
+            )
+            if rm.returncode == 0:
+                click.echo("✓ Headroom MCP server removed (via claude mcp remove)")
+                removed = True
+            else:
+                click.echo(
+                    f"Warning: 'claude mcp remove' failed ({rm.stderr.strip()}).",
+                    err=True,
+                )
 
-    if "headroom" not in config.get("mcpServers", {}):
-        click.echo("Headroom MCP is not configured. Nothing to uninstall.")
-        raise SystemExit(0)
+    # Also remove from mcp.json fallback config if present
+    if MCP_CONFIG_PATH.exists():
+        config = load_mcp_config()
+        if "headroom" in config.get("mcpServers", {}):
+            del config["mcpServers"]["headroom"]
+            save_mcp_config(config)
+            click.echo(f"✓ Headroom MCP server removed from {MCP_CONFIG_PATH}")
+            removed = True
 
-    # Remove headroom
-    del config["mcpServers"]["headroom"]
-
-    # Save (or delete if empty)
-    if config.get("mcpServers"):
-        save_mcp_config(config)
-        click.echo(f"✓ Headroom MCP server removed from {MCP_CONFIG_PATH}")
-    else:
-        # Config is now empty, could delete but safer to leave empty
-        save_mcp_config(config)
-        click.echo(f"✓ Headroom MCP server removed from {MCP_CONFIG_PATH}")
+    if not removed:
+        if MCP_CONFIG_PATH.exists():
+            click.echo("Headroom MCP is not configured. Nothing to uninstall.")
+        else:
+            click.echo("No MCP config found. Nothing to uninstall.")
 
 
 @mcp.command("status")
