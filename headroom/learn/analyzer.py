@@ -62,9 +62,7 @@ class SessionAnalyzer:
     def __init__(self, model: str | None = None):
         self.model = model
 
-    def analyze(
-        self, project: ProjectInfo, sessions: list[SessionData]
-    ) -> AnalysisResult:
+    def analyze(self, project: ProjectInfo, sessions: list[SessionData]) -> AnalysisResult:
         """Analyze sessions and produce recommendations via LLM."""
         all_calls = [tc for s in sessions for tc in s.tool_calls]
         failed_calls = [tc for tc in all_calls if tc.is_error]
@@ -134,7 +132,9 @@ def _build_digest(project: ProjectInfo, sessions: list[SessionData]) -> str:
 
     for session in sessions:
         if chars_used > char_budget:
-            lines.append(f"... (remaining {len(sessions) - sessions.index(session)} sessions truncated)")
+            lines.append(
+                f"... (remaining {len(sessions) - sessions.index(session)} sessions truncated)"
+            )
             break
 
         session_header = (
@@ -179,7 +179,7 @@ def _format_event(event: SessionEvent) -> str | None:
 
     if event.type == "user_message" and event.text.strip():
         text = event.text.strip()[:300]
-        return f"  [{event.msg_index}] USER: \"{text}\""
+        return f'  [{event.msg_index}] USER: "{text}"'
 
     if event.type == "interruption":
         return f"  [{event.msg_index}] INTERRUPTED: {event.text[:150]}"
@@ -188,7 +188,7 @@ def _format_event(event: SessionEvent) -> str | None:
         return (
             f"  [{event.msg_index}] SUBAGENT: {event.agent_tool_count} tool calls, "
             f"{event.agent_tokens:,} tokens, {event.agent_duration_ms / 1000:.1f}s "
-            f"— prompt: \"{event.agent_prompt[:100]}\""
+            f'— prompt: "{event.agent_prompt[:100]}"'
         )
 
     return None
@@ -384,7 +384,5 @@ class FailureAnalyzer:
     def __init__(self) -> None:
         self._analyzer = SessionAnalyzer()
 
-    def analyze(
-        self, project: ProjectInfo, sessions: list[SessionData]
-    ) -> AnalysisResult:
+    def analyze(self, project: ProjectInfo, sessions: list[SessionData]) -> AnalysisResult:
         return self._analyzer.analyze(project, sessions)

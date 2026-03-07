@@ -261,7 +261,7 @@ class TestSessionAnalyzer:
             "memory_file_rules": [],
         }
 
-        analyzer = SessionAnalyzer()
+        analyzer = SessionAnalyzer(model="test-model")
         sessions = [
             SessionData(
                 session_id="s1",
@@ -283,7 +283,7 @@ class TestSessionAnalyzer:
     def test_handles_llm_failure_gracefully(self, mock_call_llm: MagicMock):
         mock_call_llm.side_effect = RuntimeError("API key not set")
 
-        analyzer = SessionAnalyzer()
+        analyzer = SessionAnalyzer(model="test-model")
         sessions = [
             SessionData(
                 session_id="s1",
@@ -309,7 +309,7 @@ class TestSessionAnalyzer:
         ]
         sessions = [SessionData(session_id="s1", tool_calls=[tc], events=events)]
 
-        analyzer = SessionAnalyzer()
+        analyzer = SessionAnalyzer(model="test-model")
         analyzer.analyze(_project(), sessions)
 
         # Check that the digest passed to the LLM includes user message

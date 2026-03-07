@@ -240,9 +240,7 @@ class ClaudeCodeScanner(ConversationScanner):
                         total_input_tokens += usage.get("cache_creation_input_tokens", 0)
                         total_output_tokens += usage.get("output_tokens", 0)
                     elif line_type == "user":
-                        self._extract_tool_results(
-                            d, tool_uses, tool_calls, events, msg_index, ts
-                        )
+                        self._extract_tool_results(d, tool_uses, tool_calls, events, msg_index, ts)
                         self._extract_user_events(d, events, msg_index, ts)
 
         except (OSError, UnicodeDecodeError) as e:
@@ -251,12 +249,8 @@ class ClaudeCodeScanner(ConversationScanner):
 
         # Also wrap tool_calls as events for unified access
         for tc in tool_calls:
-            if not any(
-                e.type == "tool_call" and e.tool_call is tc for e in events
-            ):
-                events.append(
-                    SessionEvent(type="tool_call", msg_index=tc.msg_index, tool_call=tc)
-                )
+            if not any(e.type == "tool_call" and e.tool_call is tc for e in events):
+                events.append(SessionEvent(type="tool_call", msg_index=tc.msg_index, tool_call=tc))
         events.sort(key=lambda e: e.msg_index)
 
         return SessionData(
@@ -332,7 +326,9 @@ class ClaudeCodeScanner(ConversationScanner):
             )
             tool_calls.append(tc)
             events.append(
-                SessionEvent(type="tool_call", msg_index=msg_index, timestamp=timestamp, tool_call=tc)
+                SessionEvent(
+                    type="tool_call", msg_index=msg_index, timestamp=timestamp, tool_call=tc
+                )
             )
 
             # Extract subagent summary from toolUseResult metadata
