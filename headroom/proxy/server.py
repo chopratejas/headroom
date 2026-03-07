@@ -175,6 +175,22 @@ def _setup_file_logging() -> None:
 
 _setup_file_logging()
 
+
+def _summarize_transforms(transforms: list[str]) -> str:
+    """Collapse repeated transforms into counted summary.
+
+    e.g. ['router:excluded:tool', 'router:excluded:tool', 'read_lifecycle:stale']
+      → 'router:excluded:tool*2 read_lifecycle:stale'
+    """
+    if not transforms:
+        return "none"
+    counts: dict[str, int] = {}
+    for t in transforms:
+        counts[t] = counts.get(t, 0) + 1
+    parts = [f"{k}*{v}" if v > 1 else k for k, v in counts.items()]
+    return " ".join(parts)
+
+
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
@@ -2286,7 +2302,7 @@ class HeadroomProxy:
                     f"tok_saved={tokens_saved} "
                     f"cache_read={cr} cache_write={cw} cache_hit_pct={chp} "
                     f"opt_ms={optimization_latency:.0f} "
-                    f"transforms={','.join(transforms_applied) if transforms_applied else 'none'}"
+                    f"transforms={_summarize_transforms(transforms_applied)}"
                 )
 
                 # Remove compression headers since httpx already decompressed the response
@@ -3909,7 +3925,7 @@ class HeadroomProxy:
                     f"cache_read={cache_read_tokens} cache_write={cache_write_tokens} "
                     f"cache_hit_pct={cache_hit_pct} "
                     f"opt_ms={optimization_latency:.0f} "
-                    f"transforms={','.join(transforms_applied) if transforms_applied else 'none'}"
+                    f"transforms={_summarize_transforms(transforms_applied)}"
                 )
 
                 # Normalize input tokens based on provider semantics:
@@ -4098,7 +4114,7 @@ class HeadroomProxy:
                     f"tok_saved={tokens_saved} "
                     f"cache_read=0 cache_write=0 cache_hit_pct=0 "
                     f"opt_ms={optimization_latency:.0f} "
-                    f"transforms={','.join(transforms_applied) if transforms_applied else 'none'}"
+                    f"transforms={_summarize_transforms(transforms_applied)}"
                 )
 
         return StreamingResponse(

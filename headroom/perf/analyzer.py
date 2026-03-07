@@ -39,8 +39,18 @@ _TOIN_RE = re.compile(
 
 
 def _parse_kv(kv_str: str) -> dict[str, str]:
-    """Parse key=value pairs from a PERF log line."""
+    """Parse key=value pairs from a PERF log line.
+
+    The ``transforms=`` field is always last and its value may contain spaces
+    (e.g. ``transforms=router:excluded:tool*32 read_lifecycle:stale*17``).
+    Everything after ``transforms=`` is captured as a single value.
+    """
     result: dict[str, str] = {}
+    # Handle transforms= specially since its value contains spaces
+    if "transforms=" in kv_str:
+        before, transforms_val = kv_str.split("transforms=", 1)
+        result["transforms"] = transforms_val.strip()
+        kv_str = before
     for part in kv_str.split():
         if "=" in part:
             k, v = part.split("=", 1)
@@ -143,7 +153,21 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                     if m:
                         kv = _parse_kv(m.group("kv"))
                         transforms_str = kv.get("transforms", "none")
-                        transforms = transforms_str.split(",") if transforms_str != "none" else []
+                        # Handle both old comma-separated and new space-separated *N format
+                        if transforms_str == "none":
+                            transforms: list[str] = []
+                        elif "*" in transforms_str or " " in transforms_str:
+                            # New format: "router:excluded:tool*32 read_lifecycle:stale*17"
+                            transforms = []
+                            for part in transforms_str.split():
+                                if "*" in part:
+                                    name, _ = part.rsplit("*", 1)
+                                else:
+                                    name = part
+                                transforms.append(name)
+                        else:
+                            # Old comma-separated format
+                            transforms = transforms_str.split(",")
                         report.perf_records.append(
                             PerfRecord(
                                 timestamp=m.group("ts"),
