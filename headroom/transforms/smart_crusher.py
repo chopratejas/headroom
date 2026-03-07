@@ -506,9 +506,7 @@ def _detect_score_field_statistically(stats: FieldStats, items: list[dict]) -> t
         # Check for descending sort
         num_pairs = len(values_in_order) - 1
         descending_count = sum(
-            1
-            for i in range(num_pairs)
-            if values_in_order[i] >= values_in_order[i + 1]
+            1 for i in range(num_pairs) if values_in_order[i] >= values_in_order[i + 1]
         )
         if num_pairs > 0 and descending_count / num_pairs > 0.7:
             confidence += 0.3

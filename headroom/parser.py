@@ -70,7 +70,9 @@ def detect_waste_signals(text: str, tokenizer: Tokenizer) -> WasteSignals:
         # Count tokens that could be saved by normalizing whitespace to single spaces
         ws_text = "".join(ws_matches)
         normalized_text = " ".join(ws_matches)
-        signals.whitespace_tokens = max(0, tokenizer.count_text(ws_text) - tokenizer.count_text(normalized_text))
+        signals.whitespace_tokens = max(
+            0, tokenizer.count_text(ws_text) - tokenizer.count_text(normalized_text)
+        )
 
     # Large JSON blocks
     json_matches = JSON_BLOCK_PATTERN.findall(text)
