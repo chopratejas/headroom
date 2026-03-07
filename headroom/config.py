@@ -352,16 +352,23 @@ class AnchorConfig:
 #   Compressing would break the edit workflow.
 # Glob: Returns compact file path lists used for navigation. Low token count,
 #   not worth compressing.
-# Grep/Bash are NOT excluded - their outputs (search results, build logs,
-# test output) are ideal compression targets for SearchCompressor/LogCompressor,
-# and CCR provides safe retrieval if the LLM needs more detail.
+# Tool outputs that are reference data and must NOT be compressed.
+# Read/Glob/Grep contain exact file contents/search results the agent needs for edits.
+# Write/Edit record what changes were made — compressing them causes duplicate/conflicting edits.
+# Bash is NOT excluded — its outputs (build logs, test output) are ideal compression targets.
 DEFAULT_EXCLUDE_TOOLS: frozenset[str] = frozenset(
     {
         "Read",
         "Glob",
+        "Grep",
+        "Write",
+        "Edit",
         # Lowercase variants for case-insensitive matching
         "read",
         "glob",
+        "grep",
+        "write",
+        "edit",
     }
 )
 

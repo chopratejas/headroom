@@ -368,6 +368,10 @@ def _detect_sequential_pattern(values: list[Any], check_order: bool = True) -> b
     if len(nums) < 5:
         return False
 
+    # Need at least 2 elements for pairwise comparison
+    if len(nums) < 2:
+        return False
+
     # Check if sorted values form a near-sequence
     sorted_nums = sorted(nums)
     diffs = [sorted_nums[i + 1] - sorted_nums[i] for i in range(len(sorted_nums) - 1)]
@@ -500,12 +504,13 @@ def _detect_score_field_statistically(stats: FieldStats, items: list[dict]) -> t
                 values_in_order.append(float(val))
     if len(values_in_order) >= 5:
         # Check for descending sort
+        num_pairs = len(values_in_order) - 1
         descending_count = sum(
             1
-            for i in range(len(values_in_order) - 1)
+            for i in range(num_pairs)
             if values_in_order[i] >= values_in_order[i + 1]
         )
-        if descending_count / (len(values_in_order) - 1) > 0.7:
+        if num_pairs > 0 and descending_count / num_pairs > 0.7:
             confidence += 0.3
 
     # Score fields often have floating point values

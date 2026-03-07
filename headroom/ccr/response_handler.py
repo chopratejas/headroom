@@ -96,6 +96,7 @@ class CCRResponseHandler:
     def __init__(self, config: ResponseHandlerConfig | None = None):
         self.config = config or ResponseHandlerConfig()
         self._retrieval_count = 0
+        self._retrieval_count_lock = __import__("threading").Lock()
 
     def has_ccr_tool_calls(
         self,
@@ -432,7 +433,8 @@ class CCRResponseHandler:
                 break
 
             rounds += 1
-            self._retrieval_count += len(ccr_calls)
+            with self._retrieval_count_lock:
+                self._retrieval_count += len(ccr_calls)
 
             logger.info(f"CCR: Handling {len(ccr_calls)} retrieval(s) in round {rounds}")
 
@@ -625,9 +627,16 @@ class StreamingCCRHandler:
         if self.buffer.detected_ccr:
             logger.info("CCR: Detected tool call in stream, switching to buffered mode")
 
-            # Collect rest of stream
-            async for chunk in stream_iterator:
-                self.buffer.add_chunk(chunk)
+            # Collect rest of stream with timeout to prevent indefinite blocking
+            import asyncio
+
+            try:
+                async for chunk in stream_iterator:
+                    self.buffer.add_chunk(chunk)
+            except asyncio.TimeoutError:
+                logger.warning("CCR: Timed out collecting rest of stream")
+            except Exception as e:
+                logger.error(f"CCR: Error collecting rest of stream: {e}")
 
             # Parse the complete response
             try:

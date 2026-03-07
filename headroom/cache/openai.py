@@ -372,7 +372,7 @@ class OpenAICacheOptimizer(BaseCacheOptimizer):
 
         # Estimate cacheable portion (system + early messages)
         # OpenAI caches the longest matching prefix
-        cacheable_ratio = min(1.0, system_tokens / total_tokens)
+        cacheable_ratio = min(1.0, system_tokens / total_tokens) if total_tokens > 0 else 0.0
 
         # Check if prefix is stable
         current_hash = self._compute_prefix_hash(system_content)

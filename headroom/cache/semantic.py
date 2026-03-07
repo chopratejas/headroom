@@ -285,11 +285,13 @@ class SemanticCache:
 
     def _touch(self, key: str) -> None:
         """Update access time and move to end of LRU."""
-        if key in self._cache:
+        try:
             entry = self._cache.pop(key)
-            entry.last_accessed = time.time()
-            entry.access_count += 1
-            self._cache[key] = entry
+        except KeyError:
+            return
+        entry.last_accessed = time.time()
+        entry.access_count += 1
+        self._cache[key] = entry
 
     def _evict_oldest(self) -> None:
         """Evict the oldest (least recently used) entry."""

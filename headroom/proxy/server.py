@@ -2049,9 +2049,14 @@ class HeadroomProxy:
                             logger.info("CCR: Parsed JSON successfully")
                             return result
                         except Exception as e:
+                            resp_headers: str | dict[str, str] = "N/A"
+                            try:
+                                resp_headers = dict(cont_response.headers)
+                            except Exception:
+                                pass
                             logger.error(
                                 f"CCR: API call failed: {e}, "
-                                f"response headers: {dict(cont_response.headers) if 'cont_response' in dir() else 'N/A'}"
+                                f"response headers: {resp_headers}"
                             )
                             raise
 
@@ -2072,9 +2077,14 @@ class HeadroomProxy:
                             for k, v in response.headers.items()
                             if k.lower() not in ("content-encoding", "content-length")
                         }
+                        try:
+                            ccr_content = json.dumps(final_resp_json).encode()
+                        except (TypeError, ValueError) as json_err:
+                            logger.warning(f"[{request_id}] CCR: JSON serialization failed: {json_err}")
+                            ccr_content = json.dumps(resp_json).encode()
                         response = httpx.Response(
                             status_code=200,
-                            content=json.dumps(final_resp_json).encode(),
+                            content=ccr_content,
                             headers=ccr_response_headers,
                         )
                         logger.info(f"[{request_id}] CCR: Retrieval handled successfully")

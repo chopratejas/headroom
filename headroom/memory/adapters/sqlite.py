@@ -217,14 +217,14 @@ class SQLiteMemoryStore:
             supersedes=row["supersedes"],
             superseded_by=row["superseded_by"],
             promoted_from=row["promoted_from"],
-            promotion_chain=json.loads(row["promotion_chain"]),
+            promotion_chain=json.loads(row["promotion_chain"]) if row["promotion_chain"] else [],
             access_count=row["access_count"],
             last_accessed=datetime.fromisoformat(row["last_accessed"])
             if row["last_accessed"]
             else None,
-            entity_refs=json.loads(row["entity_refs"]),
+            entity_refs=json.loads(row["entity_refs"]) if row["entity_refs"] else [],
             embedding=self._deserialize_embedding(row["embedding"]),
-            metadata=json.loads(row["metadata"]),
+            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
         )
 
     async def save(self, memory: Memory) -> None:

@@ -471,7 +471,7 @@ def _get_top_waste_requests(
         )
 
     # Sort by tokens saved (waste potential)
-    requests.sort(key=lambda x: x["tokens_before"], reverse=True)
+    requests.sort(key=lambda x: x["tokens_saved"], reverse=True)
 
     return requests[:limit]
 

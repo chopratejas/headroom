@@ -103,7 +103,8 @@ def compute_bleu(response_a: str, response_b: str, max_n: int = 4) -> float:
     # Geometric mean of precisions
     import math
 
-    log_sum = sum(math.log(p) for p in precisions if p > 0) / len(precisions)
+    nonzero_precisions = [p for p in precisions if p > 0]
+    log_sum = sum(math.log(p) for p in nonzero_precisions) / len(nonzero_precisions)
     return math.exp(log_sum)
 
 

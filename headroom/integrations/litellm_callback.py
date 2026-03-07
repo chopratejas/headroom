@@ -103,7 +103,7 @@ class HeadroomCallback:
             else:
                 result = self._local_compress(messages, model)
 
-            if result and result.get("tokens_saved", 0) > 0:
+            if result and result.get("tokens_saved", 0) > 0 and "messages" in result:
                 data["messages"] = result["messages"]
                 self._total_saved += result["tokens_saved"]
                 logger.info(

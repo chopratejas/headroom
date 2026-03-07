@@ -163,7 +163,13 @@ def compress(
 
     except Exception as e:
         logger.warning("Compression failed, returning original messages: %s", e)
-        return CompressResult(messages=messages)
+        return CompressResult(
+            messages=messages,
+            tokens_before=0,
+            tokens_after=0,
+            tokens_saved=0,
+            compression_ratio=0.0,
+        )
 
 
 def _get_pipeline() -> Any:

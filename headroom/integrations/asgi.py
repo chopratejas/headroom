@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import MutableMapping
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -87,6 +88,12 @@ class CompressionMiddleware:
         """Whether cloud compression is enabled."""
         return self._api_key is not None
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx.AsyncClient, if one was created."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -103,8 +110,8 @@ class CompressionMiddleware:
         # Buffer the request body
         body_chunks: list[bytes] = []
 
-        async def buffering_receive() -> dict[str, Any]:
-            message: dict[str, Any] = await receive()
+        async def buffering_receive() -> MutableMapping[str, Any]:
+            message = await receive()
             if message["type"] == "http.request":
                 chunk = message.get("body", b"")
                 if chunk:
@@ -135,7 +142,7 @@ class CompressionMiddleware:
                 else:
                     result = self._local_compress(messages, model)
 
-                if result and result.get("tokens_saved", 0) > 0:
+                if result and result.get("tokens_saved", 0) > 0 and "messages" in result:
                     body_json["messages"] = result["messages"]
                     full_body = json.dumps(body_json).encode("utf-8")
                     tokens_saved = result["tokens_saved"]
@@ -157,16 +164,16 @@ class CompressionMiddleware:
         # Create a new receive that returns the (possibly modified) body
         body_sent = False
 
-        async def modified_receive() -> dict[str, Any]:
+        async def modified_receive() -> MutableMapping[str, Any]:
             nonlocal body_sent
             if not body_sent:
                 body_sent = True
                 return {"type": "http.request", "body": full_body, "more_body": False}
-            result: dict[str, Any] = await receive()
+            result = await receive()
             return result
 
         # Wrap send to inject compression headers
-        async def metrics_send(message: dict[str, Any]) -> None:
+        async def metrics_send(message: MutableMapping[str, Any]) -> None:
             if message["type"] == "http.response.start" and tokens_saved > 0:
                 headers = list(message.get("headers", []))
                 headers.append((b"x-headroom-compressed", b"true"))

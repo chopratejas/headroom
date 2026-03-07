@@ -134,7 +134,7 @@ class BM25Scorer(RelevanceScorer):
             return 0.0, []
 
         doc_len = len(doc_tokens)
-        avgdl = avg_doc_len or doc_len
+        avgdl = avg_doc_len or doc_len or 1
 
         doc_freq = Counter(doc_tokens)
         query_freq = Counter(query_tokens)

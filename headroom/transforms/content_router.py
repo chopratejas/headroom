@@ -288,7 +288,7 @@ class ContentRouterConfig:
     # compression.  At 10 msgs, protects ~5 Reads.  At 100 msgs, protects ~10.
     # Old Reads beyond this window become compressible even though they are
     # in DEFAULT_EXCLUDE_TOOLS.  0.0 = always exclude all (old behavior).
-    protect_recent_reads_fraction: float = 0.5  # protect the most-recent 50% of messages
+    protect_recent_reads_fraction: float = 0.0  # 0.0 = protect ALL excluded-tool outputs (safest for coding agents)
 
     # Adaptive compression ratio: scales with context pressure.
     # At low pressure (<30% full), use the relaxed threshold (reject marginal).
