@@ -38,6 +38,7 @@ def _register_commands() -> None:
         learn,  # noqa: F401
         mcp,  # noqa: F401
         memory,  # noqa: F401
+        perf,  # noqa: F401
         proxy,  # noqa: F401
     )
 

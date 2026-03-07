@@ -89,32 +89,47 @@ def _auto_detect_agents() -> list[tuple[str, ConversationScanner, ContextWriter]
     default="auto",
     help=_AGENT_HELP,
 )
+@click.option(
+    "--model",
+    type=str,
+    default=None,
+    help="LLM model for analysis (e.g., claude-sonnet-4-6, gpt-4o, gemini/gemini-2.0-flash). "
+    "Auto-detected from API keys if not specified.",
+)
 def learn(
     project: Path | None,
     analyze_all: bool,
     apply: bool,
     agent: str,
+    model: str | None,
 ) -> None:
     """Learn from past tool call failures to prevent future ones.
 
-    Analyzes conversation history to find failure patterns (wrong paths,
-    missing modules, stubborn retries) and generates context that prevents
-    them from recurring.
+    Analyzes conversation history using an LLM to find failure patterns
+    (wrong paths, missing modules, stubborn retries) and generates context
+    that prevents them from recurring.
 
     Supports multiple coding agents: Claude Code, Codex, Gemini CLI.
-    Auto-detects which agents have data on your machine by default.
+    Uses LiteLLM for provider-agnostic LLM access (100+ models).
 
     \b
     Examples:
-        headroom learn                        # Auto-detect agent, analyze current project
+        headroom learn                        # Auto-detect agent & model
         headroom learn --apply                # Write recommendations
+        headroom learn --model gpt-4o         # Use GPT-4o for analysis
         headroom learn --all                  # Analyze all projects
         headroom learn --agent codex --all    # Analyze all Codex sessions
-        headroom learn --agent claude --project ~/myapp
     """
-    from ..learn.analyzer import FailureAnalyzer
+    from ..learn.analyzer import SessionAnalyzer, _detect_default_model
 
-    analyzer = FailureAnalyzer()
+    # Resolve model early to fail fast with a clear message
+    try:
+        resolved_model = model or _detect_default_model()
+    except RuntimeError as e:
+        click.echo(f"Error: {e}")
+        raise SystemExit(1) from None
+
+    analyzer = SessionAnalyzer(model=resolved_model)
 
     # Determine which agents to scan
     if agent == "auto":
@@ -171,25 +186,22 @@ def learn(
                 click.echo("  No conversation data found.")
                 continue
 
-            from ..learn.writer import Recommender
-
-            recommender = Recommender()
-            report = analyzer.analyze(proj, sessions)
+            click.echo(f"  Analyzing with {resolved_model}...")
+            result_data = analyzer.analyze(proj, sessions)
             total_projects += 1
-            total_failures += report.total_failures
+            total_failures += result_data.total_failures
 
             click.echo(
-                f"\n  Sessions: {report.total_sessions}  |  "
-                f"Calls: {report.total_calls}  |  "
-                f"Failures: {report.total_failures} ({report.failure_rate:.1%})  |  "
-                f"Corrections: {len(report.corrections)}"
+                f"\n  Sessions: {result_data.total_sessions}  |  "
+                f"Calls: {result_data.total_calls}  |  "
+                f"Failures: {result_data.total_failures} ({result_data.failure_rate:.1%})"
             )
 
-            if report.failure_rate == 0:
-                click.echo("  No failures found.")
+            if result_data.failure_rate == 0 and not result_data.recommendations:
+                click.echo("  No failures or patterns found.")
                 continue
 
-            recommendations = recommender.recommend(report)
+            recommendations = result_data.recommendations
             if not recommendations:
                 click.echo("  No actionable patterns found.")
                 continue

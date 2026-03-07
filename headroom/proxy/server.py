@@ -140,6 +140,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger("headroom.proxy")
 
+# Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis
+_HEADROOM_LOG_DIR = Path.home() / ".headroom" / "logs"
+
+
+def _setup_file_logging() -> None:
+    """Add a RotatingFileHandler to the headroom root logger.
+
+    Writes to ~/.headroom/logs/proxy.log with automatic rotation:
+    - Rotates at 10 MB
+    - Keeps 5 backups (~50 MB max)
+    """
+    from logging.handlers import RotatingFileHandler
+
+    try:
+        _HEADROOM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = _HEADROOM_LOG_DIR / "proxy.log"
+        handler = RotatingFileHandler(
+            log_path,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding="utf-8",
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        # Attach to the headroom root logger so all sub-loggers are captured
+        logging.getLogger("headroom").addHandler(handler)
+    except OSError:
+        # Non-fatal: can't write logs (read-only fs, permissions, etc.)
+        pass
+
+
+_setup_file_logging()
+
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
@@ -2055,8 +2090,7 @@ class HeadroomProxy:
                             except Exception:
                                 pass
                             logger.error(
-                                f"CCR: API call failed: {e}, "
-                                f"response headers: {resp_headers}"
+                                f"CCR: API call failed: {e}, response headers: {resp_headers}"
                             )
                             raise
 
@@ -2080,7 +2114,9 @@ class HeadroomProxy:
                         try:
                             ccr_content = json.dumps(final_resp_json).encode()
                         except (TypeError, ValueError) as json_err:
-                            logger.warning(f"[{request_id}] CCR: JSON serialization failed: {json_err}")
+                            logger.warning(
+                                f"[{request_id}] CCR: JSON serialization failed: {json_err}"
+                            )
                             ccr_content = json.dumps(resp_json).encode()
                         response = httpx.Response(
                             status_code=200,
@@ -2237,15 +2273,21 @@ class HeadroomProxy:
                         )
                     )
 
-                # Log to console
-                if tokens_saved > 0:
-                    logger.info(
-                        f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
-                        f"(saved {tokens_saved:,} tokens, ${savings_usd:.4f})"
-                        if savings_usd
-                        else f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
-                        f"(saved {tokens_saved:,} tokens)"
-                    )
+                # Structured perf log line for `headroom perf` analysis
+                num_msgs = len(messages)
+                resp_usage = resp_json.get("usage", {}) if resp_json else {}
+                cr = resp_usage.get("cache_read_input_tokens", 0)
+                cw = resp_usage.get("cache_creation_input_tokens", 0)
+                chp = round(cr / (cr + cw) * 100) if (cr + cw) > 0 else 0
+                logger.info(
+                    f"[{request_id}] PERF "
+                    f"model={model} msgs={num_msgs} "
+                    f"tok_before={original_tokens} tok_after={optimized_tokens} "
+                    f"tok_saved={tokens_saved} "
+                    f"cache_read={cr} cache_write={cw} cache_hit_pct={chp} "
+                    f"opt_ms={optimization_latency:.0f} "
+                    f"transforms={','.join(transforms_applied) if transforms_applied else 'none'}"
+                )
 
                 # Remove compression headers since httpx already decompressed the response
                 response_headers = dict(response.headers)
@@ -3852,16 +3894,23 @@ class HeadroomProxy:
                 cache_read_tokens = stream_state["cache_read_input_tokens"]
                 cache_write_tokens = stream_state["cache_creation_input_tokens"]
 
-                # INFO logging for token tracking (temporary for debugging)
-                if api_input_tokens is None:
-                    logger.info(
-                        f"[{request_id}] No input_tokens from API, using estimate: {optimized_tokens}"
-                    )
-                else:
-                    logger.info(
-                        f"[{request_id}] Final tokens: input={api_input_tokens}, "
-                        f"cache_read={cache_read_tokens}, cache_write={cache_write_tokens}"
-                    )
+                # Structured perf log line for `headroom perf` analysis
+                num_msgs = len(body.get("messages", []))
+                cache_hit_pct = (
+                    round(cache_read_tokens / (cache_read_tokens + cache_write_tokens) * 100)
+                    if (cache_read_tokens + cache_write_tokens) > 0
+                    else 0
+                )
+                logger.info(
+                    f"[{request_id}] PERF "
+                    f"model={model} msgs={num_msgs} "
+                    f"tok_before={original_tokens} tok_after={optimized_tokens} "
+                    f"tok_saved={tokens_saved} "
+                    f"cache_read={cache_read_tokens} cache_write={cache_write_tokens} "
+                    f"cache_hit_pct={cache_hit_pct} "
+                    f"opt_ms={optimization_latency:.0f} "
+                    f"transforms={','.join(transforms_applied) if transforms_applied else 'none'}"
+                )
 
                 # Normalize input tokens based on provider semantics:
                 # - Anthropic: input_tokens excludes cache_read (it's separate), pass as-is
@@ -3912,11 +3961,6 @@ class HeadroomProxy:
                     cost_usd=cost_usd or 0,
                     savings_usd=savings_usd or 0,
                 )
-
-                if tokens_saved > 0:
-                    logger.info(
-                        f"[{request_id}] {model}: saved {tokens_saved:,} tokens (streaming)"
-                    )
 
         return StreamingResponse(
             generate(),
@@ -4045,10 +4089,17 @@ class HeadroomProxy:
                         )
                     )
 
-                if tokens_saved > 0:
-                    logger.info(
-                        f"[{request_id}] Bedrock {model}: saved {tokens_saved:,} tokens (streaming)"
-                    )
+                # Structured perf log line for `headroom perf` analysis
+                num_msgs = len(body.get("messages", []))
+                logger.info(
+                    f"[{request_id}] PERF "
+                    f"model={model} msgs={num_msgs} "
+                    f"tok_before={original_tokens} tok_after={optimized_tokens} "
+                    f"tok_saved={tokens_saved} "
+                    f"cache_read=0 cache_write=0 cache_hit_pct=0 "
+                    f"opt_ms={optimization_latency:.0f} "
+                    f"transforms={','.join(transforms_applied) if transforms_applied else 'none'}"
+                )
 
         return StreamingResponse(
             generate(),

@@ -16,6 +16,7 @@ from .models import (
     ErrorCategory,
     ProjectInfo,
     SessionData,
+    SessionEvent,
     ToolCall,
 )
 
@@ -213,6 +214,9 @@ class ClaudeCodeScanner(ConversationScanner):
         session_id = jsonl_path.stem
         tool_uses: dict[str, tuple[str, dict]] = {}  # tc_id → (tool_name, input)
         tool_calls: list[ToolCall] = []
+        events: list[SessionEvent] = []
+        total_input_tokens = 0
+        total_output_tokens = 0
         msg_index = 0
 
         try:
@@ -225,17 +229,43 @@ class ClaudeCodeScanner(ConversationScanner):
 
                     msg_index += 1
                     line_type = d.get("type", "")
+                    ts = d.get("timestamp", None)
 
                     if line_type == "assistant":
                         self._extract_tool_uses(d, tool_uses)
+                        # Extract token usage
+                        usage = d.get("message", {}).get("usage", {})
+                        total_input_tokens += usage.get("input_tokens", 0)
+                        total_input_tokens += usage.get("cache_read_input_tokens", 0)
+                        total_input_tokens += usage.get("cache_creation_input_tokens", 0)
+                        total_output_tokens += usage.get("output_tokens", 0)
                     elif line_type == "user":
-                        self._extract_tool_results(d, tool_uses, tool_calls, msg_index)
+                        self._extract_tool_results(
+                            d, tool_uses, tool_calls, events, msg_index, ts
+                        )
+                        self._extract_user_events(d, events, msg_index, ts)
 
         except (OSError, UnicodeDecodeError) as e:
             logger.debug("Failed to read %s: %s", jsonl_path, e)
             return None
 
-        return SessionData(session_id=session_id, tool_calls=tool_calls)
+        # Also wrap tool_calls as events for unified access
+        for tc in tool_calls:
+            if not any(
+                e.type == "tool_call" and e.tool_call is tc for e in events
+            ):
+                events.append(
+                    SessionEvent(type="tool_call", msg_index=tc.msg_index, tool_call=tc)
+                )
+        events.sort(key=lambda e: e.msg_index)
+
+        return SessionData(
+            session_id=session_id,
+            tool_calls=tool_calls,
+            events=events,
+            total_input_tokens=total_input_tokens,
+            total_output_tokens=total_output_tokens,
+        )
 
     def _extract_tool_uses(self, d: dict, tool_uses: dict[str, tuple[str, dict]]) -> None:
         """Extract tool_use blocks from an assistant message."""
@@ -258,7 +288,9 @@ class ClaudeCodeScanner(ConversationScanner):
         d: dict,
         tool_uses: dict[str, tuple[str, dict]],
         tool_calls: list[ToolCall],
+        events: list[SessionEvent],
         msg_index: int,
+        timestamp: str | None = None,
     ) -> None:
         """Extract tool_result blocks from a user message and match to tool_uses."""
         msg = d.get("message", {})
@@ -288,18 +320,77 @@ class ClaudeCodeScanner(ConversationScanner):
 
             error_cat = classify_error(result_content) if is_err else ErrorCategory.UNKNOWN
 
-            tool_calls.append(
-                ToolCall(
-                    name=name,
-                    tool_call_id=tc_id,
-                    input_data=inp,
-                    output=result_content,
-                    is_error=is_err,
-                    error_category=error_cat,
+            tc = ToolCall(
+                name=name,
+                tool_call_id=tc_id,
+                input_data=inp,
+                output=result_content,
+                is_error=is_err,
+                error_category=error_cat,
+                msg_index=msg_index,
+                output_bytes=len(result_content.encode("utf-8")),
+            )
+            tool_calls.append(tc)
+            events.append(
+                SessionEvent(type="tool_call", msg_index=msg_index, timestamp=timestamp, tool_call=tc)
+            )
+
+            # Extract subagent summary from toolUseResult metadata
+            if name in ("Agent", "agent"):
+                tool_result_meta = d.get("toolUseResult", {})
+                if isinstance(tool_result_meta, dict):
+                    events.append(
+                        SessionEvent(
+                            type="agent_summary",
+                            msg_index=msg_index,
+                            timestamp=timestamp,
+                            agent_id=tool_result_meta.get("agentId", ""),
+                            agent_tool_count=tool_result_meta.get("totalToolUseCount", 0),
+                            agent_tokens=tool_result_meta.get("totalTokens", 0),
+                            agent_duration_ms=tool_result_meta.get("totalDurationMs", 0),
+                            agent_prompt=tool_result_meta.get("prompt", "")[:200],
+                        )
+                    )
+
+    def _extract_user_events(
+        self,
+        d: dict,
+        events: list[SessionEvent],
+        msg_index: int,
+        timestamp: str | None = None,
+    ) -> None:
+        """Extract user text messages and interruptions from a user line."""
+        msg = d.get("message", {})
+        content = msg.get("content", "")
+
+        # Human text messages have content as a string, not a list
+        if isinstance(content, str) and content.strip():
+            events.append(
+                SessionEvent(
+                    type="user_message",
                     msg_index=msg_index,
-                    output_bytes=len(result_content.encode("utf-8")),
+                    timestamp=timestamp,
+                    text=content[:500],
                 )
             )
+            return
+
+        # Check for interruptions in list-format content
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text = block.get("text", "")
+                    if "[Request interrupted by user" in text:
+                        events.append(
+                            SessionEvent(
+                                type="interruption",
+                                msg_index=msg_index,
+                                timestamp=timestamp,
+                                text=text[:200],
+                            )
+                        )
 
 
 def _decode_project_path(escaped_name: str) -> Path | None:

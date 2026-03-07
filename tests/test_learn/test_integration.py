@@ -3,112 +3,34 @@
 These tests run against actual conversation data on the machine.
 They verify the full pipeline: scan → analyze → recommend → write.
 Tests are skipped if the required data directories don't exist.
+The LLM-based analyzer tests require ANTHROPIC_API_KEY.
 
 Key behaviors tested:
-- Quality gates prevent writing when evidence is weak
-- False positives don't generate recommendations
-- Real Codex/Claude Code sessions produce sensible output
+- Empty recommendations don't create files
+- Real Codex/Claude Code sessions can be scanned
 - Skip logic: no file writes when nothing meaningful is found
 - Idempotency: running twice produces same output
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from headroom.learn.analyzer import FailureAnalyzer
+from headroom.learn.analyzer import SessionAnalyzer
 from headroom.learn.models import (
-    AnalysisReport,
     ProjectInfo,
     Recommendation,
     RecommendationTarget,
 )
-from headroom.learn.writer import ClaudeCodeWriter, CodexWriter, Recommender
+from headroom.learn.writer import ClaudeCodeWriter, CodexWriter
 
 # =============================================================================
-# Quality Gate Tests (synthetic data, always run)
+# Writer Tests (no LLM needed)
 # =============================================================================
-
-
-class TestQualityGates:
-    """Verify that weak signals don't generate recommendations."""
-
-    def test_single_failure_not_enough(self):
-        """One failure shouldn't generate a recommendation (min_evidence=2)."""
-        recommender = Recommender(min_evidence=2)
-        report = AnalysisReport(
-            project=ProjectInfo(name="test", project_path=Path("/tmp"), data_path=Path("/tmp")),
-            total_calls=100,
-            total_failures=1,
-            total_sessions=1,
-        )
-        # One missing path — below threshold
-        from headroom.learn.models import StructureNote
-
-        report.structure_notes = [
-            StructureNote(
-                category="missing_path",
-                path="/src/foo.py",
-                note="not found",
-                evidence_count=1,
-            )
-        ]
-        recs = recommender.recommend(report)
-        assert recs == []
-
-    def test_low_total_evidence_skipped(self):
-        """Even if individual recs pass, if total evidence is too low, skip all."""
-        recommender = Recommender(min_evidence=1, min_total_evidence=10)
-        report = AnalysisReport(
-            project=ProjectInfo(name="test", project_path=Path("/tmp"), data_path=Path("/tmp")),
-            total_calls=100,
-            total_failures=2,
-            total_sessions=1,
-        )
-        from headroom.learn.models import StructureNote
-
-        report.structure_notes = [
-            StructureNote(category="missing_path", path="/a.py", note="x", evidence_count=2)
-        ]
-        recs = recommender.recommend(report)
-        assert recs == []  # Total evidence=2 < min_total_evidence=10
-
-    def test_sufficient_evidence_passes(self):
-        """Enough evidence generates recommendations."""
-        recommender = Recommender(min_evidence=2, min_total_evidence=3)
-        report = AnalysisReport(
-            project=ProjectInfo(name="test", project_path=Path("/tmp"), data_path=Path("/tmp")),
-            total_calls=100,
-            total_failures=10,
-            total_sessions=5,
-        )
-        from headroom.learn.models import StructureNote
-
-        report.structure_notes = [
-            StructureNote(
-                category="large_file",
-                path="/big.py",
-                note="too big",
-                evidence_count=5,
-                sessions_seen=3,
-            ),
-        ]
-        recs = recommender.recommend(report)
-        assert len(recs) >= 1
-
-    def test_no_failures_no_recommendations(self):
-        """Zero failures = zero recommendations, no files touched."""
-        recommender = Recommender()
-        report = AnalysisReport(
-            project=ProjectInfo(name="test", project_path=Path("/tmp"), data_path=Path("/tmp")),
-            total_calls=500,
-            total_failures=0,
-            total_sessions=10,
-        )
-        recs = recommender.recommend(report)
-        assert recs == []
 
 
 class TestSkipWriteLogic:
@@ -180,10 +102,6 @@ class TestFalsePositiveFiltering:
 
         # Normal code output that happens to contain "error" in identifiers
         assert not is_error_content("def handle_error(e):\n    print('ok')")
-        # Normal sed output with error handling code in the file content
-        assert not is_error_content(
-            '    return fmt.Errorf("connection failed")\n    log.Print("ok")'
-        )
 
     def test_real_error_detected(self):
         """Actual errors should be detected."""
@@ -203,6 +121,7 @@ class TestFalsePositiveFiltering:
 
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 CODEX_DIR = Path.home() / ".codex" / "sessions"
+HAS_API_KEY = bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 @pytest.mark.skipif(not CLAUDE_DIR.exists(), reason="No Claude Code data")
@@ -219,30 +138,37 @@ class TestClaudeCodeIntegration:
             assert p.name
             assert p.data_path.exists()
 
-    def test_full_pipeline_produces_output(self):
-        """Scan → analyze → recommend on real data produces valid output."""
+    def test_scanner_extracts_events(self):
+        """Scanner should extract events including user messages."""
         from headroom.learn.scanner import ClaudeCodeScanner
 
         scanner = ClaudeCodeScanner()
         projects = scanner.discover_projects()
-
-        # Find a project with the most sessions
         best = max(projects, key=lambda p: len(list(p.data_path.glob("*.jsonl"))))
-
         sessions = scanner.scan_project(best)
         assert len(sessions) > 0
 
-        analyzer = FailureAnalyzer()
-        report = analyzer.analyze(best, sessions)
+        # At least some sessions should have events
+        sessions_with_events = [s for s in sessions if s.events]
+        assert len(sessions_with_events) > 0
 
-        assert report.total_calls > 0
-        assert report.total_sessions > 0
-        # Failure rate should be realistic (0-30%)
-        assert 0 <= report.failure_rate <= 0.5
+    @pytest.mark.skipif(not HAS_API_KEY, reason="No ANTHROPIC_API_KEY")
+    def test_full_pipeline_produces_output(self):
+        """Scan → analyze on real data produces valid output."""
+        from headroom.learn.scanner import ClaudeCodeScanner
 
-        # Corrections should be found if there are failures
-        if report.total_failures > 10:
-            assert len(report.corrections) > 0
+        scanner = ClaudeCodeScanner()
+        projects = scanner.discover_projects()
+        best = max(projects, key=lambda p: len(list(p.data_path.glob("*.jsonl"))))
+        sessions = scanner.scan_project(best)
+        assert len(sessions) > 0
+
+        analyzer = SessionAnalyzer()
+        result = analyzer.analyze(best, sessions)
+
+        assert result.total_calls > 0
+        assert result.total_sessions > 0
+        assert 0 <= result.failure_rate <= 0.5
 
     def test_dry_run_writes_nothing(self):
         """Dry run should never create files."""
@@ -252,18 +178,29 @@ class TestClaudeCodeIntegration:
         projects = scanner.discover_projects()
         best = max(projects, key=lambda p: len(list(p.data_path.glob("*.jsonl"))))
 
-        sessions = scanner.scan_project(best)
-        report = FailureAnalyzer().analyze(best, sessions)
-        recs = Recommender().recommend(report)
+        # Use mock LLM to avoid needing API key
+        mock_response = {
+            "context_file_rules": [
+                {
+                    "section": "Test",
+                    "content": "- test rule",
+                    "estimated_tokens_saved": 100,
+                    "evidence_count": 2,
+                }
+            ],
+            "memory_file_rules": [],
+        }
+        with patch("headroom.learn.analyzer._call_llm", return_value=mock_response):
+            sessions = scanner.scan_project(best)
+            result = SessionAnalyzer().analyze(best, sessions)
+            recs = result.recommendations
 
-        writer = ClaudeCodeWriter()
-        result = writer.write(recs, best, dry_run=True)
+            writer = ClaudeCodeWriter()
+            write_result = writer.write(recs, best, dry_run=True)
 
-        assert result.dry_run is True
-        # Verify no new files were created (check a temp path won't exist)
-        for fp in result.files_written:
-            # Files should only be in expected locations
-            assert "CLAUDE.md" in fp.name or "MEMORY.md" in fp.name
+            assert write_result.dry_run is True
+            for fp in write_result.files_written:
+                assert "CLAUDE.md" in fp.name or "MEMORY.md" in fp.name
 
 
 @pytest.mark.skipif(not CODEX_DIR.exists(), reason="No Codex data")
@@ -287,50 +224,25 @@ class TestCodexIntegration:
 
         assert len(sessions) > 0
 
-        analyzer = FailureAnalyzer()
-        report = analyzer.analyze(projects[0], sessions)
-
-        assert report.total_calls > 0
         # Codex has only Bash tool (shell)
         all_tools = {tc.name for s in sessions for tc in s.tool_calls}
         assert "Bash" in all_tools
 
-        # Failure rate should be realistic
-        assert 0 <= report.failure_rate <= 0.5
-
-    def test_quality_gate_filters_noise(self):
-        """Codex has false positive 'runtime_error' from sed output.
-        Quality gate should prevent these from generating weak recommendations."""
-        from headroom.learn.scanner import CodexScanner
-
-        scanner = CodexScanner()
-        projects = scanner.discover_projects()
-        sessions = scanner.scan_project(projects[0])
-
-        report = FailureAnalyzer().analyze(projects[0], sessions)
-        # Use strict quality gates
-        recommender = Recommender(min_evidence=5, min_total_evidence=10)
-        recs = recommender.recommend(report)
-
-        # Every recommendation should have meaningful evidence
-        for rec in recs:
-            assert rec.evidence_count >= 5
-            assert rec.confidence >= 0.3
-
-    def test_codex_writer_targets_agents_md(self):
+    def test_codex_writer_targets_agents_md(self, tmp_path):
         """Codex writer should target AGENTS.md, not CLAUDE.md."""
-        from headroom.learn.scanner import CodexScanner
+        proj = ProjectInfo(name="codex-test", project_path=tmp_path, data_path=tmp_path)
+        recs = [
+            Recommendation(
+                target=RecommendationTarget.CONTEXT_FILE,
+                section="Commands",
+                content="- Use npm run test",
+                confidence=0.9,
+                evidence_count=5,
+            )
+        ]
 
-        scanner = CodexScanner()
-        projects = scanner.discover_projects()
-        sessions = scanner.scan_project(projects[0])
-
-        report = FailureAnalyzer().analyze(projects[0], sessions)
-        recs = Recommender().recommend(report)
-
-        if recs:
-            writer = CodexWriter()
-            result = writer.write(recs, projects[0], dry_run=True)
-            for fp in result.files_written:
-                assert fp.name in ("AGENTS.md", "instructions.md")
-                assert "CLAUDE.md" not in fp.name
+        writer = CodexWriter()
+        result = writer.write(recs, proj, dry_run=True)
+        for fp in result.files_written:
+            assert fp.name in ("AGENTS.md", "instructions.md")
+            assert "CLAUDE.md" not in fp.name

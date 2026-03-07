@@ -77,12 +77,41 @@ class ToolCall:
 
 
 @dataclass
+class SessionEvent:
+    """Any event in a session — tool calls, user messages, interruptions.
+
+    Provides richer context than ToolCall alone, enabling
+    user preference mining and conversation understanding.
+    """
+
+    type: str  # "tool_call", "user_message", "interruption", "agent_summary"
+    msg_index: int
+    timestamp: str | None = None
+
+    # For tool_call type
+    tool_call: ToolCall | None = None
+
+    # For user_message type
+    text: str = ""
+
+    # For agent_summary type (subagent results)
+    agent_id: str = ""
+    agent_tool_count: int = 0
+    agent_tokens: int = 0
+    agent_duration_ms: int = 0
+    agent_prompt: str = ""
+
+
+@dataclass
 class SessionData:
     """Normalized data from a single conversation session."""
 
     session_id: str
     tool_calls: list[ToolCall] = field(default_factory=list)
+    events: list[SessionEvent] = field(default_factory=list)
     timestamp: datetime | None = None
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
 
     @property
     def failure_count(self) -> int:
@@ -119,92 +148,6 @@ class RecommendationTarget(str, Enum):
 
 
 @dataclass
-class EnvironmentFact:
-    """A learned fact about the project's runtime environment."""
-
-    category: str  # "python", "build_tool", "test_runner", "linter"
-    correct_command: str  # What works: "uv run python"
-    wrong_commands: list[str] = field(default_factory=list)  # What fails: ["python3"]
-    evidence_count: int = 0  # How many failures support this
-    sessions_seen: int = 0  # Across how many sessions
-
-
-@dataclass
-class StructureNote:
-    """A learned fact about the project's file structure."""
-
-    category: str  # "large_file", "missing_path", "path_correction", "search_scope"
-    path: str  # The file path in question
-    note: str  # Human-readable note
-    correct_path: str = ""  # If corrected, what the actual path is
-    evidence_count: int = 0
-    sessions_seen: int = 0
-
-
-@dataclass
-class Correction:
-    """A failure→success pair: what failed and what worked instead.
-
-    This is the core learning primitive. By comparing the failed input to
-    the successful input, we extract specific actionable knowledge.
-    """
-
-    tool_name: str
-    failed_input: dict  # The input that failed
-    success_input: dict  # The input that succeeded
-    error_category: ErrorCategory
-    session_id: str
-
-    @property
-    def failed_summary(self) -> str:
-        if self.tool_name in ("Read", "read"):
-            return str(self.failed_input.get("file_path", "?"))
-        if self.tool_name in ("Bash", "bash"):
-            return str(self.failed_input.get("command", "?"))[:100]
-        if self.tool_name in ("Grep", "grep"):
-            path = str(self.failed_input.get("path", ""))
-            pattern = str(self.failed_input.get("pattern", ""))
-            return f"pattern={pattern[:40]} path={path}"
-        return str(self.failed_input)[:80]
-
-    @property
-    def success_summary(self) -> str:
-        if self.tool_name in ("Read", "read"):
-            return str(self.success_input.get("file_path", "?"))
-        if self.tool_name in ("Bash", "bash"):
-            return str(self.success_input.get("command", "?"))[:100]
-        if self.tool_name in ("Grep", "grep"):
-            path = str(self.success_input.get("path", ""))
-            pattern = str(self.success_input.get("pattern", ""))
-            return f"pattern={pattern[:40]} path={path}"
-        return str(self.success_input)[:80]
-
-
-@dataclass
-class CommandPattern:
-    """A learned pattern about how commands should be run in this project."""
-
-    category: str  # "gradle", "python", "test", "build", "lint"
-    wrong_pattern: str  # What fails (e.g., "cd /path && ./gradlew")
-    correct_pattern: str  # What works (e.g., "../gradlew from axion/")
-    explanation: str  # Why (e.g., "user rejects cd-based gradle, use relative path")
-    evidence_count: int = 0
-    sessions_seen: int = 0
-
-
-@dataclass
-class RetryPattern:
-    """A pattern of stubborn retries that should be prevented."""
-
-    tool_name: str
-    error_category: ErrorCategory
-    description: str  # What keeps failing
-    max_retries_seen: int  # Worst case observed
-    suggestion: str  # What to do instead (SPECIFIC, from success correlation)
-    evidence_count: int = 0
-
-
-@dataclass
 class Recommendation:
     """A concrete recommendation to write to a context/memory file."""
 
@@ -213,25 +156,18 @@ class Recommendation:
     content: str  # Markdown content for the section
     confidence: float = 0.0  # 0-1, based on evidence strength
     evidence_count: int = 0  # Number of failures supporting this
+    estimated_tokens_saved: int = 0  # Projected savings if recommendation is followed
 
 
 @dataclass
-class AnalysisReport:
-    """Complete output of failure analysis for a project."""
+class AnalysisResult:
+    """Output of session analysis — stats + recommendations."""
 
     project: ProjectInfo
+    total_sessions: int = 0
     total_calls: int = 0
     total_failures: int = 0
-    total_sessions: int = 0
-    waste_bytes: int = 0
-
-    environment_facts: list[EnvironmentFact] = field(default_factory=list)
-    structure_notes: list[StructureNote] = field(default_factory=list)
-    retry_patterns: list[RetryPattern] = field(default_factory=list)
-    command_patterns: list[CommandPattern] = field(default_factory=list)
-    corrections: list[Correction] = field(default_factory=list)
-    permission_issues: list[str] = field(default_factory=list)
-    cross_session_patterns: list[str] = field(default_factory=list)
+    recommendations: list[Recommendation] = field(default_factory=list)
 
     @property
     def failure_rate(self) -> float:
