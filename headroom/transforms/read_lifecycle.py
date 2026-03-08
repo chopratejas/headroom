@@ -50,6 +50,8 @@ class FileOperation:
     file_path: str
     operation: str  # "read" | "edit" | "write"
     content_size: int = 0  # Size of tool_result content (for reads only)
+    read_offset: int | None = None  # Line offset for partial reads
+    read_limit: int | None = None  # Line limit for partial reads
 
 
 @dataclass
@@ -116,13 +118,14 @@ class ReadLifecycleManager:
 
     def _build_tool_metadata(
         self, messages: list[dict[str, Any]]
-    ) -> dict[str, tuple[str, str | None]]:
+    ) -> dict[str, tuple[str, str | None, int | None, int | None]]:
         """Build tool_call_id → (tool_name, file_path) mapping.
 
         Scans assistant messages for tool calls, extracts name and file_path
         from tool inputs. Handles both OpenAI and Anthropic formats.
         """
-        metadata: dict[str, tuple[str, str | None]] = {}
+        # Maps tool_call_id → (name, file_path, offset, limit)
+        metadata: dict[str, tuple[str, str | None, int | None, int | None]] = {}
 
         for msg in messages:
             if msg.get("role") != "assistant":
@@ -139,12 +142,16 @@ class ReadLifecycleManager:
                     continue
 
                 file_path = None
+                offset = None
+                limit = None
                 try:
                     args = json.loads(func.get("arguments", "{}"))
                     file_path = args.get("file_path") or args.get("path")
+                    offset = args.get("offset")
+                    limit = args.get("limit")
                 except (json.JSONDecodeError, TypeError):
                     pass
-                metadata[tc_id] = (name, file_path)
+                metadata[tc_id] = (name, file_path, offset, limit)
 
             # Anthropic format: content blocks with type=tool_use
             content = msg.get("content", [])
@@ -160,16 +167,20 @@ class ReadLifecycleManager:
 
                 inp = block.get("input", {})
                 file_path = None
+                offset = None
+                limit = None
                 if isinstance(inp, dict):
                     file_path = inp.get("file_path") or inp.get("path")
-                metadata[tc_id] = (name, file_path)
+                    offset = inp.get("offset")
+                    limit = inp.get("limit")
+                metadata[tc_id] = (name, file_path, offset, limit)
 
         return metadata
 
     def _build_file_operation_index(
         self,
         messages: list[dict[str, Any]],
-        tool_metadata: dict[str, tuple[str, str | None]],
+        tool_metadata: dict[str, tuple[str, str | None, int | None, int | None]],
     ) -> dict[str, list[FileOperation]]:
         """Build file_path → [FileOperation] index in a single pass.
 
@@ -177,7 +188,7 @@ class ReadLifecycleManager:
         """
         file_ops: dict[str, list[FileOperation]] = defaultdict(list)
 
-        for tc_id, (name, file_path) in tool_metadata.items():
+        for tc_id, (name, file_path, offset, limit) in tool_metadata.items():
             if not file_path:
                 continue
 
@@ -200,6 +211,8 @@ class ReadLifecycleManager:
                     tool_name=name,
                     file_path=file_path,
                     operation=operation,
+                    read_offset=offset if operation == "read" else None,
+                    read_limit=limit if operation == "read" else None,
                 )
             )
 
@@ -231,6 +244,29 @@ class ReadLifecycleManager:
 
         return None
 
+    @staticmethod
+    def _read_covers(later: FileOperation, earlier: FileOperation) -> bool:
+        """Check if `later` read fully covers the line range of `earlier`.
+
+        A full-file read (no offset/limit) covers everything.
+        A partial read only covers another partial if its range is a superset.
+        """
+        # Full-file read supersedes anything
+        if later.read_offset is None and later.read_limit is None:
+            return True
+
+        # If the earlier was a full-file read, a partial can't cover it
+        if earlier.read_offset is None and earlier.read_limit is None:
+            return False
+
+        # Both are partial reads — check range containment
+        later_start = later.read_offset or 0
+        later_end = later_start + (later.read_limit or 2000)
+        earlier_start = earlier.read_offset or 0
+        earlier_end = earlier_start + (earlier.read_limit or 2000)
+
+        return later_start <= earlier_start and later_end >= earlier_end
+
     def _classify_reads(self, file_ops: dict[str, list[FileOperation]]) -> list[ReadClassification]:
         """Classify each Read as fresh, stale, or superseded."""
         classifications: list[ReadClassification] = []
@@ -248,9 +284,13 @@ class ReadLifecycleManager:
                     e.msg_index > read_op.msg_index for e in edits
                 )
 
-                # Check superseded: any later read of this file?
+                # Check superseded: any later read that FULLY COVERS this read's range?
+                # A partial read (offset=100, limit=50) is NOT superseded by a
+                # different partial read (offset=200, limit=50) — they cover
+                # different lines. Only supersede when the later read contains
+                # all the lines of this read.
                 is_superseded = self.config.compress_superseded and any(
-                    r.msg_index > read_op.msg_index for r in reads
+                    r.msg_index > read_op.msg_index and self._read_covers(r, read_op) for r in reads
                 )
 
                 if is_stale:

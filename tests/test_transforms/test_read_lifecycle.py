@@ -276,7 +276,7 @@ class TestSupersededDetection:
 
     def test_reread_makes_superseded(self):
         """Read(A) → Read(A): first Read becomes superseded."""
-        config = ReadLifecycleConfig(enabled=True)
+        config = ReadLifecycleConfig(enabled=True, compress_superseded=True)
         mgr = ReadLifecycleManager(config)
 
         messages = [

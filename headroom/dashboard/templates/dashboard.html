@@ -25,6 +25,8 @@
         body { background: #0f0f0f; }
         .sparkline { stroke: #22d3ee; stroke-width: 1.5; fill: none; }
         .sparkline-area { fill: url(#sparkline-gradient); }
+        .trend-line { stroke: #22d3ee; stroke-width: 2; fill: none; }
+        .trend-area { fill: url(#trend-gradient); }
         @keyframes pulse-subtle { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
         .pulse-live { animation: pulse-subtle 2s ease-in-out infinite; }
     </style>
@@ -52,27 +54,20 @@
     </header>
 
     <main class="p-6 max-w-7xl mx-auto">
-        <!-- Hero Metrics -->
+        <!-- Hero Metrics (reordered: Savings $ -> Tokens Saved % -> Quality Confidence -> Overhead) -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <!-- Requests -->
+            <!-- Savings ($) - Lead with dollars -->
             <div class="bg-surface rounded-lg p-4 border border-border">
-                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Requests</div>
-                <div class="text-3xl font-light tabular-nums" x-text="formatNumber(stats.requests?.total || 0)"></div>
-                <div class="mt-2 h-8">
-                    <svg class="w-full h-full" viewBox="0 0 100 32" preserveAspectRatio="none">
-                        <defs>
-                            <linearGradient id="sparkline-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                                <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:0.3"/>
-                                <stop offset="100%" style="stop-color:#22d3ee;stop-opacity:0"/>
-                            </linearGradient>
-                        </defs>
-                        <path class="sparkline-area" :d="getSparklineArea(requestHistory)"></path>
-                        <path class="sparkline" :d="getSparkline(requestHistory)"></path>
-                    </svg>
+                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Savings</div>
+                <div class="flex items-baseline gap-2">
+                    <span class="text-3xl font-light tabular-nums text-emerald-400" x-text="'$' + formatCurrency(stats.cost?.savings_usd || 0)"></span>
+                </div>
+                <div class="mt-2 text-xs text-gray-500">
+                    <span x-text="formatNumber(stats.requests?.total || 0)"></span> requests processed
                 </div>
             </div>
 
-            <!-- Tokens Saved -->
+            <!-- Tokens Saved (%) -->
             <div class="bg-surface rounded-lg p-4 border border-border">
                 <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Tokens Saved</div>
                 <div class="flex items-baseline gap-2">
@@ -81,32 +76,120 @@
                 </div>
                 <div class="mt-2 h-8">
                     <svg class="w-full h-full" viewBox="0 0 100 32" preserveAspectRatio="none">
+                        <defs>
+                            <linearGradient id="sparkline-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:0.3"/>
+                                <stop offset="100%" style="stop-color:#22d3ee;stop-opacity:0"/>
+                            </linearGradient>
+                        </defs>
                         <path class="sparkline-area" :d="getSparklineArea(savingsHistory)"></path>
                         <path class="sparkline" :d="getSparkline(savingsHistory)"></path>
                     </svg>
                 </div>
             </div>
 
-            <!-- Cost Saved -->
+            <!-- Quality Confidence -->
             <div class="bg-surface rounded-lg p-4 border border-border">
-                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cost Saved</div>
+                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Compression Quality</div>
                 <div class="flex items-baseline gap-2">
-                    <span class="text-3xl font-light tabular-nums text-accent" x-text="'$' + formatCost(stats.cost?.total_savings_usd || 0)"></span>
+                    <span class="w-3 h-3 rounded-full mt-1" :class="confidenceColor"></span>
+                    <span class="text-3xl font-light tabular-nums" :class="confidenceTextColor" x-text="confidenceLabel"></span>
                 </div>
-                <div class="mt-3 text-xs text-gray-500">
-                    vs $<span x-text="formatCost(stats.cost?.total_cost_usd || 0)"></span> spent
-                </div>
+                <div class="mt-2 text-xs text-gray-500" x-text="confidenceDetail"></div>
             </div>
 
             <!-- Headroom Overhead -->
             <div class="bg-surface rounded-lg p-4 border border-border">
-                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Headroom Overhead</div>
+                <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Overhead</div>
                 <div class="flex items-baseline gap-2">
                     <span class="text-3xl font-light tabular-nums" x-text="(stats.overhead?.average_ms || 0).toFixed(0) + 'ms'"></span>
                 </div>
-                <div class="mt-3 text-xs text-gray-500">
-                    Avg <span x-text="((stats.latency?.average_ms || 0) / 1000).toFixed(1)"></span>s total response time
+                <div class="mt-2 text-xs text-gray-500">
+                    TTFB <span x-text="((stats.ttfb?.average_ms || 0) / 1000).toFixed(2)"></span>s avg
                 </div>
+            </div>
+        </div>
+
+        <!-- "Without Headroom" Counterfactual -->
+        <template x-if="(stats.cost?.cost_without_headroom_usd || 0) > 0">
+            <div class="bg-surface rounded-lg p-4 border border-border mb-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="text-sm font-medium text-gray-300 mb-2">Without Headroom</div>
+                        <div class="flex items-center gap-8">
+                            <div>
+                                <div class="text-xs text-gray-500 mb-1">Input cost</div>
+                                <div class="text-2xl font-light tabular-nums text-emerald-400" x-text="'$' + formatCurrency(stats.cost?.cost_with_headroom_usd || 0)"></div>
+                            </div>
+                            <div class="text-gray-500 text-2xl font-light">vs</div>
+                            <div>
+                                <div class="text-xs text-gray-500 mb-1">Input cost without Headroom</div>
+                                <div class="text-2xl font-light tabular-nums text-red-400 line-through decoration-red-400/50" x-text="'$' + formatCurrency(stats.cost?.cost_without_headroom_usd || 0)"></div>
+                            </div>
+                            <div class="ml-auto text-right">
+                                <div class="text-xs text-gray-500 mb-1">Total saved</div>
+                                <div class="text-2xl font-light tabular-nums text-emerald-400" x-text="'$' + formatCurrency(stats.cost?.savings_usd || 0)"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- New: Waste Signal Breakdown + Cumulative Savings Trend -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+            <!-- What Headroom Removed -->
+            <div class="bg-surface rounded-lg p-4 border border-border">
+                <div class="text-sm font-medium mb-4 text-gray-300">What Headroom Removed</div>
+                <template x-if="Object.keys(stats.waste_signals || {}).length > 0">
+                    <div class="space-y-3">
+                        <template x-for="[signal, tokens] in sortedWasteSignals" :key="signal">
+                            <div>
+                                <div class="flex justify-between items-center mb-1">
+                                    <span class="text-sm text-gray-400" x-text="wasteSignalLabel(signal)"></span>
+                                    <span class="font-mono text-sm text-accent" x-text="formatNumber(tokens) + ' tokens'"></span>
+                                </div>
+                                <div class="w-full h-2 bg-border rounded-full overflow-hidden">
+                                    <div class="h-full rounded-full transition-all duration-500"
+                                         :class="wasteSignalColor(signal)"
+                                         :style="'width: ' + getWastePercent(tokens) + '%'"></div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+                <template x-if="Object.keys(stats.waste_signals || {}).length === 0">
+                    <div class="text-sm text-gray-500 italic py-8 text-center">
+                        No waste signals detected yet. Data appears after requests are processed.
+                    </div>
+                </template>
+            </div>
+
+            <!-- Cumulative Savings Trend -->
+            <div class="bg-surface rounded-lg p-4 border border-border">
+                <div class="flex justify-between items-center mb-4">
+                    <span class="text-sm font-medium text-gray-300">Savings Over Time</span>
+                    <span class="text-xs text-gray-500 font-mono" x-text="formatNumber(stats.tokens?.saved || 0) + ' tokens total'"></span>
+                </div>
+                <template x-if="(stats.savings_history || []).length >= 2">
+                    <div class="h-32">
+                        <svg class="w-full h-full" viewBox="0 0 200 64" preserveAspectRatio="none">
+                            <defs>
+                                <linearGradient id="trend-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:0.2"/>
+                                    <stop offset="100%" style="stop-color:#22d3ee;stop-opacity:0"/>
+                                </linearGradient>
+                            </defs>
+                            <path class="trend-area" :d="getTrendArea(stats.savings_history)"></path>
+                            <path class="trend-line" :d="getTrendLine(stats.savings_history)"></path>
+                        </svg>
+                    </div>
+                </template>
+                <template x-if="(stats.savings_history || []).length < 2">
+                    <div class="h-32 flex items-center justify-center text-sm text-gray-500 italic">
+                        Trend data will appear after multiple requests.
+                    </div>
+                </template>
             </div>
         </div>
 
@@ -117,21 +200,17 @@
                 <div class="text-sm font-medium mb-4 text-gray-300">Token Usage</div>
                 <div class="space-y-3">
                     <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">Input Tokens</span>
-                        <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.input || 0)"></span>
-                    </div>
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">Output Tokens</span>
-                        <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.output || 0)"></span>
-                    </div>
-                    <div class="border-t border-border my-2"></div>
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">Original Size</span>
+                        <span class="text-sm text-gray-400">Before Compression</span>
                         <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.total_before_compression || 0)"></span>
                     </div>
                     <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">After Compression</span>
+                        <span class="text-sm text-gray-400">After Compression (sent)</span>
                         <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.input || 0)"></span>
+                    </div>
+                    <div class="border-t border-border my-2"></div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-400">Output Tokens</span>
+                        <span class="font-mono text-sm" x-text="formatNumber(stats.tokens?.output || 0)"></span>
                     </div>
                 </div>
             </div>
@@ -171,55 +250,171 @@
                         <span class="font-mono text-sm" x-text="(stats.overhead?.min_ms || 0).toFixed(0) + ' - ' + (stats.overhead?.max_ms || 0).toFixed(0) + 'ms'"></span>
                     </div>
                     <div class="flex justify-between items-center">
-                        <span class="text-sm text-gray-400">Total Response Time</span>
-                        <span class="font-mono text-sm" x-text="((stats.latency?.average_ms || 0) / 1000).toFixed(1) + 's avg'"></span>
+                        <span class="text-sm text-gray-400">TTFB (upstream)</span>
+                        <span class="font-mono text-sm" x-text="((stats.ttfb?.average_ms || 0) / 1000).toFixed(2) + 's avg'"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-400">TTFB Range</span>
+                        <span class="font-mono text-sm" x-text="((stats.ttfb?.min_ms || 0) / 1000).toFixed(2) + ' - ' + ((stats.ttfb?.max_ms || 0) / 1000).toFixed(2) + 's'"></span>
                     </div>
                     <div class="flex justify-between items-center">
                         <span class="text-sm text-gray-400">Failed Requests</span>
                         <span class="font-mono text-sm" x-text="stats.requests?.failed || 0"></span>
                     </div>
+                    <!-- Per-transform timing breakdown -->
+                    <template x-if="Object.keys(stats.pipeline_timing || {}).length > 0">
+                        <div>
+                            <div class="border-t border-border my-2"></div>
+                            <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">Pipeline Breakdown</div>
+                            <template x-for="[name, t] in Object.entries(stats.pipeline_timing || {})" :key="name">
+                                <div class="flex justify-between items-center mb-1">
+                                    <span class="text-xs text-gray-400 font-mono truncate mr-2" x-text="name"></span>
+                                    <span class="text-xs font-mono whitespace-nowrap"
+                                          :class="t.average_ms > 100 ? 'text-amber-400' : t.average_ms > 50 ? 'text-yellow-400' : 'text-gray-400'"
+                                          x-text="t.average_ms.toFixed(0) + 'ms avg / ' + t.max_ms.toFixed(0) + 'ms max'"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
                 </div>
             </div>
         </div>
 
-        <!-- Recent Requests Table -->
+        <!-- Per-Model Savings Breakdown -->
+        <template x-if="Object.keys(stats.cost?.per_model || {}).length > 0">
+            <div class="bg-surface rounded-lg border border-border overflow-hidden mb-6">
+                <div class="px-4 py-3 border-b border-border flex justify-between items-center">
+                    <span class="text-sm font-medium text-gray-300">Per-Model Token Savings</span>
+                    <span class="text-xs text-gray-500">Exact tokens saved per model</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-left text-xs text-gray-500 uppercase tracking-wide">
+                                <th class="px-4 py-3 font-medium">Model</th>
+                                <th class="px-4 py-3 font-medium text-right">Requests</th>
+                                <th class="px-4 py-3 font-medium text-right">Tokens Saved</th>
+                                <th class="px-4 py-3 font-medium text-right">Tokens Sent</th>
+                                <th class="px-4 py-3 font-medium text-right">Reduction</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-border">
+                            <template x-for="[model, info] in Object.entries(stats.cost?.per_model || {})" :key="model">
+                                <tr class="hover:bg-border/30 transition-colors">
+                                    <td class="px-4 py-3">
+                                        <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(model)"></span>
+                                    </td>
+                                    <td class="px-4 py-3 text-right font-mono" x-text="info.requests"></td>
+                                    <td class="px-4 py-3 text-right font-mono text-accent" x-text="formatNumber(info.tokens_saved)"></td>
+                                    <td class="px-4 py-3 text-right font-mono" x-text="formatNumber(info.tokens_sent)"></td>
+                                    <td class="px-4 py-3 text-right">
+                                        <span class="text-accent font-mono" x-text="info.reduction_pct.toFixed(1) + '%'"></span>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </template>
+
+        <!-- Recent Requests Table (with expandable rows) -->
         <div class="bg-surface rounded-lg border border-border overflow-hidden">
             <div class="px-4 py-3 border-b border-border flex justify-between items-center">
                 <span class="text-sm font-medium text-gray-300">Recent Requests</span>
-                <span class="text-xs text-gray-500">Last 10</span>
+                <span class="text-xs text-gray-500">Last 10 &mdash; click row to expand</span>
             </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead>
                         <tr class="text-left text-xs text-gray-500 uppercase tracking-wide">
+                            <th class="px-4 py-3 font-medium w-6"></th>
                             <th class="px-4 py-3 font-medium">Time</th>
                             <th class="px-4 py-3 font-medium">Model</th>
                             <th class="px-4 py-3 font-medium text-right">Input</th>
                             <th class="px-4 py-3 font-medium text-right">Output</th>
                             <th class="px-4 py-3 font-medium text-right">Saved</th>
-                            <th class="px-4 py-3 font-medium text-right">Cost</th>
+                            <th class="px-4 py-3 font-medium text-right">Quality</th>
                             <th class="px-4 py-3 font-medium text-right">Latency</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-border">
                         <template x-for="req in (stats.recent_requests || [])" :key="req.request_id">
-                            <tr class="hover:bg-border/30 transition-colors">
-                                <td class="px-4 py-3 font-mono text-gray-400" x-text="formatTime(req.timestamp)"></td>
-                                <td class="px-4 py-3">
-                                    <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(req.model)"></span>
+                            <tr>
+                                <td colspan="8" class="p-0">
+                                    <div class="cursor-pointer" @click="toggleExpanded(req.request_id)">
+                                        <div class="flex hover:bg-border/30 transition-colors">
+                                            <div class="px-4 py-3 w-6 text-gray-500">
+                                                <span x-text="expandedRows[req.request_id] ? '-' : '+'"></span>
+                                            </div>
+                                            <div class="px-4 py-3 font-mono text-gray-400 flex-1" x-text="formatTime(req.timestamp)"></div>
+                                            <div class="px-4 py-3 flex-1">
+                                                <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(req.model)"></span>
+                                            </div>
+                                            <div class="px-4 py-3 text-right font-mono flex-1" x-text="formatNumber(req.input_tokens_optimized)"></div>
+                                            <div class="px-4 py-3 text-right font-mono flex-1" x-text="formatNumber(req.output_tokens || 0)"></div>
+                                            <div class="px-4 py-3 text-right flex-1">
+                                                <span class="text-accent font-mono" x-text="req.savings_percent.toFixed(0) + '%'"></span>
+                                            </div>
+                                            <div class="px-4 py-3 text-right flex-1">
+                                                <span class="w-2 h-2 rounded-full inline-block" :class="getRequestConfidenceColor(req)"></span>
+                                            </div>
+                                            <div class="px-4 py-3 text-right font-mono text-gray-400 flex-1" x-text="(req.total_latency_ms || 0).toFixed(0) + 'ms'"></div>
+                                        </div>
+                                    </div>
+                                    <!-- Expanded detail row -->
+                                    <template x-if="expandedRows[req.request_id]">
+                                        <div class="px-8 py-4 bg-[#151515] border-t border-border">
+                                            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                                                <div>
+                                                    <div class="text-gray-500 uppercase tracking-wide mb-1">Original Tokens</div>
+                                                    <div class="font-mono" x-text="formatNumber(req.input_tokens_original)"></div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-gray-500 uppercase tracking-wide mb-1">Compressed Tokens</div>
+                                                    <div class="font-mono" x-text="formatNumber(req.input_tokens_optimized)"></div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-gray-500 uppercase tracking-wide mb-1">Tokens Removed</div>
+                                                    <div class="font-mono text-accent" x-text="formatNumber(req.tokens_saved)"></div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-gray-500 uppercase tracking-wide mb-1">Optimization Time</div>
+                                                    <div class="font-mono" x-text="(req.optimization_latency_ms || 0).toFixed(0) + 'ms'"></div>
+                                                </div>
+                                            </div>
+                                            <!-- Transforms Applied -->
+                                            <template x-if="(req.transforms_applied || []).length > 0">
+                                                <div class="mt-3">
+                                                    <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Transforms Applied</div>
+                                                    <div class="flex flex-wrap gap-1">
+                                                        <template x-for="t in req.transforms_applied" :key="t">
+                                                            <span class="px-2 py-0.5 bg-border rounded text-xs font-mono" x-text="t"></span>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <!-- Waste Signals for this request -->
+                                            <template x-if="req.waste_signals && Object.keys(req.waste_signals).length > 0">
+                                                <div class="mt-3">
+                                                    <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Waste Detected</div>
+                                                    <div class="flex flex-wrap gap-2">
+                                                        <template x-for="[signal, tokens] in Object.entries(req.waste_signals).filter(([,v]) => v > 0)" :key="signal">
+                                                            <span class="px-2 py-0.5 rounded text-xs font-mono"
+                                                                  :class="wasteSignalBadgeColor(signal)"
+                                                                  x-text="wasteSignalLabel(signal) + ': ' + formatNumber(tokens)"></span>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
                                 </td>
-                                <td class="px-4 py-3 text-right font-mono" x-text="formatNumber(req.input_tokens_optimized)"></td>
-                                <td class="px-4 py-3 text-right font-mono" x-text="formatNumber(req.output_tokens || 0)"></td>
-                                <td class="px-4 py-3 text-right">
-                                    <span class="text-accent font-mono" x-text="req.savings_percent.toFixed(0) + '%'"></span>
-                                </td>
-                                <td class="px-4 py-3 text-right font-mono text-gray-400" x-text="'$' + (req.estimated_cost_usd || 0).toFixed(4)"></td>
-                                <td class="px-4 py-3 text-right font-mono text-gray-400" x-text="(req.total_latency_ms || 0).toFixed(0) + 'ms'"></td>
                             </tr>
                         </template>
                         <template x-if="(stats.recent_requests || []).length === 0">
                             <tr>
-                                <td colspan="7" class="px-4 py-8 text-center text-gray-500 italic">
+                                <td colspan="8" class="px-4 py-8 text-center text-gray-500 italic">
                                     No requests yet. Start using the proxy to see activity here.
                                 </td>
                             </tr>
@@ -229,23 +424,6 @@
             </div>
         </div>
 
-        <!-- Budget Bar (if configured) -->
-        <template x-if="stats.cost?.budget_limit_usd">
-            <div class="mt-6 bg-surface rounded-lg p-4 border border-border">
-                <div class="flex justify-between items-center mb-2">
-                    <span class="text-sm text-gray-400">Budget (<span x-text="stats.cost?.budget_period || 'daily'"></span>)</span>
-                    <span class="font-mono text-sm">
-                        $<span x-text="formatCost(stats.cost?.period_cost_usd || 0)"></span>
-                        / $<span x-text="formatCost(stats.cost?.budget_limit_usd || 0)"></span>
-                    </span>
-                </div>
-                <div class="w-full h-2 bg-border rounded-full overflow-hidden">
-                    <div class="h-full rounded-full transition-all duration-500"
-                         :class="getBudgetPercent() > 90 ? 'bg-red-400' : getBudgetPercent() > 70 ? 'bg-amber-400' : 'bg-accent'"
-                         :style="'width: ' + Math.min(getBudgetPercent(), 100) + '%'"></div>
-                </div>
-            </div>
-        </template>
     </main>
 
     <!-- Footer -->
@@ -269,6 +447,7 @@
                 lastUpdate: 'never',
                 requestHistory: [],
                 savingsHistory: [],
+                expandedRows: {},
                 pollInterval: null,
 
                 async init() {
@@ -310,14 +489,21 @@
                     }
                 },
 
+                // --- Formatting ---
+
                 formatNumber(n) {
                     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
                     if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
                     return n.toString();
                 },
 
-                formatCost(n) {
-                    return n.toFixed(2);
+                formatCurrency(n) {
+                    if (n < 0) return '-' + this.formatCurrency(-n);
+                    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+                    if (n >= 1) return n.toFixed(2);
+                    if (n >= 0.01) return n.toFixed(3);
+                    if (n > 0) return n.toFixed(4);
+                    return '0.00';
                 },
 
                 formatTime(ts) {
@@ -332,21 +518,121 @@
 
                 truncateModel(model) {
                     if (!model) return '-';
-                    // Remove provider prefix and version suffix for display
                     return model.replace(/^(anthropic\.|openai\.|bedrock\/)/, '')
                                .replace(/-\d{8}$/, '')
                                .substring(0, 20);
                 },
 
+                // --- Waste Signals ---
+
+                wasteSignalLabel(signal) {
+                    const labels = {
+                        json_bloat: 'JSON Bloat',
+                        html_noise: 'HTML Noise',
+                        base64: 'Base64 Blobs',
+                        whitespace: 'Whitespace',
+                        dynamic_date: 'Dynamic Dates',
+                        repetition: 'Repetition',
+                    };
+                    return labels[signal] || signal;
+                },
+
+                wasteSignalColor(signal) {
+                    const colors = {
+                        json_bloat: 'bg-amber-500',
+                        html_noise: 'bg-orange-500',
+                        base64: 'bg-red-500',
+                        whitespace: 'bg-blue-500',
+                        dynamic_date: 'bg-purple-500',
+                        repetition: 'bg-pink-500',
+                    };
+                    return colors[signal] || 'bg-gray-500';
+                },
+
+                wasteSignalBadgeColor(signal) {
+                    const colors = {
+                        json_bloat: 'bg-amber-500/20 text-amber-400',
+                        html_noise: 'bg-orange-500/20 text-orange-400',
+                        base64: 'bg-red-500/20 text-red-400',
+                        whitespace: 'bg-blue-500/20 text-blue-400',
+                        dynamic_date: 'bg-purple-500/20 text-purple-400',
+                        repetition: 'bg-pink-500/20 text-pink-400',
+                    };
+                    return colors[signal] || 'bg-gray-500/20 text-gray-400';
+                },
+
+                get sortedWasteSignals() {
+                    const signals = this.stats.waste_signals || {};
+                    return Object.entries(signals)
+                        .filter(([, v]) => v > 0)
+                        .sort((a, b) => b[1] - a[1]);
+                },
+
+                getWastePercent(tokens) {
+                    const signals = this.stats.waste_signals || {};
+                    const max = Math.max(...Object.values(signals), 1);
+                    return Math.min((tokens / max) * 100, 100);
+                },
+
+                // --- Compression Confidence ---
+
+                get confidenceLevel() {
+                    const saved = this.stats.tokens?.saved || 0;
+                    if (saved === 0) return 'none';
+                    const signals = this.stats.waste_signals || {};
+                    const totalWaste = Object.values(signals).reduce((a, b) => a + b, 0);
+                    if (totalWaste === 0) return 'unknown';
+                    const wasteRatio = totalWaste / saved;
+                    if (wasteRatio >= 0.7) return 'high';
+                    if (wasteRatio >= 0.3) return 'medium';
+                    return 'low';
+                },
+
+                get confidenceColor() {
+                    const c = { high: 'bg-emerald-400', medium: 'bg-yellow-400', low: 'bg-red-400', none: 'bg-gray-500', unknown: 'bg-gray-500' };
+                    return c[this.confidenceLevel];
+                },
+
+                get confidenceTextColor() {
+                    const c = { high: 'text-emerald-400', medium: 'text-yellow-400', low: 'text-red-400', none: 'text-gray-500', unknown: 'text-gray-500' };
+                    return c[this.confidenceLevel];
+                },
+
+                get confidenceLabel() {
+                    const l = { high: 'High', medium: 'Medium', low: 'Low', none: '-', unknown: '-' };
+                    return l[this.confidenceLevel];
+                },
+
+                get confidenceDetail() {
+                    const saved = this.stats.tokens?.saved || 0;
+                    if (saved === 0) return 'No compression yet';
+                    const signals = this.stats.waste_signals || {};
+                    const totalWaste = Object.values(signals).reduce((a, b) => a + b, 0);
+                    if (totalWaste === 0) return 'No waste signals detected';
+                    const pct = Math.round((totalWaste / saved) * 100);
+                    return pct + '% of removed tokens were identified waste';
+                },
+
+                getRequestConfidenceColor(req) {
+                    if (!req.waste_signals || req.tokens_saved === 0) return 'bg-gray-500';
+                    const totalWaste = Object.values(req.waste_signals).reduce((a, b) => a + b, 0);
+                    const ratio = totalWaste / req.tokens_saved;
+                    if (ratio >= 0.7) return 'bg-emerald-400';
+                    if (ratio >= 0.3) return 'bg-yellow-400';
+                    return 'bg-red-400';
+                },
+
+                // --- Expandable Rows ---
+
+                toggleExpanded(id) {
+                    this.expandedRows[id] = !this.expandedRows[id];
+                },
+
+                // --- Charts ---
+
                 getProviderPercent(count) {
                     const total = this.stats.requests?.total || 1;
                     return Math.min((count / total) * 100, 100);
-                },
-
-                getBudgetPercent() {
-                    const limit = this.stats.cost?.budget_limit_usd || 1;
-                    const used = this.stats.cost?.period_cost_usd || 0;
-                    return (used / limit) * 100;
                 },
 
                 getSparkline(data) {
@@ -369,7 +655,30 @@
                     const line = this.getSparkline(data);
                     if (!line) return '';
                     return line + ` L100,32 L0,32 Z`;
-                }
+                },
+
+                getTrendLine(history) {
+                    if (!history || history.length < 2) return '';
+                    const values = history.map(h => h[1]);
+                    const min = Math.min(...values);
+                    const max = Math.max(...values);
+                    const range = max - min || 1;
+
+                    const points = values.map((v, i) => {
+                        const x = (i / (values.length - 1)) * 200;
+                        const y = 60 - ((v - min) / range) * 56;
+                        return `${x},${y}`;
+                    });
+
+                    return 'M' + points.join(' L');
+                },
+
+                getTrendArea(history) {
+                    if (!history || history.length < 2) return '';
+                    const line = this.getTrendLine(history);
+                    if (!line) return '';
+                    return line + ` L200,64 L0,64 Z`;
+                },
             };
         }
     </script>

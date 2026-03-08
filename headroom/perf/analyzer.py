@@ -2,13 +2,20 @@
 
 Parses PERF log lines from ~/.headroom/logs/proxy.log* and produces
 actionable reports on token savings, cache efficiency, and transform impact.
+
+Cost accounting is **cache-aware**: saved tokens that would have been served
+from the provider's prompt cache are valued at cache_read price (~10% for
+Anthropic), not the full input price.  This prevents overstating dollar savings.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 LOG_DIR = Path.home() / ".headroom" / "logs"
 
@@ -36,6 +43,90 @@ _TOIN_RE = re.compile(
     r"TOIN: (?P<patterns>\d+) patterns, (?P<compressions>\d+) compressions, "
     r"(?P<retrievals>\d+) retrievals, (?P<rate>[\d.]+)% retrieval rate"
 )
+
+
+# ---------------------------------------------------------------------------
+# Cache-aware pricing via LiteLLM
+# ---------------------------------------------------------------------------
+
+# LiteLLM already knows per-token costs for 100+ models including
+# cache_read and cache_creation pricing.  We call it directly instead
+# of maintaining our own pricing tables.
+
+try:
+    import litellm as _litellm
+
+    _LITELLM_AVAILABLE = True
+except ImportError:
+    _LITELLM_AVAILABLE = False
+
+# Cache resolved model names (e.g. "claude-opus-4-6" → "anthropic/claude-opus-4-6")
+_resolved_model_cache: dict[str, str] = {}
+
+
+def _resolve_model(model: str) -> str:
+    """Resolve to a model name LiteLLM recognises, adding provider prefix if needed.
+
+    TODO: Duplicated with CostTracker._resolve_litellm_model in proxy/server.py.
+    Extract to shared utility.
+    """
+    if model in _resolved_model_cache:
+        return _resolved_model_cache[model]
+
+    if not _LITELLM_AVAILABLE:
+        _resolved_model_cache[model] = model
+        return model
+
+    # Try as-is
+    if model in _litellm.model_cost:
+        _resolved_model_cache[model] = model
+        return model
+
+    # Try provider prefixes
+    for prefix in ("anthropic/", "openai/", "google/", "mistral/", "deepseek/"):
+        prefixed = f"{prefix}{model}"
+        if prefixed in _litellm.model_cost:
+            _resolved_model_cache[model] = prefixed
+            return prefixed
+
+    _resolved_model_cache[model] = model
+    return model
+
+
+def _litellm_cost(
+    model: str,
+    prompt_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float | None:
+    """Compute input cost via litellm.cost_per_token (cache-aware).
+
+    Returns total input cost in USD, or None if model not found.
+    """
+    if not _LITELLM_AVAILABLE:
+        return None
+    resolved = _resolve_model(model)
+    try:
+        input_cost, _ = _litellm.cost_per_token(
+            model=resolved,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=0,
+            cache_read_input_tokens=cache_read_tokens,
+            cache_creation_input_tokens=cache_write_tokens,
+        )
+        return float(input_cost)
+    except Exception:
+        return None
+
+
+def _get_list_price(model: str) -> float | None:
+    """Get list input price per 1M tokens."""
+    if not _LITELLM_AVAILABLE:
+        return None
+    resolved = _resolve_model(model)
+    info = _litellm.model_cost.get(resolved, {})
+    cost_per_token = info.get("input_cost_per_token")
+    return cost_per_token * 1_000_000 if cost_per_token else None
 
 
 def _parse_kv(kv_str: str) -> dict[str, str]:
@@ -276,14 +367,33 @@ def format_report(report: PerfReport) -> str:
         total_saved = sum(r.tokens_saved for r in records)
         pct = (total_saved / total_before * 100) if total_before > 0 else 0
 
-        models = {r.model for r in records}
         lines.append(f"Requests:     {len(records)}")
-        lines.append(f"Models:       {', '.join(sorted(models))}")
-        lines.append(
-            f"Tokens:       {total_before:,} input -> {total_after:,} after transforms "
-            f"({pct:.1f}% reduction)"
-        )
+        lines.append(f"Tokens:       {total_before:,} -> {total_after:,} ({pct:.1f}% reduction)")
         lines.append(f"Total saved:  {total_saved:,} tokens")
+        lines.append("")
+
+        # Per-model breakdown with list prices
+        by_model: dict[str, list[PerfRecord]] = {}
+        for r in records:
+            by_model.setdefault(r.model, []).append(r)
+
+        lines.append("Per-Model Breakdown")
+        lines.append("-" * 40)
+        for model, model_recs in sorted(by_model.items()):
+            m_saved = sum(r.tokens_saved for r in model_recs)
+            m_before = sum(r.tokens_before for r in model_recs)
+            m_pct = (m_saved / m_before * 100) if m_before > 0 else 0
+            list_price = _get_list_price(model)
+            price_str = f"${list_price:.2f}/MTok" if list_price else "unknown"
+            est_str = (
+                f"  ~${m_saved * list_price / 1_000_000:.2f} at list price" if list_price else ""
+            )
+            lines.append(
+                f"  {model}: {len(model_recs)} reqs, "
+                f"{m_saved:,} tokens saved ({m_pct:.0f}%), "
+                f"list price {price_str}{est_str}"
+            )
+        lines.append("  * Actual bill savings depend on provider caching behavior")
         lines.append("")
 
         # Cache analysis

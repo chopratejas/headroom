@@ -78,7 +78,7 @@ class CacheAlignerConfig:
     SAFE: Only applied to SYSTEM messages, not user/assistant/tool content.
     """
 
-    enabled: bool = True
+    enabled: bool = False  # Disabled by default — prefix stability gains are marginal in practice
 
     # === Phase 1: DynamicContentDetector Integration ===
     # When True, uses the full DynamicContentDetector with 15+ patterns
@@ -397,7 +397,7 @@ class ReadLifecycleConfig:
 
     enabled: bool = True  # On by default: stale/superseded Reads are provably safe to compress
     compress_stale: bool = True  # Replace Reads of files that were later edited
-    compress_superseded: bool = True  # Replace Reads of files that were later re-Read
+    compress_superseded: bool = False  # Disabled: busts Anthropic prompt cache prefix
     min_size_bytes: int = 512  # Skip tiny Read outputs (not worth the overhead)
 
 
@@ -702,11 +702,13 @@ class TransformResult:
     warnings: list[str] = field(default_factory=list)
     diff_artifact: DiffArtifact | None = None  # Populated if generate_diff_artifact=True
     cache_metrics: CachePrefixMetrics | None = None  # Populated by CacheAligner
+    timing: dict[str, float] = field(default_factory=dict)  # transform_name → ms
+    waste_signals: WasteSignals | None = None  # Detected waste in original messages
 
 
 @dataclass
 class TransformDiff:
-    """Diff info for a single transform (for debugging)."""
+    """Diff info for a single transform (for debugging/perf)."""
 
     transform_name: str
     tokens_before: int
@@ -715,6 +717,7 @@ class TransformDiff:
     items_removed: int = 0
     items_kept: int = 0
     details: str = ""  # Human-readable description of what changed
+    duration_ms: float = 0.0  # Wall-clock time for this transform
 
 
 @dataclass

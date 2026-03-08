@@ -559,9 +559,16 @@ class TestCostTrackingAccuracy:
             patch("headroom.proxy.server.litellm") as mock_litellm,
         ):
             # Setup: $10/M input, $30/M output
-            def mock_cost(model, prompt_tokens, completion_tokens):
+            def mock_cost(model, prompt_tokens, completion_tokens, **kwargs):
                 input_cost = prompt_tokens * 0.00001
                 output_cost = completion_tokens * 0.00003
+                # Add cache costs if provided
+                cache_read = kwargs.get("cache_read_input_tokens", 0)
+                cache_write = kwargs.get("cache_creation_input_tokens", 0)
+                if cache_read or cache_write:
+                    model_info = mock_litellm.get_model_info()
+                    input_cost += cache_read * model_info.get("cache_read_input_token_cost", 0)
+                    input_cost += cache_write * model_info.get("cache_creation_input_token_cost", 0)
                 return (input_cost, output_cost)
 
             mock_litellm.cost_per_token.side_effect = mock_cost
@@ -598,7 +605,7 @@ class TestCostTrackingAccuracy:
             patch("headroom.proxy.server.litellm") as mock_litellm,
         ):
             mock_litellm.cost_per_token.side_effect = (
-                lambda model, prompt_tokens, completion_tokens: (
+                lambda model, prompt_tokens, completion_tokens, **kwargs: (
                     prompt_tokens * 0.00001,
                     completion_tokens * 0.00003,
                 )

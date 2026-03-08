@@ -867,6 +867,25 @@ class CodeAwareCompressor(Transform):
 
             ratio = compressed_tokens / max(original_tokens, 1)
 
+            # Guard against over-aggressive compression (data loss).
+            # If AST extraction stripped content to <5% of original,
+            # the output is essentially empty — return original.
+            if ratio < 0.05:
+                logger.warning(
+                    "Code compression too aggressive (ratio=%.3f), returning original",
+                    ratio,
+                )
+                return CodeCompressionResult(
+                    compressed=code,
+                    original=code,
+                    original_tokens=original_tokens,
+                    compressed_tokens=original_tokens,
+                    compression_ratio=1.0,
+                    language=detected_lang,
+                    language_confidence=confidence,
+                    syntax_valid=True,
+                )
+
             # Store in CCR if significant compression
             cache_key = None
             if self.config.enable_ccr and ratio < 0.8:
