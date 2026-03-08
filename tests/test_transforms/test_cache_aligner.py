@@ -29,8 +29,8 @@ def tokenizer():
 
 @pytest.fixture
 def default_config():
-    """Default CacheAlignerConfig."""
-    return CacheAlignerConfig()
+    """Default CacheAlignerConfig with enabled=True for testing."""
+    return CacheAlignerConfig(enabled=True)
 
 
 @pytest.fixture
@@ -194,7 +194,7 @@ class TestDateExtraction:
             {"role": "user", "content": "Hello"},
         ]
 
-        config = CacheAlignerConfig(date_patterns=custom_patterns)
+        config = CacheAlignerConfig(enabled=True, date_patterns=custom_patterns)
         aligner = CacheAligner(config)
 
         assert aligner.should_apply(messages, tokenizer)
@@ -705,7 +705,7 @@ Please be helpful, harmless, and honest."""
             {"role": "user", "content": "What can you help me with today?"},
         ]
 
-        aligner = CacheAligner()
+        aligner = CacheAligner(CacheAlignerConfig(enabled=True))
 
         # Check should_apply
         assert aligner.should_apply(messages, tokenizer)

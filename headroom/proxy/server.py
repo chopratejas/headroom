@@ -216,10 +216,6 @@ class RequestLog:
     tokens_saved: int
     savings_percent: float
 
-    # Cost
-    estimated_cost_usd: float | None
-    estimated_savings_usd: float | None
-
     # Performance
     optimization_latency_ms: float
     total_latency_ms: float | None
@@ -228,6 +224,9 @@ class RequestLog:
     tags: dict[str, str]
     cache_hit: bool
     transforms_applied: list[str]
+
+    # Waste signals detected in original messages
+    waste_signals: dict[str, int] | None = None
 
     # Request/Response (optional, for debugging)
     request_messages: list[dict] | None = None
@@ -601,9 +600,12 @@ class CostTracker:
 
         # Cost tracking - using deque for efficient left-side removal
         self._costs: deque[tuple[datetime, float]] = deque(maxlen=self.MAX_COST_ENTRIES)
-        self._total_cost_usd: float = 0
-        self._total_savings_usd: float = 0
         self._last_prune_time: datetime = datetime.now()
+
+        # Token savings per model (exact, no dollar estimation)
+        self._tokens_saved_by_model: dict[str, int] = {}
+        self._tokens_sent_by_model: dict[str, int] = {}
+        self._requests_by_model: dict[str, int] = {}
 
     # Cache resolved model names to avoid repeated litellm lookups.
     # This is critical: litellm.cost_per_token() is synchronous and can block
@@ -667,83 +669,34 @@ class CostTracker:
     ) -> float | None:
         """Estimate cost in USD using LiteLLM's pricing database.
 
+        LiteLLM natively handles cache_read and cache_creation pricing
+        for all providers (Anthropic, OpenAI, Google, etc.) in a single call.
+
         Args:
             model: Model name for pricing lookup
-            input_tokens: Input tokens sent to API (does NOT include cache_read, which is served from cache)
+            input_tokens: Non-cached input tokens (excludes cache_read)
             output_tokens: Output tokens
-            cache_read_tokens: Tokens read from cache (charged at ~10% of input rate)
-            cache_write_tokens: Tokens written to cache - this is a SUBSET of input_tokens (charged at ~125% of input rate)
+            cache_read_tokens: Tokens served from cache (~10% of input rate)
+            cache_write_tokens: Tokens written to cache (~125% of input rate)
         """
         if not LITELLM_AVAILABLE:
             logger.warning("LiteLLM not available - cannot calculate costs")
             return None
 
         try:
-            # Resolve model name (adds provider prefix if needed, e.g. claude-opus-4-6 → anthropic/claude-opus-4-6)
             resolved_model = self._resolve_litellm_model(model)
 
-            # cost_per_token returns (total_input_cost, total_output_cost) for the given token counts
-            # Despite the name, it returns total cost not per-token cost
-
-            # Anthropic's token semantics (all three are SEPARATE, not overlapping):
-            # - input_tokens: tokens sent that are NOT cached (neither read nor written)
-            # - cache_read_input_tokens: tokens served from existing cache
-            # - cache_creation_input_tokens: tokens being written to cache
-            # Total billable = input_tokens + cache_read + cache_write (each at different rates)
-            regular_input = input_tokens  # Don't subtract cache_write, they're separate
-
-            # Get cost for regular (non-cached) input tokens
-            input_cost, _ = litellm.cost_per_token(
+            # litellm.cost_per_token handles all token types natively:
+            # prompt_tokens at input rate, cache_read at ~10%, cache_creation at ~125%
+            input_cost, output_cost = litellm.cost_per_token(
                 model=resolved_model,
-                prompt_tokens=regular_input,
-                completion_tokens=0,
-            )
-
-            # Get cost for output tokens
-            _, output_cost = litellm.cost_per_token(
-                model=resolved_model,
-                prompt_tokens=0,
+                prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
+                cache_read_input_tokens=cache_read_tokens,
+                cache_creation_input_tokens=cache_write_tokens,
             )
 
-            # Get model info for cache pricing
-            model_info: dict[str, Any] = {}
-            try:
-                model_info = dict(litellm.get_model_info(resolved_model))
-            except Exception:
-                pass
-
-            # Calculate cache read cost (typically 10% of input price)
-            cache_read_cost = 0.0
-            if cache_read_tokens > 0:
-                cache_read_cost_per_token = model_info.get("cache_read_input_token_cost")
-                if cache_read_cost_per_token:
-                    cache_read_cost = cache_read_tokens * cache_read_cost_per_token
-                else:
-                    # Fallback: most providers charge ~10% of input price for cache reads
-                    cache_read_full_cost, _ = litellm.cost_per_token(
-                        model=resolved_model,
-                        prompt_tokens=cache_read_tokens,
-                        completion_tokens=0,
-                    )
-                    cache_read_cost = cache_read_full_cost * 0.1
-
-            # Calculate cache write cost (typically 125% of input price)
-            cache_write_cost = 0.0
-            if cache_write_tokens > 0:
-                cache_write_cost_per_token = model_info.get("cache_creation_input_token_cost")
-                if cache_write_cost_per_token:
-                    cache_write_cost = cache_write_tokens * cache_write_cost_per_token
-                else:
-                    # Fallback: most providers charge ~125% of input price for cache writes
-                    cache_write_full_cost, _ = litellm.cost_per_token(
-                        model=resolved_model,
-                        prompt_tokens=cache_write_tokens,
-                        completion_tokens=0,
-                    )
-                    cache_write_cost = cache_write_full_cost * 1.25
-
-            total_cost = input_cost + cache_read_cost + cache_write_cost + output_cost
+            total_cost = input_cost + output_cost
             return float(total_cost) if total_cost > 0 else None
 
         except Exception as e:
@@ -769,16 +722,13 @@ class CostTracker:
         while self._costs and self._costs[0][0] < cutoff:
             self._costs.popleft()
 
-    def record_cost(self, cost_usd: float):
-        """Record a cost. Periodically prunes old entries."""
-        self._costs.append((datetime.now(), cost_usd))
-        self._total_cost_usd += cost_usd
-        # Periodically prune old costs to prevent memory growth
-        self._prune_old_costs()
-
-    def record_savings(self, savings_usd: float):
-        """Record savings from optimization."""
-        self._total_savings_usd += savings_usd
+    def record_tokens(self, model: str, tokens_saved: int, tokens_sent: int):
+        """Record token counts per model. This is exact — no estimation."""
+        self._tokens_saved_by_model[model] = (
+            self._tokens_saved_by_model.get(model, 0) + tokens_saved
+        )
+        self._tokens_sent_by_model[model] = self._tokens_sent_by_model.get(model, 0) + tokens_sent
+        self._requests_by_model[model] = self._requests_by_model.get(model, 0) + 1
 
     def get_period_cost(self) -> float:
         """Get cost for current budget period."""
@@ -802,17 +752,55 @@ class CostTracker:
         remaining = self.budget_limit_usd - period_cost
         return remaining > 0, max(0, remaining)
 
+    def _get_list_price(self, model: str) -> float | None:
+        """Get list input price per 1M tokens for a model."""
+        if not LITELLM_AVAILABLE:
+            return None
+        try:
+            resolved = self._resolve_litellm_model(model)
+            info = litellm.model_cost.get(resolved, {})
+            cost_per_token = info.get("input_cost_per_token")
+            return cost_per_token * 1_000_000 if cost_per_token else None
+        except Exception:
+            return None
+
     def stats(self) -> dict:
-        """Get cost statistics."""
+        """Get token statistics per model."""
+        per_model = {}
+        total_saved = 0
+        for model in sorted(self._tokens_saved_by_model.keys()):
+            saved = self._tokens_saved_by_model[model]
+            sent = self._tokens_sent_by_model.get(model, 0)
+            reqs = self._requests_by_model.get(model, 0)
+            total_saved += saved
+            per_model[model] = {
+                "requests": reqs,
+                "tokens_saved": saved,
+                "tokens_sent": sent,
+                "reduction_pct": round(saved / (saved + sent) * 100, 1)
+                if (saved + sent) > 0
+                else 0,
+            }
+
+        # Compute counterfactual: what would you have paid without Headroom?
+        # Note: uses input token pricing only. Output tokens and cache pricing
+        # are excluded since Headroom only compresses input tokens.
+        cost_with_headroom = 0.0
+        cost_without_headroom = 0.0
+        for model in self._tokens_saved_by_model:
+            saved = self._tokens_saved_by_model[model]
+            sent = self._tokens_sent_by_model.get(model, 0)
+            price_per_1m = self._get_list_price(model)
+            if price_per_1m:
+                cost_with_headroom += (sent / 1_000_000) * price_per_1m
+                cost_without_headroom += ((saved + sent) / 1_000_000) * price_per_1m
+
         return {
-            "total_cost_usd": round(self._total_cost_usd, 4),
-            "total_savings_usd": round(self._total_savings_usd, 4),
-            "period_cost_usd": round(self.get_period_cost(), 4),
-            "budget_limit_usd": self.budget_limit_usd,
-            "budget_period": self.budget_period,
-            "budget_remaining_usd": round(self.check_budget()[1], 4)
-            if self.budget_limit_usd
-            else None,
+            "total_tokens_saved": total_saved,
+            "per_model": per_model,
+            "cost_with_headroom_usd": round(cost_with_headroom, 4),
+            "cost_without_headroom_usd": round(cost_without_headroom, 4),
+            "savings_usd": round(cost_without_headroom - cost_with_headroom, 4),
         }
 
 
@@ -845,9 +833,24 @@ class PrometheusMetrics:
         self.overhead_sum_ms = 0.0
         self.overhead_min_ms = float("inf")
         self.overhead_max_ms = 0.0
+        self.overhead_count = 0
 
-        self.cost_total_usd = 0.0
-        self.savings_total_usd = 0.0
+        # Time to first byte (TTFB) from upstream — what the user actually feels
+        self.ttfb_sum_ms = 0.0
+        self.ttfb_min_ms = float("inf")
+        self.ttfb_max_ms = 0.0
+        self.ttfb_count = 0
+
+        # Per-transform timing (name → cumulative ms, count)
+        self.transform_timing_sum: dict[str, float] = defaultdict(float)
+        self.transform_timing_count: dict[str, int] = defaultdict(int)
+        self.transform_timing_max: dict[str, float] = defaultdict(float)
+
+        # Aggregate waste signals
+        self.waste_signals_total: dict[str, int] = defaultdict(int)
+
+        # Cumulative savings history (timestamp → cumulative tokens saved)
+        self.savings_history: list[tuple[str, int]] = []
 
         self._lock = asyncio.Lock()
 
@@ -860,9 +863,10 @@ class PrometheusMetrics:
         tokens_saved: int,
         latency_ms: float,
         cached: bool = False,
-        cost_usd: float = 0,
-        savings_usd: float = 0,
         overhead_ms: float = 0,
+        ttfb_ms: float = 0,
+        pipeline_timing: dict[str, float] | None = None,
+        waste_signals: dict[str, int] | None = None,
     ):
         """Record metrics for a request."""
         async with self._lock:
@@ -887,9 +891,34 @@ class PrometheusMetrics:
                 self.overhead_sum_ms += overhead_ms
                 self.overhead_min_ms = min(self.overhead_min_ms, overhead_ms)
                 self.overhead_max_ms = max(self.overhead_max_ms, overhead_ms)
+                self.overhead_count += 1
 
-            self.cost_total_usd += cost_usd
-            self.savings_total_usd += savings_usd
+            # Track TTFB (time to first byte from upstream)
+            if ttfb_ms > 0:
+                self.ttfb_sum_ms += ttfb_ms
+                self.ttfb_min_ms = min(self.ttfb_min_ms, ttfb_ms)
+                self.ttfb_max_ms = max(self.ttfb_max_ms, ttfb_ms)
+                self.ttfb_count += 1
+
+            # Track per-transform timing
+            if pipeline_timing:
+                for name, ms in pipeline_timing.items():
+                    self.transform_timing_sum[name] += ms
+                    self.transform_timing_count[name] += 1
+                    self.transform_timing_max[name] = max(self.transform_timing_max[name], ms)
+
+            # Track waste signals
+            if waste_signals:
+                for signal_name, token_count in waste_signals.items():
+                    self.waste_signals_total[signal_name] += token_count
+
+            # Track cumulative savings history (record every request)
+            from datetime import datetime
+
+            self.savings_history.append((datetime.now().isoformat(), self.tokens_saved_total))
+            # Keep last 500 data points
+            if len(self.savings_history) > 500:
+                self.savings_history = self.savings_history[-500:]
 
     async def record_rate_limited(self):
         async with self._lock:
@@ -934,14 +963,6 @@ class PrometheusMetrics:
                 "# HELP headroom_latency_ms_sum Sum of request latencies",
                 "# TYPE headroom_latency_ms_sum counter",
                 f"headroom_latency_ms_sum {self.latency_sum_ms:.2f}",
-                "",
-                "# HELP headroom_cost_usd_total Total cost in USD",
-                "# TYPE headroom_cost_usd_total counter",
-                f"headroom_cost_usd_total {self.cost_total_usd:.6f}",
-                "",
-                "# HELP headroom_savings_usd_total Total savings in USD",
-                "# TYPE headroom_savings_usd_total counter",
-                f"headroom_savings_usd_total {self.savings_total_usd:.6f}",
             ]
 
             # Per-provider metrics
@@ -1406,6 +1427,14 @@ class HeadroomProxy:
         else:
             logger.info("Smart Routing: DISABLED (legacy sequential mode)")
 
+        # Eagerly load LLMLingua model at startup (avoids 5s delay on first request)
+        if self.config.llmlingua_enabled:
+            for transform in self.anthropic_pipeline.transforms:
+                if hasattr(transform, "eager_load_compressors"):
+                    transform.eager_load_compressors()
+                    self._llmlingua_status = "enabled"
+                    break
+
         # LLMLingua status with helpful hint
         if self._llmlingua_status == "enabled":
             logger.info(
@@ -1474,8 +1503,6 @@ class HeadroomProxy:
                 m.tokens_saved_total / (m.tokens_input_total + m.tokens_saved_total)
             ) * 100
             logger.info(f"Token savings:         {savings_pct:.1f}%")
-        logger.info(f"Total cost:            ${m.cost_total_usd:.4f}")
-        logger.info(f"Total savings:         ${m.savings_total_usd:.4f}")
         if m.latency_count > 0:
             avg_latency = m.latency_sum_ms / m.latency_count
             logger.info(f"Avg latency:           {avg_latency:.0f}ms")
@@ -1727,6 +1754,8 @@ class HeadroomProxy:
 
         # Apply optimization
         transforms_applied = []
+        pipeline_timing: dict[str, float] = {}
+        waste_signals_dict: dict[str, int] | None = None
         optimized_messages = messages
         optimized_tokens = original_tokens
 
@@ -1745,13 +1774,16 @@ class HeadroomProxy:
                 if result.messages != messages:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
+                    pipeline_timing = result.timing
                     # Use pipeline's token counts for consistency with pipeline logs
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                if result.waste_signals:
+                    waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
 
-        tokens_saved = original_tokens - optimized_tokens
+        tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
 
         # Hook: post_compress — let hooks observe compression results
@@ -1933,6 +1965,7 @@ class HeadroomProxy:
                         transforms_applied,
                         tags,
                         optimization_latency,
+                        pipeline_timing=pipeline_timing,
                     )
                 else:
                     backend_response = await self.anthropic_backend.send_message(body, headers)
@@ -1957,22 +1990,11 @@ class HeadroomProxy:
                         latency_ms=total_latency,
                         cached=False,
                         overhead_ms=optimization_latency,
+                        pipeline_timing=pipeline_timing,
                     )
 
-                    cost_usd = None
-                    savings_usd = None
                     if self.cost_tracker:
-                        cost_usd = self.cost_tracker.estimate_cost(
-                            model, optimized_tokens, output_tokens
-                        )
-                        original_cost = self.cost_tracker.estimate_cost(
-                            model, original_tokens, output_tokens
-                        )
-                        if cost_usd:
-                            self.cost_tracker.record_cost(cost_usd)
-                        if cost_usd and original_cost:
-                            savings_usd = original_cost - cost_usd
-                            self.cost_tracker.record_savings(savings_usd)
+                        self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
 
                     # Log request
                     if self.logger:
@@ -1989,8 +2011,6 @@ class HeadroomProxy:
                                 savings_percent=(tokens_saved / original_tokens * 100)
                                 if original_tokens > 0
                                 else 0,
-                                estimated_cost_usd=cost_usd,
-                                estimated_savings_usd=savings_usd,
                                 optimization_latency_ms=optimization_latency,
                                 total_latency_ms=total_latency,
                                 tags=tags,
@@ -2035,6 +2055,7 @@ class HeadroomProxy:
                     tags,
                     optimization_latency,
                     memory_user_id=memory_user_id,
+                    pipeline_timing=pipeline_timing,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -2200,45 +2221,14 @@ class HeadroomProxy:
 
                 total_latency = (time.time() - start_time) * 1000
 
-                # Parse response for actual token counts from API
-                actual_input_tokens = optimized_tokens  # fallback
+                # Parse response for output token count
                 output_tokens = 0
-                cache_read_tokens = 0
-                cache_write_tokens = 0
                 if resp_json:
                     usage = resp_json.get("usage", {})
-                    actual_input_tokens = usage.get("input_tokens", optimized_tokens)
                     output_tokens = usage.get("output_tokens", 0)
-                    # Anthropic returns cache_read_input_tokens for cached prompt tokens
-                    # These are charged at 10% of the input price
-                    cache_read_tokens = usage.get("cache_read_input_tokens", 0)
-                    # Anthropic returns cache_creation_input_tokens for tokens written to cache
-                    # These are charged at 125% of the input price
-                    cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
 
-                # Calculate cost using actual API tokens with proper cache pricing
-                cost_usd = None
-                savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(
-                        model,
-                        actual_input_tokens,
-                        output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
-                    )
-                    # original_cost: what it would have cost without compression
-                    # Use only original_tokens at regular input rate — no cache params,
-                    # since caching is orthogonal to compression savings
-                    original_cost = self.cost_tracker.estimate_cost(
-                        model,
-                        original_tokens,
-                        output_tokens,
-                    )
-                    if cost_usd and original_cost:
-                        savings_usd = original_cost - cost_usd
-                        self.cost_tracker.record_cost(cost_usd)
-                        self.cost_tracker.record_savings(savings_usd)
+                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
 
                 # Cache response
                 if self.cache and response.status_code == 200:
@@ -2250,17 +2240,18 @@ class HeadroomProxy:
                         tokens_saved=tokens_saved,
                     )
 
-                # Record metrics with actual API tokens
+                # Record metrics — use optimized_tokens (what we sent), not API's
+                # input_tokens which is just the non-cached portion with prompt caching
                 await self.metrics.record_request(
                     provider="anthropic",
                     model=model,
-                    input_tokens=actual_input_tokens,
+                    input_tokens=optimized_tokens,
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
-                    cost_usd=cost_usd or 0,
-                    savings_usd=savings_usd or 0,
                     overhead_ms=optimization_latency,
+                    pipeline_timing=pipeline_timing,
+                    waste_signals=waste_signals_dict,
                 )
 
                 # Log request
@@ -2278,13 +2269,12 @@ class HeadroomProxy:
                             savings_percent=(tokens_saved / original_tokens * 100)
                             if original_tokens > 0
                             else 0,
-                            estimated_cost_usd=cost_usd,
-                            estimated_savings_usd=savings_usd,
                             optimization_latency_ms=optimization_latency,
                             total_latency_ms=total_latency,
                             tags=tags,
                             cache_hit=cache_hit,
                             transforms_applied=transforms_applied,
+                            waste_signals=waste_signals_dict,
                             request_messages=messages if self.config.log_full_messages else None,
                         )
                     )
@@ -2295,6 +2285,11 @@ class HeadroomProxy:
                 cr = resp_usage.get("cache_read_input_tokens", 0)
                 cw = resp_usage.get("cache_creation_input_tokens", 0)
                 chp = round(cr / (cr + cw) * 100) if (cr + cw) > 0 else 0
+                timing_str = (
+                    " ".join(f"{k}={v:.0f}ms" for k, v in pipeline_timing.items())
+                    if pipeline_timing
+                    else ""
+                )
                 logger.info(
                     f"[{request_id}] PERF "
                     f"model={model} msgs={num_msgs} "
@@ -2303,6 +2298,7 @@ class HeadroomProxy:
                     f"cache_read={cr} cache_write={cw} cache_hit_pct={chp} "
                     f"opt_ms={optimization_latency:.0f} "
                     f"transforms={_summarize_transforms(transforms_applied)}"
+                    f"{' timing=' + timing_str if timing_str else ''}"
                 )
 
                 # Remove compression headers since httpx already decompressed the response
@@ -2427,6 +2423,7 @@ class HeadroomProxy:
         total_optimized_tokens = 0
         total_tokens_saved = 0
         compressed_requests = []
+        pipeline_timing: dict[str, float] = {}
 
         # Apply compression to each request in the batch
         for batch_req in requests_list:
@@ -2450,12 +2447,13 @@ class HeadroomProxy:
                 )
 
                 optimized_messages = result.messages
+                pipeline_timing = result.timing
                 # Use pipeline's token counts for consistency with pipeline logs
                 original_tokens = result.tokens_before
                 optimized_tokens = result.tokens_after
                 total_original_tokens += original_tokens
                 total_optimized_tokens += optimized_tokens
-                tokens_saved = original_tokens - optimized_tokens
+                tokens_saved = max(0, original_tokens - optimized_tokens)
                 total_tokens_saved += tokens_saved
 
                 # CCR Tool Injection: Inject retrieval tool if compression occurred
@@ -2519,6 +2517,8 @@ class HeadroomProxy:
                 output_tokens=0,
                 tokens_saved=total_tokens_saved,
                 latency_ms=optimization_latency,
+                overhead_ms=optimization_latency,
+                pipeline_timing=pipeline_timing,
             )
 
             # Log compression stats
@@ -2857,6 +2857,7 @@ class HeadroomProxy:
         total_optimized_tokens = 0
         total_tokens_saved = 0
         compressed_requests = []
+        pipeline_timing: dict[str, float] = {}
 
         # Apply compression to each request in the batch
         for idx, batch_req in enumerate(requests_list):
@@ -2897,12 +2898,13 @@ class HeadroomProxy:
                 )
 
                 optimized_messages = result.messages
+                pipeline_timing = result.timing
                 # Use pipeline's token counts for consistency with pipeline logs
                 original_tokens = result.tokens_before
                 optimized_tokens = result.tokens_after
                 total_original_tokens += original_tokens
                 total_optimized_tokens += optimized_tokens
-                tokens_saved = original_tokens - optimized_tokens
+                tokens_saved = max(0, original_tokens - optimized_tokens)
                 total_tokens_saved += tokens_saved
 
                 # CCR Tool Injection: Inject retrieval tool if compression occurred
@@ -2993,6 +2995,8 @@ class HeadroomProxy:
                 output_tokens=0,
                 tokens_saved=total_tokens_saved,
                 latency_ms=optimization_latency,
+                overhead_ms=optimization_latency,
+                pipeline_timing=pipeline_timing,
             )
 
             # Log compression stats
@@ -3697,6 +3701,7 @@ class HeadroomProxy:
         tags: dict[str, str],
         optimization_latency: float,
         memory_user_id: str | None = None,
+        pipeline_timing: dict[str, float] | None = None,
     ) -> StreamingResponse:
         """Stream response with metrics tracking and memory tool handling.
 
@@ -3719,6 +3724,7 @@ class HeadroomProxy:
             "cache_creation_input_tokens": 0,
             "total_bytes": 0,
             "sse_buffer": "",  # Buffer for incomplete SSE events
+            "ttfb_ms": None,  # Time to first byte from upstream
         }
 
         # Track if we need to handle memory tools
@@ -3740,6 +3746,10 @@ class HeadroomProxy:
                     "POST", url, json=body, headers=headers
                 ) as response:
                     async for chunk in response.aiter_bytes():
+                        # Record TTFB on first chunk
+                        if stream_state["ttfb_ms"] is None:
+                            stream_state["ttfb_ms"] = (time.time() - start_time) * 1000
+
                         stream_state["total_bytes"] += len(chunk)
 
                         # Buffer SSE data to handle chunks split across calls
@@ -3901,12 +3911,9 @@ class HeadroomProxy:
                         f"[{request_id}] No usage in stream, estimated {output_tokens} output tokens"
                     )
 
-                # Use actual tokens from API if available, fallback to estimates
-                # Note: use 'is not None' instead of 'or' to handle 0 correctly
-                api_input_tokens = stream_state["input_tokens"]
-                total_input_tokens = (
-                    api_input_tokens if api_input_tokens is not None else optimized_tokens
-                )
+                # Use optimized_tokens for dashboard metrics (what we actually sent).
+                # API's input_tokens is the non-cached portion only, which is
+                # misleading for aggregation (often just 1 with prompt caching).
                 cache_read_tokens = stream_state["cache_read_input_tokens"]
                 cache_write_tokens = stream_state["cache_creation_input_tokens"]
 
@@ -3928,54 +3935,19 @@ class HeadroomProxy:
                     f"transforms={_summarize_transforms(transforms_applied)}"
                 )
 
-                # Normalize input tokens based on provider semantics:
-                # - Anthropic: input_tokens excludes cache_read (it's separate), pass as-is
-                # - OpenAI/Gemini: input_tokens includes cache_read (it's a subset), subtract it
-                if provider == "anthropic":
-                    # Anthropic's input_tokens = non-cached tokens sent (excludes cache_read)
-                    non_cached_input = total_input_tokens
-                else:
-                    # OpenAI/Gemini's input_tokens = total (includes cache_read)
-                    non_cached_input = total_input_tokens - cache_read_tokens
-
-                # Calculate cost using actual API tokens with proper cache pricing
-                cost_usd = None
-                savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(
-                        model,
-                        non_cached_input,
-                        output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
-                    )
-                    # For savings calculation, compare compression benefit using base token rates only
-                    # (cache effects are Anthropic's feature, not Headroom's compression benefit)
-                    compressed_base_cost = self.cost_tracker.estimate_cost(
-                        model,
-                        non_cached_input,
-                        output_tokens,
-                    )
-                    original_base_cost = self.cost_tracker.estimate_cost(
-                        model,
-                        original_tokens,
-                        output_tokens,
-                    )
-                    if cost_usd:
-                        self.cost_tracker.record_cost(cost_usd)
-                    if compressed_base_cost and original_base_cost:
-                        savings_usd = original_base_cost - compressed_base_cost
-                        self.cost_tracker.record_savings(max(0, savings_usd))
+                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
 
                 await self.metrics.record_request(
                     provider=provider,
                     model=model,
-                    input_tokens=total_input_tokens,  # Record total for accurate tracking
+                    input_tokens=optimized_tokens,  # What we sent, not API's non-cached count
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
-                    cost_usd=cost_usd or 0,
-                    savings_usd=savings_usd or 0,
+                    overhead_ms=optimization_latency,
+                    ttfb_ms=stream_state["ttfb_ms"] or 0,
+                    pipeline_timing=pipeline_timing,
                 )
 
         return StreamingResponse(
@@ -3996,6 +3968,7 @@ class HeadroomProxy:
         transforms_applied: list[str],
         tags: dict[str, str],
         optimization_latency: float,
+        pipeline_timing: dict[str, float] | None = None,
     ) -> StreamingResponse:
         """Stream response from Bedrock backend with metrics tracking.
 
@@ -4007,6 +3980,7 @@ class HeadroomProxy:
         stream_state: dict[str, Any] = {
             "input_tokens": 0,
             "output_tokens": 0,
+            "ttfb_ms": None,
         }
 
         async def generate():
@@ -4014,6 +3988,10 @@ class HeadroomProxy:
                 assert self.anthropic_backend is not None
 
                 async for event in self.anthropic_backend.stream_message(body, headers):
+                    # Record TTFB on first event
+                    if stream_state["ttfb_ms"] is None:
+                        stream_state["ttfb_ms"] = (time.time() - start_time) * 1000
+
                     # Format as SSE
                     if event.raw_sse:
                         yield event.raw_sse.encode()
@@ -4060,22 +4038,12 @@ class HeadroomProxy:
                     latency_ms=total_latency,
                     cached=False,
                     overhead_ms=optimization_latency,
+                    ttfb_ms=stream_state["ttfb_ms"] or 0,
+                    pipeline_timing=pipeline_timing,
                 )
 
-                cost_usd = None
-                savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(
-                        model, optimized_tokens, output_tokens
-                    )
-                    original_cost = self.cost_tracker.estimate_cost(
-                        model, original_tokens, output_tokens
-                    )
-                    if cost_usd:
-                        self.cost_tracker.record_cost(cost_usd)
-                    if cost_usd and original_cost:
-                        savings_usd = original_cost - cost_usd
-                        self.cost_tracker.record_savings(savings_usd)
+                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
 
                 # Log request
                 if self.logger:
@@ -4092,8 +4060,6 @@ class HeadroomProxy:
                             savings_percent=(tokens_saved / original_tokens * 100)
                             if original_tokens > 0
                             else 0,
-                            estimated_cost_usd=cost_usd,
-                            estimated_savings_usd=savings_usd,
                             optimization_latency_ms=optimization_latency,
                             total_latency_ms=total_latency,
                             tags=tags,
@@ -4230,6 +4196,8 @@ class HeadroomProxy:
 
         # Optimization
         transforms_applied = []
+        pipeline_timing: dict[str, float] = {}
+        waste_signals_dict: dict[str, int] | None = None
         optimized_messages = messages
         optimized_tokens = original_tokens
 
@@ -4245,12 +4213,15 @@ class HeadroomProxy:
                 if result.messages != messages:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
+                    pipeline_timing = result.timing
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                if result.waste_signals:
+                    waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
 
-        tokens_saved = original_tokens - optimized_tokens
+        tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
 
         # Hook: post_compress
@@ -4335,6 +4306,7 @@ class HeadroomProxy:
                     latency_ms=total_latency,
                     cached=False,
                     overhead_ms=optimization_latency,
+                    pipeline_timing=pipeline_timing,
                 )
 
                 if tokens_saved > 0:
@@ -4385,6 +4357,7 @@ class HeadroomProxy:
                     transforms_applied,
                     tags,
                     optimization_latency,
+                    pipeline_timing=pipeline_timing,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -4407,30 +4380,8 @@ class HeadroomProxy:
                         f"[{request_id}] Failed to extract cached tokens from OpenAI response: {e}"
                     )
 
-                # For OpenAI, prompt_tokens is TOTAL (includes cached)
-                # Normalize to non-cached input for consistent cost calculation
-                non_cached_input = total_input_tokens - cache_read_tokens
-
-                # Cost tracking using actual API tokens
-                cost_usd = savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(
-                        model,
-                        non_cached_input,  # Pass non-cached portion
-                        output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                    )
-                    # original_cost: what it would have cost without compression
-                    # No cache params — caching is orthogonal to compression savings
-                    original_cost = self.cost_tracker.estimate_cost(
-                        model,
-                        original_tokens,
-                        output_tokens,
-                    )
-                    if cost_usd and original_cost:
-                        savings_usd = original_cost - cost_usd
-                        self.cost_tracker.record_cost(cost_usd)
-                        self.cost_tracker.record_savings(savings_usd)
+                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
 
                 # Cache
                 if self.cache and response.status_code == 200:
@@ -4438,7 +4389,6 @@ class HeadroomProxy:
                         messages, model, response.content, dict(response.headers), tokens_saved
                     )
 
-                # Metrics with actual API tokens (total, for accurate tracking)
                 await self.metrics.record_request(
                     provider="openai",
                     model=model,
@@ -4446,8 +4396,9 @@ class HeadroomProxy:
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
-                    cost_usd=cost_usd or 0,
-                    savings_usd=savings_usd or 0,
+                    overhead_ms=optimization_latency,
+                    pipeline_timing=pipeline_timing,
+                    waste_signals=waste_signals_dict,
                 )
 
                 if tokens_saved > 0:
@@ -4543,8 +4494,6 @@ class HeadroomProxy:
                 tokens_saved=0,
                 latency_ms=latency_ms,
                 cached=False,
-                cost_usd=0,
-                savings_usd=0,
             )
 
         return Response(
@@ -5191,39 +5140,19 @@ class HeadroomProxy:
 
                 total_input_tokens = original_tokens  # fallback
                 output_tokens = 0
-                cache_read_tokens = 0
                 try:
                     resp_json = response.json()
                     usage = resp_json.get("usage", {})
                     total_input_tokens = usage.get("input_tokens", original_tokens)
                     output_tokens = usage.get("output_tokens", 0)
-                    # OpenAI returns cached_tokens in prompt_tokens_details (or input_tokens_details)
-                    prompt_details = usage.get(
-                        "prompt_tokens_details", usage.get("input_tokens_details", {})
-                    )
-                    cache_read_tokens = prompt_details.get("cached_tokens", 0)
                 except (KeyError, TypeError, AttributeError) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI passthrough response: {e}"
                     )
 
-                # For OpenAI, input_tokens is TOTAL (includes cached)
-                # Normalize to non-cached input for consistent cost calculation
-                non_cached_input = total_input_tokens - cache_read_tokens
-
-                # Cost tracking using actual API tokens
-                cost_usd = savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(
-                        model,
-                        non_cached_input,  # Pass non-cached portion
-                        output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                    )
-                    if cost_usd:
-                        self.cost_tracker.record_cost(cost_usd)
+                    self.cost_tracker.record_tokens(model, tokens_saved, total_input_tokens)
 
-                # Metrics with actual API tokens (total, for accurate tracking)
                 await self.metrics.record_request(
                     provider="openai",
                     model=model,
@@ -5231,8 +5160,7 @@ class HeadroomProxy:
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
-                    cost_usd=cost_usd or 0,
-                    savings_usd=savings_usd or 0,
+                    overhead_ms=optimization_latency,
                 )
 
                 logger.info(f"[{request_id}] /v1/responses {model}: {total_input_tokens:,} tokens")
@@ -5378,6 +5306,7 @@ class HeadroomProxy:
 
         # Optimization
         transforms_applied: list[str] = []
+        waste_signals_dict: dict[str, int] | None = None
         optimized_messages = messages
         optimized_tokens = original_tokens
 
@@ -5396,10 +5325,12 @@ class HeadroomProxy:
                     # Use pipeline's token counts for consistency with pipeline logs
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                if result.waste_signals:
+                    waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
                 logger.warning(f"[{request_id}] Gemini optimization failed: {e}")
 
-        tokens_saved = original_tokens - optimized_tokens
+        tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
 
         # Query Echo: re-inject user's question after compressed tool outputs
@@ -5481,32 +5412,9 @@ class HeadroomProxy:
                         f"[{request_id}] Failed to extract cached tokens from Gemini response: {e}"
                     )
 
-                # For Gemini, promptTokenCount is TOTAL (includes cached)
-                # Normalize to non-cached input for consistent cost calculation
-                non_cached_input = total_input_tokens - cache_read_tokens
-
-                # Cost tracking using actual API tokens
-                cost_usd = savings_usd = None
                 if self.cost_tracker:
-                    cost_usd = self.cost_tracker.estimate_cost(
-                        model,
-                        non_cached_input,  # Pass non-cached portion
-                        output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                    )
-                    # original_cost: what it would have cost without compression
-                    # No cache params — caching is orthogonal to compression savings
-                    original_cost = self.cost_tracker.estimate_cost(
-                        model,
-                        original_tokens,
-                        output_tokens,
-                    )
-                    if cost_usd and original_cost:
-                        savings_usd = original_cost - cost_usd
-                        self.cost_tracker.record_cost(cost_usd)
-                        self.cost_tracker.record_savings(savings_usd)
+                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
 
-                # Metrics with actual API tokens (total, for accurate tracking)
                 await self.metrics.record_request(
                     provider="gemini",
                     model=model,
@@ -5514,8 +5422,8 @@ class HeadroomProxy:
                     output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
-                    cost_usd=cost_usd or 0,
-                    savings_usd=savings_usd or 0,
+                    overhead_ms=optimization_latency,
+                    waste_signals=waste_signals_dict,
                 )
 
                 if tokens_saved > 0:
@@ -5745,7 +5653,7 @@ class HeadroomProxy:
                 logger.debug(f"[{request_id}] Failed to parse Gemini token count response: {e}")
 
             # Track stats
-            tokens_saved = original_tokens - compressed_tokens if compressed_tokens > 0 else 0
+            tokens_saved = max(0, original_tokens - compressed_tokens) if compressed_tokens > 0 else 0
 
             await self.metrics.record_request(
                 provider="gemini",
@@ -5754,8 +5662,6 @@ class HeadroomProxy:
                 output_tokens=0,
                 tokens_saved=tokens_saved,
                 latency_ms=total_latency,
-                cost_usd=0,
-                savings_usd=0,
             )
 
             if tokens_saved > 0:
@@ -5937,16 +5843,23 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
         max_latency_ms = round(m.latency_max_ms, 2) if m.latency_count > 0 else 0
 
-        # Calculate Headroom overhead (optimization time only)
+        # Calculate Headroom overhead (optimization time only, excludes pass-through requests)
         avg_overhead_ms = (
-            round(m.overhead_sum_ms / m.latency_count, 2) if m.latency_count > 0 else 0
+            round(m.overhead_sum_ms / m.overhead_count, 2) if m.overhead_count > 0 else 0
         )
         min_overhead_ms = (
             round(m.overhead_min_ms, 2)
-            if m.latency_count > 0 and m.overhead_min_ms != float("inf")
+            if m.overhead_count > 0 and m.overhead_min_ms != float("inf")
             else 0
         )
-        max_overhead_ms = round(m.overhead_max_ms, 2) if m.latency_count > 0 else 0
+        max_overhead_ms = round(m.overhead_max_ms, 2) if m.overhead_count > 0 else 0
+
+        # Calculate TTFB (time to first byte)
+        avg_ttfb_ms = round(m.ttfb_sum_ms / m.ttfb_count, 2) if m.ttfb_count > 0 else 0
+        min_ttfb_ms = (
+            round(m.ttfb_min_ms, 2) if m.ttfb_count > 0 and m.ttfb_min_ms != float("inf") else 0
+        )
+        max_ttfb_ms = round(m.ttfb_max_ms, 2) if m.ttfb_count > 0 else 0
 
         # Get compression store stats
         store = get_compression_store()
@@ -5995,6 +5908,25 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "min_ms": min_overhead_ms,
                 "max_ms": max_overhead_ms,
             },
+            "ttfb": {
+                "average_ms": avg_ttfb_ms,
+                "min_ms": min_ttfb_ms,
+                "max_ms": max_ttfb_ms,
+            },
+            "pipeline_timing": {
+                name: {
+                    "average_ms": round(
+                        m.transform_timing_sum[name] / m.transform_timing_count[name], 2
+                    ),
+                    "max_ms": round(m.transform_timing_max[name], 2),
+                    "count": m.transform_timing_count[name],
+                }
+                for name in sorted(m.transform_timing_sum.keys())
+            }
+            if m.transform_timing_sum
+            else {},
+            "waste_signals": dict(m.waste_signals_total) if m.waste_signals_total else {},
+            "savings_history": m.savings_history[-100:],  # Last 100 data points
             "cost": proxy.cost_tracker.stats() if proxy.cost_tracker else None,
             "compression": {
                 "ccr_entries": compression_stats.get("entry_count", 0),

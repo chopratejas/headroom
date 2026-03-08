@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -130,6 +131,112 @@ def _create_content_signature(
         )
     except ImportError:
         return None
+
+
+class CompressionCache:
+    """Two-tier compression cache with TTL.
+
+    Tier 1 (skip set): content hashes that won't compress — instant skip,
+    near-zero memory (just ints in a set).
+
+    Tier 2 (result cache): compressed results for content that DID compress —
+    reuse the compressed text on subsequent requests.
+
+    Entries expire after TTL (default 30min). No max-entries cap — TTL is the
+    natural bound. Memory grows proportional to compressible content × TTL,
+    which is bounded by session duration.
+
+    Uses in-process dict for ultra-fast lookups (~100ns). Could be backed
+    by memcached/Redis for multi-process deployments.
+    """
+
+    def __init__(self, ttl_seconds: int = 1800):
+        # Tier 2: compressed results {hash: (text, ratio, strategy, timestamp)}
+        self._results: dict[int, tuple[str, float, str, float]] = {}
+        # Tier 1: hashes of content that won't compress {hash: timestamp}
+        self._skip: dict[int, float] = {}
+        self._ttl_seconds = ttl_seconds
+        # Metrics
+        self._hits = 0
+        self._misses = 0
+        self._skip_hits = 0
+        self._evictions = 0
+        self._total_lookup_ns = 0
+        self._lookup_count = 0
+
+    def get(self, key: int) -> tuple[str, float, str] | None:
+        """Get cached compression result.
+
+        Returns (compressed_text, ratio, strategy) or None if not found/expired.
+        Use is_skipped() first to check if content is known non-compressible.
+        """
+        t0 = time.perf_counter_ns()
+        entry = self._results.get(key)
+        if entry is not None:
+            compressed, ratio, strategy, created_at = entry
+            if (time.time() - created_at) < self._ttl_seconds:
+                self._hits += 1
+                self._total_lookup_ns += time.perf_counter_ns() - t0
+                self._lookup_count += 1
+                return (compressed, ratio, strategy)
+            else:
+                del self._results[key]
+                self._evictions += 1
+        self._misses += 1
+        self._total_lookup_ns += time.perf_counter_ns() - t0
+        self._lookup_count += 1
+        return None
+
+    def is_skipped(self, key: int) -> bool:
+        """Check if content is known non-compressible (Tier 1)."""
+        ts = self._skip.get(key)
+        if ts is not None:
+            if (time.time() - ts) < self._ttl_seconds:
+                self._skip_hits += 1
+                return True
+            else:
+                del self._skip[key]
+                self._evictions += 1
+        return False
+
+    def put(self, key: int, compressed: str, ratio: float, strategy: str) -> None:
+        """Store a compressed result (Tier 2)."""
+        self._results[key] = (compressed, ratio, strategy, time.time())
+
+    def mark_skip(self, key: int) -> None:
+        """Mark content as non-compressible (Tier 1)."""
+        self._skip[key] = time.time()
+
+    def move_to_skip(self, key: int) -> None:
+        """Move a result to skip set (threshold tightened, no longer qualifies)."""
+        self._results.pop(key, None)
+        self._skip[key] = time.time()
+
+    @property
+    def size(self) -> int:
+        return len(self._results)
+
+    @property
+    def skip_size(self) -> int:
+        return len(self._skip)
+
+    @property
+    def stats(self) -> dict[str, int | float]:
+        avg_ns = self._total_lookup_ns / self._lookup_count if self._lookup_count else 0
+        return {
+            "cache_hits": self._hits,
+            "cache_skip_hits": self._skip_hits,
+            "cache_misses": self._misses,
+            "cache_evictions": self._evictions,
+            "cache_size": len(self._results),
+            "cache_skip_size": len(self._skip),
+            "cache_avg_lookup_ns": avg_ns,
+        }
+
+    def clear(self) -> None:
+        """Clear all entries (e.g., on session end)."""
+        self._results.clear()
+        self._skip.clear()
 
 
 class CompressionStrategy(Enum):
@@ -532,6 +639,8 @@ class ContentRouter(Transform):
 
         # TOIN integration for cross-strategy learning
         self._toin: Any = None
+
+        self._cache = CompressionCache()
 
     def _record_to_toin(
         self,
@@ -1042,6 +1151,25 @@ class ContentRouter(Transform):
                 logger.debug("HTMLExtractor not available (install trafilatura)")
         return self._html_extractor
 
+    def eager_load_compressors(self) -> None:
+        """Pre-load compressors at startup to avoid first-request latency.
+
+        Call this during proxy startup to load LLMLingua model (~5s)
+        before any requests arrive.
+        """
+        if self.config.enable_llmlingua:
+            compressor = self._get_llmlingua()
+            if compressor:
+                # Trigger the underlying model load by accessing it
+                try:
+                    from .llmlingua_compressor import _get_llmlingua_compressor
+
+                    device = compressor._resolve_device()
+                    _get_llmlingua_compressor(compressor.config.model_name, device)
+                    logger.info("LLMLingua model pre-loaded at startup")
+                except Exception as e:
+                    logger.warning("Failed to pre-load LLMLingua model: %s", e)
+
     def _get_llmlingua(self) -> Any:
         """Get LLMLinguaCompressor (lazy load)."""
         if self._llmlingua is None:
@@ -1269,6 +1397,7 @@ class ContentRouter(Transform):
         transformed_messages: list[dict[str, Any]] = []
         transforms_applied: list[str] = []
         warnings: list[str] = []
+        compressor_timing: dict[str, float] = {}  # strategy → cumulative ms
 
         # Routing reason counters for summary logging
         route_counts: dict[str, int] = {
@@ -1309,6 +1438,7 @@ class ContentRouter(Transform):
                     min_ratio=min_ratio,
                     read_protection_window=read_protection_window,
                     messages_from_end=messages_from_end,
+                    compressor_timing=compressor_timing,
                 )
                 transformed_messages.append(transformed_message)
                 route_counts["content_blocks"] += 1
@@ -1375,14 +1505,70 @@ class ContentRouter(Transform):
                 route_counts["analysis_ctx"] += 1
                 continue
 
+            # Compression pinning: if this message was already compressed
+            # (contains a CCR retrieval marker), skip recompression.
+            # Recompressing would change byte content and break provider
+            # prefix caching with no meaningful further reduction.
+            if "Retrieve more: hash=" in content or "Retrieve original: hash=" in content:
+                transformed_messages.append(message)
+                route_counts.setdefault("already_compressed", 0)
+                route_counts["already_compressed"] += 1
+                continue
+
             # Route and compress based on content detection
             # Merge tool-specific bias with hook-provided bias (multiplicative)
             msg_bias = bias if role == "tool" else 1.0
             if i in hook_biases:
                 msg_bias *= hook_biases[i]
+
+            # Two-tier compression cache.
+            # Tier 1 (skip): known won't-compress → instant skip.
+            # Tier 2 (result): known compresses → reuse compressed text.
+            content_key = hash(content)
+
+            # Tier 1: skip set — instant rejection
+            if self._cache.is_skipped(content_key):
+                transformed_messages.append(message)
+                route_counts["ratio_too_high"] += 1
+                route_counts.setdefault("cache_hit", 0)
+                route_counts["cache_hit"] += 1
+                continue
+
+            # Tier 2: result cache — reuse compressed output
+            cached = self._cache.get(content_key)
+            if cached is not None:
+                cached_compressed, cached_ratio, cached_strategy = cached
+                # Re-check ratio against current min_ratio (shifts with context pressure)
+                if cached_ratio < min_ratio:
+                    transformed_messages.append({**message, "content": cached_compressed})
+                    transforms_applied.append(f"router:{cached_strategy}:{cached_ratio:.2f}")
+                    compressed_details.append(f"{cached_strategy}:{cached_ratio:.2f}")
+                else:
+                    # Threshold tightened — no longer qualifies. Move to skip.
+                    self._cache.move_to_skip(content_key)
+                    transformed_messages.append(message)
+                    route_counts["ratio_too_high"] += 1
+                route_counts.setdefault("cache_hit", 0)
+                route_counts["cache_hit"] += 1
+                continue
+
+            # Cache miss — run full compression
+            route_counts.setdefault("cache_miss", 0)
+            route_counts["cache_miss"] += 1
+            t0 = time.perf_counter()
             result = self.compress(content, context=context, bias=msg_bias)
+            compress_ms = (time.perf_counter() - t0) * 1000
+            strategy_key = f"compressor:{result.strategy_used.value}"
+            compressor_timing[strategy_key] = compressor_timing.get(strategy_key, 0.0) + compress_ms
 
             if result.compression_ratio < min_ratio:
+                # Compressed — store in result cache
+                self._cache.put(
+                    content_key,
+                    result.compressed,
+                    result.compression_ratio,
+                    result.strategy_used.value,
+                )
                 transformed_messages.append({**message, "content": result.compressed})
                 transforms_applied.append(
                     f"router:{result.strategy_used.value}:{result.compression_ratio:.2f}"
@@ -1391,12 +1577,22 @@ class ContentRouter(Transform):
                     f"{result.strategy_used.value}:{result.compression_ratio:.2f}"
                 )
             else:
+                # Didn't compress — add to skip set
+                self._cache.mark_skip(content_key)
                 transformed_messages.append(message)
                 route_counts["ratio_too_high"] += 1
 
         tokens_after = sum(
             tokenizer.count_text(str(m.get("content", ""))) for m in transformed_messages
         )
+
+        # Add cache performance metrics to timing
+        cache_stats = self._cache.stats
+        compressor_timing["cache_hits"] = float(cache_stats["cache_hits"])
+        compressor_timing["cache_skip_hits"] = float(cache_stats["cache_skip_hits"])
+        compressor_timing["cache_size"] = float(cache_stats["cache_size"])
+        compressor_timing["cache_skip_size"] = float(cache_stats["cache_skip_size"])
+        compressor_timing["cache_avg_lookup_ns"] = cache_stats["cache_avg_lookup_ns"]
 
         # Log routing summary
         parts = []
@@ -1412,12 +1608,24 @@ class ContentRouter(Transform):
             parts.append(f"{route_counts['recent_code']} protected (recent code)")
         if route_counts["analysis_ctx"]:
             parts.append(f"{route_counts['analysis_ctx']} protected (analysis ctx)")
+        if route_counts.get("already_compressed"):
+            parts.append(f"{route_counts['already_compressed']} pinned (already compressed)")
         if route_counts["ratio_too_high"]:
             parts.append(f"{route_counts['ratio_too_high']} unchanged (ratio>={min_ratio:.2f})")
         if route_counts["content_blocks"]:
             parts.append(f"{route_counts['content_blocks']} content-block msgs")
         if route_counts["non_string"]:
             parts.append(f"{route_counts['non_string']} non-string")
+        if route_counts.get("cache_hit"):
+            parts.append(f"{route_counts['cache_hit']} cache hits")
+        if route_counts.get("cache_miss"):
+            parts.append(f"{route_counts['cache_miss']} cache misses")
+        cs = self._cache.stats
+        if cs["cache_size"] > 0 or cs["cache_skip_size"] > 0:
+            parts.append(
+                f"cache[{cs['cache_size']} results, {cs['cache_skip_size']} skips, "
+                f"{cs['cache_avg_lookup_ns']:.0f}ns avg]"
+            )
         if parts:
             logger.info(
                 "content_router: %d msgs — %s",
@@ -1433,6 +1641,7 @@ class ContentRouter(Transform):
             transforms_applied=all_transforms if all_transforms else ["router:noop"],
             markers_inserted=lifecycle_ccr_hashes,
             warnings=warnings,
+            timing=compressor_timing,
         )
 
     def _get_tool_bias(self, tool_name: str) -> float:
@@ -1469,6 +1678,7 @@ class ContentRouter(Transform):
         min_ratio: float = 0.85,
         read_protection_window: int = 8,
         messages_from_end: int = 0,
+        compressor_timing: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """Process content blocks (Anthropic format) for tool_result compression.
 
@@ -1523,9 +1733,70 @@ class ContentRouter(Transform):
 
                 # Only process string content
                 if isinstance(tool_content, str) and len(tool_content) > 500:
-                    # Compress using content detection (will auto-detect JSON arrays, etc.)
+                    # Compression pinning: skip already-compressed content
+                    if (
+                        "Retrieve more: hash=" in tool_content
+                        or "Retrieve original: hash=" in tool_content
+                    ):
+                        new_blocks.append(block)
+                        if route_counts is not None:
+                            route_counts.setdefault("already_compressed", 0)
+                            route_counts["already_compressed"] += 1
+                        continue
+
+                    # Two-tier compression cache
+                    content_key = hash(tool_content)
+
+                    # Tier 1: skip set — instant rejection
+                    if self._cache.is_skipped(content_key):
+                        new_blocks.append(block)
+                        if route_counts is not None:
+                            route_counts["ratio_too_high"] += 1
+                            route_counts.setdefault("cache_hit", 0)
+                            route_counts["cache_hit"] += 1
+                        continue
+
+                    # Tier 2: result cache — reuse compressed output
+                    cached = self._cache.get(content_key)
+                    if cached is not None:
+                        cached_compressed, cached_ratio, cached_strategy = cached
+                        if cached_ratio < min_ratio:
+                            new_blocks.append({**block, "content": cached_compressed})
+                            transforms_applied.append(f"router:tool_result:{cached_strategy}")
+                            if compressed_details is not None:
+                                compressed_details.append(
+                                    f"tool:{cached_strategy}:{cached_ratio:.2f}"
+                                )
+                            any_compressed = True
+                        else:
+                            # Threshold tightened — move to skip
+                            self._cache.move_to_skip(content_key)
+                            new_blocks.append(block)
+                            if route_counts is not None:
+                                route_counts["ratio_too_high"] += 1
+                        if route_counts is not None:
+                            route_counts.setdefault("cache_hit", 0)
+                            route_counts["cache_hit"] += 1
+                        continue
+
+                    # Cache miss — run full compression
+                    if route_counts is not None:
+                        route_counts.setdefault("cache_miss", 0)
+                        route_counts["cache_miss"] += 1
+                    t0 = time.perf_counter()
                     result = self.compress(tool_content, context=context, bias=bias)
+                    compress_ms = (time.perf_counter() - t0) * 1000
+                    if compressor_timing is not None:
+                        key = f"compressor:{result.strategy_used.value}"
+                        compressor_timing[key] = compressor_timing.get(key, 0.0) + compress_ms
                     if result.compression_ratio < min_ratio:
+                        # Compressed — store in result cache
+                        self._cache.put(
+                            content_key,
+                            result.compressed,
+                            result.compression_ratio,
+                            result.strategy_used.value,
+                        )
                         new_blocks.append({**block, "content": result.compressed})
                         transforms_applied.append(
                             f"router:tool_result:{result.strategy_used.value}"
@@ -1537,6 +1808,8 @@ class ContentRouter(Transform):
                         any_compressed = True
                         continue
                     else:
+                        # Didn't compress — add to skip set
+                        self._cache.mark_skip(content_key)
                         if route_counts is not None:
                             route_counts["ratio_too_high"] += 1
                 else:

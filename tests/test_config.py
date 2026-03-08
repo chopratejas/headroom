@@ -91,7 +91,7 @@ class TestCacheAlignerConfig:
     def test_default_values(self):
         """Default values are correctly set."""
         config = CacheAlignerConfig()
-        assert config.enabled is True
+        assert config.enabled is False
         assert config.normalize_whitespace is True
         assert config.collapse_blank_lines is True
 
@@ -389,6 +389,8 @@ class TestTransformResult:
             "warnings",
             "diff_artifact",
             "cache_metrics",
+            "timing",
+            "waste_signals",
         }
         assert field_names == expected_fields
 

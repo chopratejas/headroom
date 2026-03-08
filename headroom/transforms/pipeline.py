@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from ..config import (
@@ -14,6 +15,7 @@ from ..config import (
     ToolCrusherConfig,
     TransformDiff,
     TransformResult,
+    WasteSignals,
 )
 from ..tokenizer import Tokenizer
 from ..utils import deep_copy_messages
@@ -188,12 +190,14 @@ class TransformPipeline:
         all_transforms: list[str] = []
         all_markers: list[str] = []
         all_warnings: list[str] = []
+        all_timing: dict[str, float] = {}  # transform_name → ms
 
         # Track transform diffs if enabled
         transform_diffs: list[TransformDiff] = []
         generate_diff = self.config.generate_diff_artifact
 
         current_messages = deep_copy_messages(messages)
+        pipeline_start = time.perf_counter()
 
         for transform in self.transforms:
             # Check if transform should run
@@ -203,8 +207,10 @@ class TransformPipeline:
             # Track tokens before this transform (for diff)
             tokens_before_transform = tokenizer.count_messages(current_messages)
 
-            # Apply transform
+            # Time the transform
+            t0 = time.perf_counter()
             result = transform.apply(current_messages, tokenizer, **kwargs)
+            duration_ms = (time.perf_counter() - t0) * 1000
 
             # Update messages for next transform
             current_messages = result.messages
@@ -216,18 +222,24 @@ class TransformPipeline:
             all_transforms.extend(result.transforms_applied)
             all_markers.extend(result.markers_inserted)
             all_warnings.extend(result.warnings)
+            all_timing[transform.name] = duration_ms
+
+            # Merge sub-transform timing (e.g. ContentRouter's per-compressor breakdown)
+            if result.timing:
+                all_timing.update(result.timing)
 
             # Log transform results
             if result.transforms_applied:
                 logger.info(
-                    "Transform %s: %d -> %d tokens (saved %d)",
+                    "Transform %s: %d -> %d tokens (saved %d) [%.1fms]",
                     transform.name,
                     tokens_before_transform,
                     tokens_after_transform,
                     tokens_before_transform - tokens_after_transform,
+                    duration_ms,
                 )
             else:
-                logger.debug("Transform %s: no changes", transform.name)
+                logger.debug("Transform %s: no changes [%.1fms]", transform.name, duration_ms)
 
             # Record diff if enabled
             if generate_diff:
@@ -240,24 +252,29 @@ class TransformPipeline:
                         details=", ".join(result.transforms_applied)
                         if result.transforms_applied
                         else "",
+                        duration_ms=duration_ms,
                     )
                 )
 
         # Final token count
         tokens_after = tokenizer.count_messages(current_messages)
+        pipeline_ms = (time.perf_counter() - pipeline_start) * 1000
+        all_timing["pipeline_total"] = pipeline_ms
 
         # Log pipeline summary
         total_saved = tokens_before - tokens_after
+        timing_parts = " ".join(f"{k}={v:.0f}ms" for k, v in all_timing.items())
         if total_saved > 0:
             logger.info(
-                "Pipeline complete: %d -> %d tokens (saved %d, %.1f%% reduction)",
+                "Pipeline complete: %d -> %d tokens (saved %d, %.1f%% reduction) [%s]",
                 tokens_before,
                 tokens_after,
                 total_saved,
                 (total_saved / tokens_before * 100) if tokens_before > 0 else 0,
+                timing_parts,
             )
         else:
-            logger.debug("Pipeline complete: no token savings")
+            logger.debug("Pipeline complete: no token savings [%s]", timing_parts)
 
         # Build diff artifact if enabled
         diff_artifact = None
@@ -270,6 +287,18 @@ class TransformPipeline:
                 transforms=transform_diffs,
             )
 
+        # Detect waste signals in original messages (only when significant compression)
+        waste_signals: WasteSignals | None = None
+        if tokens_before > tokens_after and (tokens_before - tokens_after) > 100:
+            try:
+                from ..parser import parse_messages
+
+                _, _, waste_signals = parse_messages(messages, tokenizer)
+                if waste_signals.total() == 0:
+                    waste_signals = None
+            except Exception:
+                pass
+
         return TransformResult(
             messages=current_messages,
             tokens_before=tokens_before,
@@ -278,6 +307,8 @@ class TransformPipeline:
             markers_inserted=all_markers,
             warnings=all_warnings,
             diff_artifact=diff_artifact,
+            timing=all_timing,
+            waste_signals=waste_signals,
         )
 
     def simulate(
