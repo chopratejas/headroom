@@ -71,6 +71,10 @@ headroom learn --all --apply     # Learn across all your projects
 
 Reads your conversation history, finds every failed tool call, correlates it with what eventually succeeded, and writes specific corrections into your project files. Next session starts smarter. **[Learn docs](docs/learn.md)**
 
+<p align="center">
+  <img src="headroom_learn.gif" alt="headroom learn demo" width="800">
+</p>
+
 ### Python: One function
 
 ```python
