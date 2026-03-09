@@ -1586,14 +1586,6 @@ class ContentRouter(Transform):
             tokenizer.count_text(str(m.get("content", ""))) for m in transformed_messages
         )
 
-        # Add cache performance metrics to timing
-        cache_stats = self._cache.stats
-        compressor_timing["cache_hits"] = float(cache_stats["cache_hits"])
-        compressor_timing["cache_skip_hits"] = float(cache_stats["cache_skip_hits"])
-        compressor_timing["cache_size"] = float(cache_stats["cache_size"])
-        compressor_timing["cache_skip_size"] = float(cache_stats["cache_skip_size"])
-        compressor_timing["cache_avg_lookup_ns"] = cache_stats["cache_avg_lookup_ns"]
-
         # Log routing summary
         parts = []
         if compressed_details:

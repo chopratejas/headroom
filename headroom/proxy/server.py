@@ -191,6 +191,164 @@ def _summarize_transforms(transforms: list[str]) -> str:
     return " ".join(parts)
 
 
+# Provider-specific cache discount multipliers (what fraction of input price)
+# Used to calculate dollar savings from prefix caching
+_CACHE_ECONOMICS = {
+    "anthropic": {
+        "read_multiplier": 0.1,
+        "write_multiplier": 1.25,
+        "label": "Explicit breakpoints, 5-min TTL",
+    },
+    "openai": {
+        "read_multiplier": 0.5,
+        "write_multiplier": 1.0,
+        "label": "Automatic, no TTL control",
+    },
+    "gemini": {
+        "read_multiplier": 0.1,
+        "write_multiplier": 1.0,
+        "label": "Explicit cachedContent, configurable TTL",
+    },
+    "bedrock": {
+        "read_multiplier": 0.1,
+        "write_multiplier": 1.25,
+        "label": "Same as Anthropic (Bedrock)",
+    },
+}
+
+
+def _build_prefix_cache_stats(
+    metrics: PrometheusMetrics,
+    cost_tracker: CostTracker | None,
+) -> dict:
+    """Build provider-aware prefix cache statistics for the dashboard."""
+    by_provider = {}
+    totals = {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "requests": 0,
+        "hit_requests": 0,
+        "bust_count": 0,
+        "bust_write_tokens": 0,
+        "savings_usd": 0.0,
+        "bust_penalty_usd": 0.0,
+    }
+
+    for provider, pc in metrics.cache_by_provider.items():
+        if pc["requests"] == 0:
+            continue
+
+        econ = _CACHE_ECONOMICS.get(provider, _CACHE_ECONOMICS["anthropic"])
+        read_mult: float = econ["read_multiplier"]  # type: ignore[assignment]
+        write_mult: float = econ["write_multiplier"]  # type: ignore[assignment]
+
+        # Get the base input price per token for the most-used model on this provider
+        input_price_per_token = None
+        if cost_tracker:
+            for model_name in cost_tracker._tokens_sent_by_model:
+                # Match model to provider
+                _openai_prefixes = ("gpt", "o1", "o3", "o4")
+                is_match = (
+                    (provider == "anthropic" and "claude" in model_name)
+                    or (provider == "openai" and any(
+                        p in model_name for p in _openai_prefixes
+                    ))
+                    or (provider == "gemini" and "gemini" in model_name)
+                    or (provider == "bedrock" and "claude" in model_name)
+                )
+                if is_match:
+                    price_per_1m = cost_tracker._get_list_price(model_name)
+                    if price_per_1m:
+                        input_price_per_token = price_per_1m / 1_000_000
+                        break
+
+        # Calculate savings:
+        # Without cache: all tokens at 1.0x input price
+        # With cache: read tokens at read_mult, write tokens at write_mult
+        read_tokens: int = pc["cache_read_tokens"]  # type: ignore[assignment]
+        write_tokens: int = pc["cache_write_tokens"]  # type: ignore[assignment]
+        savings_usd = 0.0
+        bust_penalty_usd = 0.0
+
+        if input_price_per_token:
+            # Savings from reads: tokens * price * (1.0 - read_multiplier)
+            savings_usd = read_tokens * input_price_per_token * (1.0 - read_mult)
+            # Penalty from writes: tokens * price * (write_multiplier - 1.0)
+            if write_mult > 1.0:
+                bust_penalty_usd = write_tokens * input_price_per_token * (write_mult - 1.0)
+
+        hit_rate = round(pc["hit_requests"] / pc["requests"] * 100, 1) if pc["requests"] > 0 else 0
+
+        provider_stats = {
+            "cache_read_tokens": read_tokens,
+            "cache_write_tokens": write_tokens,
+            "requests": pc["requests"],
+            "hit_requests": pc["hit_requests"],
+            "hit_rate": hit_rate,
+            "bust_count": pc["bust_count"],
+            "bust_write_tokens": pc["bust_write_tokens"],
+            "read_discount": f"{(1.0 - read_mult) * 100:.0f}%",
+            "write_premium": f"{(write_mult - 1.0) * 100:.0f}%" if write_mult > 1.0 else "none",
+            "savings_usd": round(savings_usd, 4),
+            "bust_penalty_usd": round(bust_penalty_usd, 4),
+            "net_savings_usd": round(savings_usd - bust_penalty_usd, 4),
+            "label": str(econ["label"]),
+        }
+        by_provider[provider] = provider_stats
+
+        # Accumulate totals
+        totals["cache_read_tokens"] += read_tokens
+        totals["cache_write_tokens"] += write_tokens
+        totals["requests"] += pc["requests"]
+        totals["hit_requests"] += pc["hit_requests"]
+        totals["bust_count"] += pc["bust_count"]
+        totals["bust_write_tokens"] += pc["bust_write_tokens"]
+        totals["savings_usd"] += savings_usd
+        totals["bust_penalty_usd"] += bust_penalty_usd
+
+    totals["net_savings_usd"] = round(totals["savings_usd"] - totals["bust_penalty_usd"], 4)
+    totals["savings_usd"] = round(totals["savings_usd"], 4)
+    totals["bust_penalty_usd"] = round(totals["bust_penalty_usd"], 4)
+    totals["hit_rate"] = (
+        round(totals["hit_requests"] / totals["requests"] * 100, 1) if totals["requests"] > 0 else 0
+    )
+
+    return {
+        "by_provider": by_provider,
+        "totals": totals,
+    }
+
+
+def _merge_cost_stats(
+    cost_stats: dict | None,
+    cache_stats: dict,
+) -> dict | None:
+    """Add prefix cache savings to overall cost stats.
+
+    Compression savings and cache savings are computed on different token
+    scopes (Headroom tracks user-message tokens; Anthropic's cache metrics
+    cover the entire prompt including system/tools). We keep both as
+    additive line items without cross-contaminating the counterfactual.
+
+    - compression_savings_usd: from removing tokens (CostTracker scope)
+    - cache_savings_usd: from prefix cache discounts (full-prompt scope)
+    - savings_usd: sum of both (hero metric)
+    - cost_with/without_headroom_usd: unchanged (compression scope only)
+    """
+    if cost_stats is None:
+        return None
+
+    cache_net = cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
+    compression_savings = cost_stats.get("savings_usd", 0.0)
+
+    return {
+        **cost_stats,
+        "savings_usd": round(compression_savings + cache_net, 4),
+        "compression_savings_usd": round(compression_savings, 4),
+        "cache_savings_usd": round(cache_net, 4),
+    }
+
+
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
@@ -849,6 +1007,25 @@ class PrometheusMetrics:
         # Aggregate waste signals
         self.waste_signals_total: dict[str, int] = defaultdict(int)
 
+        # Provider-specific prefix cache tracking
+        # Each provider has different cache economics:
+        #   Anthropic: cache_read=0.1x, cache_write=1.25x, explicit breakpoints
+        #   OpenAI: cache_read=0.5x, no write penalty, automatic
+        #   Google: cache_read=~0.1x, explicit cachedContent API, storage cost
+        #   Bedrock: no cache metrics
+        self.cache_by_provider: dict[str, dict[str, int | float]] = defaultdict(
+            lambda: {
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "requests": 0,
+                "hit_requests": 0,  # requests with cache_read > 0
+                "bust_count": 0,
+                "bust_write_tokens": 0,
+            }
+        )
+        # Track per-model cache request count to distinguish cold starts from busts
+        self._cache_requests_by_model: dict[str, int] = defaultdict(int)
+
         # Cumulative savings history (timestamp → cumulative tokens saved)
         self.savings_history: list[tuple[str, int]] = []
 
@@ -867,6 +1044,8 @@ class PrometheusMetrics:
         ttfb_ms: float = 0,
         pipeline_timing: dict[str, float] | None = None,
         waste_signals: dict[str, int] | None = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ):
         """Record metrics for a request."""
         async with self._lock:
@@ -880,6 +1059,26 @@ class PrometheusMetrics:
             self.tokens_input_total += input_tokens
             self.tokens_output_total += output_tokens
             self.tokens_saved_total += tokens_saved
+
+            # Track provider-specific prefix cache metrics
+            if cache_read_tokens > 0 or cache_write_tokens > 0:
+                pc = self.cache_by_provider[provider]
+                pc["cache_read_tokens"] += cache_read_tokens
+                pc["cache_write_tokens"] += cache_write_tokens
+                pc["requests"] += 1
+                if cache_read_tokens > 0:
+                    pc["hit_requests"] += 1
+                # Model-aware bust detection: the first request for any model
+                # is always a cold start (100% write, 0% read) — not a bust.
+                # Only flag as bust when a previously-warm model suddenly has
+                # high write ratio, indicating prefix invalidation.
+                model_req_num = self._cache_requests_by_model[model]
+                self._cache_requests_by_model[model] += 1
+                if provider == "anthropic" and model_req_num > 0:
+                    total_cached = cache_read_tokens + cache_write_tokens
+                    if total_cached > 0 and cache_write_tokens > total_cached * 0.5:
+                        pc["bust_count"] += 1
+                        pc["bust_write_tokens"] += cache_write_tokens
 
             self.latency_sum_ms += latency_ms
             self.latency_min_ms = min(self.latency_min_ms, latency_ms)
@@ -1380,7 +1579,6 @@ class HeadroomProxy:
                     preserve_imports=True,
                     preserve_signatures=True,
                     preserve_type_annotations=True,
-                    preserve_error_handlers=True,
                 )
                 # Insert before RollingWindow (which should be last)
                 transforms.insert(-1, CodeAwareCompressor(code_config))
@@ -2221,11 +2419,15 @@ class HeadroomProxy:
 
                 total_latency = (time.time() - start_time) * 1000
 
-                # Parse response for output token count
+                # Parse response for output token count and cache metrics
                 output_tokens = 0
+                cr_tokens = 0
+                cw_tokens = 0
                 if resp_json:
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
+                    cr_tokens = usage.get("cache_read_input_tokens", 0)
+                    cw_tokens = usage.get("cache_creation_input_tokens", 0)
 
                 if self.cost_tracker:
                     self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
@@ -2252,6 +2454,8 @@ class HeadroomProxy:
                     overhead_ms=optimization_latency,
                     pipeline_timing=pipeline_timing,
                     waste_signals=waste_signals_dict,
+                    cache_read_tokens=cr_tokens,
+                    cache_write_tokens=cw_tokens,
                 )
 
                 # Log request
@@ -2447,7 +2651,8 @@ class HeadroomProxy:
                 )
 
                 optimized_messages = result.messages
-                pipeline_timing = result.timing
+                for k, v in result.timing.items():
+                    pipeline_timing[k] = pipeline_timing.get(k, 0.0) + v
                 # Use pipeline's token counts for consistency with pipeline logs
                 original_tokens = result.tokens_before
                 optimized_tokens = result.tokens_after
@@ -2898,7 +3103,8 @@ class HeadroomProxy:
                 )
 
                 optimized_messages = result.messages
-                pipeline_timing = result.timing
+                for k, v in result.timing.items():
+                    pipeline_timing[k] = pipeline_timing.get(k, 0.0) + v
                 # Use pipeline's token counts for consistency with pipeline logs
                 original_tokens = result.tokens_before
                 optimized_tokens = result.tokens_after
@@ -3948,6 +4154,8 @@ class HeadroomProxy:
                     overhead_ms=optimization_latency,
                     ttfb_ms=stream_state["ttfb_ms"] or 0,
                     pipeline_timing=pipeline_timing,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
                 )
 
         return StreamingResponse(
@@ -4399,6 +4607,7 @@ class HeadroomProxy:
                     overhead_ms=optimization_latency,
                     pipeline_timing=pipeline_timing,
                     waste_signals=waste_signals_dict,
+                    cache_read_tokens=cache_read_tokens,
                 )
 
                 if tokens_saved > 0:
@@ -5424,6 +5633,7 @@ class HeadroomProxy:
                     latency_ms=total_latency,
                     overhead_ms=optimization_latency,
                     waste_signals=waste_signals_dict,
+                    cache_read_tokens=cache_read_tokens,
                 )
 
                 if tokens_saved > 0:
@@ -5873,6 +6083,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         feedback = get_compression_feedback()
         feedback_stats = feedback.get_stats()
 
+        # Build prefix cache stats once (used in both prefix_cache and cost)
+        prefix_cache_stats = _build_prefix_cache_stats(m, proxy.cost_tracker)
+
         # Calculate total tokens before compression
         total_tokens_before = m.tokens_input_total + m.tokens_saved_total
 
@@ -5927,7 +6140,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             else {},
             "waste_signals": dict(m.waste_signals_total) if m.waste_signals_total else {},
             "savings_history": m.savings_history[-100:],  # Last 100 data points
-            "cost": proxy.cost_tracker.stats() if proxy.cost_tracker else None,
+            "prefix_cache": prefix_cache_stats,
+            "cost": _merge_cost_stats(
+                proxy.cost_tracker.stats() if proxy.cost_tracker else None,
+                prefix_cache_stats,
+            ),
             "compression": {
                 "ccr_entries": compression_stats.get("entry_count", 0),
                 "ccr_max_entries": compression_stats.get("max_entries", 0),

@@ -9,6 +9,8 @@ Key Features:
 - Preserves imports, signatures, type annotations, error handlers
 - Compresses function bodies while maintaining structure
 - Multi-language support via tree-sitter
+- Data-driven language config (no per-language method duplication)
+- Thread-safe (no mutable instance state during compression)
 
 Supported Languages (Tier 1):
 - Python, JavaScript, TypeScript
@@ -19,7 +21,7 @@ Supported Languages (Tier 2):
 Compression Strategy:
 1. Parse code into AST using tree-sitter
 2. Extract and preserve critical structures (imports, signatures, types)
-3. Rank functions by importance (using perplexity or heuristics)
+3. Rank functions by importance (using semantic analysis)
 4. Compress function bodies while preserving signatures
 5. Reassemble into valid code
 
@@ -170,6 +172,131 @@ class DocstringMode(Enum):
     NONE = "none"  # Alias for REMOVE (deprecated)
 
 
+# =========================================================================
+# Data-driven language configuration
+# =========================================================================
+
+
+@dataclass(frozen=True)
+class LangConfig:
+    """Data-driven configuration for a programming language.
+
+    Instead of per-language methods, each language declares its AST node
+    types and syntactic conventions. The compressor uses these tables to
+    drive extraction and compression generically.
+    """
+
+    # AST node types for structural extraction
+    import_nodes: frozenset[str]
+    function_nodes: frozenset[str]
+    class_nodes: frozenset[str]
+    type_nodes: frozenset[str]
+    body_node_types: frozenset[str]  # Node types that represent function/method bodies
+    decorator_node: str | None  # e.g. "decorated_definition" for Python
+
+    # Syntax conventions
+    comment_prefix: str  # "#" for Python, "//" for C-family
+    uses_colon_after_signature: bool  # Python: True, C-family: False
+    package_node: str | None = None  # e.g. "package_clause" for Go
+
+    # Quick pre-filter hints for language detection (substrings to check)
+    detection_hints: tuple[str, ...] = ()
+
+
+_LANG_CONFIGS: dict[CodeLanguage, LangConfig] = {
+    CodeLanguage.PYTHON: LangConfig(
+        import_nodes=frozenset({"import_statement", "import_from_statement"}),
+        function_nodes=frozenset({"function_definition"}),
+        class_nodes=frozenset({"class_definition"}),
+        type_nodes=frozenset({"type_alias_statement"}),
+        body_node_types=frozenset({"block"}),
+        decorator_node="decorated_definition",
+        comment_prefix="#",
+        uses_colon_after_signature=True,
+        detection_hints=("def ", "import ", "from ", "class ", "async def"),
+    ),
+    CodeLanguage.JAVASCRIPT: LangConfig(
+        import_nodes=frozenset({"import_statement", "import_declaration"}),
+        function_nodes=frozenset({"function_declaration", "method_definition"}),
+        class_nodes=frozenset({"class_declaration"}),
+        type_nodes=frozenset(),
+        body_node_types=frozenset({"statement_block"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("function ", "const ", "let ", "var ", "export ", "require("),
+    ),
+    CodeLanguage.TYPESCRIPT: LangConfig(
+        import_nodes=frozenset({"import_statement", "import_declaration"}),
+        function_nodes=frozenset({"function_declaration", "method_definition"}),
+        class_nodes=frozenset({"class_declaration"}),
+        type_nodes=frozenset({"interface_declaration", "type_alias_declaration"}),
+        body_node_types=frozenset({"statement_block"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("interface ", "type ", ": string", ": number", ": boolean"),
+    ),
+    CodeLanguage.GO: LangConfig(
+        import_nodes=frozenset({"import_declaration"}),
+        function_nodes=frozenset({"function_declaration", "method_declaration"}),
+        class_nodes=frozenset(),
+        type_nodes=frozenset({"type_declaration"}),
+        body_node_types=frozenset({"block"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        package_node="package_clause",
+        detection_hints=("func ", "package ", "struct {"),
+    ),
+    CodeLanguage.RUST: LangConfig(
+        import_nodes=frozenset({"use_declaration"}),
+        function_nodes=frozenset({"function_item"}),
+        class_nodes=frozenset({"impl_item"}),
+        type_nodes=frozenset({"struct_item", "enum_item", "type_item", "trait_item"}),
+        body_node_types=frozenset({"block"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("fn ", "struct ", "impl ", "mod ", "use "),
+    ),
+    CodeLanguage.JAVA: LangConfig(
+        import_nodes=frozenset({"import_declaration"}),
+        function_nodes=frozenset({"method_declaration", "constructor_declaration"}),
+        class_nodes=frozenset({"class_declaration", "interface_declaration"}),
+        type_nodes=frozenset({"enum_declaration"}),
+        body_node_types=frozenset({"block"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        package_node="package_declaration",
+        detection_hints=("public ", "private ", "protected ", "class ", "interface "),
+    ),
+    CodeLanguage.C: LangConfig(
+        import_nodes=frozenset({"preproc_include"}),
+        function_nodes=frozenset({"function_definition"}),
+        class_nodes=frozenset(),
+        type_nodes=frozenset({"struct_specifier", "enum_specifier", "type_definition"}),
+        body_node_types=frozenset({"compound_statement"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("#include", "typedef ", "int main("),
+    ),
+    CodeLanguage.CPP: LangConfig(
+        import_nodes=frozenset({"preproc_include"}),
+        function_nodes=frozenset({"function_definition"}),
+        class_nodes=frozenset({"class_specifier"}),
+        type_nodes=frozenset({"struct_specifier", "enum_specifier", "type_definition"}),
+        body_node_types=frozenset({"compound_statement"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("#include", "namespace ", "class ", "::"),
+    ),
+}
+
+
 @dataclass
 class CodeStructure:
     """Extracted structure from parsed code."""
@@ -182,8 +309,8 @@ class CodeStructure:
         default_factory=list
     )  # (signature, body, line)
     decorators: list[str] = field(default_factory=list)
-    error_handlers: list[str] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
+    top_level_code: list[str] = field(default_factory=list)
     other: list[str] = field(default_factory=list)
 
 
@@ -195,7 +322,6 @@ class CodeCompressorConfig:
         preserve_imports: Always keep import statements.
         preserve_signatures: Always keep function/method signatures.
         preserve_type_annotations: Keep type hints and annotations.
-        preserve_error_handlers: Keep try/except/finally blocks.
         preserve_decorators: Keep decorators on functions/classes.
         docstring_mode: How to handle docstrings.
         target_compression_rate: Target compression ratio (0.2 = keep 20%).
@@ -212,7 +338,6 @@ class CodeCompressorConfig:
     preserve_imports: bool = True
     preserve_signatures: bool = True
     preserve_type_annotations: bool = True
-    preserve_error_handlers: bool = True
     preserve_decorators: bool = True
     docstring_mode: DocstringMode = DocstringMode.FIRST_LINE
 
@@ -311,12 +436,18 @@ class CodeCompressionResult:
         )
 
 
-# Language detection patterns
-_LANGUAGE_PATTERNS: dict[CodeLanguage, list[re.Pattern[str]]] = {
+# =========================================================================
+# Language detection
+# =========================================================================
+
+# Lightweight pre-filter patterns for language detection.
+# These are ONLY used as a quick check to avoid parsing with every language.
+# Actual detection is done by tree-sitter (fewest parse errors wins).
+_LANGUAGE_PREFILTER: dict[CodeLanguage, list[re.Pattern[str]]] = {
     CodeLanguage.PYTHON: [
         re.compile(r"^\s*(def|class|import|from|async def)\s+\w+", re.MULTILINE),
-        re.compile(r"^\s*@\w+", re.MULTILINE),  # Decorators
-        re.compile(r'^\s*"""', re.MULTILINE),  # Docstrings
+        re.compile(r"^\s*@\w+", re.MULTILINE),
+        re.compile(r'^\s*"""', re.MULTILINE),
         re.compile(r"^\s*if __name__\s*==", re.MULTILINE),
     ],
     CodeLanguage.JAVASCRIPT: [
@@ -328,21 +459,18 @@ _LANGUAGE_PATTERNS: dict[CodeLanguage, list[re.Pattern[str]]] = {
     CodeLanguage.TYPESCRIPT: [
         re.compile(r"^\s*(interface|type|enum|namespace)\s+\w+", re.MULTILINE),
         re.compile(r":\s*(string|number|boolean|any|void|Promise)\b", re.MULTILINE),
-        re.compile(r"<\w+>", re.MULTILINE),  # Generic types
     ],
     CodeLanguage.GO: [
         re.compile(r"^\s*(func|type|package|import)\s+", re.MULTILINE),
-        re.compile(r"^\s*func\s+\([^)]+\)\s+\w+", re.MULTILINE),  # Methods
+        re.compile(r"^\s*func\s+\([^)]+\)\s+\w+", re.MULTILINE),
         re.compile(r"\bstruct\s*\{", re.MULTILINE),
     ],
     CodeLanguage.RUST: [
         re.compile(r"^\s*(fn|struct|enum|impl|mod|use|pub)\s+", re.MULTILINE),
-        re.compile(r"^\s*#\[", re.MULTILINE),  # Attributes
-        re.compile(r"->\s*\w+", re.MULTILINE),  # Return types
+        re.compile(r"^\s*#\[", re.MULTILINE),
     ],
     CodeLanguage.JAVA: [
         re.compile(r"^\s*(public|private|protected)\s+(class|interface|enum)", re.MULTILINE),
-        re.compile(r"^\s*@\w+", re.MULTILINE),  # Annotations
         re.compile(r"^\s*package\s+[\w.]+;", re.MULTILINE),
     ],
     CodeLanguage.C: [
@@ -352,56 +480,113 @@ _LANGUAGE_PATTERNS: dict[CodeLanguage, list[re.Pattern[str]]] = {
     ],
     CodeLanguage.CPP: [
         re.compile(r"^\s*#include\s*[<\"]", re.MULTILINE),
-        re.compile(r"\bclass\s+\w+\s*[:{]", re.MULTILINE),
         re.compile(r"\bnamespace\s+\w+", re.MULTILINE),
-        re.compile(r"::\w+", re.MULTILINE),  # Scope resolution
+        re.compile(r"::\w+", re.MULTILINE),
     ],
 }
+
+
+def _count_error_nodes(node: Any) -> int:
+    """Count ERROR and MISSING nodes in a tree-sitter AST."""
+    count = 0
+    if node.type == "ERROR" or node.is_missing:
+        count += 1
+    for child in node.children:
+        count += _count_error_nodes(child)
+    return count
 
 
 def detect_language(code: str) -> tuple[CodeLanguage, float]:
     """Detect the programming language of code.
 
+    Uses tree-sitter AST parsing when available (most accurate), with a
+    regex pre-filter to avoid parsing with all languages. Falls back to
+    regex-only scoring when tree-sitter is unavailable.
+
     Args:
         code: Source code to analyze.
 
     Returns:
-        Tuple of (detected language, confidence score).
+        Tuple of (detected language, confidence score 0.0-1.0).
     """
     if not code or not code.strip():
         return CodeLanguage.UNKNOWN, 0.0
 
-    scores: dict[CodeLanguage, int] = {}
-    sample = code[:5000]  # Analyze first 5000 chars
+    sample = code[:5000]
 
-    for lang, patterns in _LANGUAGE_PATTERNS.items():
+    # Phase 1: Pre-filter — find candidate languages using quick regex
+    candidates: dict[CodeLanguage, int] = {}
+    for lang, patterns in _LANGUAGE_PREFILTER.items():
         score = 0
         for pattern in patterns:
             matches = len(pattern.findall(sample))
             score += matches
         if score > 0:
-            scores[lang] = score
+            candidates[lang] = score
 
-    if not scores:
+    if not candidates:
         return CodeLanguage.UNKNOWN, 0.0
 
-    # TypeScript is a superset of JavaScript - prefer TS if TS patterns found
-    if CodeLanguage.TYPESCRIPT in scores and CodeLanguage.JAVASCRIPT in scores:
-        if scores[CodeLanguage.TYPESCRIPT] >= 2:
-            scores[CodeLanguage.JAVASCRIPT] = 0
+    # Disambiguation: TypeScript superset of JavaScript
+    if CodeLanguage.TYPESCRIPT in candidates and CodeLanguage.JAVASCRIPT in candidates:
+        if candidates[CodeLanguage.TYPESCRIPT] >= 2:
+            candidates[CodeLanguage.JAVASCRIPT] = 0
 
-    # C++ is a superset of C - prefer C++ if C++ patterns found
-    if CodeLanguage.CPP in scores and CodeLanguage.C in scores:
-        if scores[CodeLanguage.CPP] >= 2:
-            scores[CodeLanguage.C] = 0
+    # Disambiguation: C++ superset of C
+    if CodeLanguage.CPP in candidates and CodeLanguage.C in candidates:
+        if candidates[CodeLanguage.CPP] >= 2:
+            candidates[CodeLanguage.C] = 0
 
-    best_lang = max(scores, key=lambda k: scores[k])
-    best_score = scores[best_lang]
+    # Phase 2: If tree-sitter available, parse with candidates and pick fewest errors
+    if _check_tree_sitter_available():
+        best_lang = CodeLanguage.UNKNOWN
+        min_errors = float("inf")
+        best_node_count = 0
+        code_bytes = bytes(code[:10000], "utf-8")
 
-    # Calculate confidence (higher score = higher confidence)
+        # Sort candidates by pre-filter score (try most likely first)
+        sorted_candidates = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
+
+        for lang, _prefilter_score in sorted_candidates:
+            if lang == CodeLanguage.UNKNOWN or candidates.get(lang, 0) == 0:
+                continue
+            try:
+                parser = _get_parser(lang.value)
+                tree = parser.parse(code_bytes)
+                error_count = _count_error_nodes(tree.root_node)
+                node_count = tree.root_node.child_count
+
+                # Prefer: fewest errors, then most top-level nodes (richer parse)
+                if error_count < min_errors or (
+                    error_count == min_errors and node_count > best_node_count
+                ):
+                    min_errors = error_count
+                    best_lang = lang
+                    best_node_count = node_count
+            except (ValueError, ImportError):
+                continue
+
+        if best_lang != CodeLanguage.UNKNOWN:
+            # Confidence based on error ratio
+            total_lines = max(1, len(code.strip().split("\n")))
+            error_ratio = min_errors / total_lines
+            confidence = max(0.3, min(1.0, 1.0 - error_ratio))
+            return best_lang, confidence
+
+    # Phase 3: Fallback — regex-only scoring (no tree-sitter)
+    best_lang = max(candidates, key=lambda k: candidates[k])
+    best_score = candidates[best_lang]
+
+    if best_score == 0:
+        return CodeLanguage.UNKNOWN, 0.0
+
     confidence = min(1.0, 0.3 + (best_score * 0.1))
-
     return best_lang, confidence
+
+
+# =========================================================================
+# Symbol importance analysis
+# =========================================================================
 
 
 @dataclass
@@ -428,10 +613,11 @@ class CodeAwareCompressor(Transform):
 
     Key advantages over token-level compression:
     - Syntax validity guaranteed
-    - Preserves imports, signatures, types, error handlers
+    - Preserves imports, signatures, types
     - Better compression ratios for code (5-8x vs 3-5x)
     - Lower latency (~20-50ms vs 50-200ms for LLMLingua)
     - Smaller memory footprint (~50MB vs ~1GB)
+    - Thread-safe (no mutable instance state during compression)
 
     Example:
         >>> compressor = CodeAwareCompressor()
@@ -474,8 +660,23 @@ class CodeAwareCompressor(Transform):
             startup overhead when the compressor isn't used.
         """
         self.config = config or CodeCompressorConfig()
-        self._symbol_analysis: _SymbolAnalysis | None = None
-        self._body_limits: dict[str, int] | None = None
+
+    # =========================================================================
+    # Token estimation
+    # =========================================================================
+
+    @staticmethod
+    def _estimate_tokens(text: str, tokenizer: Tokenizer | None = None) -> int:
+        """Count or estimate tokens for text.
+
+        Uses real tokenizer when available; falls back to chars/4 which is
+        a much closer approximation for code than word count.
+        """
+        if tokenizer is not None:
+            return tokenizer.count_text(text)
+        # chars/4 is a reasonable approximation for code tokens
+        # (code has lots of punctuation that tokenizes separately)
+        return max(1, len(text) // 4)
 
     # =========================================================================
     # Symbol importance analysis
@@ -500,35 +701,40 @@ class CodeAwareCompressor(Transform):
         if not self.config.semantic_analysis:
             return _SymbolAnalysis()
 
-        definition_types = {
-            "function_definition",  # Python
-            "class_definition",  # Python
-            "function_declaration",  # JS, Go
-            "class_declaration",  # JS, Java
-            "method_definition",  # JS
-            "method_declaration",  # Go, Java
-            "function_item",  # Rust
-        }
+        lang_config = _LANG_CONFIGS.get(language)
+        if not lang_config:
+            return _SymbolAnalysis()
+
+        all_definition_types = lang_config.function_nodes | lang_config.class_nodes
 
         # Use qualified keys (ClassName.method) to avoid collisions
-        # between methods with the same name in different classes.
-        # bare_names maps qualified keys back to short names for display/matching.
         definitions: dict[str, Any] = {}  # qualified_name -> node
         bare_names: dict[str, str] = {}  # qualified_name -> short_name
         all_identifiers: dict[str, int] = {}  # short_name -> count
         function_calls: dict[str, set[str]] = {}
 
         def collect_definitions(node: Any, parent_name: str = "") -> None:
-            if node.type in definition_types:
-                short_name = self._get_definition_name(node)
+            if node.type in all_definition_types:
+                short_name = _get_definition_name(node)
                 if short_name:
                     qualified = f"{parent_name}.{short_name}" if parent_name else short_name
                     definitions[qualified] = node
                     bare_names[qualified] = short_name
-                    # Recurse into this definition to find nested defs
                     for child in node.children:
                         collect_definitions(child, parent_name=qualified)
                     return
+            # Also check for decorated definitions
+            if lang_config.decorator_node and node.type == lang_config.decorator_node:
+                for child in node.children:
+                    if child.type in all_definition_types:
+                        short_name = _get_definition_name(child)
+                        if short_name:
+                            qualified = f"{parent_name}.{short_name}" if parent_name else short_name
+                            definitions[qualified] = child
+                            bare_names[qualified] = short_name
+                            for grandchild in child.children:
+                                collect_definitions(grandchild, parent_name=qualified)
+                            return
             for child in node.children:
                 collect_definitions(child, parent_name)
 
@@ -542,7 +748,6 @@ class CodeAwareCompressor(Transform):
 
         def collect_calls_in_function(func_node: Any, func_qname: str) -> None:
             func_short = bare_names[func_qname]
-            # Collect short names of other defined symbols this function references
             defined_short_names = set(bare_names.values())
             calls: set[str] = set()
 
@@ -564,7 +769,7 @@ class CodeAwareCompressor(Transform):
         if not definitions:
             return _SymbolAnalysis()
 
-        # Pass 2: Collect all identifiers (by short name, since code uses short names)
+        # Pass 2: Collect all identifiers
         collect_identifiers(root)
 
         # Pass 3: Collect call relationships and body sizes
@@ -574,8 +779,7 @@ class CodeAwareCompressor(Transform):
             node_text = code[node.start_byte : node.end_byte]
             body_line_counts[qname] = max(1, len(node_text.split("\n")) - 2)
 
-        # Reference counts: use short name counts, subtract 1 per definition with that name
-        # (multiple definitions with the same short name each contribute -1)
+        # Reference counts: subtract definition occurrences
         short_name_def_count: dict[str, int] = {}
         for short in bare_names.values():
             short_name_def_count[short] = short_name_def_count.get(short, 0) + 1
@@ -587,7 +791,6 @@ class CodeAwareCompressor(Transform):
             ref_counts[qname] = max(0, count - short_name_def_count.get(short, 1))
 
         # Raw importance signals per symbol
-        # Context matching: split into words AND check as substring for multi-word names
         context_lower = context.lower() if context else ""
         context_words = set(re.split(r"[\s,;:.()\[\]{}\"']+", context_lower)) if context else set()
         context_words.discard("")
@@ -597,7 +800,7 @@ class CodeAwareCompressor(Transform):
             short = bare_names[qname]
             refs = ref_counts.get(qname, 0)
             fan_out = len(function_calls.get(qname, set()))
-            is_public = self._is_public_symbol(short, language)
+            is_public = _is_public_symbol(short, language)
 
             raw = float(refs)
             raw += 1.0 if is_public else 0.0
@@ -608,11 +811,10 @@ class CodeAwareCompressor(Transform):
                 if short.startswith("__") and short.endswith("__"):
                     raw += 2.0
             elif language == CodeLanguage.GO:
-                if short[0].isupper():
+                if short and short[0].isupper():
                     raw += 1.0
 
-            # Context boost: match whole symbol name against context words,
-            # or check if multi-word symbol appears as substring in context
+            # Context boost
             if context_words:
                 name_lower = short.lower()
                 if name_lower in context_words or (
@@ -622,7 +824,7 @@ class CodeAwareCompressor(Transform):
 
             raw_signals[qname] = raw
 
-        # Normalize to 0-1 using min-max scaling (distribution-based)
+        # Normalize to 0-1 using min-max scaling
         values = list(raw_signals.values())
         min_val = min(values)
         max_val = max(values)
@@ -631,7 +833,6 @@ class CodeAwareCompressor(Transform):
         if range_val > 0:
             scores = {name: round((v - min_val) / range_val, 3) for name, v in raw_signals.items()}
         else:
-            # All symbols have equal importance (test files, utility libraries)
             scores = dict.fromkeys(raw_signals, 0.5)
 
         return _SymbolAnalysis(
@@ -642,29 +843,8 @@ class CodeAwareCompressor(Transform):
             bare_names=bare_names,
         )
 
-    def _get_definition_name(self, node: Any) -> str | None:
-        """Extract the name identifier from a definition AST node."""
-        for child in node.children:
-            if child.type in ("identifier", "name", "type_identifier", "property_identifier"):
-                text = child.text
-                return text.decode("utf-8") if isinstance(text, bytes) else str(text)
-        return None
-
-    def _is_public_symbol(self, name: str, language: CodeLanguage) -> bool:
-        """Heuristic for whether a symbol is public/exported."""
-        if not name:
-            return False
-        if language == CodeLanguage.GO:
-            return name[0].isupper()
-        return not name.startswith("_")
-
     def _allocate_body_budget(self, analysis: _SymbolAnalysis, code: str) -> dict[str, int]:
         """Allocate body line budget across functions using target_compression_rate.
-
-        Instead of hardcoded tiers, distributes a total body line budget
-        proportionally to each symbol's importance score. The budget is
-        derived from target_compression_rate and accounts for fixed overhead
-        (imports, signatures) that are always preserved.
 
         Returns dict mapping symbol name to max body lines to keep.
         """
@@ -679,18 +859,14 @@ class CodeAwareCompressor(Transform):
         total_body_lines = sum(body_sizes.values())
         fixed_lines = max(0, total_lines - total_body_lines)
 
-        # Body budget = target total output - fixed overhead
         target_total = total_lines * target_rate
         body_budget = max(0.0, target_total - fixed_lines)
 
         if total_body_lines == 0:
             return {}
 
-        # Score floor: even lowest-scored symbols get a minimal allocation
-        # so the LLM sees they exist (vs just `pass`)
         score_floor = 0.05
 
-        # Weight = score * body_size (larger important functions get more budget)
         weights: dict[str, float] = {}
         for name in scores:
             score = max(scores.get(name, 0.5), score_floor)
@@ -700,7 +876,6 @@ class CodeAwareCompressor(Transform):
         total_weight = sum(weights.values())
 
         if total_weight == 0:
-            # Edge case: distribute evenly
             per_func = max(0, int(body_budget / max(len(scores), 1)))
             return {name: min(per_func, body_sizes.get(name, 0)) for name in scores}
 
@@ -711,48 +886,11 @@ class CodeAwareCompressor(Transform):
             limit = min(int(round(allocation)), max_lines)
             limits[qname] = limit
             # Also store by short name so _get_body_limit can find it.
-            # On collision, keep the higher limit (more generous).
             short = analysis.bare_names.get(qname, qname)
             if short not in limits or limit > limits[short]:
                 limits[short] = limit
 
         return limits
-
-    def _get_body_limit(self, func_name: str | None) -> int:
-        """Look up the allocated body line limit for a function.
-
-        Falls back to max_body_lines if no budget allocation was computed.
-        max_body_lines always acts as a hard cap — budget allocation can give
-        a function FEWER lines but never MORE than max_body_lines.
-        """
-        if self._body_limits and func_name and func_name in self._body_limits:
-            return min(self._body_limits[func_name], self.config.max_body_lines)
-        return self.config.max_body_lines
-
-    def _make_omitted_comment(
-        self,
-        func_name: str | None,
-        omitted_count: int,
-        indent: str,
-        comment_prefix: str = "#",
-    ) -> str:
-        """Build omitted comment with call information from analysis."""
-        calls_info = ""
-        if self._symbol_analysis and func_name:
-            # Try both short name and as-is (qualified name) for lookup
-            for key in (
-                func_name,
-                *(k for k in self._symbol_analysis.calls if k.endswith(f".{func_name}")),
-            ):
-                if key in self._symbol_analysis.calls:
-                    called = self._symbol_analysis.calls[key]
-                    if called:
-                        sorted_calls = sorted(called)[:5]
-                        calls_info = "; calls: " + ", ".join(sorted_calls)
-                        if len(called) > 5:
-                            calls_info += f" +{len(called) - 5} more"
-                    break
-        return f"{indent}{comment_prefix} [{omitted_count} lines omitted{calls_info}]"
 
     # =========================================================================
     # Core compression
@@ -763,6 +901,7 @@ class CodeAwareCompressor(Transform):
         code: str,
         language: str | None = None,
         context: str = "",
+        tokenizer: Tokenizer | None = None,
     ) -> CodeCompressionResult:
         """Compress code while preserving syntax validity.
 
@@ -770,6 +909,7 @@ class CodeAwareCompressor(Transform):
             code: Source code to compress.
             language: Language name (e.g., 'python'). Auto-detected if None.
             context: Optional context for relevance-aware compression.
+            tokenizer: Optional tokenizer for accurate token counting.
 
         Returns:
             CodeCompressionResult with compressed code and metadata.
@@ -784,8 +924,7 @@ class CodeAwareCompressor(Transform):
                 syntax_valid=True,
             )
 
-        # Estimate tokens
-        original_tokens = len(code.split())
+        original_tokens = self._estimate_tokens(code, tokenizer)
 
         # Skip small content
         if original_tokens < self.config.min_tokens_for_compression:
@@ -813,7 +952,6 @@ class CodeAwareCompressor(Transform):
             if self.config.fallback_to_llmlingua:
                 return self._fallback_compress(code, original_tokens)
             else:
-                # Pass through unchanged
                 return CodeCompressionResult(
                     compressed=code,
                     original=code,
@@ -844,11 +982,11 @@ class CodeAwareCompressor(Transform):
         # Parse and compress
         try:
             compressed, structure, symbol_scores = self._compress_with_ast(
-                code, detected_lang, context
+                code, detected_lang, context, tokenizer
             )
-            compressed_tokens = len(compressed.split())
+            compressed_tokens = self._estimate_tokens(compressed, tokenizer)
 
-            # Verify syntax validity
+            # Verify syntax validity (checks both ERROR and MISSING nodes)
             syntax_valid = self._verify_syntax(compressed, detected_lang)
 
             # If syntax invalid, fall back to original
@@ -867,9 +1005,7 @@ class CodeAwareCompressor(Transform):
 
             ratio = compressed_tokens / max(original_tokens, 1)
 
-            # Guard against over-aggressive compression (data loss).
-            # If AST extraction stripped content to <5% of original,
-            # the output is essentially empty — return original.
+            # Guard against over-aggressive compression (data loss)
             if ratio < 0.05:
                 logger.warning(
                     "Code compression too aggressive (ratio=%.3f), returning original",
@@ -891,7 +1027,6 @@ class CodeAwareCompressor(Transform):
             if self.config.enable_ccr and ratio < 0.8:
                 cache_key = self._store_in_ccr(code, compressed, original_tokens)
                 if cache_key:
-                    # Generate summary from AST data (language-agnostic)
                     from .compression_summary import summarize_compressed_code
 
                     code_summary = summarize_compressed_code(
@@ -900,8 +1035,8 @@ class CodeAwareCompressor(Transform):
                     )
                     summary_str = f" {code_summary}." if code_summary else ""
 
-                    # Add CCR marker (hash without quotes, matches CCRToolInjector regex)
-                    ttl_min = max(1, getattr(self.config, "ccr_ttl_seconds", 300) // 60)
+                    # Use the actual config attribute (not the wrong name)
+                    ttl_min = max(1, self.config.ccr_ttl // 60)
                     compressed += (
                         f"\n# [{original_tokens - compressed_tokens} tokens compressed."
                         f"{summary_str}"
@@ -945,40 +1080,36 @@ class CodeAwareCompressor(Transform):
         code: str,
         language: CodeLanguage,
         context: str,
+        tokenizer: Tokenizer | None = None,
     ) -> tuple[str, CodeStructure, dict[str, float]]:
         """Compress code using AST parsing with symbol importance analysis.
+
+        Thread-safe: all mutable state is passed through parameters, not
+        stored on self.
 
         Args:
             code: Source code.
             language: Detected language.
             context: User context for relevance.
+            tokenizer: Optional tokenizer for accurate token counting.
 
         Returns:
             Tuple of (compressed code, extracted structure, symbol scores).
         """
-        # Get parser for language
         parser = _get_parser(language.value)
-
-        # Parse code
         tree = parser.parse(bytes(code, "utf-8"))
         root = tree.root_node
 
         # Analyze symbol importance and allocate compression budget
         analysis = self._analyze_symbol_importance(root, code, language, context)
-        self._symbol_analysis = analysis
-        self._body_limits = self._allocate_body_budget(analysis, code)
+        body_limits = self._allocate_body_budget(analysis, code)
 
-        # Extract structure based on language
-        if language == CodeLanguage.PYTHON:
-            structure = self._extract_python_structure(root, code)
-        elif language in (CodeLanguage.JAVASCRIPT, CodeLanguage.TYPESCRIPT):
-            structure = self._extract_js_structure(root, code)
-        elif language == CodeLanguage.GO:
-            structure = self._extract_go_structure(root, code)
-        elif language == CodeLanguage.RUST:
-            structure = self._extract_rust_structure(root, code)
-        elif language == CodeLanguage.JAVA:
-            structure = self._extract_java_structure(root, code)
+        # Extract structure using data-driven language config
+        lang_config = _LANG_CONFIGS.get(language)
+        if lang_config:
+            structure = self._extract_structure(
+                root, code, language, lang_config, body_limits, analysis
+            )
         else:
             structure = self._extract_generic_structure(root, code)
 
@@ -990,456 +1121,456 @@ class CodeAwareCompressor(Transform):
         if analysis.scores:
             for qname, score in analysis.scores.items():
                 short = analysis.bare_names.get(qname, qname)
-                # On collision, keep the higher score (more generous)
                 if short not in symbol_scores or score > symbol_scores[short]:
                     symbol_scores[short] = score
-        self._symbol_analysis = None
-        self._body_limits = None
 
         return compressed, structure, symbol_scores
 
-    def _extract_python_structure(self, root: Any, code: str) -> CodeStructure:
-        """Extract structure from Python AST."""
+    # =========================================================================
+    # Unified structure extraction (data-driven, replaces per-language methods)
+    # =========================================================================
+
+    def _extract_structure(
+        self,
+        root: Any,
+        code: str,
+        language: CodeLanguage,
+        lang_config: LangConfig,
+        body_limits: dict[str, int],
+        analysis: _SymbolAnalysis,
+    ) -> CodeStructure:
+        """Extract structure from AST using data-driven language config.
+
+        A single visitor handles all languages by checking node types against
+        the LangConfig tables. No per-language extraction methods needed.
+        """
         structure = CodeStructure()
-        lines = code.split("\n")
+        captured_byte_ranges: list[tuple[int, int]] = []
 
         def visit(node: Any) -> None:
             node_type = node.type
 
-            if node_type == "import_statement":
-                structure.imports.append(self._get_node_text(node, code))
+            # Package declarations (Go, Java)
+            if lang_config.package_node and node_type == lang_config.package_node:
+                structure.imports.insert(0, _get_node_text(node, code))
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
+                return
 
-            elif node_type == "import_from_statement":
-                structure.imports.append(self._get_node_text(node, code))
+            # Import statements
+            if node_type in lang_config.import_nodes:
+                structure.imports.append(_get_node_text(node, code))
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
+                return
 
-            elif node_type == "decorated_definition":
-                # Get decorator and the definition
+            # Export statements (JS/TS) — may contain functions or re-exports
+            if node_type == "export_statement":
+                text = _get_node_text(node, code)
+                # Check if this export wraps a function or class
+                has_func_or_class = False
+                for child in node.children:
+                    if (
+                        child.type in lang_config.function_nodes
+                        or child.type in lang_config.class_nodes
+                    ):
+                        has_func_or_class = True
+                        compressed = self._compress_function_ast(
+                            child, code, language, lang_config, body_limits, analysis
+                        )
+                        # Reconstruct export with compressed inner definition
+                        export_prefix = code[node.start_byte : child.start_byte]
+                        export_suffix = code[child.end_byte : node.end_byte]
+                        structure.function_signatures.append(
+                            export_prefix + compressed + export_suffix
+                        )
+                        break
+                if not has_func_or_class:
+                    structure.imports.append(text)
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
+                return
+
+            # Decorated definitions (Python)
+            if lang_config.decorator_node and node_type == lang_config.decorator_node:
                 decorator_text = []
-                definition_text = None
+                definition_compressed = None
                 for child in node.children:
                     if child.type == "decorator":
-                        decorator_text.append(self._get_node_text(child, code))
-                    elif child.type in ("function_definition", "class_definition"):
-                        definition_text = self._extract_definition(child, code, lines)
-                if decorator_text and definition_text:
-                    full_def = "\n".join(decorator_text) + "\n" + definition_text
-                    if "class" in definition_text:
-                        structure.class_definitions.append(full_def)
+                        decorator_text.append(_get_node_text(child, code))
+                    elif child.type in lang_config.function_nodes:
+                        definition_compressed = self._compress_function_ast(
+                            child, code, language, lang_config, body_limits, analysis
+                        )
+                    elif child.type in lang_config.class_nodes:
+                        definition_compressed = self._compress_class_ast(
+                            child, code, language, lang_config, body_limits, analysis
+                        )
+                if decorator_text and definition_compressed:
+                    full_def = "\n".join(decorator_text) + "\n" + definition_compressed
+                    # Route to correct list based on inner definition type
+                    for child in node.children:
+                        if child.type in lang_config.class_nodes:
+                            structure.class_definitions.append(full_def)
+                            break
                     else:
                         structure.function_signatures.append(full_def)
-                return  # Don't recurse into children
-
-            elif node_type == "function_definition":
-                definition = self._extract_definition(node, code, lines)
-                structure.function_signatures.append(definition)
+                elif definition_compressed:
+                    structure.function_signatures.append(definition_compressed)
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
-            elif node_type == "class_definition":
-                definition = self._extract_definition(node, code, lines)
-                structure.class_definitions.append(definition)
+            # Function/method definitions
+            if node_type in lang_config.function_nodes:
+                compressed = self._compress_function_ast(
+                    node, code, language, lang_config, body_limits, analysis
+                )
+                structure.function_signatures.append(compressed)
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
-            elif node_type == "try_statement":
-                if self.config.preserve_error_handlers:
-                    structure.error_handlers.append(self._get_node_text(node, code))
+            # Class definitions — compress each method individually
+            if node_type in lang_config.class_nodes:
+                compressed = self._compress_class_ast(
+                    node, code, language, lang_config, body_limits, analysis
+                )
+                structure.class_definitions.append(compressed)
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
-            elif node_type == "type_alias_statement":
-                structure.type_definitions.append(self._get_node_text(node, code))
+            # Type definitions
+            if node_type in lang_config.type_nodes:
+                structure.type_definitions.append(_get_node_text(node, code))
+                captured_byte_ranges.append((node.start_byte, node.end_byte))
+                return
 
             # Recurse into children
             for child in node.children:
                 visit(child)
 
         visit(root)
+
+        # Capture top-level code that wasn't handled by any of the above.
+        # This preserves global variables, constants, if __name__ blocks,
+        # module-level assignments, etc.
+        for child in root.children:
+            child_range = (child.start_byte, child.end_byte)
+            if child_range not in captured_byte_ranges:
+                text = _get_node_text(child, code).strip()
+                if text:
+                    structure.top_level_code.append(text)
+
         return structure
 
-    def _extract_definition(self, node: Any, code: str, lines: list[str]) -> str:
-        """Extract a function/class definition with budget-aware compressed body."""
-        node_text = self._get_node_text(node, code)
-        node_lines = node_text.split("\n")
+    # =========================================================================
+    # Unified function/class compression (data-driven)
+    # =========================================================================
 
-        # Look up allocated body line limit for this symbol
-        func_name = self._get_definition_name(node)
-        body_limit = self._get_body_limit(func_name)
+    def _compress_function_ast(
+        self,
+        node: Any,
+        code: str,
+        language: CodeLanguage,
+        lang_config: LangConfig,
+        body_limits: dict[str, int],
+        analysis: _SymbolAnalysis,
+    ) -> str:
+        """Compress a function/class/impl block using AST body detection.
 
-        # Check if small enough to keep as-is
+        Uses the AST to find the body node directly instead of string-scanning
+        for '{' or ':'. Works for all languages via lang_config.body_node_types.
+
+        Key insight: tree-sitter byte offsets may not include leading whitespace
+        on the first line. We use LINE-based slicing from the original code to
+        preserve indentation faithfully.
+        """
+        # Use line-based slicing from original code (not byte offsets) to
+        # preserve indentation. This is critical for nested definitions
+        # (methods inside classes).
+        code_lines = code.split("\n")
+        start_row = node.start_point[0]
+        end_row = node.end_point[0]
+        node_lines = code_lines[start_row : end_row + 1]
+        node_text = "\n".join(node_lines)
+
+        func_name = _get_definition_name(node)
+        body_limit = _get_body_limit(func_name, body_limits, self.config.max_body_lines)
+
+        # Small enough to keep as-is
         if len(node_lines) <= body_limit + 2:
             return node_text
 
-        # Find signature (first line(s) until colon)
-        signature_lines = []
-        body_start = 0
-        paren_depth = 0
-        found_colon = False
+        # Find the body node using AST (not string scanning)
+        body_node = None
+        for child in node.children:
+            if child.type in lang_config.body_node_types:
+                body_node = child
+                break
 
-        for i, line in enumerate(node_lines):
-            signature_lines.append(line)
-            paren_depth += line.count("(") - line.count(")")
-            if ":" in line and paren_depth <= 0:
-                # Check if this is the end of signature
-                if line.rstrip().endswith(":"):
-                    found_colon = True
-                    body_start = i + 1
-                    break
+        if body_node is None:
+            return node_text
 
-        if not found_colon:
-            # Couldn't parse signature, return truncated
-            return "\n".join(node_lines[: max(body_limit, 1)]) + "\n    # ..."
+        # Use line numbers to slice: this preserves original indentation.
+        # tree-sitter gives 0-based row numbers.
+        node_start_line = node.start_point[0]
+        body_start_line = body_node.start_point[0]
+        body_end_line = body_node.end_point[0]
 
-        signature = "\n".join(signature_lines)
+        # Lines within the node (0-indexed relative to node start)
+        sig_end = body_start_line - node_start_line  # exclusive
+        body_end_rel = body_end_line - node_start_line + 1  # inclusive
 
-        # Check for docstring
-        docstring = ""
-        if body_start < len(node_lines):
-            first_body_line = node_lines[body_start].strip()
-            if first_body_line.startswith(('"""', "'''")):
-                quote = first_body_line[:3]
-                docstring_lines = [node_lines[body_start]]
-                if first_body_line.count(quote) >= 2:
-                    # Single line docstring
-                    if self.config.docstring_mode == DocstringMode.FULL:
-                        docstring = node_lines[body_start]
-                    elif self.config.docstring_mode == DocstringMode.FIRST_LINE:
-                        docstring = node_lines[body_start]
-                    body_start += 1
-                else:
-                    # Multi-line docstring
-                    for j in range(body_start + 1, len(node_lines)):
-                        docstring_lines.append(node_lines[j])
-                        if quote in node_lines[j]:
-                            break
-                    body_start = body_start + len(docstring_lines)
-                    if self.config.docstring_mode == DocstringMode.FULL:
-                        docstring = "\n".join(docstring_lines)
-                    elif self.config.docstring_mode == DocstringMode.FIRST_LINE:
-                        # Keep first line of docstring
-                        first_doc = docstring_lines[0].strip()
-                        if first_doc == '"""' or first_doc == "'''":
-                            # Opening on its own line
-                            if len(docstring_lines) > 1:
-                                indent_len = len(docstring_lines[0]) - len(
-                                    docstring_lines[0].lstrip()
+        # Handle case where signature and body start on the SAME line
+        # (common in brace languages: `function foo(arg) { ... }`)
+        if sig_end == 0 and not lang_config.uses_colon_after_signature:
+            # Signature and body on same line: `function foo(arg) { ... }`
+            # Keep them together: sig includes up to and including `{`
+            first_line = node_lines[0]
+            # Include the opening brace in the signature line
+            sig_with_brace = first_line.rstrip()
+            signature_lines = [sig_with_brace]
+            # Body lines are everything between { and } (inner content only)
+            body_lines = node_lines[1:body_end_rel]
+            after_lines = node_lines[body_end_rel:]
+            # We've already included { in signature, so mark it
+            _brace_in_signature = True
+        else:
+            signature_lines = node_lines[:sig_end]
+            body_lines = node_lines[sig_end:body_end_rel]
+            after_lines = node_lines[body_end_rel:]
+            _brace_in_signature = False
+
+        # For brace languages, detect opening/closing braces in the body lines.
+        opening_brace_line = None
+        closing_brace_line = None
+        if not lang_config.uses_colon_after_signature:
+            if _brace_in_signature:
+                # Opening brace already in signature line — just find closing
+                pass
+            elif body_lines and body_lines[0].strip().startswith("{"):
+                opening_brace_line = body_lines[0]
+                body_lines = body_lines[1:]
+            if body_lines and body_lines[-1].strip().endswith("}"):
+                closing_brace_line = body_lines[-1]
+                body_lines = body_lines[:-1]
+
+        # Handle Python docstrings via AST
+        docstring_text = ""
+        ds_skip_lines = 0
+        if language == CodeLanguage.PYTHON and body_node.child_count > 0:
+            first_child = body_node.children[0]
+            # tree-sitter Python may represent docstrings as:
+            # - bare `string` node directly in block, OR
+            # - `expression_statement` containing a `string` node
+            ds_node = None
+            if first_child.type == "string":
+                ds_node = first_child
+            elif first_child.type == "expression_statement" and first_child.child_count > 0:
+                if first_child.children[0].type == "string":
+                    ds_node = first_child
+
+            if ds_node is not None:
+                ds_text = _get_node_text(ds_node, code)
+                ds_lines_count = ds_node.end_point[0] - ds_node.start_point[0] + 1
+                ds_start_rel = ds_node.start_point[0] - body_node.start_point[0]
+
+                if self.config.docstring_mode == DocstringMode.FULL:
+                    # Keep entire docstring as-is (preserve indentation from body_lines)
+                    docstring_text = "\n".join(
+                        body_lines[ds_start_rel : ds_start_rel + ds_lines_count]
+                    )
+                elif self.config.docstring_mode == DocstringMode.FIRST_LINE:
+                    full_ds = ds_text.strip()
+                    ds_first_line_indent = (
+                        body_lines[ds_start_rel][
+                            : len(body_lines[ds_start_rel]) - len(body_lines[ds_start_rel].lstrip())
+                        ]
+                        if body_lines[ds_start_rel:]
+                        else ""
+                    )
+                    ds_stripped_lines = full_ds.split("\n")
+                    if len(ds_stripped_lines) == 1:
+                        docstring_text = body_lines[ds_start_rel]
+                    else:
+                        first_stripped = ds_stripped_lines[0].strip()
+                        if first_stripped in ('"""', "'''", 'r"""', "r'''"):
+                            # Opening quote on its own line
+                            if len(ds_stripped_lines) > 1:
+                                docstring_text = (
+                                    ds_first_line_indent
+                                    + '"""'
+                                    + ds_stripped_lines[1].strip()
+                                    + '"""'
                                 )
-                                docstring = " " * indent_len + '"""' + docstring_lines[1].strip()
-                                if not docstring.rstrip().endswith('"""'):
-                                    docstring += '"""'
+                        elif first_stripped.endswith('"""'):
+                            # Single-line docstring: """text"""
+                            docstring_text = body_lines[ds_start_rel]
                         else:
-                            docstring = docstring_lines[0]
-                            if not docstring.rstrip().endswith('"""'):
-                                docstring = docstring.rstrip() + '..."""'
+                            # Multi-line: """text\n...\n"""  → """text..."""
+                            docstring_text = ds_first_line_indent + first_stripped + '..."""'
+                # elif REMOVE: docstring_text stays empty
+                ds_skip_lines = ds_start_rel + ds_lines_count
 
-        # Build compressed output
-        body_lines = node_lines[body_start:]
-        total_body = len(body_lines)
+        # Get content lines after docstring
+        content_lines = body_lines[ds_skip_lines:]
+        total_body = len(content_lines)
+        keep_lines = min(body_limit, total_body)
 
-        # Keep body lines based on budget-allocated limit
-        keep_lines = min(body_limit, len(body_lines))
+        # Detect indentation from actual body code (preserves whatever the file uses)
+        indent = _detect_indent(body_lines) if body_lines else "    "
 
-        # Determine indentation from the first omitted line, not the first body line.
-        # This handles nested structures correctly: if the cut falls inside a nested
-        # method definition, the pass/omitted comment use the inner indent level.
-        indent = "    "
-        if body_lines:
-            omitted_part = body_lines[keep_lines:] if keep_lines < len(body_lines) else body_lines
-            first_non_empty = next((line for line in omitted_part if line.strip()), "")
-            if not first_non_empty:
-                first_non_empty = next((line for line in body_lines if line.strip()), "")
-            if first_non_empty:
-                indent = first_non_empty[: len(first_non_empty) - len(first_non_empty.lstrip())]
-        compressed_body = body_lines[:keep_lines]
+        # Build compressed output preserving original indentation
+        result_parts: list[str] = []
 
-        result_parts = [signature]
-        if docstring and self.config.docstring_mode not in (
+        # Signature lines (may be multi-line)
+        if signature_lines:
+            result_parts.extend(signature_lines)
+        else:
+            # Single-line: signature and body on same line — extract up to colon/brace
+            sig_text = code[node.start_byte : body_node.start_byte].rstrip()
+            result_parts.append(sig_text)
+
+        if opening_brace_line is not None:
+            result_parts.append(opening_brace_line)
+
+        if docstring_text and self.config.docstring_mode not in (
             DocstringMode.NONE,
             DocstringMode.REMOVE,
         ):
-            result_parts.append(docstring)
+            result_parts.append(docstring_text)
 
-        if compressed_body:
-            result_parts.extend(compressed_body)
+        if keep_lines > 0:
+            result_parts.extend(content_lines[:keep_lines])
 
         if total_body > keep_lines:
             omitted = total_body - keep_lines
-            result_parts.append(self._make_omitted_comment(func_name, omitted, indent))
-            result_parts.append(f"{indent}pass")
+            result_parts.append(
+                _make_omitted_comment(
+                    func_name, omitted, indent, lang_config.comment_prefix, analysis
+                )
+            )
+            if lang_config.uses_colon_after_signature:
+                result_parts.append(f"{indent}pass")
+
+        if closing_brace_line is not None:
+            result_parts.append(closing_brace_line)
+        elif after_lines:
+            result_parts.extend(after_lines)
 
         return "\n".join(result_parts)
 
-    def _extract_js_structure(self, root: Any, code: str) -> CodeStructure:
-        """Extract structure from JavaScript/TypeScript AST."""
-        structure = CodeStructure()
-        lines = code.split("\n")
+    def _compress_class_ast(
+        self,
+        node: Any,
+        code: str,
+        language: CodeLanguage,
+        lang_config: LangConfig,
+        body_limits: dict[str, int],
+        analysis: _SymbolAnalysis,
+    ) -> str:
+        """Compress a class by individually compressing each method.
 
-        def visit(node: Any) -> None:
-            node_type = node.type
+        Preserves class-level attributes, type annotations, and decorators
+        while compressing method bodies individually. This ensures correct
+        indentation for each method's omitted-body comment.
+        """
+        # Use line-based extraction to preserve indentation
+        code_lines = code.split("\n")
+        start_row = node.start_point[0]
+        end_row = node.end_point[0]
+        node_lines = code_lines[start_row : end_row + 1]
+        node_text = "\n".join(node_lines)
 
-            if node_type in ("import_statement", "import_declaration"):
-                structure.imports.append(self._get_node_text(node, code))
-
-            elif node_type == "export_statement":
-                text = self._get_node_text(node, code)
-                if "function" in text or "class" in text:
-                    structure.function_signatures.append(
-                        self._compress_js_function(node, code, lines)
-                    )
-                else:
-                    structure.imports.append(text)  # export declarations
-                return
-
-            elif node_type in ("function_declaration", "method_definition"):
-                structure.function_signatures.append(self._compress_js_function(node, code, lines))
-                return
-
-            elif node_type == "class_declaration":
-                structure.class_definitions.append(self._compress_js_class(node, code, lines))
-                return
-
-            elif node_type in ("interface_declaration", "type_alias_declaration"):
-                structure.type_definitions.append(self._get_node_text(node, code))
-
-            elif node_type == "try_statement":
-                if self.config.preserve_error_handlers:
-                    structure.error_handlers.append(self._get_node_text(node, code))
-                return
-
-            for child in node.children:
-                visit(child)
-
-        visit(root)
-        return structure
-
-    def _compress_js_function(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a JavaScript function with budget-aware retention."""
-        node_text = self._get_node_text(node, code)
-        node_lines = node_text.split("\n")
-
-        func_name = self._get_definition_name(node)
-        body_limit = self._get_body_limit(func_name)
-
-        if len(node_lines) <= body_limit + 2:
-            return node_text
-
-        # Find opening brace
-        signature_lines = []
-        body_start = 0
-        for i, line in enumerate(node_lines):
-            signature_lines.append(line)
-            if "{" in line:
-                body_start = i + 1
+        # Find the body node
+        body_node = None
+        for child in node.children:
+            if child.type in lang_config.body_node_types:
+                body_node = child
                 break
 
-        if body_start == 0:
-            return node_text  # Arrow function or other format
-
-        body_lines = node_lines[body_start:-1]  # Exclude closing brace
-        total_body = len(body_lines)
-        keep_lines = min(body_limit, total_body)
-
-        result = signature_lines + body_lines[:keep_lines]
-        if total_body > keep_lines:
-            result.append(
-                self._make_omitted_comment(func_name, total_body - keep_lines, "  ", "//")
-            )
-        result.append(node_lines[-1])  # Closing brace
-
-        return "\n".join(result)
-
-    def _compress_js_class(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a JavaScript class, keeping method signatures."""
-        # For now, use similar logic to function compression
-        return self._compress_js_function(node, code, lines)
-
-    def _extract_go_structure(self, root: Any, code: str) -> CodeStructure:
-        """Extract structure from Go AST."""
-        structure = CodeStructure()
-        lines = code.split("\n")
-
-        def visit(node: Any) -> None:
-            node_type = node.type
-
-            if node_type == "import_declaration":
-                structure.imports.append(self._get_node_text(node, code))
-
-            elif node_type == "package_clause":
-                structure.imports.insert(0, self._get_node_text(node, code))
-
-            elif node_type == "function_declaration":
-                structure.function_signatures.append(self._compress_go_function(node, code, lines))
-                return
-
-            elif node_type == "method_declaration":
-                structure.function_signatures.append(self._compress_go_function(node, code, lines))
-                return
-
-            elif node_type == "type_declaration":
-                structure.type_definitions.append(self._get_node_text(node, code))
-
-            for child in node.children:
-                visit(child)
-
-        visit(root)
-        return structure
-
-    def _compress_go_function(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Go function with budget-aware retention."""
-        node_text = self._get_node_text(node, code)
-        node_lines = node_text.split("\n")
-
-        func_name = self._get_definition_name(node)
-        body_limit = self._get_body_limit(func_name)
-
-        if len(node_lines) <= body_limit + 2:
+        if body_node is None:
             return node_text
 
-        # Find opening brace
-        signature_lines = []
-        body_start = 0
-        for i, line in enumerate(node_lines):
-            signature_lines.append(line)
-            if "{" in line:
-                body_start = i + 1
-                break
+        # Class header (signature) — everything before the body
+        node_start_line = node.start_point[0]
+        body_start_line = body_node.start_point[0]
+        sig_end = body_start_line - node_start_line
+        header_lines = node_lines[:sig_end] if sig_end > 0 else [node_lines[0]]
 
-        body_lines = node_lines[body_start:-1]
-        total_body = len(body_lines)
-        keep_lines = min(body_limit, total_body)
+        # Process each child of the class body individually
+        body_parts: list[str] = []
+        processed_ranges: list[tuple[int, int]] = []
 
-        result = signature_lines + body_lines[:keep_lines]
-        if total_body > keep_lines:
-            result.append(
-                self._make_omitted_comment(func_name, total_body - keep_lines, "\t", "//")
-            )
-        result.append(node_lines[-1])
+        for child in body_node.children:
+            # Use line-based extraction for children too
+            child_start = child.start_point[0]
+            child_end = child.end_point[0]
+            child_text = "\n".join(code_lines[child_start : child_end + 1])
 
-        return "\n".join(result)
-
-    def _extract_rust_structure(self, root: Any, code: str) -> CodeStructure:
-        """Extract structure from Rust AST."""
-        structure = CodeStructure()
-        lines = code.split("\n")
-
-        def visit(node: Any) -> None:
-            node_type = node.type
-
-            if node_type == "use_declaration":
-                structure.imports.append(self._get_node_text(node, code))
-
-            elif node_type == "function_item":
-                structure.function_signatures.append(
-                    self._compress_rust_function(node, code, lines)
+            # Methods/functions inside the class — compress individually
+            if child.type in lang_config.function_nodes:
+                compressed = self._compress_function_ast(
+                    child, code, language, lang_config, body_limits, analysis
                 )
-                return
+                body_parts.append(compressed)
+                processed_ranges.append((child.start_byte, child.end_byte))
+            # Decorated methods
+            elif lang_config.decorator_node and child.type == lang_config.decorator_node:
+                decorator_lines = []
+                method_compressed = None
+                for deco_child in child.children:
+                    if deco_child.type == "decorator":
+                        decorator_lines.append(_get_node_text(deco_child, code))
+                    elif deco_child.type in lang_config.function_nodes:
+                        method_compressed = self._compress_function_ast(
+                            deco_child, code, language, lang_config, body_limits, analysis
+                        )
+                if decorator_lines and method_compressed:
+                    body_parts.append("\n".join(decorator_lines) + "\n" + method_compressed)
+                elif method_compressed:
+                    body_parts.append(method_compressed)
+                else:
+                    body_parts.append(child_text)
+                processed_ranges.append((child.start_byte, child.end_byte))
+            # Nested classes — recurse
+            elif child.type in lang_config.class_nodes:
+                compressed = self._compress_class_ast(
+                    child, code, language, lang_config, body_limits, analysis
+                )
+                body_parts.append(compressed)
+                processed_ranges.append((child.start_byte, child.end_byte))
+            else:
+                # Class-level attributes, type annotations, docstrings, etc.
+                # Keep them as-is with original indentation
+                if child_text.strip():
+                    body_parts.append(child_text)
+                processed_ranges.append((child.start_byte, child.end_byte))
 
-            elif node_type in ("struct_item", "enum_item", "type_item"):
-                structure.type_definitions.append(self._get_node_text(node, code))
+        # Reconstruct class with proper indentation
+        result_parts = list(header_lines)
+        for part in body_parts:
+            result_parts.append(part)
 
-            elif node_type == "impl_item":
-                structure.class_definitions.append(self._compress_rust_impl(node, code, lines))
-                return
+        # Handle closing brace for brace-delimited languages
+        body_end_line = body_node.end_point[0]
+        body_end_rel = body_end_line - node_start_line + 1
+        after_lines = node_lines[body_end_rel:]
+        if after_lines:
+            result_parts.extend(after_lines)
+        elif not lang_config.uses_colon_after_signature:
+            # Ensure closing brace
+            last_body_line = node_lines[-1] if node_lines else ""
+            if last_body_line.strip() == "}":
+                result_parts.append(last_body_line)
 
-            for child in node.children:
-                visit(child)
-
-        visit(root)
-        return structure
-
-    def _compress_rust_function(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Rust function with budget-aware retention."""
-        node_text = self._get_node_text(node, code)
-        node_lines = node_text.split("\n")
-
-        func_name = self._get_definition_name(node)
-        body_limit = self._get_body_limit(func_name)
-
-        if len(node_lines) <= body_limit + 2:
-            return node_text
-
-        # Find opening brace
-        signature_lines = []
-        body_start = 0
-        for i, line in enumerate(node_lines):
-            signature_lines.append(line)
-            if "{" in line:
-                body_start = i + 1
-                break
-
-        body_lines = node_lines[body_start:-1]
-        total_body = len(body_lines)
-        keep_lines = min(body_limit, total_body)
-
-        result = signature_lines + body_lines[:keep_lines]
-        if total_body > keep_lines:
-            result.append(
-                self._make_omitted_comment(func_name, total_body - keep_lines, "    ", "//")
-            )
-        result.append(node_lines[-1])
-
-        return "\n".join(result)
-
-    def _compress_rust_impl(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Rust impl block."""
-        return self._compress_rust_function(node, code, lines)
-
-    def _extract_java_structure(self, root: Any, code: str) -> CodeStructure:
-        """Extract structure from Java AST."""
-        structure = CodeStructure()
-        lines = code.split("\n")
-
-        def visit(node: Any) -> None:
-            node_type = node.type
-
-            if node_type == "import_declaration":
-                structure.imports.append(self._get_node_text(node, code))
-
-            elif node_type == "package_declaration":
-                structure.imports.insert(0, self._get_node_text(node, code))
-
-            elif node_type == "class_declaration":
-                structure.class_definitions.append(self._compress_java_class(node, code, lines))
-                return
-
-            elif node_type == "method_declaration":
-                structure.function_signatures.append(self._compress_java_method(node, code, lines))
-                return
-
-            for child in node.children:
-                visit(child)
-
-        visit(root)
-        return structure
-
-    def _compress_java_class(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Java class."""
-        return self._compress_js_function(node, code, lines)
-
-    def _compress_java_method(self, node: Any, code: str, lines: list[str]) -> str:
-        """Compress a Java method."""
-        return self._compress_js_function(node, code, lines)
+        return "\n".join(result_parts)
 
     def _extract_generic_structure(self, root: Any, code: str) -> CodeStructure:
-        """Extract structure from generic code."""
-        # Fallback: use line-based compression
+        """Extract structure from generic/unknown code.
+
+        For languages without a LangConfig, we can't reliably separate
+        imports from other code. Just preserve everything in 'other'.
+        """
         structure = CodeStructure()
-        lines = code.split("\n")
-
-        # Keep imports (lines starting with import/include/use/from)
-        for line in lines:
-            stripped = line.strip()
-            if any(
-                stripped.startswith(kw)
-                for kw in ["import ", "from ", "#include", "use ", "require("]
-            ):
-                structure.imports.append(line)
-
-        # Rest goes to other
-        structure.other = lines
-
+        structure.other = code.split("\n")
         return structure
-
-    def _get_node_text(self, node: Any, code: str) -> str:
-        """Extract text from AST node."""
-        return code[node.start_byte : node.end_byte]
 
     def _assemble_compressed(
         self,
@@ -1452,7 +1583,7 @@ class CodeAwareCompressor(Transform):
         # Imports first
         if structure.imports:
             parts.extend(structure.imports)
-            parts.append("")  # Empty line after imports
+            parts.append("")
 
         # Type definitions
         if structure.type_definitions:
@@ -1469,13 +1600,12 @@ class CodeAwareCompressor(Transform):
             parts.extend(structure.function_signatures)
             parts.append("")
 
-        # Error handlers (if preserved separately)
-        if structure.error_handlers and self.config.preserve_error_handlers:
-            parts.append("# Error handlers:")
-            parts.extend(structure.error_handlers)
+        # Top-level code (global variables, constants, if __name__, etc.)
+        if structure.top_level_code:
+            parts.extend(structure.top_level_code)
             parts.append("")
 
-        # Other content
+        # Other content (used by generic extraction)
         if structure.other:
             parts.extend(structure.other)
 
@@ -1486,23 +1616,17 @@ class CodeAwareCompressor(Transform):
         return "\n".join(parts)
 
     def _verify_syntax(self, code: str, language: CodeLanguage) -> bool:
-        """Verify that code is syntactically valid."""
+        """Verify that code is syntactically valid.
+
+        Checks for both ERROR nodes (parse failures) and MISSING nodes
+        (tokens the parser expected but didn't find).
+        """
         try:
             parser = _get_parser(language.value)
             tree = parser.parse(bytes(code, "utf-8"))
-            # Check for ERROR nodes in the tree
-            return not self._has_error_nodes(tree.root_node)
+            return not _has_syntax_issues(tree.root_node)
         except Exception:
             return False
-
-    def _has_error_nodes(self, node: Any) -> bool:
-        """Check if AST contains ERROR nodes."""
-        if node.type == "ERROR":
-            return True
-        for child in node.children:
-            if self._has_error_nodes(child):
-                return True
-        return False
 
     def _fallback_compress(self, code: str, original_tokens: int) -> CodeCompressionResult:
         """Fall back to LLMLingua compression."""
@@ -1520,7 +1644,8 @@ class CodeAwareCompressor(Transform):
                     compression_ratio=result.compression_ratio,
                     language=CodeLanguage.UNKNOWN,
                     language_confidence=0.0,
-                    syntax_valid=True,  # LLMLingua doesn't guarantee this
+                    # LLMLingua does NOT guarantee syntax validity
+                    syntax_valid=False,
                 )
         except ImportError:
             pass
@@ -1552,7 +1677,7 @@ class CodeAwareCompressor(Transform):
                 original,
                 compressed,
                 original_tokens=original_tokens,
-                compressed_tokens=len(compressed.split()),
+                compressed_tokens=self._estimate_tokens(compressed),
                 compression_strategy="code_aware",
             )
         except ImportError:
@@ -1569,8 +1694,8 @@ class CodeAwareCompressor(Transform):
     ) -> TransformResult:
         """Apply code-aware compression to messages.
 
-        This method implements the Transform interface for use in pipelines.
-        It compresses code content in tool outputs and messages.
+        Handles both string content and Anthropic content block format
+        (list of {"type": "text", "text": "..."} dicts).
 
         Args:
             messages: List of message dicts to transform.
@@ -1580,37 +1705,41 @@ class CodeAwareCompressor(Transform):
         Returns:
             TransformResult with compressed messages and metadata.
         """
-        from .content_detector import ContentType, detect_content_type
-
         tokens_before = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
         context = kwargs.get("context", "")
 
         transformed_messages = []
-        transforms_applied = []
+        transforms_applied: list[str] = []
         warnings: list[str] = []
 
         for message in messages:
             content = message.get("content", "")
 
-            # Skip empty or non-string content (multimodal messages with images)
+            # Handle content blocks (Anthropic format)
+            if isinstance(content, list):
+                new_blocks = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        compressed_text = self._try_compress_text(
+                            text, context, tokenizer, transforms_applied
+                        )
+                        new_blocks.append({**block, "text": compressed_text})
+                    else:
+                        new_blocks.append(block)
+                transformed_messages.append({**message, "content": new_blocks})
+                continue
+
+            # Handle string content
             if not content or not isinstance(content, str):
                 transformed_messages.append(message)
                 continue
 
-            # Check if content is code
-            detection = detect_content_type(content)
-
-            if detection.content_type == ContentType.SOURCE_CODE:
-                language = detection.metadata.get("language")
-                result = self.compress(content, language=language, context=context)
-
-                if result.compression_ratio < 0.9:
-                    transformed_messages.append({**message, "content": result.compressed})
-                    transforms_applied.append(
-                        f"code_aware:{result.language.value}:{result.compression_ratio:.2f}"
-                    )
-                else:
-                    transformed_messages.append(message)
+            compressed_content = self._try_compress_text(
+                content, context, tokenizer, transforms_applied
+            )
+            if compressed_content != content:
+                transformed_messages.append({**message, "content": compressed_content})
             else:
                 transformed_messages.append(message)
 
@@ -1630,6 +1759,30 @@ class CodeAwareCompressor(Transform):
             transforms_applied=transforms_applied if transforms_applied else ["code_aware:noop"],
             warnings=warnings,
         )
+
+    def _try_compress_text(
+        self,
+        text: str,
+        context: str,
+        tokenizer: Tokenizer,
+        transforms_applied: list[str],
+    ) -> str:
+        """Try to compress a text string if it contains code."""
+        from .content_detector import ContentType, detect_content_type
+
+        if not text:
+            return text
+
+        detection = detect_content_type(text)
+        if detection.content_type == ContentType.SOURCE_CODE:
+            language = detection.metadata.get("language")
+            result = self.compress(text, language=language, context=context, tokenizer=tokenizer)
+            if result.compression_ratio < 0.9:
+                transforms_applied.append(
+                    f"code_aware:{result.language.value}:{result.compression_ratio:.2f}"
+                )
+                return result.compressed
+        return text
 
     def should_apply(
         self,
@@ -1658,13 +1811,108 @@ class CodeAwareCompressor(Transform):
 
         for message in messages:
             content = message.get("content", "")
-            # Only check string content (skip multimodal)
+            # Handle string content
             if content and isinstance(content, str):
                 detection = detect_content_type(content)
                 if detection.content_type == ContentType.SOURCE_CODE:
                     return True
+            # Handle content blocks
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        if text:
+                            detection = detect_content_type(text)
+                            if detection.content_type == ContentType.SOURCE_CODE:
+                                return True
 
         return False
+
+
+# =========================================================================
+# Module-level helper functions (stateless, used by the class)
+# =========================================================================
+
+
+def _get_node_text(node: Any, code: str) -> str:
+    """Extract text from AST node."""
+    return code[node.start_byte : node.end_byte]
+
+
+def _get_definition_name(node: Any) -> str | None:
+    """Extract the name identifier from a definition AST node."""
+    for child in node.children:
+        if child.type in ("identifier", "name", "type_identifier", "property_identifier"):
+            text = child.text
+            return text.decode("utf-8") if isinstance(text, bytes) else str(text)
+    return None
+
+
+def _is_public_symbol(name: str, language: CodeLanguage) -> bool:
+    """Heuristic for whether a symbol is public/exported."""
+    if not name:
+        return False
+    if language == CodeLanguage.GO:
+        return name[0].isupper()
+    return not name.startswith("_")
+
+
+def _get_body_limit(
+    func_name: str | None,
+    body_limits: dict[str, int],
+    max_body_lines: int,
+) -> int:
+    """Look up the allocated body line limit for a function.
+
+    Falls back to max_body_lines if no budget allocation was computed.
+    max_body_lines always acts as a hard cap.
+    """
+    if body_limits and func_name and func_name in body_limits:
+        return min(body_limits[func_name], max_body_lines)
+    return max_body_lines
+
+
+def _make_omitted_comment(
+    func_name: str | None,
+    omitted_count: int,
+    indent: str,
+    comment_prefix: str,
+    analysis: _SymbolAnalysis | None,
+) -> str:
+    """Build omitted comment with call information from analysis."""
+    calls_info = ""
+    if analysis and func_name:
+        for key in (
+            func_name,
+            *(k for k in analysis.calls if k.endswith(f".{func_name}")),
+        ):
+            if key in analysis.calls:
+                called = analysis.calls[key]
+                if called:
+                    sorted_calls = sorted(called)[:5]
+                    calls_info = "; calls: " + ", ".join(sorted_calls)
+                    if len(called) > 5:
+                        calls_info += f" +{len(called) - 5} more"
+                break
+    return f"{indent}{comment_prefix} [{omitted_count} lines omitted{calls_info}]"
+
+
+def _detect_indent(lines: list[str]) -> str:
+    """Detect the indentation used in a list of code lines."""
+    for line in lines:
+        if line.strip():
+            return line[: len(line) - len(line.lstrip())]
+    return "    "
+
+
+def _has_syntax_issues(node: Any) -> bool:
+    """Check if AST contains ERROR or MISSING nodes."""
+    if node.type == "ERROR" or node.is_missing:
+        return True
+    for child in node.children:
+        if _has_syntax_issues(child):
+            return True
+    return False
 
 
 def compress_code(

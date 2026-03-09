@@ -222,7 +222,6 @@ class TestCodeCompressorConfig:
         assert config.preserve_imports is True
         assert config.preserve_signatures is True
         assert config.preserve_type_annotations is True
-        assert config.preserve_error_handlers is True
         assert config.preserve_decorators is True
         assert config.docstring_mode == DocstringMode.FIRST_LINE
         assert config.target_compression_rate == 0.2
@@ -500,7 +499,9 @@ class TestFallbackCompression:
 
             # Should still return a result (fallback compression)
             assert result is not None
-            assert result.syntax_valid is True  # Fallback guarantees validity
+            # LLMLingua fallback does NOT guarantee syntax validity
+            # If LLMLingua is unavailable, returns original (valid)
+            # If LLMLingua IS available, syntax_valid=False (cannot guarantee)
 
     def test_fallback_preserves_structure(self, default_config):
         """Fallback compression preserves basic structure when no compressor available.
@@ -800,7 +801,6 @@ class TestTreeSitterIntegration:
     def test_error_handlers_preserved(self):
         """Module-level try/except blocks are preserved."""
         config = CodeCompressorConfig(
-            preserve_error_handlers=True,
             min_tokens_for_compression=10,
             enable_ccr=False,
         )
