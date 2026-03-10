@@ -250,9 +250,7 @@ def _build_prefix_cache_stats(
                 _openai_prefixes = ("gpt", "o1", "o3", "o4")
                 is_match = (
                     (provider == "anthropic" and "claude" in model_name)
-                    or (provider == "openai" and any(
-                        p in model_name for p in _openai_prefixes
-                    ))
+                    or (provider == "openai" and any(p in model_name for p in _openai_prefixes))
                     or (provider == "gemini" and "gemini" in model_name)
                     or (provider == "bedrock" and "claude" in model_name)
                 )
@@ -2132,14 +2130,9 @@ class HeadroomProxy:
                                 f"[{request_id}] Memory: Added beta header: {key}={headers[key]}"
                             )
 
-        # Query Echo: re-inject user's question after compressed tool outputs
-        # Helps LLM attend to the question after reading dense compressed data
-        if tokens_saved > 0:
-            from headroom.transforms.query_echo import extract_user_query, inject_query_echo
-
-            user_query = extract_user_query(messages)  # From original messages
-            if inject_query_echo(optimized_messages, user_query, tokens_saved, original_tokens):
-                logger.debug(f"[{request_id}] Query echo injected after compression")
+        # Query Echo: disabled — hurts prefix caching in long conversations.
+        # The echo changes every turn, invalidating the cached prefix.
+        # To re-enable, uncomment and set query_echo_enabled on ProxyConfig.
 
         # Update body
         body["messages"] = optimized_messages
@@ -4475,13 +4468,7 @@ class HeadroomProxy:
                         f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
                     )
 
-        # Query Echo: re-inject user's question after compressed tool outputs
-        if tokens_saved > 0:
-            from headroom.transforms.query_echo import extract_user_query, inject_query_echo
-
-            user_query = extract_user_query(messages)
-            if inject_query_echo(optimized_messages, user_query, tokens_saved, original_tokens):
-                logger.debug(f"[{request_id}] Query echo injected after compression")
+        # Query Echo: disabled — hurts prefix caching in long conversations.
 
         body["messages"] = optimized_messages
         if tools is not None:
@@ -5542,13 +5529,7 @@ class HeadroomProxy:
         tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
 
-        # Query Echo: re-inject user's question after compressed tool outputs
-        if tokens_saved > 0:
-            from headroom.transforms.query_echo import extract_user_query, inject_query_echo
-
-            user_query = extract_user_query(messages)
-            if inject_query_echo(optimized_messages, user_query, tokens_saved, original_tokens):
-                logger.debug(f"[{request_id}] Query echo injected after Gemini compression")
+        # Query Echo: disabled — hurts prefix caching in long conversations.
 
         # Convert back to Gemini format if optimized
         if optimized_messages != messages:
@@ -5863,7 +5844,9 @@ class HeadroomProxy:
                 logger.debug(f"[{request_id}] Failed to parse Gemini token count response: {e}")
 
             # Track stats
-            tokens_saved = max(0, original_tokens - compressed_tokens) if compressed_tokens > 0 else 0
+            tokens_saved = (
+                max(0, original_tokens - compressed_tokens) if compressed_tokens > 0 else 0
+            )
 
             await self.metrics.record_request(
                 provider="gemini",

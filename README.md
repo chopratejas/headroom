@@ -1,10 +1,11 @@
 <p align="center">
   <h1 align="center">Headroom</h1>
   <p align="center">
-    <strong>The Context Optimization Layer for LLM Applications</strong>
+    <strong>Compress everything your AI agent reads. Same answers, fraction of the tokens.</strong>
   </p>
   <p align="center">
-    Tool outputs are 70-95% redundant boilerplate. Headroom compresses that away.
+    Every tool call, DB query, file read, and RAG retrieval your agent makes is 70-95% boilerplate.<br>
+    Headroom compresses it away before it hits the model.
   </p>
 </p>
 
@@ -27,15 +28,38 @@
   <a href="https://chopratejas.github.io/headroom/">
     <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation">
   </a>
+  <a href="https://discord.gg/QEyNhaGA">
+    <img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord">
+  </a>
 </p>
 
 ---
 
-## Demo
+## Where Headroom Fits
 
-<p align="center">
-  <img src="Headroom-2.gif" alt="Headroom Demo" width="800">
-</p>
+```
+Your Agent / App
+      │
+      │  tool calls, logs, DB reads, RAG results, file reads, API responses
+      ▼
+   Headroom  ← transparent proxy, no code changes needed
+      │
+      ▼
+ LLM Provider  (OpenAI, Anthropic, Google, Bedrock, 100+ via LiteLLM)
+```
+
+Headroom sits between your application and the LLM provider. It intercepts requests, compresses the context, and forwards an optimized prompt. Your app doesn't change — just point it at Headroom.
+
+### What gets compressed
+
+Headroom optimizes any data your agent injects into a prompt:
+
+- **Tool outputs** — shell commands, API calls, search results
+- **Database queries** — SQL results, key-value lookups
+- **RAG retrievals** — document chunks, embeddings results
+- **File reads** — code, logs, configs, CSVs
+- **API responses** — JSON, XML, HTML
+- **Conversation history** — long agent sessions with repetitive context
 
 ---
 
@@ -45,7 +69,7 @@
 pip install "headroom-ai[all]"
 ```
 
-### Simplest: Proxy (zero code changes)
+### Proxy (zero code changes)
 
 ```bash
 headroom proxy --port 8787
@@ -60,20 +84,6 @@ OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 ```
 
 Works with any language, any tool, any framework. One env var. **[Proxy docs](docs/proxy.md)**
-
-### Failure Learning (new)
-
-```bash
-headroom learn                   # Analyze past Claude Code sessions, show recommendations
-headroom learn --apply           # Write learnings to CLAUDE.md and MEMORY.md
-headroom learn --all --apply     # Learn across all your projects
-```
-
-Reads your conversation history, finds every failed tool call, correlates it with what eventually succeeded, and writes specific corrections into your project files. Next session starts smarter. **[Learn docs](docs/learn.md)**
-
-<p align="center">
-  <img src="headroom_learn.gif" alt="headroom learn demo" width="800">
-</p>
 
 ### Python: One function
 
@@ -103,6 +113,14 @@ You don't need to replace it. Drop Headroom into your existing stack:
 
 ---
 
+## Demo
+
+<p align="center">
+  <img src="Headroom-2.gif" alt="Headroom Demo" width="800">
+</p>
+
+---
+
 ## Does It Actually Work?
 
 **100 production log entries. One critical error buried at position 67.**
@@ -122,9 +140,18 @@ Both responses: *"payment-gateway, error PG-5523, fix: Increase max_connections 
 From 100 log entries, SmartCrusher kept 6: first 3 (boundary), the FATAL error at position 67 (anomaly detection), and last 2 (recency). The error was automatically preserved — not by keyword matching, but by statistical analysis of field variance.
 </details>
 
+### Real Workloads
+
+| Scenario | Before | After | Savings |
+|----------|--------|-------|---------|
+| Code search (100 results) | 17,765 | 1,408 | **92%** |
+| SRE incident debugging | 65,694 | 5,118 | **92%** |
+| Codebase exploration | 78,502 | 41,254 | **47%** |
+| GitHub issue triage | 54,174 | 14,761 | **73%** |
+
 ### Accuracy Benchmarks
 
-Headroom is evaluated on real OSS benchmarks — compression preserves accuracy.
+Compression preserves accuracy — tested on real OSS benchmarks.
 
 **Standard Benchmarks** — Baseline (direct to API) vs Headroom (through proxy):
 
@@ -133,7 +160,7 @@ Headroom is evaluated on real OSS benchmarks — compression preserves accuracy.
 | [GSM8K](https://huggingface.co/datasets/openai/gsm8k) | Math | 100 | 0.870 | 0.870 | **0.000** |
 | [TruthfulQA](https://huggingface.co/datasets/truthfulqa/truthful_qa) | Factual | 100 | 0.530 | 0.560 | **+0.030** |
 
-**Compression Benchmarks** — Accuracy after compression + CCR (full stack):
+**Compression Benchmarks** — Accuracy after full compression stack:
 
 | Benchmark | Category | N | Accuracy | Compression | Method |
 |-----------|----------|---|----------|-------------|--------|
@@ -159,56 +186,102 @@ Full methodology: [Benchmarks](docs/benchmarks.md) | [Evals Framework](headroom/
 
 ---
 
-## How It Works
+## Key Capabilities
 
-```mermaid
-flowchart LR
-  App["Your App"] --> H["Headroom"] --> LLM["LLM Provider"]
-  LLM --> Resp["Response"]
+### Lossless Compression
+
+Headroom never throws data away. It compresses aggressively, stores the originals, and gives the LLM a tool to retrieve full details when needed. When it compresses 500 items to 20, it tells the model *what was omitted* ("87 passed, 2 failed, 1 error") so the model knows when to ask for more.
+
+### Smart Content Detection
+
+Auto-detects what's in your context — JSON arrays, code, logs, plain text — and routes each to the best compressor. JSON goes to SmartCrusher, code goes through AST-aware compression (Python, JS, Go, Rust, Java, C++), prose goes to LLMLingua-2.
+
+### Cache Optimization
+
+Stabilizes message prefixes so your provider's KV cache actually works. Claude offers a 90% read discount on cached prefixes — but almost no framework takes advantage of it. Headroom does.
+
+### Failure Learning
+
+```bash
+headroom learn                   # Analyze past Claude Code sessions, show recommendations
+headroom learn --apply           # Write learnings to CLAUDE.md and MEMORY.md
+headroom learn --all --apply     # Learn across all your projects
 ```
 
-### Inside Headroom
+Reads your conversation history, finds every failed tool call, correlates it with what eventually succeeded, and writes specific corrections into your project files. Next session starts smarter. **[Learn docs](docs/learn.md)**
 
-```mermaid
-flowchart TB
-  subgraph Pipeline["Transform Pipeline"]
-    CA["1. CacheAligner\nStabilizes prefix for KV cache"]
-    CR["2. ContentRouter\nDetects content type, picks compressor"]
-    IC["3. IntelligentContext\nScore-based token fitting"]
-    QE["4. Query Echo\nRe-injects user question"]
-    CA --> CR --> IC --> QE
-  end
+<p align="center">
+  <img src="headroom_learn.gif" alt="headroom learn demo" width="800">
+</p>
 
-  subgraph Compressors["ContentRouter dispatches to"]
-    SC["SmartCrusher\nAny JSON type"]
-    CC["CodeCompressor\nAST-aware code"]
-    LL["LLMLingua\nML-based text"]
-  end
+### Image Compression
 
-  subgraph CCR["CCR: Compress-Cache-Retrieve"]
-    Store[("Compressed\nStore")]
-    Tool["headroom_retrieve"]
-    Tool <--> Store
-  end
+40-90% token reduction via trained ML router. Automatically selects the right resize/quality tradeoff per image.
 
-  CR --> Compressors
-  SC -. "stores originals +\nsummary of what's omitted" .-> Store
-  QE --> LLM["LLM Provider"]
-  LLM -. "retrieves when\nit needs more" .-> Tool
+<details>
+<summary><b>All features</b></summary>
+
+| Feature | What it does |
+|---------|-------------|
+| **Content Router** | Auto-detects content type, routes to optimal compressor |
+| **SmartCrusher** | Universal JSON compression — arrays of dicts, strings, numbers, mixed types, nested objects |
+| **CodeCompressor** | AST-aware compression for Python, JS, Go, Rust, Java, C++ |
+| **LLMLingua-2** | ML-based 20x text compression |
+| **CCR** | Reversible compression — LLM retrieves originals when needed |
+| **Compression Summaries** | Tells the LLM what was omitted ("3 errors, 12 failures") |
+| **CacheAligner** | Stabilizes prefixes for provider KV cache hits |
+| **IntelligentContext** | Score-based context management with learned importance |
+| **Image Compression** | 40-90% token reduction via trained ML router |
+| **Memory** | Persistent memory across conversations |
+| **Compression Hooks** | Customize compression with pre/post hooks |
+| **Read Lifecycle** | Detects stale/superseded Read outputs, replaces with CCR markers |
+| **`headroom learn`** | Analyzes past failures, writes project-specific learnings to CLAUDE.md/MEMORY.md |
+
+</details>
+
+---
+
+## Headroom vs Alternatives
+
+Context compression is a new space. Here's how the approaches differ:
+
+| | Approach | Scope | Deploy as | Framework integrations | Data stays local? | Reversible |
+|---|---|---|---|---|---|---|
+| **Headroom** | Multi-algorithm compression | All context (tool outputs, DB reads, RAG, files, logs, history) | Proxy, Python library, ASGI middleware, or callback | LangChain, Agno, LiteLLM, Strands, MCP | Yes (OSS) | Yes (CCR) |
+| **[RTK](https://github.com/rtk-ai/rtk)** | CLI command rewriter | Shell command outputs | CLI wrapper | None | Yes (OSS) | No |
+| **[Compresr](https://compresr.ai)** | Cloud compression API | Text sent to their API | API call | None | No | No |
+| **[Token Company](https://thetokencompany.ai)** | Cloud compression API | Text sent to their API | API call | None | No | No |
+
+**Use it however you want.** Headroom works as a standalone proxy (`headroom proxy`), a one-function Python library (`compress()`), ASGI middleware, or a LiteLLM callback. Already using LiteLLM, LangChain, or Agno? Drop Headroom in without replacing anything.
+
+**Headroom + RTK work well together.** RTK rewrites CLI commands (`git show` → `git show --short`), Headroom compresses everything else (JSON arrays, code, logs, RAG results, conversation history). Use both.
+
+**Headroom vs cloud APIs.** Compresr and Token Company are hosted services — you send your context to their servers, they compress and return it. Headroom runs locally. Your data never leaves your machine. You also get lossless compression (CCR): the LLM can retrieve the full original when it needs more detail.
+
+---
+
+## How It Works Inside
+
 ```
+  Your prompt
+      │
+      ▼
+  1. CacheAligner            Stabilize prefix for KV cache
+      │
+      ▼
+  2. ContentRouter           Route each content type:
+      │                         → SmartCrusher    (JSON)
+      │                         → CodeCompressor  (code)
+      │                         → LLMLingua       (text)
+      ▼
+  3. IntelligentContext      Score-based token fitting
+      │
+      ▼
+  LLM Provider
 
-> Headroom never throws data away. It compresses aggressively and retrieves precisely.
-> When it compresses 500 items to 20, it tells the LLM *what was omitted*
-> ("87 passed, 2 failed, 1 error") so the LLM knows when to ask for more.
-
-### Verified on Real Workloads
-
-| Scenario | Before | After | Savings |
-|----------|--------|-------|---------|
-| Code search (100 results) | 17,765 | 1,408 | **92%** |
-| SRE incident debugging | 65,694 | 5,118 | **92%** |
-| Codebase exploration | 78,502 | 41,254 | **47%** |
-| GitHub issue triage | 54,174 | 14,761 | **73%** |
+  Needs full details? LLM calls headroom_retrieve.
+  Originals are in the Compressed Store — nothing is thrown away.
+```
 
 **Overhead**: 15-200ms compression latency (net positive for Sonnet/Opus). Full data: [Latency Benchmarks](docs/LATENCY_BENCHMARKS.md)
 
@@ -226,27 +299,6 @@ flowchart TB
 | MCP (Claude Code) | **Stable** | [MCP Guide](docs/mcp.md) |
 | Strands | **Stable** | [Strands Guide](docs/strands.md) |
 | LangChain | **Experimental** | [LangChain Guide](docs/langchain.md) |
-
----
-
-## Features
-
-| Feature | What it does |
-|---------|-------------|
-| **Content Router** | Auto-detects content type, routes to optimal compressor |
-| **SmartCrusher** | Universal JSON compression — arrays of dicts, strings, numbers, mixed types, nested objects |
-| **CodeCompressor** | AST-aware compression for Python, JS, Go, Rust, Java, C++ |
-| **LLMLingua-2** | ML-based 20x text compression |
-| **CCR** | Reversible compression — LLM retrieves originals when needed |
-| **Compression Summaries** | Tells the LLM what was omitted ("3 errors, 12 failures") |
-| **Query Echo** | Re-injects user question after compressed data for better attention |
-| **CacheAligner** | Stabilizes prefixes for provider KV cache hits |
-| **IntelligentContext** | Score-based context management with learned importance |
-| **Image Compression** | 40-90% token reduction via trained ML router |
-| **Memory** | Persistent memory across conversations |
-| **Compression Hooks** | Customize compression with pre/post hooks |
-| **Read Lifecycle** | Detects stale/superseded Read outputs, replaces with CCR markers |
-| **`headroom learn`** | Analyzes past failures, writes project-specific learnings to CLAUDE.md/MEMORY.md |
 
 ---
 
@@ -294,6 +346,12 @@ Python 3.10+
 | [MCP](docs/mcp.md) | Claude Code subscriptions |
 | [Learn](docs/learn.md) | Offline failure learning for coding agents |
 | [Configuration](docs/configuration.md) | All options |
+
+---
+
+## Community
+
+Questions, feedback, or just want to follow along? **[Join us on Discord](https://discord.gg/QEyNhaGA)**
 
 ---
 

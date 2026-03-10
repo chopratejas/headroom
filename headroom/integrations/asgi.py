@@ -111,7 +111,7 @@ class CompressionMiddleware:
         body_chunks: list[bytes] = []
 
         async def buffering_receive() -> MutableMapping[str, Any]:
-            message = await receive()
+            message: MutableMapping[str, Any] = await receive()
             if message["type"] == "http.request":
                 chunk = message.get("body", b"")
                 if chunk:
@@ -169,7 +169,7 @@ class CompressionMiddleware:
             if not body_sent:
                 body_sent = True
                 return {"type": "http.request", "body": full_body, "more_body": False}
-            result = await receive()
+            result: MutableMapping[str, Any] = await receive()
             return result
 
         # Wrap send to inject compression headers
