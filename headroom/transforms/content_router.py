@@ -246,6 +246,7 @@ class CompressionStrategy(Enum):
     SMART_CRUSHER = "smart_crusher"
     SEARCH = "search"
     LOG = "log"
+    KOMPRESS = "kompress"
     LLMLINGUA = "llmlingua"
     TEXT = "text"
     DIFF = "diff"
@@ -371,6 +372,7 @@ class ContentRouterConfig:
 
     # Enable/disable specific compressors
     enable_code_aware: bool = True
+    enable_kompress: bool = True  # Kompress: ModernBERT token compressor (preferred over LLMLingua)
     enable_llmlingua: bool = True
     enable_smart_crusher: bool = True
     enable_search_compressor: bool = True
@@ -383,8 +385,8 @@ class ContentRouterConfig:
     mixed_content_threshold: int = 2  # Min types to consider mixed
     min_section_tokens: int = 20  # Min tokens to compress a section
 
-    # Fallback
-    fallback_strategy: CompressionStrategy = CompressionStrategy.PASSTHROUGH
+    # Fallback: Kompress handles unknown/mixed content instead of passing through
+    fallback_strategy: CompressionStrategy = CompressionStrategy.KOMPRESS
 
     # Protection: Don't compress content that's likely the subject of analysis
     skip_user_messages: bool = True  # User messages contain what they want analyzed
@@ -633,6 +635,7 @@ class ContentRouter(Transform):
         self._log_compressor: Any = None
         self._diff_compressor: Any = None
         self._html_extractor: Any = None
+        self._kompress: Any = None
         self._llmlingua: Any = None
         self._text_compressor: Any = None
         self._image_optimizer: Any = None
@@ -989,13 +992,16 @@ class ContentRouter(Transform):
                         # Estimate tokens from extracted text (simple word count)
                         compressed_tokens = len(compressed.split()) if compressed else 0
 
+            elif strategy == CompressionStrategy.KOMPRESS:
+                compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
+
             elif strategy == CompressionStrategy.LLMLINGUA:
-                compressed, compressed_tokens = self._try_llmlingua(content, context, question)
+                compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
 
             elif strategy == CompressionStrategy.TEXT:
-                # Prefer LLMLingua for text if available (ML-based, better compression)
-                # Falls back to heuristic TextCompressor if LLMLingua unavailable
-                compressed, compressed_tokens = self._try_llmlingua(content, context, question)
+                # Prefer ML compressor (Kompress > LLMLingua) for text
+                # Falls back to heuristic TextCompressor if neither available
+                compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
 
         except Exception as e:
             logger.warning("Compression with %s failed: %s", strategy.value, e)
@@ -1016,10 +1022,13 @@ class ContentRouter(Transform):
         # Fallback: return unchanged
         return content, original_tokens
 
-    def _try_llmlingua(
+    def _try_ml_compressor(
         self, content: str, context: str, question: str | None = None
     ) -> tuple[str, int]:
-        """Try LLMLingua compression with fallback.
+        """ML-based compression: Kompress (primary), LLMLingua (fallback only).
+
+        Kompress (ModernBERT, trained on 330K structured tool outputs)
+        auto-downloads from HuggingFace on first use. No heuristic fallback.
 
         Args:
             content: Content to compress.
@@ -1029,6 +1038,17 @@ class ContentRouter(Transform):
         Returns:
             Tuple of (compressed, token_count).
         """
+        # Primary: Kompress — downloads from chopratejas/kompress-base on first use
+        if self.config.enable_kompress:
+            compressor = self._get_kompress()
+            if compressor:
+                try:
+                    result = compressor.compress(content, context=context, question=question)
+                    return result.compressed, result.compressed_tokens
+                except Exception as e:
+                    logger.warning("Kompress failed: %s", e)
+
+        # Fallback: LLMLingua (only if Kompress not installed)
         if self.config.enable_llmlingua:
             compressor = self._get_llmlingua()
             if compressor:
@@ -1036,15 +1056,12 @@ class ContentRouter(Transform):
                     result = compressor.compress(content, context=context, question=question)
                     return result.compressed, result.compressed_tokens
                 except Exception as e:
-                    logger.debug("LLMLingua failed: %s", e)
-
-        # Fallback to text compressor
-        compressor = self._get_text_compressor()
-        if compressor:
-            result = compressor.compress(content, context=context)
-            return result.compressed, result.compressed_line_count
+                    logger.warning("LLMLingua failed: %s", e)
 
         return content, len(content.split())
+
+    # Backwards compatibility
+    _try_llmlingua = _try_ml_compressor
 
     def _strategy_from_detection_type(self, content_type: ContentType) -> CompressionStrategy:
         """Get strategy from ContentType enum."""
@@ -1069,6 +1086,7 @@ class ContentRouter(Transform):
             CompressionStrategy.DIFF: ContentType.GIT_DIFF,
             CompressionStrategy.HTML: ContentType.HTML,
             CompressionStrategy.TEXT: ContentType.PLAIN_TEXT,
+            CompressionStrategy.KOMPRESS: ContentType.PLAIN_TEXT,
             CompressionStrategy.LLMLINGUA: ContentType.PLAIN_TEXT,
             CompressionStrategy.PASSTHROUGH: ContentType.PLAIN_TEXT,
         }
@@ -1154,13 +1172,19 @@ class ContentRouter(Transform):
     def eager_load_compressors(self) -> None:
         """Pre-load compressors at startup to avoid first-request latency.
 
-        Call this during proxy startup to load LLMLingua model (~5s)
+        Call this during proxy startup to load models (~5s)
         before any requests arrive.
         """
+        # Prefer Kompress (faster, smaller, better on structured data)
+        if self.config.enable_kompress:
+            compressor = self._get_kompress()
+            if compressor:
+                logger.info("Kompress model pre-loaded at startup")
+                return  # No need to also load LLMLingua
+
         if self.config.enable_llmlingua:
             compressor = self._get_llmlingua()
             if compressor:
-                # Trigger the underlying model load by accessing it
                 try:
                     from .llmlingua_compressor import _get_llmlingua_compressor
 
@@ -1170,8 +1194,20 @@ class ContentRouter(Transform):
                 except Exception as e:
                     logger.warning("Failed to pre-load LLMLingua model: %s", e)
 
+    def _get_kompress(self) -> Any:
+        """Get KompressCompressor (lazy load). Downloads from HuggingFace on first use."""
+        if self._kompress is None:
+            try:
+                from .kompress_compressor import KompressCompressor, is_kompress_available
+
+                if is_kompress_available():
+                    self._kompress = KompressCompressor()
+            except ImportError:
+                logger.debug("Kompress dependencies not available")
+        return self._kompress
+
     def _get_llmlingua(self) -> Any:
-        """Get LLMLinguaCompressor (lazy load)."""
+        """Get LLMLinguaCompressor (lazy load). Fallback if Kompress unavailable."""
         if self._llmlingua is None:
             try:
                 from .llmlingua_compressor import (

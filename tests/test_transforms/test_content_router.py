@@ -155,12 +155,13 @@ class TestContentRouterConfig:
         config = ContentRouterConfig()
 
         assert config.enable_code_aware is True
+        assert config.enable_kompress is True
         assert config.enable_llmlingua is True
         assert config.enable_smart_crusher is True
         assert config.enable_search_compressor is True
         assert config.enable_log_compressor is True
         assert config.min_section_tokens == 20
-        assert config.fallback_strategy == CompressionStrategy.PASSTHROUGH
+        assert config.fallback_strategy == CompressionStrategy.KOMPRESS
 
     def test_custom_values(self):
         """Custom config values are applied."""

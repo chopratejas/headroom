@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "headroom-ai"
-version = "0.3.7"
+version = "0.4.0"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
 license = "Apache-2.0"
@@ -76,7 +76,7 @@ proxy = [
 reports = [
     "jinja2>=3.0.0",
 ]
-# ML-based compression (LLMLingua-2)
+# ML-based compression (LLMLingua-2 — fallback if Kompress fails)
 llmlingua = [
     "llmlingua>=0.2.0",
     "torch>=2.0.0",
