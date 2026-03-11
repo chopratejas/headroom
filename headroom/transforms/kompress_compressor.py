@@ -62,15 +62,33 @@ class HeadroomCompressorModel(nn.Module):
             nn.Sigmoid(),
         )
 
-    def get_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Get per-token compression scores. Higher = more important."""
+    def get_keep_mask(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Get per-token keep/discard decision. True = keep."""
         with torch.no_grad():
             hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
 
-            token_probs = torch.softmax(self.token_head(hidden), dim=-1)[:, :, 1]
+            # Token head: binary classifier — argmax decides keep/discard
+            token_logits = self.token_head(hidden)  # [B, L, 2]
+            token_keep = token_logits[:, :, 1] > token_logits[:, :, 0]  # True if class 1 > class 0
 
+            # Span head: boost tokens in important spans
+            # If a token is borderline but its span is important, keep it
             span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
+            span_boost = span_scores > 0.5  # span says this region matters
 
+            # Keep if: token head says keep, OR token is borderline and span says keep
+            token_probs = torch.softmax(token_logits, dim=-1)[:, :, 1]
+            borderline = (token_probs > 0.3) & (token_probs <= 0.5)
+            keep = token_keep | (borderline & span_boost)
+
+            return keep
+
+    def get_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Get per-token importance scores (for ranking when target_ratio is set)."""
+        with torch.no_grad():
+            hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
+            token_probs = torch.softmax(self.token_head(hidden), dim=-1)[:, :, 1]
+            span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
             return token_probs * (0.5 + 0.5 * span_scores)
 
 
@@ -236,37 +254,38 @@ class KompressCompressor(Transform):
             input_ids = encoding["input_ids"].to(device)
             attention_mask = encoding["attention_mask"].to(device)
 
-            # Get per-token importance scores from dual-head model
-            scores = model.get_scores(input_ids, attention_mask)[0].cpu()
-
-            # Map subword scores to word-level (max pooling)
             word_ids = encoding.word_ids(batch_index=0)
-            word_scores: dict[int, float] = {}
-            for idx, wid in enumerate(word_ids):
-                if wid is None:
-                    continue
-                s = scores[idx].item()
-                if wid not in word_scores or s > word_scores[wid]:
-                    word_scores[wid] = s
 
-            if not word_scores:
-                return self._passthrough(content, n_words)
-
-            # Token selection
             if target_ratio is not None:
-                # User explicitly asked for a specific ratio — use top-k
+                # User explicitly asked for a specific ratio — use scores + top-k
+                scores = model.get_scores(input_ids, attention_mask)[0].cpu()
+                word_scores: dict[int, float] = {}
+                for idx, wid in enumerate(word_ids):
+                    if wid is None:
+                        continue
+                    s = scores[idx].item()
+                    if wid not in word_scores or s > word_scores[wid]:
+                        word_scores[wid] = s
+                if not word_scores:
+                    return self._passthrough(content, n_words)
                 sorted_wids = sorted(word_scores, key=lambda w: word_scores[w], reverse=True)
                 num_keep = max(1, int(len(sorted_wids) * target_ratio))
                 kept_ids = set(sorted_wids[:num_keep])
             else:
-                # Model decides. Trained with binary labels — score > 0.5 = keep.
-                # Dense content → most tokens score high → keeps more.
-                # Boilerplate → most score low → keeps less. That's correct.
-                kept_ids = {wid for wid, score in word_scores.items() if score > 0.5}
+                # Model decides — no threshold, no ratio, just argmax
+                keep_mask = model.get_keep_mask(input_ids, attention_mask)[0].cpu()
+                # Map subword decisions to word-level (keep word if ANY subword says keep)
+                word_keep: dict[int, bool] = {}
+                for idx, wid in enumerate(word_ids):
+                    if wid is None:
+                        continue
+                    if keep_mask[idx].item():
+                        word_keep[wid] = True
+                    elif wid not in word_keep:
+                        word_keep[wid] = False
+                kept_ids = {wid for wid, keep in word_keep.items() if keep}
                 if not kept_ids:
-                    # Edge case: nothing above threshold — keep the single highest
-                    best = max(word_scores, key=lambda w: word_scores[w])
-                    kept_ids = {best}
+                    return self._passthrough(content, n_words)
 
             # Reconstruct in original word order
             compressed_words = [words[w] for w in sorted(kept_ids) if w < n_words]
