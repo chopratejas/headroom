@@ -314,6 +314,14 @@ def _build_prefix_cache_stats(
     return {
         "by_provider": by_provider,
         "totals": totals,
+        "prefix_freeze": {
+            "busts_avoided": metrics.prefix_freeze_busts_avoided,
+            "tokens_preserved": metrics.prefix_freeze_tokens_preserved,
+            "compression_foregone_tokens": metrics.prefix_freeze_compression_foregone,
+            "net_benefit_tokens": (
+                metrics.prefix_freeze_tokens_preserved - metrics.prefix_freeze_compression_foregone
+            ),
+        },
     }
 
 
@@ -485,6 +493,10 @@ class ProxyConfig:
     retry_max_attempts: int = 3
     retry_base_delay_ms: int = 1000
     retry_max_delay_ms: int = 30000
+
+    # Prefix freeze: skip compression on already-cached messages
+    prefix_freeze_enabled: bool = True  # Respect provider's prefix cache
+    prefix_freeze_session_ttl: int = 600  # Session tracker TTL (seconds)
 
     # Cost tracking
     cost_tracking_enabled: bool = True
@@ -1024,6 +1036,11 @@ class PrometheusMetrics:
         # Track per-model cache request count to distinguish cold starts from busts
         self._cache_requests_by_model: dict[str, int] = defaultdict(int)
 
+        # Prefix freeze stats (cache-aware compression)
+        self.prefix_freeze_busts_avoided: int = 0
+        self.prefix_freeze_tokens_preserved: int = 0
+        self.prefix_freeze_compression_foregone: int = 0
+
         # Cumulative savings history (timestamp → cumulative tokens saved)
         self.savings_history: list[tuple[str, int]] = []
 
@@ -1411,6 +1428,17 @@ class HeadroomProxy:
         )
 
         self.metrics = PrometheusMetrics()
+
+        # Prefix cache tracking: freeze already-cached messages to avoid
+        # invalidating the provider's prefix cache with our transforms
+        from headroom.cache.prefix_tracker import PrefixFreezeConfig, SessionTrackerStore
+
+        self.session_tracker_store = SessionTrackerStore(
+            default_config=PrefixFreezeConfig(
+                enabled=config.prefix_freeze_enabled,
+                session_ttl_seconds=config.prefix_freeze_session_ttl,
+            )
+        )
 
         self.logger = (
             RequestLogger(
@@ -1955,6 +1983,11 @@ class HeadroomProxy:
         optimized_messages = messages
         optimized_tokens = original_tokens
 
+        # Get prefix cache tracker for this session
+        session_id = self.session_tracker_store.compute_session_id(request, model, messages)
+        prefix_tracker = self.session_tracker_store.get_or_create(session_id, "anthropic")
+        frozen_message_count = prefix_tracker.get_frozen_message_count()
+
         if self.config.optimize and messages:
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
@@ -1962,6 +1995,7 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    frozen_message_count=frozen_message_count,
                     biases=self.config.hooks.compute_biases(messages, _hook_ctx)
                     if self.config.hooks
                     else None,
@@ -2247,6 +2281,7 @@ class HeadroomProxy:
                     optimization_latency,
                     memory_user_id=memory_user_id,
                     pipeline_timing=pipeline_timing,
+                    prefix_tracker=prefix_tracker,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -2421,6 +2456,13 @@ class HeadroomProxy:
                     output_tokens = usage.get("output_tokens", 0)
                     cr_tokens = usage.get("cache_read_input_tokens", 0)
                     cw_tokens = usage.get("cache_creation_input_tokens", 0)
+
+                # Update prefix cache tracker for next turn
+                prefix_tracker.update_from_response(
+                    cache_read_tokens=cr_tokens,
+                    cache_write_tokens=cw_tokens,
+                    messages=optimized_messages,
+                )
 
                 if self.cost_tracker:
                     self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
@@ -3901,6 +3943,7 @@ class HeadroomProxy:
         optimization_latency: float,
         memory_user_id: str | None = None,
         pipeline_timing: dict[str, float] | None = None,
+        prefix_tracker: Any | None = None,
     ) -> StreamingResponse:
         """Stream response with metrics tracking and memory tool handling.
 
@@ -4133,6 +4176,14 @@ class HeadroomProxy:
                     f"opt_ms={optimization_latency:.0f} "
                     f"transforms={_summarize_transforms(transforms_applied)}"
                 )
+
+                # Update prefix cache tracker for next turn (streaming path)
+                if prefix_tracker is not None:
+                    prefix_tracker.update_from_response(
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        messages=body.get("messages", []),
+                    )
 
                 if self.cost_tracker:
                     self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
@@ -4402,6 +4453,13 @@ class HeadroomProxy:
         optimized_messages = messages
         optimized_tokens = original_tokens
 
+        # Get prefix cache tracker for this session
+        openai_session_id = self.session_tracker_store.compute_session_id(request, model, messages)
+        openai_prefix_tracker = self.session_tracker_store.get_or_create(
+            openai_session_id, "openai"
+        )
+        openai_frozen_count = openai_prefix_tracker.get_frozen_message_count()
+
         if self.config.optimize and messages:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
@@ -4409,6 +4467,7 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    frozen_message_count=openai_frozen_count,
                     biases=_hook_biases,
                 )
                 if result.messages != messages:
@@ -4553,6 +4612,7 @@ class HeadroomProxy:
                     tags,
                     optimization_latency,
                     pipeline_timing=pipeline_timing,
+                    prefix_tracker=openai_prefix_tracker,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -4574,6 +4634,13 @@ class HeadroomProxy:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI response: {e}"
                     )
+
+                # Update prefix cache tracker for next turn
+                openai_prefix_tracker.update_from_response(
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=0,  # OpenAI doesn't report write tokens
+                    messages=optimized_messages,
+                )
 
                 if self.cost_tracker:
                     self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)

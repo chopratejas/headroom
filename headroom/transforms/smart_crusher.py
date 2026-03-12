@@ -2036,8 +2036,13 @@ class SmartCrusher(Transform):
         query_context = self._extract_context_from_messages(result_messages)
 
         crushed_count = 0
+        frozen_message_count = kwargs.get("frozen_message_count", 0)
 
-        for msg in result_messages:
+        for msg_idx, msg in enumerate(result_messages):
+            # Skip frozen messages (in provider's prefix cache)
+            if msg_idx < frozen_message_count:
+                continue
+
             # OpenAI style
             if msg.get("role") == "tool":
                 content = msg.get("content", "")

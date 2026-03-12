@@ -199,6 +199,14 @@ class TransformPipeline:
         current_messages = deep_copy_messages(messages)
         pipeline_start = time.perf_counter()
 
+        frozen_count = kwargs.get("frozen_message_count", 0)
+        if frozen_count > 0:
+            logger.info(
+                "Pipeline: freezing first %d/%d messages (prefix cached by provider)",
+                frozen_count,
+                len(messages),
+            )
+
         for transform in self.transforms:
             # Check if transform should run
             if not transform.should_apply(current_messages, tokenizer, **kwargs):
