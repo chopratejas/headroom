@@ -106,6 +106,11 @@ class RollingWindow(Transform):
         # Identify protected indices
         protected = self._get_protected_indices(result_messages)
 
+        # Frozen messages (in provider's prefix cache) must never be dropped
+        frozen_message_count = kwargs.get("frozen_message_count", 0)
+        if frozen_message_count > 0:
+            protected.update(range(frozen_message_count))
+
         # Identify tool units
         tool_units = find_tool_units(result_messages)
 

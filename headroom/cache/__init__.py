@@ -45,6 +45,7 @@ from .dynamic_detector import (
 )
 from .google import GoogleCacheOptimizer
 from .openai import OpenAICacheOptimizer
+from .prefix_tracker import FreezeStats, PrefixCacheTracker, PrefixFreezeConfig, SessionTrackerStore
 from .registry import CacheOptimizerRegistry
 from .semantic import SemanticCache, SemanticCacheLayer
 
@@ -73,4 +74,9 @@ __all__ = [
     # Semantic caching
     "SemanticCacheLayer",
     "SemanticCache",
+    # Prefix cache tracking
+    "PrefixCacheTracker",
+    "PrefixFreezeConfig",
+    "FreezeStats",
+    "SessionTrackerStore",
 ]

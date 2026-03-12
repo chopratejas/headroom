@@ -159,9 +159,12 @@ class CacheAligner(Transform):
 
         extracted_dynamic: list[str] = []
         detection_stats: dict[str, int] = {}  # Track what was detected
+        frozen_message_count = kwargs.get("frozen_message_count", 0)
 
-        # Process system messages
-        for msg in result_messages:
+        # Process system messages (skip if frozen — in provider's prefix cache)
+        for i, msg in enumerate(result_messages):
+            if i < frozen_message_count:
+                continue
             if msg.get("role") == "system":
                 content = msg.get("content", "")
                 if isinstance(content, str):
@@ -175,9 +178,11 @@ class CacheAligner(Transform):
                         for category, count in stats.items():
                             detection_stats[category] = detection_stats.get(category, 0) + count
 
-        # Normalize whitespace if configured
+        # Normalize whitespace if configured (skip frozen messages)
         if self.config.normalize_whitespace:
-            for msg in result_messages:
+            for i, msg in enumerate(result_messages):
+                if i < frozen_message_count:
+                    continue
                 content = msg.get("content")
                 if isinstance(content, str):
                     msg["content"] = self._normalize_whitespace(content)

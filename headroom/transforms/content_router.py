@@ -1361,7 +1361,10 @@ class ContentRouter(Transform):
                 self.config.read_lifecycle,
                 compression_store=kwargs.get("compression_store"),
             )
-            lifecycle_result = lifecycle_mgr.apply(messages)
+            lifecycle_result = lifecycle_mgr.apply(
+                messages,
+                frozen_message_count=kwargs.get("frozen_message_count", 0),
+            )
             messages = lifecycle_result.messages
             # lifecycle transforms tracked separately, merged at the end
             lifecycle_transforms = lifecycle_result.transforms_applied
@@ -1453,7 +1456,16 @@ class ContentRouter(Transform):
         if self.config.protect_analysis_context:
             analysis_intent = self._detect_analysis_intent(messages)
 
+        frozen_message_count = kwargs.get("frozen_message_count", 0)
+
         for i, message in enumerate(messages):
+            # Skip frozen messages (in provider's prefix cache).
+            # Modifying these would invalidate the cache, replacing a 90%
+            # read discount with a 25% write penalty (Anthropic).
+            if i < frozen_message_count:
+                transformed_messages.append(message)
+                continue
+
             role = message.get("role", "")
             content = message.get("content", "")
             bias = 1.0  # Default bias, may be overridden for tool messages

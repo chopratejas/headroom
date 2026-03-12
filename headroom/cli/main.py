@@ -40,6 +40,7 @@ def _register_commands() -> None:
         memory,  # noqa: F401
         perf,  # noqa: F401
         proxy,  # noqa: F401
+        wrap,  # noqa: F401
     )
 
 

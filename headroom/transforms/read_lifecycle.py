@@ -95,10 +95,20 @@ class ReadLifecycleManager:
         self.config = config
         self.store = compression_store
 
-    def apply(self, messages: list[dict[str, Any]]) -> ReadLifecycleResult:
+    def apply(
+        self,
+        messages: list[dict[str, Any]],
+        frozen_message_count: int = 0,
+    ) -> ReadLifecycleResult:
         """Apply lifecycle management to messages.
 
         Single-pass analysis, targeted replacement of stale/superseded Reads.
+
+        Args:
+            messages: Conversation messages.
+            frozen_message_count: Number of leading messages in the provider's
+                prefix cache. Stale/superseded Reads in the frozen prefix are
+                skipped to avoid invalidating the cache.
         """
         if not self.config.enabled:
             return ReadLifecycleResult(messages=messages)
@@ -113,7 +123,26 @@ class ReadLifecycleManager:
         if not classifications:
             return ReadLifecycleResult(messages=messages)
 
-        # Phase 3: Replace stale/superseded content
+        # Phase 3: Filter out replacements in frozen prefix
+        if frozen_message_count > 0:
+            frozen_skipped = sum(
+                1
+                for c in classifications
+                if c.state != ReadState.FRESH and c.msg_index < frozen_message_count
+            )
+            if frozen_skipped > 0:
+                logger.info(
+                    "ReadLifecycle: skipping %d stale/superseded replacements "
+                    "in frozen prefix (first %d messages)",
+                    frozen_skipped,
+                    frozen_message_count,
+                )
+                # Re-classify frozen stale/superseded as FRESH to skip replacement
+                for c in classifications:
+                    if c.msg_index < frozen_message_count and c.state != ReadState.FRESH:
+                        c.state = ReadState.FRESH
+
+        # Phase 4: Replace stale/superseded content
         return self._apply_lifecycle(messages, classifications)
 
     def _build_tool_metadata(
