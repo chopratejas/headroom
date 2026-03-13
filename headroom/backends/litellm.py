@@ -819,3 +819,62 @@ class LiteLLMBackend(Backend):
                 status_code=status_code,
                 error=str(e),
             )
+
+    async def stream_openai_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> AsyncIterator[str]:
+        """Stream OpenAI-format chat completion via LiteLLM.
+
+        Yields SSE-formatted strings ready to send to the client.
+        """
+        original_model = body.get("model", "gpt-4")
+        litellm_model = self.map_model_id(original_model)
+
+        try:
+            kwargs: dict[str, Any] = {
+                "model": litellm_model,
+                "messages": body.get("messages", []),
+                "stream": True,
+            }
+
+            for param in [
+                "max_tokens",
+                "temperature",
+                "top_p",
+                "stop",
+                "tools",
+                "tool_choice",
+                "response_format",
+                "seed",
+                "n",
+            ]:
+                if param in body:
+                    kwargs[param] = body[param]
+
+            if "stream_options" in body:
+                kwargs["stream_options"] = body["stream_options"]
+
+            if self.provider == "bedrock" and self.region:
+                kwargs["aws_region_name"] = self.region
+
+            response = await acompletion(**kwargs)
+
+            async for chunk in response:
+                chunk_dict = chunk.model_dump(exclude_none=True, exclude_unset=True)
+                yield f"data: {json.dumps(chunk_dict)}\n\n"
+
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"LiteLLM OpenAI streaming error: {e}")
+            error_data = {
+                "error": {
+                    "message": str(e),
+                    "type": "api_error",
+                    "code": "backend_error",
+                }
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+            yield "data: [DONE]\n\n"

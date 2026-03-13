@@ -1313,12 +1313,17 @@ class HeadroomProxy:
         self.config = config
 
         # Override OPENAI_API_URL with config if set
+        # Strip trailing /v1 or /v1/ to avoid double-path (e.g., .../v1/v1/models)
         if config.openai_api_url:
-            HeadroomProxy.OPENAI_API_URL = config.openai_api_url
+            url = config.openai_api_url.rstrip("/")
+            if url.endswith("/v1"):
+                url = url[:-3]
+            HeadroomProxy.OPENAI_API_URL = url
 
         # Override GEMINI_API_URL with config if set
         if config.gemini_api_url:
-            HeadroomProxy.GEMINI_API_URL = config.gemini_api_url
+            gurl = config.gemini_api_url.rstrip("/")
+            HeadroomProxy.GEMINI_API_URL = gurl
 
         # Initialize providers
         self.anthropic_provider = AnthropicProvider()
@@ -1651,26 +1656,45 @@ class HeadroomProxy:
         else:
             logger.info("Smart Routing: DISABLED (legacy sequential mode)")
 
-        # Eagerly load LLMLingua model at startup (avoids 5s delay on first request)
-        if self.config.llmlingua_enabled:
+        # Eagerly load ML compressors at startup (avoids download on first request)
+        # Kompress requires [ml] extra (torch + transformers). If not installed, skip.
+        self._kompress_status = "not installed"
+        from headroom.transforms.kompress_compressor import is_kompress_available
+
+        if is_kompress_available() and self.config.optimize:
+            logger.info("Kompress: Downloading model (first-time only)...")
             for transform in self.anthropic_pipeline.transforms:
                 if hasattr(transform, "eager_load_compressors"):
                     transform.eager_load_compressors()
-                    self._llmlingua_status = "enabled"
+                    self._kompress_status = "enabled"
+                    break
+            if self._kompress_status == "enabled":
+                logger.info("Kompress: ENABLED (ModernBERT token compressor)")
+        else:
+            if self.config.optimize:
+                logger.info(
+                    "Kompress: not installed (pip install headroom-ai[ml] for ML compression)"
+                )
+
+        # LLMLingua fallback (only loads if Kompress is not available)
+        if self._kompress_status != "enabled" and self.config.llmlingua_enabled:
+            for transform in self.anthropic_pipeline.transforms:
+                if hasattr(transform, "_get_llmlingua"):
+                    llmlingua = transform._get_llmlingua()
+                    if llmlingua:
+                        self._llmlingua_status = "enabled"
                     break
 
-        # LLMLingua status with helpful hint
+        # LLMLingua status
         if self._llmlingua_status == "enabled":
             logger.info(
                 f"LLMLingua: ENABLED (device={self.config.llmlingua_device}, "
                 f"rate={self.config.llmlingua_target_rate})"
             )
+        elif self._kompress_status == "enabled":
+            logger.info("LLMLingua: skipped (Kompress is active)")
         elif self._llmlingua_status == "lazy":
             logger.info("LLMLingua: LAZY (will load when prose content detected)")
-        elif self._llmlingua_status == "available":
-            logger.info("LLMLingua: available but disabled (use --llmlingua)")
-        elif self._llmlingua_status == "unavailable":
-            logger.info("LLMLingua: not installed (pip install headroom-ai[llmlingua])")
         elif self._llmlingua_status == "disabled":
             logger.info("LLMLingua: DISABLED")
 
@@ -4340,6 +4364,67 @@ class HeadroomProxy:
             media_type="text/event-stream",
         )
 
+    async def _stream_openai_via_backend(
+        self,
+        body: dict,
+        headers: dict,
+        model: str,
+        request_id: str,
+        start_time: float,
+        original_tokens: int,
+        optimized_tokens: int,
+        tokens_saved: int,
+        transforms_applied: list[str],
+        tags: dict[str, str],
+        optimization_latency: float,
+        pipeline_timing: dict[str, float] | None = None,
+    ) -> StreamingResponse:
+        """Stream OpenAI chat completion response from backend.
+
+        Routes stream:true requests through the backend's stream_openai_message(),
+        yielding SSE events to the client.
+        """
+        assert self.anthropic_backend is not None
+
+        async def generate():
+            try:
+                async for sse_chunk in self.anthropic_backend.stream_openai_message(body, headers):
+                    yield sse_chunk.encode() if isinstance(sse_chunk, str) else sse_chunk
+            except Exception as e:
+                logger.error(f"[{request_id}] Backend streaming error: {e}")
+                error_data = {
+                    "error": {
+                        "message": str(e),
+                        "type": "api_error",
+                        "code": "backend_error",
+                    }
+                }
+                yield f"data: {json.dumps(error_data)}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+            finally:
+                total_latency = (time.time() - start_time) * 1000
+                await self.metrics.record_request(
+                    provider=self.anthropic_backend.name,
+                    model=model,
+                    input_tokens=optimized_tokens,
+                    output_tokens=0,  # Unknown in streaming
+                    tokens_saved=tokens_saved,
+                    latency_ms=total_latency,
+                    cached=False,
+                    overhead_ms=optimization_latency,
+                    pipeline_timing=pipeline_timing,
+                )
+                if tokens_saved > 0:
+                    logger.info(
+                        f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
+                        f"(saved {tokens_saved:,} tokens) via {self.anthropic_backend.name} [stream]"
+                    )
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+        )
+
     async def handle_openai_chat(
         self,
         request: Request,
@@ -4533,46 +4618,65 @@ class HeadroomProxy:
         if tools is not None:
             body["tools"] = tools
 
-        # Route through LiteLLM backend if configured (Databricks, Bedrock, etc.)
+        # Route through LiteLLM/any-llm backend if configured
         if self.anthropic_backend is not None:
             try:
-                # Use the backend's OpenAI-format method
-                backend_response = await self.anthropic_backend.send_openai_message(body, headers)
+                if stream:
+                    # Streaming: use stream_openai_message() → SSE events
+                    return await self._stream_openai_via_backend(
+                        body,
+                        headers,
+                        model,
+                        request_id,
+                        start_time,
+                        original_tokens,
+                        optimized_tokens,
+                        tokens_saved,
+                        transforms_applied,
+                        tags,
+                        optimization_latency,
+                        pipeline_timing=pipeline_timing,
+                    )
+                else:
+                    # Non-streaming: use send_openai_message() → JSON
+                    backend_response = await self.anthropic_backend.send_openai_message(
+                        body, headers
+                    )
 
-                if backend_response.error:
+                    if backend_response.error:
+                        return JSONResponse(
+                            status_code=backend_response.status_code,
+                            content=backend_response.body,
+                        )
+
+                    # Track metrics
+                    total_latency = (time.time() - start_time) * 1000
+                    usage = backend_response.body.get("usage", {})
+                    output_tokens = usage.get("completion_tokens", 0)
+                    total_input_tokens = usage.get("prompt_tokens", optimized_tokens)
+
+                    await self.metrics.record_request(
+                        provider=self.anthropic_backend.name,
+                        model=model,
+                        input_tokens=total_input_tokens,
+                        output_tokens=output_tokens,
+                        tokens_saved=tokens_saved,
+                        latency_ms=total_latency,
+                        cached=False,
+                        overhead_ms=optimization_latency,
+                        pipeline_timing=pipeline_timing,
+                    )
+
+                    if tokens_saved > 0:
+                        logger.info(
+                            f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
+                            f"(saved {tokens_saved:,} tokens) via {self.anthropic_backend.name}"
+                        )
+
                     return JSONResponse(
                         status_code=backend_response.status_code,
                         content=backend_response.body,
                     )
-
-                # Track metrics
-                total_latency = (time.time() - start_time) * 1000
-                usage = backend_response.body.get("usage", {})
-                output_tokens = usage.get("completion_tokens", 0)
-                total_input_tokens = usage.get("prompt_tokens", optimized_tokens)
-
-                await self.metrics.record_request(
-                    provider=self.anthropic_backend.name,
-                    model=model,
-                    input_tokens=total_input_tokens,
-                    output_tokens=output_tokens,
-                    tokens_saved=tokens_saved,
-                    latency_ms=total_latency,
-                    cached=False,
-                    overhead_ms=optimization_latency,
-                    pipeline_timing=pipeline_timing,
-                )
-
-                if tokens_saved > 0:
-                    logger.info(
-                        f"[{request_id}] {model}: {original_tokens:,} → {optimized_tokens:,} "
-                        f"(saved {tokens_saved:,} tokens) via {self.anthropic_backend.name}"
-                    )
-
-                return JSONResponse(
-                    status_code=backend_response.status_code,
-                    content=backend_response.body,
-                )
             except Exception as e:
                 logger.error(f"[{request_id}] Backend error: {e}")
                 return JSONResponse(

@@ -140,6 +140,30 @@ class Backend(ABC):
         """
         raise NotImplementedError(f"{self.name} backend does not support OpenAI format")
 
+    async def stream_openai_message(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> AsyncIterator[str]:
+        """Stream an OpenAI-format chat completion.
+
+        Yields SSE-formatted strings: 'data: {...}\\n\\n' for each chunk,
+        ending with 'data: [DONE]\\n\\n'.
+
+        Args:
+            body: Request body in OpenAI chat completion format (stream: true).
+            headers: Request headers.
+
+        Yields:
+            SSE-formatted strings ready to send to client.
+
+        Raises:
+            NotImplementedError: If backend doesn't support OpenAI streaming.
+        """
+        raise NotImplementedError(f"{self.name} backend does not support OpenAI streaming")
+        # Make this an async generator (yield never reached but needed for type)
+        yield ""  # type: ignore[misc]  # pragma: no cover
+
     async def close(self) -> None:  # noqa: B027
         """Clean up resources (e.g., close HTTP clients)."""
         pass

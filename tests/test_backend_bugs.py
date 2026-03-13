@@ -290,3 +290,62 @@ class TestVertexModelMap:
 
     def test_claude_3_legacy(self):
         assert "claude-3-haiku-20240307" in _VERTEX_MODEL_MAP
+
+
+# =============================================================================
+# URL Normalization (trailing /v1 stripping)
+# =============================================================================
+
+pytest.importorskip("fastapi")
+
+
+class TestOpenAIURLNormalization:
+    """Test that OPENAI_TARGET_API_URL with /v1 suffix is normalized."""
+
+    def test_v1_suffix_stripped(self):
+        from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+        original = HeadroomProxy.OPENAI_API_URL
+        try:
+            config = ProxyConfig(
+                openai_api_url="http://localhost:4000/v1",
+                optimize=False,
+                cache_enabled=False,
+                rate_limit_enabled=False,
+            )
+            proxy = HeadroomProxy(config)
+            assert proxy.OPENAI_API_URL == "http://localhost:4000"
+        finally:
+            HeadroomProxy.OPENAI_API_URL = original
+
+    def test_v1_slash_suffix_stripped(self):
+        from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+        original = HeadroomProxy.OPENAI_API_URL
+        try:
+            config = ProxyConfig(
+                openai_api_url="http://localhost:4000/v1/",
+                optimize=False,
+                cache_enabled=False,
+                rate_limit_enabled=False,
+            )
+            proxy = HeadroomProxy(config)
+            assert proxy.OPENAI_API_URL == "http://localhost:4000"
+        finally:
+            HeadroomProxy.OPENAI_API_URL = original
+
+    def test_no_v1_unchanged(self):
+        from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+        original = HeadroomProxy.OPENAI_API_URL
+        try:
+            config = ProxyConfig(
+                openai_api_url="http://localhost:4000",
+                optimize=False,
+                cache_enabled=False,
+                rate_limit_enabled=False,
+            )
+            proxy = HeadroomProxy(config)
+            assert proxy.OPENAI_API_URL == "http://localhost:4000"
+        finally:
+            HeadroomProxy.OPENAI_API_URL = original

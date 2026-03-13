@@ -140,10 +140,12 @@ def _load_kompress(device: str = "auto") -> tuple[HeadroomCompressorModel, Any]:
 
 
 def is_kompress_available() -> bool:
-    """Check if Kompress dependencies are available."""
+    """Check if Kompress dependencies are available (requires [ml] extra)."""
     try:
         import huggingface_hub  # noqa: F401
         import safetensors  # noqa: F401
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
 
         return True
     except ImportError:
