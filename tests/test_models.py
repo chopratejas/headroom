@@ -240,11 +240,14 @@ class TestBuiltInModels:
         info = get_model_info("claude-3-5-sonnet-20241022")
         assert info.provider == "anthropic"
         assert info.context_window == 200000
-        # Pricing is now fetched from LiteLLM
-        pricing = ModelRegistry.get_pricing("claude-3-5-sonnet-20241022")
+        # Pricing fetched from LiteLLM (falls back to alias for retired models)
+        pricing = ModelRegistry.get_pricing("claude-sonnet-4-20250514")
         assert pricing is not None
         assert pricing[0] == 3.00  # input cost per 1M
         assert pricing[1] == 15.00  # output cost per 1M
+        # Retired model alias should also resolve
+        alias_pricing = ModelRegistry.get_pricing("claude-3-5-sonnet-20241022")
+        assert alias_pricing is not None
 
     def test_gemini_info(self):
         """Test Gemini model info."""

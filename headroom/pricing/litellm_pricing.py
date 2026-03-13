@@ -13,6 +13,16 @@ from typing import Any
 
 import litellm
 
+# Aliases for models removed from LiteLLM's cost database (retired/renamed).
+# Maps old model name -> current LiteLLM key that has equivalent pricing.
+_MODEL_ALIASES: dict[str, str] = {
+    # Claude 3.5 Sonnet retired Feb 2026, pricing same as claude-sonnet-4-20250514
+    "claude-3-5-sonnet-20241022": "claude-sonnet-4-20250514",
+    "claude-3-5-sonnet-20240620": "claude-sonnet-4-20250514",
+    # Claude 3 Sonnet retired
+    "claude-3-sonnet-20240229": "claude-3-haiku-20240307",
+}
+
 
 @dataclass
 class LiteLLMModelPricing:
@@ -60,6 +70,12 @@ def get_model_pricing(model: str) -> LiteLLMModelPricing | None:
             if f"{prefix}{model}" in cost_data:
                 info = cost_data[f"{prefix}{model}"]
                 break
+
+    # Try retired/renamed model aliases (LiteLLM removes old model keys over time)
+    if info is None:
+        alias = _MODEL_ALIASES.get(model)
+        if alias:
+            info = cost_data.get(alias)
 
     if info is None:
         return None
