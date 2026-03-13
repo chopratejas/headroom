@@ -169,3 +169,6 @@ pyrightconfig.json
 
 # Local development configuration
 CLAUDE.md
+
+# Vitals provenance data
+.vitals/
