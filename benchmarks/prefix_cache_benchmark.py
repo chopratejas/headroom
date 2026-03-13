@@ -225,12 +225,14 @@ TOOL_RESPONSES = {
             for i, f in enumerate(["auth", "api", "cache"])
         ]
     ),
-    "read_file": lambda q: "# File contents (simulated)\nimport logging\nfrom typing import Optional\n\nlogger = logging.getLogger(__name__)\n\n"
-    + "\n".join(
-        [
-            f"def function_{i}(arg: str) -> Optional[dict]:\n    \"\"\"Process {q}.\"\"\"\n    result = {{}}\n    for key in ['id', 'name', 'status']:\n        result[key] = f'value_{{key}}_{{arg}}'\n    logger.info(f'Processed {{arg}}')\n    return result\n"
-            for i in range(8)
-        ]
+    "read_file": lambda q: (
+        "# File contents (simulated)\nimport logging\nfrom typing import Optional\n\nlogger = logging.getLogger(__name__)\n\n"
+        + "\n".join(
+            [
+                f"def function_{i}(arg: str) -> Optional[dict]:\n    \"\"\"Process {q}.\"\"\"\n    result = {{}}\n    for key in ['id', 'name', 'status']:\n        result[key] = f'value_{{key}}_{{arg}}'\n    logger.info(f'Processed {{arg}}')\n    return result\n"
+                for i in range(8)
+            ]
+        )
     ),
     "query_database": lambda q: json.dumps(
         [
