@@ -37,27 +37,49 @@ def _check_proxy(port: int) -> bool:
         return False
 
 
+def _get_log_path() -> Path:
+    """Get path for proxy log file."""
+    log_dir = Path.home() / ".headroom" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "proxy.log"
+
+
 def _start_proxy(port: int) -> subprocess.Popen:
-    """Start Headroom proxy as a background subprocess."""
+    """Start Headroom proxy as a background subprocess.
+
+    Logs are written to ~/.headroom/logs/proxy.log to avoid pipe buffer
+    deadlocks (macOS pipe buffer is ~64KB — a busy proxy fills it quickly,
+    blocking the process).
+    """
     cmd = [sys.executable, "-m", "headroom.cli", "proxy", "--port", str(port)]
+
+    log_path = _get_log_path()
+    log_file = open(log_path, "a")  # noqa: SIM115
 
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=log_file,
     )
 
     # Wait for proxy to be ready (up to 15 seconds)
     for _i in range(15):
         time.sleep(1)
         if _check_proxy(port):
+            click.echo(f"  Logs: {log_path}")
             return proc
         # Check if process died
         if proc.poll() is not None:
-            stderr = proc.stderr.read().decode() if proc.stderr else ""
-            raise RuntimeError(f"Proxy exited with code {proc.returncode}: {stderr[:500]}")
+            log_file.close()
+            # Read last few lines of log for error context
+            try:
+                tail = log_path.read_text()[-500:]
+            except Exception:
+                tail = "(no log output)"
+            raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
 
     proc.kill()
+    log_file.close()
     raise RuntimeError(f"Proxy failed to start on port {port} within 15 seconds")
 
 
