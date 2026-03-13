@@ -11,7 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import litellm
+try:
+    import litellm
+
+    LITELLM_AVAILABLE = True
+except ImportError:
+    litellm = None  # type: ignore[assignment]
+    LITELLM_AVAILABLE = False
 
 # Aliases for models removed from LiteLLM's cost database (retired/renamed).
 # Maps old model name -> current LiteLLM key that has equivalent pricing.
@@ -46,7 +52,10 @@ def get_litellm_model_cost() -> dict[str, Any]:
 
     Returns:
         Dictionary mapping model names to their pricing/capability info.
+        Empty dict if litellm is not installed.
     """
+    if not LITELLM_AVAILABLE:
+        return {}
     return litellm.model_cost  # type: ignore[no-any-return]
 
 
@@ -57,8 +66,10 @@ def get_model_pricing(model: str) -> LiteLLMModelPricing | None:
         model: Model name (e.g., 'gpt-4o', 'claude-3-5-sonnet-20241022').
 
     Returns:
-        LiteLLMModelPricing if found, None otherwise.
+        LiteLLMModelPricing if found, None if not found or litellm not installed.
     """
+    if not LITELLM_AVAILABLE:
+        return None
     cost_data = litellm.model_cost
 
     # Try exact match first
@@ -124,6 +135,8 @@ def list_available_models() -> list[str]:
     """List all models with pricing info in LiteLLM's database.
 
     Returns:
-        List of model names.
+        List of model names. Empty list if litellm not installed.
     """
+    if not LITELLM_AVAILABLE:
+        return []
     return list(litellm.model_cost.keys())

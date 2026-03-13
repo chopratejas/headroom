@@ -27,19 +27,21 @@ try:
 except ImportError:
     HAS_PIL = False
 
-from headroom.image.compressor import (
+torch = pytest.importorskip("torch")
+
+from headroom.image.compressor import (  # noqa: E402
     CompressionResult,
     ImageCompressor,
     Technique,
     compress_images,
     get_compressor,
 )
-from headroom.image.trained_router import (
+from headroom.image.trained_router import (  # noqa: E402
     ImageSignals,
     RouteDecision,
     TrainedRouter,
 )
-from headroom.image.trained_router import (
+from headroom.image.trained_router import (  # noqa: E402
     Technique as RouterTechnique,
 )
 

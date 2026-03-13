@@ -44,51 +44,64 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "tiktoken>=0.5.0",
-    "pydantic>=2.0.0",
-    "openai>=2.14.0",
-    "sentence-transformers>=5.2.0",
-    "litellm>=1.0.0",
-    "accelerate>=1.12.0",
-    "sentencepiece>=0.2.1",
-    "protobuf>=6.33.4",
-    "semantic-router>=0.1.12",
-    "pillow>=10.0.0",             # Image processing for compression
-    "datasets>=4.5.0",
-    "hnswlib>=0.8.0",             # HNSW vector index for memory system
+    # Core: lightweight compression (SmartCrusher, ContentRouter, CCR, TOIN)
+    "tiktoken>=0.5.0",            # Tokenizer for all compressors
+    "pydantic>=2.0.0",            # Config and data models
+    "litellm>=1.0.0",             # Model registry, pricing, and provider support
     "click>=8.1.0",               # CLI framework
     "rich>=13.0.0",               # Rich terminal output
 ]
 
 [project.optional-dependencies]
-# Semantic relevance scoring with embeddings
-relevance = [
-    "sentence-transformers>=2.2.0",
-    "numpy>=1.24.0",
-]
-# Proxy server
+# Proxy server (most common install: pip install headroom-ai[proxy])
 proxy = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
-    "httpx[http2]>=0.24.0",  # http2 extra enables h2 for HTTP/2 support
-]
-# Report generation
-reports = [
-    "jinja2>=3.0.0",
-]
-# ML-based compression (LLMLingua-2 — fallback if Kompress fails)
-llmlingua = [
-    "llmlingua>=0.2.0",
-    "torch>=2.0.0",
-    "transformers>=4.30.0",
+    "httpx[http2]>=0.24.0",
+    "openai>=2.14.0",             # OpenAI API format support
 ]
 # AST-based code compression (tree-sitter)
 code = [
     "tree-sitter-language-pack>=0.10.0",
 ]
+# ML-based compression with Kompress (ModernBERT)
+ml = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+]
+# Legacy ML compression (LLMLingua-2 — use [ml] instead for Kompress)
+llmlingua = [
+    "llmlingua>=0.2.0",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+]
+# Memory system (hierarchical memory with vector search)
+memory = [
+    "hnswlib>=0.8.0",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=2.2.0",
+]
+# Semantic relevance scoring with embeddings
+relevance = [
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.24.0",
+]
+# Image compression (ML-based routing)
+image = [
+    "pillow>=10.0.0",
+]
+# Report generation
+reports = [
+    "jinja2>=3.0.0",
+]
 # any-llm multi-provider backend (requires Python 3.11+)
 anyllm = [
     "any-llm-sdk>=1.0.0",
+]
+# LangChain integration
+langchain = [
+    "langchain-core>=0.2.0",
+    "langchain-openai>=0.1.0",
 ]
 # Agno agent framework integration
 agno = [
@@ -98,46 +111,41 @@ agno = [
 strands = [
     "strands-agents>=0.1.0",
 ]
-# MCP server for Claude Code integration (CCR without API access)
+# MCP server for Claude Code integration
 mcp = [
     "mcp>=1.0.0",
     "httpx>=0.24.0",
 ]
-# Voice filler detection (training and inference)
+# Voice filler detection
 voice = [
-    "onnxruntime>=1.16.0",       # Fast CPU inference
-    "transformers>=4.30.0",      # Model loading and tokenization
-    "torch>=2.0.0",              # Training
+    "onnxruntime>=1.16.0",
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
 ]
-# Voice training only (includes voice deps + training extras)
+# Voice training (includes voice deps + training extras)
 voice-train = [
     "headroom-ai[voice]",
-    "datasets>=2.14.0",          # Data loading
-    "accelerate>=0.20.0",        # Training acceleration
+    "datasets>=2.14.0",
+    "accelerate>=0.20.0",
 ]
-# Evaluation framework for testing compression accuracy
+# Evaluation framework
 evals = [
-    "datasets>=2.14.0",           # HuggingFace datasets
-    "sentence-transformers>=2.2.0", # Semantic similarity
-    "numpy>=1.24.0",              # Numerical operations
-    "scikit-learn>=1.3.0",        # ML metrics
-    "anthropic>=0.18.0",          # Anthropic API for evals
-    "openai>=1.0.0",              # OpenAI API for evals
-]
-# Memory system extras (hierarchical memory with vector search)
-memory = [
-    "hnswlib>=0.8.0", # HNSW vector index for semantic search
-    "sqlite-vec>=0.1.6",
+    "datasets>=2.14.0",
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.3.0",
+    "anthropic>=0.18.0",
+    "openai>=1.0.0",
 ]
 # AWS Bedrock backend
 bedrock = [
     "boto3>=1.28.0",
 ]
-# HTML content extraction (web scraping results)
+# HTML content extraction
 html = [
     "trafilatura>=1.6.0",
 ]
-# Comprehensive LLM benchmarks (EleutherAI lm-evaluation-harness)
+# Comprehensive LLM benchmarks
 benchmark = [
     "lm-eval>=0.4.0",
     "openai>=1.0.0",
@@ -153,14 +161,20 @@ dev = [
     "pre-commit>=3.0.0",
     "openai>=1.0.0",
     "anthropic>=0.18.0",
-    "ollama>=0.4.0",  # For Ollama integration tests (local LLM, no API key needed)
-    "langchain-ollama>=0.2.0",  # For LangChain+Ollama integration tests
-    "hnswlib>=0.8.0",  # For memory system tests
-    "sqlite-vec>=0.1.6",  # Fallback vector backend for CI runners without AVX support
+    "litellm>=1.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "httpx[http2]>=0.24.0",
+    "ollama>=0.4.0",
+    "langchain-ollama>=0.2.0",
+    "hnswlib>=0.8.0",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=2.2.0",
+    "numpy>=1.24.0",
 ]
-# All optional dependencies
+# All optional dependencies (everything you need)
 all = [
-    "headroom-ai[relevance,proxy,reports,llmlingua,code,evals,memory,voice,html,benchmark,mcp]",
+    "headroom-ai[proxy,code,ml,memory,relevance,image,reports,evals,voice,html,benchmark,mcp]",
 ]
 
 [project.scripts]

@@ -8,7 +8,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
 
 
 class ScopeLevel(Enum):
@@ -56,7 +59,7 @@ class Memory:
     entity_refs: list[str] = field(default_factory=list)
 
     # Embedding (for vector search)
-    embedding: np.ndarray | None = None
+    embedding: Any = None  # np.ndarray when numpy is available
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -105,7 +108,7 @@ class Memory:
     def from_dict(cls, data: dict[str, Any]) -> Memory:
         """Create from dictionary."""
         embedding = None
-        if data.get("embedding"):
+        if data.get("embedding") and np is not None:
             embedding = np.array(data["embedding"], dtype=np.float32)
 
         return cls(

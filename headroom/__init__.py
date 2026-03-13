@@ -113,16 +113,27 @@ from .exceptions import (
     ValidationError,
 )
 
-# Memory module - hierarchical memory system
-from .memory import (
-    EmbedderBackend,
-    HierarchicalMemory,
-    Memory,
-    MemoryConfig,
-    ScopeLevel,
-    with_memory,
-)
+# Memory module - optional (requires numpy, hnswlib, etc.)
+try:
+    from .memory import (
+        EmbedderBackend,
+        HierarchicalMemory,
+        Memory,
+        MemoryConfig,
+        ScopeLevel,
+        with_memory,
+    )
+except ImportError:
+    EmbedderBackend = None  # type: ignore[assignment,misc]
+    HierarchicalMemory = None  # type: ignore[assignment,misc]
+    Memory = None  # type: ignore[assignment,misc]
+    MemoryConfig = None  # type: ignore[assignment,misc]
+    ScopeLevel = None  # type: ignore[assignment,misc]
+    with_memory = None  # type: ignore[assignment]
+
 from .providers import AnthropicProvider, OpenAIProvider, Provider, TokenCounter
+
+# Relevance scoring - BM25 always available, embedding requires sentence-transformers
 from .relevance import (
     BM25Scorer,
     EmbeddingScorer,

@@ -16,9 +16,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import torch
-from PIL import Image
-from transformers.modeling_outputs import BaseModelOutputWithPooling
+try:
+    import torch
+    from PIL import Image
+    from transformers.modeling_outputs import BaseModelOutputWithPooling
+
+    _IMAGE_ML_AVAILABLE = True
+except ImportError:
+    _IMAGE_ML_AVAILABLE = False
 
 from headroom.models.config import ML_MODEL_DEFAULTS
 
