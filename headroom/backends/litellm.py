@@ -12,6 +12,7 @@ LiteLLM handles all the auth and format translation internally.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -158,11 +159,29 @@ def _normalize_bedrock_profile_id(profile_id: str) -> str | None:
 _BEDROCK_MODEL_MAP: dict[str, str] = {}
 
 _VERTEX_MODEL_MAP = {
+    # Claude 4.6 (latest, no date suffix)
+    "claude-opus-4-6": "vertex_ai/claude-opus-4-6",
+    "claude-sonnet-4-6": "vertex_ai/claude-sonnet-4-6",
+    # Claude 4.5
+    "claude-sonnet-4-5-20250929": "vertex_ai/claude-sonnet-4-5@20250929",
+    "claude-opus-4-5-20251101": "vertex_ai/claude-opus-4-5@20251101",
+    # Claude 4.1
+    "claude-opus-4-1-20250805": "vertex_ai/claude-opus-4-1@20250805",
+    # Claude 4
+    "claude-sonnet-4-20250514": "vertex_ai/claude-sonnet-4@20250514",
+    "claude-opus-4-20250514": "vertex_ai/claude-opus-4@20250514",
+    # Claude 3.7
+    "claude-3-7-sonnet-20250219": "vertex_ai/claude-3-7-sonnet@20250219",
+    # Claude 3.5
     "claude-3-5-sonnet-20241022": "vertex_ai/claude-3-5-sonnet-v2@20241022",
     "claude-3-5-sonnet-20240620": "vertex_ai/claude-3-5-sonnet@20240620",
+    "claude-3-5-haiku-20241022": "vertex_ai/claude-3-5-haiku@20241022",
+    # Claude 3 (haiku 3 deprecated, others retired)
     "claude-3-opus-20240229": "vertex_ai/claude-3-opus@20240229",
     "claude-3-sonnet-20240229": "vertex_ai/claude-3-sonnet@20240229",
     "claude-3-haiku-20240307": "vertex_ai/claude-3-haiku@20240307",
+    # Haiku 4.5
+    "claude-haiku-4-5-20251001": "vertex_ai/claude-haiku-4-5@20251001",
 }
 
 
@@ -221,6 +240,53 @@ def get_provider_config(provider: str) -> ProviderConfig:
         model_map={},
         pass_through=True,
     )
+
+
+def _convert_anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    """Convert Anthropic tool format to OpenAI function format.
+
+    Anthropic: {"name": "...", "description": "...", "input_schema": {...}}
+    OpenAI:    {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
+    """
+    func: dict[str, Any] = {"name": tool.get("name", "")}
+    if "description" in tool:
+        func["description"] = tool["description"]
+    if "input_schema" in tool:
+        func["parameters"] = tool["input_schema"]
+    return {"type": "function", "function": func}
+
+
+def _convert_tool_choice(choice: Any) -> Any:
+    """Convert Anthropic tool_choice to OpenAI format.
+
+    Anthropic: {"type": "auto"}, {"type": "any"}, {"type": "tool", "name": "..."}
+    OpenAI:    "auto", "required", {"type": "function", "function": {"name": "..."}}
+    """
+    if isinstance(choice, str):
+        return choice
+    if isinstance(choice, dict):
+        choice_type = choice.get("type", "auto")
+        if choice_type == "auto":
+            return "auto"
+        if choice_type == "any":
+            return "required"
+        if choice_type == "tool":
+            return {"type": "function", "function": {"name": choice.get("name", "")}}
+    return "auto"
+
+
+def _parse_tool_arguments(arguments: Any) -> Any:
+    """Parse tool call arguments from string to dict.
+
+    LiteLLM/OpenAI returns arguments as a JSON string,
+    but Anthropic expects input as a parsed dict.
+    """
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except (json.JSONDecodeError, TypeError):
+            return arguments
+    return arguments
 
 
 class LiteLLMBackend(Backend):
@@ -379,7 +445,7 @@ class LiteLLMBackend(Backend):
                         "type": "tool_use",
                         "id": tc.id,
                         "name": tc.function.name,
-                        "input": tc.function.arguments,
+                        "input": _parse_tool_arguments(tc.function.arguments),
                     }
                 )
 
@@ -437,6 +503,12 @@ class LiteLLMBackend(Backend):
                 kwargs["top_p"] = body["top_p"]
             if "stop_sequences" in body:
                 kwargs["stop"] = body["stop_sequences"]
+
+            # Tools (convert Anthropic format to OpenAI format)
+            if "tools" in body:
+                kwargs["tools"] = [_convert_anthropic_tool(t) for t in body["tools"]]
+            if "tool_choice" in body:
+                kwargs["tool_choice"] = _convert_tool_choice(body["tool_choice"])
 
             # System prompt (Anthropic puts it in body, OpenAI in messages)
             if "system" in body:
@@ -517,6 +589,14 @@ class LiteLLMBackend(Backend):
                 kwargs["max_tokens"] = body["max_tokens"]
             if "temperature" in body:
                 kwargs["temperature"] = body["temperature"]
+            if "top_p" in body:
+                kwargs["top_p"] = body["top_p"]
+            if "stop_sequences" in body:
+                kwargs["stop"] = body["stop_sequences"]
+            if "tools" in body:
+                kwargs["tools"] = [_convert_anthropic_tool(t) for t in body["tools"]]
+            if "tool_choice" in body:
+                kwargs["tool_choice"] = _convert_tool_choice(body["tool_choice"])
             if "system" in body:
                 system = body["system"]
                 if isinstance(system, str):

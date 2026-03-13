@@ -7215,12 +7215,14 @@ if __name__ == "__main__":
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})"
     )
 
-    # Backend (anthropic direct, bedrock, openrouter, or anyllm)
+    # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
     parser.add_argument(
         "--backend",
-        choices=["anthropic", "bedrock", "openrouter", "anyllm"],
         default="anthropic",
-        help="Backend for Anthropic API: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter', or 'anyllm' (any-llm)",
+        help=(
+            "Backend: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter', "
+            "'anyllm' (any-llm), or 'litellm-<provider>' (e.g., litellm-hosted_vllm, litellm-vertex)"
+        ),
     )
     parser.add_argument(
         "--bedrock-region",

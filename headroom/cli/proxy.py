@@ -1,5 +1,7 @@
 """Proxy server CLI commands."""
 
+import os
+
 import click
 
 from .main import main
@@ -88,6 +90,16 @@ from .main import main
     help="Provider for any-llm backend: openai, mistral, groq, ollama, etc. (default: openai)",
 )
 @click.option(
+    "--openai-api-url",
+    default=None,
+    help="Custom OpenAI API URL for passthrough endpoints (env: OPENAI_TARGET_API_URL)",
+)
+@click.option(
+    "--gemini-api-url",
+    default=None,
+    help="Custom Gemini API URL for passthrough endpoints (env: GEMINI_TARGET_API_URL)",
+)
+@click.option(
     "--region",
     default="us-west-2",
     help="Cloud region for Bedrock/Vertex/etc (default: us-west-2)",
@@ -127,6 +139,8 @@ def proxy(
     memory_top_k: int,
     backend: str,
     anyllm_provider: str,
+    openai_api_url: str | None,
+    gemini_api_url: str | None,
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
@@ -155,9 +169,18 @@ def proxy(
         click.echo(f"Details: {e}")
         raise SystemExit(1) from None
 
+    # Resolve API URL overrides: CLI flag > env var > None
+    effective_openai_api_url = openai_api_url or os.environ.get("OPENAI_TARGET_API_URL")
+    effective_gemini_api_url = gemini_api_url or os.environ.get("GEMINI_TARGET_API_URL")
+
+    # Resolve anyllm provider: env var takes precedence over CLI default (matches argparse path)
+    effective_anyllm_provider = os.environ.get("HEADROOM_ANYLLM_PROVIDER") or anyllm_provider
+
     config = ProxyConfig(
         host=host,
         port=port,
+        openai_api_url=effective_openai_api_url,
+        gemini_api_url=effective_gemini_api_url,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
         rate_limit_enabled=not no_rate_limit,
@@ -185,7 +208,7 @@ def proxy(
         backend=backend,
         bedrock_region=bedrock_region or region,
         bedrock_profile=bedrock_profile,
-        anyllm_provider=anyllm_provider,
+        anyllm_provider=effective_anyllm_provider,
     )
 
     memory_status = "DISABLED"
@@ -198,7 +221,7 @@ def proxy(
 
     if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
         # any-llm backend
-        backend_status = f"{anyllm_provider.title()} via any-llm"
+        backend_status = f"{effective_anyllm_provider.title()} via any-llm"
         backend_section = """
   Set credentials for your provider (e.g., OPENAI_API_KEY, MISTRAL_API_KEY)
   Providers: https://mozilla-ai.github.io/any-llm/providers/

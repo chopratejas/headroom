@@ -6,6 +6,7 @@ through a single interface. Auth and format translation handled automatically.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -139,12 +140,18 @@ class AnyLLMBackend(Backend):
 
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
+                args = tc.function.arguments
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 content.append(
                     {
                         "type": "tool_use",
                         "id": tc.id,
                         "name": tc.function.name,
-                        "input": tc.function.arguments,
+                        "input": args,
                     }
                 )
 
@@ -207,6 +214,10 @@ class AnyLLMBackend(Backend):
                 kwargs["top_p"] = body["top_p"]
             if "stop_sequences" in body:
                 kwargs["stop"] = body["stop_sequences"]
+            if "tools" in body:
+                kwargs["tools"] = body["tools"]
+            if "tool_choice" in body:
+                kwargs["tool_choice"] = body["tool_choice"]
 
             logger.debug(f"any-llm request: provider={self.provider}, model={original_model}")
 
@@ -249,6 +260,14 @@ class AnyLLMBackend(Backend):
                 kwargs["max_tokens"] = body["max_tokens"]
             if "temperature" in body:
                 kwargs["temperature"] = body["temperature"]
+            if "top_p" in body:
+                kwargs["top_p"] = body["top_p"]
+            if "stop_sequences" in body:
+                kwargs["stop"] = body["stop_sequences"]
+            if "tools" in body:
+                kwargs["tools"] = body["tools"]
+            if "tool_choice" in body:
+                kwargs["tool_choice"] = body["tool_choice"]
 
             msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
