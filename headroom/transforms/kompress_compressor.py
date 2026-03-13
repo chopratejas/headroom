@@ -81,7 +81,7 @@ class HeadroomCompressorModel(nn.Module):
             borderline = (token_probs > 0.3) & (token_probs <= 0.5)
             keep = token_keep | (borderline & span_boost)
 
-            return keep
+            return keep  # type: ignore[no-any-return]
 
     def get_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Get per-token importance scores (for ranking when target_ratio is set)."""
@@ -89,7 +89,7 @@ class HeadroomCompressorModel(nn.Module):
             hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
             token_probs = torch.softmax(self.token_head(hidden), dim=-1)[:, :, 1]
             span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
-            return token_probs * (0.5 + 0.5 * span_scores)
+            return token_probs * (0.5 + 0.5 * span_scores)  # type: ignore[no-any-return]
 
 
 # ── Model Loading ─────────────────────────────────────────────────────
