@@ -190,13 +190,13 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: 
         # Step 3: Launch claude
         click.echo()
         click.echo("  Launching Claude Code (API routed through Headroom)...")
-        click.echo(f"  ANTHROPIC_API_URL=http://127.0.0.1:{port}")
+        click.echo(f"  ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
         click.echo()
 
         env = os.environ.copy()
-        env["ANTHROPIC_API_URL"] = f"http://127.0.0.1:{port}"
+        env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
 
         # Run claude — this blocks until claude exits
         result = subprocess.run(

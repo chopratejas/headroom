@@ -149,7 +149,7 @@ def register_claude_hooks(rtk_path: Path | None = None) -> bool:
 
     try:
         result = subprocess.run(
-            [str(rtk_path), "init", "--global"],
+            [str(rtk_path), "init", "--global", "--auto-patch"],
             capture_output=True,
             text=True,
             timeout=10,
