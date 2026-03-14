@@ -217,6 +217,46 @@ _CACHE_ECONOMICS = {
 }
 
 
+def _get_rtk_stats() -> dict[str, Any] | None:
+    """Get rtk (Rust Token Killer) savings stats if rtk is installed.
+
+    Reads from rtk's tracking database via `rtk gain --format json`.
+    Returns None if rtk is not installed.
+    """
+    import shutil
+    import subprocess as _sp
+
+    rtk_bin = shutil.which("rtk")
+    if not rtk_bin:
+        # Check headroom-managed install
+        rtk_managed = Path.home() / ".headroom" / "bin" / "rtk"
+        if rtk_managed.exists():
+            rtk_bin = str(rtk_managed)
+        else:
+            return None
+
+    try:
+        result = _sp.run(
+            [rtk_bin, "gain", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            summary = data.get("summary", {})
+            return {
+                "installed": True,
+                "total_commands": summary.get("total_commands", 0),
+                "tokens_saved": summary.get("total_saved", 0),
+                "avg_savings_pct": summary.get("avg_savings_pct", 0.0),
+            }
+    except Exception:
+        pass
+
+    return {"installed": True, "total_commands": 0, "tokens_saved": 0, "avg_savings_pct": 0.0}
+
+
 def _build_prefix_cache_stats(
     metrics: PrometheusMetrics,
     cost_tracker: CostTracker | None,
@@ -322,24 +362,27 @@ def _build_prefix_cache_stats(
                 metrics.prefix_freeze_tokens_preserved - metrics.prefix_freeze_compression_foregone
             ),
         },
+        "attribution": (
+            "Prefix caching is performed by the LLM provider (Anthropic, OpenAI). "
+            "Headroom reports cache stats as observed from API responses. "
+            "CacheAligner and prefix freeze improve cache hit rates by stabilizing "
+            "the message prefix, but baseline caching happens without Headroom."
+        ),
     }
 
 
 def _merge_cost_stats(
     cost_stats: dict | None,
     cache_stats: dict,
+    cli_tokens_avoided: int = 0,
 ) -> dict | None:
-    """Add prefix cache savings to overall cost stats.
+    """Add prefix cache and CLI filtering savings to overall cost stats.
 
-    Compression savings and cache savings are computed on different token
-    scopes (Headroom tracks user-message tokens; Anthropic's cache metrics
-    cover the entire prompt including system/tools). We keep both as
-    additive line items without cross-contaminating the counterfactual.
-
-    - compression_savings_usd: from removing tokens (CostTracker scope)
-    - cache_savings_usd: from prefix cache discounts (full-prompt scope)
-    - savings_usd: sum of both (hero metric)
-    - cost_with/without_headroom_usd: unchanged (compression scope only)
+    Three savings layers, each on a different scope:
+    - compression_savings_usd: tokens removed by proxy (SmartCrusher, etc.)
+    - cache_savings_usd: prefix cache discount from provider
+    - cli_filtering_savings_usd: tokens avoided by rtk before reaching context
+    - savings_usd: sum of all (hero metric)
     """
     if cost_stats is None:
         return None
@@ -347,11 +390,24 @@ def _merge_cost_stats(
     cache_net = cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
     compression_savings = cost_stats.get("savings_usd", 0.0)
 
+    # Estimate CLI filtering savings: tokens_avoided * avg input price
+    # Use the average input price from the cost tracker if available
+    cli_savings_usd = 0.0
+    if cli_tokens_avoided > 0 and LITELLM_AVAILABLE:
+        # Use a conservative estimate: average across models seen
+        total_input_cost = cost_stats.get("total_input_cost_usd", 0.0)
+        total_input_tokens = cost_stats.get("total_input_tokens", 0)
+        if total_input_tokens > 0:
+            avg_price_per_token = total_input_cost / total_input_tokens
+            cli_savings_usd = cli_tokens_avoided * avg_price_per_token
+
     return {
         **cost_stats,
-        "savings_usd": round(compression_savings + cache_net, 4),
+        "savings_usd": round(compression_savings + cache_net + cli_savings_usd, 4),
         "compression_savings_usd": round(compression_savings, 4),
         "cache_savings_usd": round(cache_net, 4),
+        "cli_filtering_savings_usd": round(cli_savings_usd, 4),
+        "cli_tokens_avoided": cli_tokens_avoided,
     }
 
 
@@ -6240,10 +6296,42 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # Build prefix cache stats once (used in both prefix_cache and cost)
         prefix_cache_stats = _build_prefix_cache_stats(m, proxy.cost_tracker)
 
+        # Fetch CLI filtering savings (rtk — tokens avoided before reaching context)
+        cli_filtering_stats = _get_rtk_stats()
+        cli_tokens_avoided = (
+            cli_filtering_stats.get("tokens_saved", 0) if cli_filtering_stats else 0
+        )
+
         # Calculate total tokens before compression
         total_tokens_before = m.tokens_input_total + m.tokens_saved_total
 
+        # Build unified savings summary (all layers)
+        compression_tokens = m.tokens_saved_total
+        cache_net_usd = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
+        total_tokens_all_layers = compression_tokens + cli_tokens_avoided
+
         return {
+            "savings": {
+                "total_tokens": total_tokens_all_layers,
+                "by_layer": {
+                    "cli_filtering": {
+                        "tokens": cli_tokens_avoided,
+                        "description": "Tokens avoided by CLI output filtering (rtk) before reaching context",
+                    },
+                    "compression": {
+                        "tokens": compression_tokens,
+                        "description": "Tokens removed by proxy compression (SmartCrusher, ContentRouter, etc.)",
+                    },
+                    "prefix_cache": {
+                        "discount_usd": round(cache_net_usd, 4),
+                        "description": (
+                            "Cost discount from provider prefix caching. "
+                            "Headroom's CacheAligner improves hit rates; "
+                            "baseline caching is provider-native."
+                        ),
+                    },
+                },
+            },
             "requests": {
                 "total": m.requests_total,
                 "cached": m.requests_cached,
@@ -6256,6 +6344,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "input": m.tokens_input_total,
                 "output": m.tokens_output_total,
                 "saved": m.tokens_saved_total,
+                "cli_tokens_avoided": cli_tokens_avoided,
                 "total_before_compression": total_tokens_before,
                 "savings_percent": round(
                     (m.tokens_saved_total / total_tokens_before * 100)
@@ -6298,6 +6387,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "cost": _merge_cost_stats(
                 proxy.cost_tracker.stats() if proxy.cost_tracker else None,
                 prefix_cache_stats,
+                cli_tokens_avoided=cli_tokens_avoided,
             ),
             "compression": {
                 "ccr_entries": compression_stats.get("entry_count", 0),
@@ -6327,6 +6417,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 ),
             },
             "toin": get_toin().get_stats(),
+            "cli_filtering": cli_filtering_stats,
             "cache": await proxy.cache.stats() if proxy.cache else None,
             "rate_limiter": await proxy.rate_limiter.stats() if proxy.rate_limiter else None,
             "recent_requests": proxy.logger.get_recent(10) if proxy.logger else [],
