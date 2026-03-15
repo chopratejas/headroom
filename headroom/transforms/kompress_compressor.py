@@ -3,8 +3,7 @@
 Drop-in replacement for LLMLingua-2. Auto-downloads the model from
 HuggingFace (chopratejas/kompress-base) on first use.
 
-No extra pip install needed — uses transformers + safetensors
-which are already Headroom dependencies.
+Requires the [ml] extra: pip install headroom-ai[ml]
 
 Usage:
     >>> from headroom.transforms.kompress_compressor import KompressCompressor
@@ -19,10 +18,6 @@ import logging
 import threading
 from dataclasses import dataclass
 from typing import Any
-
-import torch
-import torch.nn as nn
-from transformers import AutoModel, AutoTokenizer
 
 from ..config import TransformResult
 from ..tokenizer import Tokenizer
@@ -39,64 +34,95 @@ _kompress_tokenizer = None
 _kompress_lock = threading.Lock()
 
 
+def is_kompress_available() -> bool:
+    """Check if Kompress dependencies are available (requires [ml] extra)."""
+    try:
+        import huggingface_hub  # noqa: F401
+        import safetensors  # noqa: F401
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 # ── Model Architecture (must match training) ──────────────────────────
+# torch/transformers are imported lazily — only when actually needed.
+# This allows `from kompress_compressor import is_kompress_available`
+# to work without torch installed.
 
 
-class HeadroomCompressorModel(nn.Module):
-    """Dual-head ModernBERT: token classification + span importance CNN."""
+def _get_model_class() -> type:
+    """Return the HeadroomCompressorModel class, importing torch on demand."""
+    import torch
+    import torch.nn as nn
+    from transformers import AutoModel
 
-    def __init__(self, model_name: str = "answerdotai/ModernBERT-base"):
-        super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name, attn_implementation="eager")
-        hidden_size = self.encoder.config.hidden_size  # 768
+    class HeadroomCompressorModel(nn.Module):
+        """Dual-head ModernBERT: token classification + span importance CNN."""
 
-        # Head 1: Token keep/discard
-        self.token_dropout = nn.Dropout(0.1)
-        self.token_head = nn.Linear(hidden_size, 2)
+        def __init__(self, model_name: str = "answerdotai/ModernBERT-base"):
+            super().__init__()
+            self.encoder = AutoModel.from_pretrained(model_name, attn_implementation="eager")
+            hidden_size = self.encoder.config.hidden_size  # 768
 
-        # Head 2: Span importance (1D CNN)
-        self.span_conv = nn.Sequential(
-            nn.Conv1d(hidden_size, 256, kernel_size=5, padding=2),
-            nn.GELU(),
-            nn.Conv1d(256, 1, kernel_size=3, padding=1),
-            nn.Sigmoid(),
-        )
+            # Head 1: Token keep/discard
+            self.token_dropout = nn.Dropout(0.1)
+            self.token_head = nn.Linear(hidden_size, 2)
 
-    def get_keep_mask(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Get per-token keep/discard decision. True = keep."""
-        with torch.no_grad():
-            hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
+            # Head 2: Span importance (1D CNN)
+            self.span_conv = nn.Sequential(
+                nn.Conv1d(hidden_size, 256, kernel_size=5, padding=2),
+                nn.GELU(),
+                nn.Conv1d(256, 1, kernel_size=3, padding=1),
+                nn.Sigmoid(),
+            )
 
-            # Token head: binary classifier — argmax decides keep/discard
-            token_logits = self.token_head(hidden)  # [B, L, 2]
-            token_keep = token_logits[:, :, 1] > token_logits[:, :, 0]  # True if class 1 > class 0
+        def get_keep_mask(
+            self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        ) -> torch.Tensor:
+            """Get per-token keep/discard decision. True = keep."""
+            with torch.no_grad():
+                hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
 
-            # Span head: boost tokens in important spans
-            # If a token is borderline but its span is important, keep it
-            span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
-            span_boost = span_scores > 0.5  # span says this region matters
+                # Token head: binary classifier — argmax decides keep/discard
+                token_logits = self.token_head(hidden)  # [B, L, 2]
+                token_keep = (
+                    token_logits[:, :, 1] > token_logits[:, :, 0]
+                )  # True if class 1 > class 0
 
-            # Keep if: token head says keep, OR token is borderline and span says keep
-            token_probs = torch.softmax(token_logits, dim=-1)[:, :, 1]
-            borderline = (token_probs > 0.3) & (token_probs <= 0.5)
-            keep = token_keep | (borderline & span_boost)
+                # Span head: boost tokens in important spans
+                # If a token is borderline but its span is important, keep it
+                span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
+                span_boost = span_scores > 0.5  # span says this region matters
 
-            return keep  # type: ignore[no-any-return]
+                # Keep if: token head says keep, OR token is borderline and span says keep
+                token_probs = torch.softmax(token_logits, dim=-1)[:, :, 1]
+                borderline = (token_probs > 0.3) & (token_probs <= 0.5)
+                keep = token_keep | (borderline & span_boost)
 
-    def get_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Get per-token importance scores (for ranking when target_ratio is set)."""
-        with torch.no_grad():
-            hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
-            token_probs = torch.softmax(self.token_head(hidden), dim=-1)[:, :, 1]
-            span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
-            return token_probs * (0.5 + 0.5 * span_scores)  # type: ignore[no-any-return]
+                return keep  # type: ignore[no-any-return]
+
+        def get_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+            """Get per-token importance scores (for ranking when target_ratio is set)."""
+            with torch.no_grad():
+                hidden = self.encoder(input_ids, attention_mask=attention_mask).last_hidden_state
+                token_probs = torch.softmax(self.token_head(hidden), dim=-1)[:, :, 1]
+                span_scores = self.span_conv(hidden.transpose(1, 2)).squeeze(1)
+                return token_probs * (0.5 + 0.5 * span_scores)  # type: ignore[no-any-return]
+
+    return HeadroomCompressorModel
 
 
 # ── Model Loading ─────────────────────────────────────────────────────
 
 
-def _load_kompress(device: str = "auto") -> tuple[HeadroomCompressorModel, Any]:
+def _load_kompress(device: str = "auto") -> tuple[Any, Any]:
     """Download from HuggingFace and load the Kompress model."""
+    import torch
+    from transformers import AutoTokenizer
+
     global _kompress_model, _kompress_tokenizer
 
     with _kompress_lock:
@@ -111,6 +137,7 @@ def _load_kompress(device: str = "auto") -> tuple[HeadroomCompressorModel, Any]:
         weights_path = hf_hub_download(HF_MODEL_ID, "model.safetensors")
 
         # Load architecture
+        HeadroomCompressorModel = _get_model_class()
         model = HeadroomCompressorModel()
 
         # Load trained weights
@@ -139,19 +166,6 @@ def _load_kompress(device: str = "auto") -> tuple[HeadroomCompressorModel, Any]:
         return model, tokenizer
 
 
-def is_kompress_available() -> bool:
-    """Check if Kompress dependencies are available (requires [ml] extra)."""
-    try:
-        import huggingface_hub  # noqa: F401
-        import safetensors  # noqa: F401
-        import torch  # noqa: F401
-        import transformers  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
 def unload_kompress_model() -> bool:
     """Unload the Kompress model to free memory."""
     global _kompress_model, _kompress_tokenizer
@@ -159,8 +173,13 @@ def unload_kompress_model() -> bool:
         if _kompress_model is not None:
             _kompress_model = None
             _kompress_tokenizer = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
             return True
     return False
 
