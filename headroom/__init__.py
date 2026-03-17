@@ -237,8 +237,13 @@ __all__ = [
     "CompressionHooks",
     "CompressContext",
     "CompressEvent",
+    # Shared context
+    "SharedContext",
 ]
 
 # One-function compression API
 from headroom.compress import CompressResult, compress  # noqa: E402
 from headroom.hooks import CompressContext, CompressEvent, CompressionHooks  # noqa: E402
+
+# Shared context for multi-agent workflows
+from headroom.shared_context import SharedContext  # noqa: E402

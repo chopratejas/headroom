@@ -5,7 +5,9 @@
   </p>
   <p align="center">
     Every tool call, DB query, file read, and RAG retrieval your agent makes is 70-95% boilerplate.<br>
-    Headroom compresses it away before it hits the model.
+    Headroom compresses it away before it hits the model.<br><br>
+    Works with <b>any agent</b> — coding agents (Claude Code, Codex, Cursor, Aider), custom agents<br>
+    (LangChain, LangGraph, CrewAI, Agno, OpenAI Agents SDK), or your own Python code.
   </p>
 </p>
 
@@ -39,16 +41,18 @@
 
 ```
 Your Agent / App
+  (coding agents, customer support bots, RAG pipelines,
+   data analysis agents, research agents, any LLM app)
       │
       │  tool calls, logs, DB reads, RAG results, file reads, API responses
       ▼
-   Headroom  ← transparent proxy, no code changes needed
+   Headroom  ← proxy, Python library, or framework integration
       │
       ▼
  LLM Provider  (OpenAI, Anthropic, Google, Bedrock, 100+ via LiteLLM)
 ```
 
-Headroom sits between your application and the LLM provider. It intercepts requests, compresses the context, and forwards an optimized prompt. Your app doesn't change — just point it at Headroom.
+Headroom sits between your application and the LLM provider. It intercepts requests, compresses the context, and forwards an optimized prompt. Use it as a transparent proxy (zero code changes), a Python function (`compress()`), or a framework integration (LangChain, LiteLLM, Agno).
 
 ### What gets compressed
 
@@ -69,23 +73,7 @@ Headroom optimizes any data your agent injects into a prompt:
 pip install "headroom-ai[all]"
 ```
 
-### Proxy (zero code changes)
-
-```bash
-headroom proxy --port 8787
-```
-
-```bash
-# Claude Code — just set the base URL
-ANTHROPIC_BASE_URL=http://localhost:8787 claude
-
-# Cursor, Continue, any OpenAI-compatible tool
-OPENAI_BASE_URL=http://localhost:8787/v1 cursor
-```
-
-Works with any language, any tool, any framework. One env var. **[Proxy docs](docs/proxy.md)**
-
-### Python: One function
+### Any agent — one function
 
 ```python
 from headroom import compress
@@ -95,21 +83,68 @@ response = client.messages.create(model="claude-sonnet-4-5-20250929", messages=r
 print(f"Saved {result.tokens_saved} tokens ({result.compression_ratio:.0%})")
 ```
 
-Works with any Python LLM client — Anthropic, OpenAI, LiteLLM, httpx, anything.
+Works with any Python LLM client — Anthropic, OpenAI, LiteLLM, Bedrock, httpx, anything. Works with any agent framework — LangChain, LangGraph, CrewAI, Agno, OpenAI Agents SDK, or your own code.
 
-### Already have a proxy or gateway?
+### Any agent — proxy (zero code changes)
 
-You don't need to replace it. Drop Headroom into your existing stack:
+```bash
+headroom proxy --port 8787
+```
+
+```bash
+# Point any LLM client at the proxy
+ANTHROPIC_BASE_URL=http://localhost:8787 your-app
+OPENAI_BASE_URL=http://localhost:8787/v1 your-app
+```
+
+Works with any language, any tool, any framework. **[Proxy docs](docs/proxy.md)**
+
+### Coding agents — one command
+
+```bash
+headroom wrap claude       # Starts proxy + launches Claude Code
+headroom wrap codex        # Starts proxy + launches OpenAI Codex CLI
+headroom wrap aider        # Starts proxy + launches Aider
+headroom wrap cursor       # Starts proxy + prints Cursor config
+```
+
+Headroom starts a proxy, points your tool at it, and compresses everything automatically.
+
+### Multi-agent — SharedContext
+
+```python
+from headroom import SharedContext
+
+ctx = SharedContext()
+ctx.put("research", big_agent_output)      # Agent A stores (compressed)
+summary = ctx.get("research")               # Agent B reads (~80% smaller)
+full = ctx.get("research", full=True)       # Agent B gets original if needed
+```
+
+Compress what moves between agents — any framework. **[SharedContext Guide](docs/shared-context.md)**
+
+### MCP Tools (Claude Code, Cursor)
+
+```bash
+headroom mcp install && claude
+```
+
+Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `headroom_stats`. **[MCP Guide](docs/mcp.md)**
+
+### Drop into your existing stack
 
 | Your setup | Add Headroom | One-liner |
 |------------|-------------|-----------|
+| **Any Python app** | `compress()` | `result = compress(messages, model="gpt-4o")` |
+| **Multi-agent** | SharedContext | `ctx = SharedContext(); ctx.put("key", data)` |
 | **LiteLLM** | Callback | `litellm.callbacks = [HeadroomCallback()]` |
 | **Any Python proxy** | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
-| **Any Python app** | `compress()` | `result = compress(messages, model="gpt-4o")` |
 | **Agno agents** | Wrap model | `HeadroomAgnoModel(your_model)` |
 | **LangChain** | Wrap model | `HeadroomChatModel(your_llm)` *(experimental)* |
+| **Claude Code** | Wrap | `headroom wrap claude` |
+| **Codex / Aider** | Wrap | `headroom wrap codex` or `headroom wrap aider` |
 
-**[Full Integration Guide](docs/integration-guide.md)** — detailed setup for LiteLLM, ASGI middleware, compress(), and every framework.
+**[Full Integration Guide](docs/integration-guide.md)** — detailed setup for every framework.
 
 ---
 
@@ -194,7 +229,7 @@ Headroom never throws data away. It compresses aggressively, stores the original
 
 ### Smart Content Detection
 
-Auto-detects what's in your context — JSON arrays, code, logs, plain text — and routes each to the best compressor. JSON goes to SmartCrusher, code goes through AST-aware compression (Python, JS, Go, Rust, Java, C++), prose goes to LLMLingua-2.
+Auto-detects what's in your context — JSON arrays, code, logs, plain text — and routes each to the best compressor. JSON goes to SmartCrusher, code goes through AST-aware compression (Python, JS, Go, Rust, Java, C++), text goes to Kompress (ModernBERT-based, with `[ml]` extra).
 
 ### Cache Optimization
 
@@ -226,7 +261,7 @@ Reads your conversation history, finds every failed tool call, correlates it wit
 | **Content Router** | Auto-detects content type, routes to optimal compressor |
 | **SmartCrusher** | Universal JSON compression — arrays of dicts, strings, numbers, mixed types, nested objects |
 | **CodeCompressor** | AST-aware compression for Python, JS, Go, Rust, Java, C++ |
-| **LLMLingua-2** | ML-based 20x text compression |
+| **Kompress** | ModernBERT token compression (replaces LLMLingua-2) |
 | **CCR** | Reversible compression — LLM retrieves originals when needed |
 | **Compression Summaries** | Tells the LLM what was omitted ("3 errors, 12 failures") |
 | **CacheAligner** | Stabilizes prefixes for provider KV cache hits |
@@ -236,6 +271,9 @@ Reads your conversation history, finds every failed tool call, correlates it wit
 | **Compression Hooks** | Customize compression with pre/post hooks |
 | **Read Lifecycle** | Detects stale/superseded Read outputs, replaces with CCR markers |
 | **`headroom learn`** | Analyzes past failures, writes project-specific learnings to CLAUDE.md/MEMORY.md |
+| **`headroom wrap`** | One-command setup for Claude Code, Codex, Aider, Cursor |
+| **SharedContext** | Compressed inter-agent context sharing for multi-agent workflows |
+| **MCP Tools** | headroom_compress, headroom_retrieve, headroom_stats for Claude Code/Cursor |
 
 </details>
 
@@ -272,7 +310,7 @@ Context compression is a new space. Here's how the approaches differ:
   2. ContentRouter           Route each content type:
       │                         → SmartCrusher    (JSON)
       │                         → CodeCompressor  (code)
-      │                         → LLMLingua       (text)
+      │                         → Kompress        (text, with [ml])
       ▼
   3. IntelligentContext      Score-based token fitting
       │
@@ -291,7 +329,9 @@ Context compression is a new space. Here's how the approaches differ:
 
 | Integration | Status | Docs |
 |-------------|--------|------|
+| `headroom wrap claude/codex/aider/cursor` | **Stable** | [Proxy Docs](docs/proxy.md) |
 | `compress()` — one function | **Stable** | [Integration Guide](docs/integration-guide.md) |
+| `SharedContext` — multi-agent | **Stable** | [SharedContext Guide](docs/shared-context.md) |
 | LiteLLM callback | **Stable** | [Integration Guide](docs/integration-guide.md#litellm) |
 | ASGI middleware | **Stable** | [Integration Guide](docs/integration-guide.md#asgi-middleware) |
 | Proxy server | **Stable** | [Proxy Docs](docs/proxy.md) |
@@ -345,6 +385,7 @@ Python 3.10+
 | [Memory](docs/memory.md) | Persistent memory |
 | [Agno](docs/agno.md) | Agno agent framework |
 | [MCP](docs/mcp.md) | Context engineering toolkit (compress, retrieve, stats) |
+| [SharedContext](docs/shared-context.md) | Compressed inter-agent context sharing |
 | [Learn](docs/learn.md) | Offline failure learning for coding agents |
 | [Configuration](docs/configuration.md) | All options |
 

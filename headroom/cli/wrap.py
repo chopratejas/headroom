@@ -233,12 +233,36 @@ def _ensure_proxy(port: int, no_proxy: bool) -> subprocess.Popen | None:
         return None
 
 
-def _make_cleanup(proxy_proc_holder: list) -> Any:
-    """Create a cleanup function that terminates the proxy on exit."""
+def _make_cleanup(proxy_proc_holder: list, port: int = 8787) -> Any:
+    """Create a cleanup function that terminates the proxy on exit.
+
+    Only kills the proxy if no other headroom-wrapped clients are using it.
+    Checks by looking for other processes with ANTHROPIC_BASE_URL or
+    OPENAI_BASE_URL pointing at our port.
+    """
+
+    def _other_clients_exist() -> bool:
+        """Check if other processes are using this proxy."""
+        try:
+            # Count headroom wrap processes (excluding ourselves)
+            result = subprocess.run(
+                ["pgrep", "-f", f"127.0.0.1:{port}"],
+                capture_output=True,
+                text=True,
+            )
+            pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+            my_pid = str(os.getpid())
+            other_pids = [p for p in pids if p != my_pid]
+            return len(other_pids) > 0
+        except Exception:
+            return False  # If we can't check, assume no others
 
     def cleanup(signum: int | None = None, frame: Any = None) -> None:
         proc = proxy_proc_holder[0] if proxy_proc_holder else None
         if proc and proc.poll() is None:
+            if _other_clients_exist():
+                # Other clients still using the proxy — leave it running
+                return
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -259,7 +283,7 @@ def _launch_tool(
 ) -> None:
     """Common logic: start proxy, launch tool, clean up."""
     proxy_holder: list[subprocess.Popen | None] = [None]
-    cleanup = _make_cleanup(proxy_holder)
+    cleanup = _make_cleanup(proxy_holder, port)
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
@@ -342,7 +366,7 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: 
 
     # Setup rtk before launching (Claude-specific)
     proxy_holder: list[subprocess.Popen | None] = [None]
-    cleanup = _make_cleanup(proxy_holder)
+    cleanup = _make_cleanup(proxy_holder, port)
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
@@ -530,7 +554,7 @@ def cursor(port: int, no_rtk: bool, no_proxy: bool, verbose: bool) -> None:
         headroom wrap cursor --port 9999    # Custom proxy port
     """
     proxy_holder: list[subprocess.Popen | None] = [None]
-    cleanup = _make_cleanup(proxy_holder)
+    cleanup = _make_cleanup(proxy_holder, port)
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
