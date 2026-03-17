@@ -197,7 +197,7 @@ class CCRToolInjector:
     # Multiple marker patterns to match different compressors:
     # - SmartCrusher: [100 items compressed to 10. Retrieve more: hash=abc123]
     # - LLMLingua: [1000 items compressed to 300. Retrieve more: hash=abc123]
-    # - TextCompressor: [100 lines compressed to 10. Retrieve more: hash=abc123]
+    # - Kompress: [100 lines compressed to 10. Retrieve more: hash=abc123]
     # - LogCompressor: [200 lines compressed to 20. Retrieve more: hash=abc123]
     # - SearchCompressor: [50 matches compressed to 5. Retrieve more: hash=abc123]
     # - Generic: any [... compressed ... hash=xxx] pattern

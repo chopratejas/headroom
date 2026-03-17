@@ -9,10 +9,9 @@ from headroom.transforms import (
     LogCompressorConfig,
     SearchCompressor,
     SearchCompressorConfig,
-    TextCompressor,
-    TextCompressorConfig,
     detect_content_type,
 )
+from headroom.transforms.text_compressor import TextCompressor, TextCompressorConfig
 
 
 class TestContentDetector:

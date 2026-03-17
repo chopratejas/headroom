@@ -1,28 +1,23 @@
-"""CCR MCP Server - Exposes headroom_retrieve as an MCP tool.
+"""Headroom MCP Server — Context engineering toolkit for AI coding tools.
 
-This MCP server allows LLMs to retrieve compressed content via MCP instead
-of through injected tool definitions. It connects to the Headroom proxy's
-CompressionStore to serve retrieval requests.
+Exposes Headroom's compression, retrieval, and observability as MCP tools
+that any MCP-compatible host (Claude Code, Cursor, Codex, etc.) can use.
+
+Tools:
+    headroom_compress   — Compress content on demand (no proxy needed)
+    headroom_retrieve   — Retrieve original uncompressed content by hash
+    headroom_stats      — Session compression statistics
 
 Usage:
-    # As standalone server (stdio transport)
-    python -m headroom.ccr.mcp_server
+    # As standalone server (stdio transport, called by AI coding tools)
+    headroom mcp serve
 
-    # With custom proxy URL
-    python -m headroom.ccr.mcp_server --proxy-url http://localhost:8787
+    # Add to Claude Code
+    headroom mcp install
 
-    # Add to Claude Code's MCP config (~/.claude/mcp.json):
-    {
-        "mcpServers": {
-            "headroom": {
-                "command": "python",
-                "args": ["-m", "headroom.ccr.mcp_server"]
-            }
-        }
-    }
-
-When MCP is configured, the proxy will detect the tool is already present
-and skip tool injection, avoiding duplicate tools.
+When running standalone (no proxy), compression and retrieval happen locally
+in this process. When a proxy is running, retrieval can also fetch from the
+proxy's compression store.
 """
 
 from __future__ import annotations
@@ -32,7 +27,18 @@ import asyncio
 import json
 import logging
 import os
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+# fcntl is Unix-only; on Windows we skip file locking (stats are best-effort)
+try:
+    import fcntl
+
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
 
 # Try to import MCP SDK
 try:
@@ -55,131 +61,298 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
-# Defined inline to avoid importing the full headroom package (which loads LiteLLM
-# and makes HTTP requests to GitHub, adding 4-5 seconds to startup time).
 CCR_TOOL_NAME = "headroom_retrieve"
+COMPRESS_TOOL_NAME = "headroom_compress"
+STATS_TOOL_NAME = "headroom_stats"
 
 logger = logging.getLogger("headroom.ccr.mcp")
 
-# Default proxy URL (can be overridden via env or args)
 DEFAULT_PROXY_URL = os.environ.get("HEADROOM_PROXY_URL", "http://127.0.0.1:8787")
 
+# Session-scoped TTL: content persists for the session (1 hour), not 5 minutes.
+# The MCP server process lives as long as the coding session.
+MCP_SESSION_TTL = 3600
 
-class CCRMCPServer:
-    """MCP Server that exposes headroom_retrieve tool.
+# Shared stats file: all MCP instances (main + sub-agents) append here.
+# headroom_stats aggregates across all instances within the session window.
+SHARED_STATS_DIR = Path.home() / ".headroom"
+SHARED_STATS_FILE = SHARED_STATS_DIR / "session_stats.jsonl"
+SESSION_WINDOW_SECONDS = 7200  # 2 hours — events older than this are pruned
 
-    This server can operate in two modes:
-    1. HTTP mode: Calls the proxy's /v1/retrieve endpoint (default)
-    2. Direct mode: Uses CompressionStore directly (same process)
 
-    HTTP mode is recommended as it ensures consistency with the proxy.
+def _append_shared_event(event: dict[str, Any]) -> None:
+    """Append an event to the shared stats file (cross-process, file-locked)."""
+    try:
+        SHARED_STATS_DIR.mkdir(parents=True, exist_ok=True)
+        event["pid"] = os.getpid()
+        line = json.dumps(event, separators=(",", ":")) + "\n"
+        with open(SHARED_STATS_FILE, "a") as f:
+            if _HAS_FCNTL:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(line)
+            if _HAS_FCNTL:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception:
+        pass  # Never break compression because of stats
+
+
+def _read_shared_events(window_seconds: int = SESSION_WINDOW_SECONDS) -> list[dict[str, Any]]:
+    """Read shared events within the session time window, pruning old entries."""
+    if not SHARED_STATS_FILE.exists():
+        return []
+    cutoff = time.time() - window_seconds
+    events: list[dict[str, Any]] = []
+    keep_lines: list[str] = []
+    try:
+        with open(SHARED_STATS_FILE) as f:
+            if _HAS_FCNTL:
+                fcntl.flock(f, fcntl.LOCK_SH)
+            lines = f.readlines()
+            if _HAS_FCNTL:
+                fcntl.flock(f, fcntl.LOCK_UN)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+                if evt.get("timestamp", 0) >= cutoff:
+                    events.append(evt)
+                    keep_lines.append(line + "\n")
+            except json.JSONDecodeError:
+                continue
+        # Prune old entries (only if we dropped some)
+        if len(keep_lines) < len(lines):
+            try:
+                with open(SHARED_STATS_FILE, "w") as f:
+                    if _HAS_FCNTL:
+                        fcntl.flock(f, fcntl.LOCK_EX)
+                    f.writelines(keep_lines)
+                    if _HAS_FCNTL:
+                        fcntl.flock(f, fcntl.LOCK_UN)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return events
+
+
+@dataclass
+class SessionStats:
+    """Track compression statistics for the current MCP session."""
+
+    compressions: int = 0
+    retrievals: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_tokens_saved: int = 0
+    started_at: float = field(default_factory=time.time)
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    def record_compression(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        strategy: str,
+    ) -> None:
+        self.compressions += 1
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_tokens_saved += max(0, input_tokens - output_tokens)
+        event = {
+            "type": "compress",
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "savings_percent": round((1 - output_tokens / input_tokens) * 100, 1)
+            if input_tokens > 0
+            else 0,
+            "strategy": strategy,
+            "timestamp": time.time(),
+        }
+        self.events.append(event)
+        _append_shared_event(event)
+        # Keep last 50 events
+        if len(self.events) > 50:
+            self.events = self.events[-50:]
+
+    def record_retrieval(self, hash_key: str) -> None:
+        self.retrievals += 1
+        event = {
+            "type": "retrieve",
+            "hash": hash_key[:12],
+            "timestamp": time.time(),
+        }
+        self.events.append(event)
+        _append_shared_event(event)
+        if len(self.events) > 50:
+            self.events = self.events[-50:]
+
+    def to_dict(self) -> dict[str, Any]:
+        savings_pct = (
+            round((self.total_tokens_saved / self.total_input_tokens) * 100, 1)
+            if self.total_input_tokens > 0
+            else 0
+        )
+        # Rough cost estimate (blended rate ~$3/1M input tokens)
+        cost_saved = round(self.total_tokens_saved * 3.0 / 1_000_000, 4)
+
+        return {
+            "session_duration_seconds": round(time.time() - self.started_at),
+            "compressions": self.compressions,
+            "retrievals": self.retrievals,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_tokens_saved": self.total_tokens_saved,
+            "savings_percent": savings_pct,
+            "estimated_cost_saved_usd": cost_saved,
+            "recent_events": self.events[-10:],
+        }
+
+
+class HeadroomMCPServer:
+    """MCP Server exposing Headroom's context engineering toolkit.
+
+    Tools:
+        headroom_compress — Compress content on demand. Stores original for
+                           retrieval. Works without a proxy.
+        headroom_retrieve — Retrieve original uncompressed content by hash.
+                           Checks local store first, then proxy if configured.
+        headroom_stats    — Session statistics: compressions, savings, cost.
+
+    Modes:
+        Standalone: Compression + retrieval happen locally. No proxy needed.
+        With proxy: Retrieval also checks the proxy's compression store
+                   (for content compressed by the proxy's automatic pipeline).
     """
 
     def __init__(
         self,
         proxy_url: str = DEFAULT_PROXY_URL,
-        direct_mode: bool = False,
+        check_proxy: bool = True,
     ):
-        """Initialize CCR MCP Server.
-
-        Args:
-            proxy_url: URL of the Headroom proxy server.
-            direct_mode: If True, access CompressionStore directly instead of via HTTP.
-        """
         self.proxy_url = proxy_url
-        self.direct_mode = direct_mode
-        self._http_client: httpx.AsyncClient | None = None
+        self.check_proxy = check_proxy
+        self._http_client: httpx.AsyncClient | None = None  # type: ignore[assignment]
+        self._stats = SessionStats()
+        self._local_store: Any = None  # Lazy-initialized CompressionStore
+        self._compressor_initialized = False
 
         if not MCP_AVAILABLE:
             raise ImportError("MCP SDK not installed. Install with: pip install mcp")
 
-        if not direct_mode and not HTTPX_AVAILABLE:
-            raise ImportError(
-                "httpx not installed (required for HTTP mode). Install with: pip install httpx"
-            )
-
-        self.server = Server("headroom-ccr")
+        self.server = Server("headroom")
         self._setup_handlers()
 
-    def _setup_handlers(self):
-        """Set up MCP tool handlers."""
+    def _get_local_store(self) -> Any:
+        """Get or create the local compression store (lazy init)."""
+        if self._local_store is None:
+            from headroom.cache.compression_store import CompressionStore
 
-        @self.server.list_tools()
-        async def list_tools() -> list[Tool]:
-            """Return available tools."""
-            return [
-                Tool(
-                    name=CCR_TOOL_NAME,
-                    description=(
-                        "Retrieve original uncompressed content that was compressed "
-                        "to save tokens. Use this when you need more data than what's "
-                        "shown in compressed tool results. The hash is provided in "
-                        "compression markers like [N items compressed... hash=abc123]."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "hash": {
-                                "type": "string",
-                                "description": "Hash key from the compression marker (e.g., 'abc123' from hash=abc123)",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": (
-                                    "Optional search query to filter results. "
-                                    "If provided, only returns items matching the query. "
-                                    "If omitted, returns all original items."
-                                ),
-                            },
-                        },
-                        "required": ["hash"],
-                    },
-                )
-            ]
+            self._local_store = CompressionStore(
+                max_entries=500,
+                default_ttl=MCP_SESSION_TTL,
+            )
+        return self._local_store
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            """Handle tool calls."""
-            if name != CCR_TOOL_NAME:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({"error": f"Unknown tool: {name}"}),
-                    )
-                ]
+    def _compress_content(self, content: str) -> dict[str, Any]:
+        """Compress content using Headroom's pipeline.
 
-            hash_key = arguments.get("hash")
-            query = arguments.get("query")
+        Returns dict with compressed text, token counts, hash, etc.
+        """
+        from headroom.compress import compress
 
-            if not hash_key:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({"error": "hash parameter is required"}),
-                    )
-                ]
+        # Wrap content as a tool message (most common compression target)
+        messages = [{"role": "tool", "content": content}]
 
-            # Retrieve content
+        result = compress(messages, model="claude-sonnet-4-5-20250929")
+
+        compressed_content = result.messages[0].get("content", content)
+        input_tokens = result.tokens_before
+        output_tokens = result.tokens_after
+
+        # Store original in local store for later retrieval
+        store = self._get_local_store()
+        hash_key = store.store(
+            original=content,
+            compressed=compressed_content
+            if isinstance(compressed_content, str)
+            else json.dumps(compressed_content),
+            original_tokens=input_tokens,
+            compressed_tokens=output_tokens,
+            compression_strategy="mcp_compress",
+            ttl=MCP_SESSION_TTL,
+        )
+
+        # Track stats
+        strategy = (
+            ", ".join(result.transforms_applied) if result.transforms_applied else "passthrough"
+        )
+        self._stats.record_compression(input_tokens, output_tokens, strategy)
+
+        savings_pct = (
+            round((1 - result.compression_ratio) * 100, 1) if result.compression_ratio < 1.0 else 0
+        )
+
+        return {
+            "compressed": compressed_content,
+            "hash": hash_key,
+            "original_tokens": input_tokens,
+            "compressed_tokens": output_tokens,
+            "tokens_saved": max(0, input_tokens - output_tokens),
+            "savings_percent": savings_pct,
+            "transforms": result.transforms_applied,
+            "note": f"Original stored with hash={hash_key}. Use headroom_retrieve to get full content later.",
+        }
+
+    async def _retrieve_content(
+        self,
+        hash_key: str,
+        query: str | None,
+    ) -> dict[str, Any]:
+        """Retrieve content. Checks local store first, then proxy."""
+        # Check local store first
+        store = self._get_local_store()
+        if query:
+            results = store.search(hash_key, query)
+            if results:
+                self._stats.record_retrieval(hash_key)
+                return {
+                    "hash": hash_key,
+                    "source": "local",
+                    "query": query,
+                    "results": results,
+                    "count": len(results),
+                }
+        else:
+            entry = store.retrieve(hash_key)
+            if entry:
+                self._stats.record_retrieval(hash_key)
+                return {
+                    "hash": hash_key,
+                    "source": "local",
+                    "original_content": entry.original_content,
+                    "original_item_count": entry.original_item_count,
+                    "compressed_item_count": entry.compressed_item_count,
+                    "retrieval_count": entry.retrieval_count,
+                }
+
+        # Fall back to proxy if available
+        if self.check_proxy and HTTPX_AVAILABLE:
             try:
-                if self.direct_mode:
-                    result = await self._retrieve_direct(hash_key, query)
-                else:
-                    result = await self._retrieve_via_proxy(hash_key, query)
+                result = await self._retrieve_via_proxy(hash_key, query)
+                if "error" not in result:
+                    result["source"] = "proxy"
+                    self._stats.record_retrieval(hash_key)
+                    return result
+            except Exception:
+                pass  # Proxy unavailable, that's fine
 
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps(result, indent=2),
-                    )
-                ]
-            except Exception as e:
-                logger.error(f"Retrieval failed: {e}")
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({"error": str(e)}),
-                    )
-                ]
+        return {
+            "error": "Content not found. It may have expired or the hash may be incorrect.",
+            "hash": hash_key,
+            "hint": "Content compressed via headroom_compress is stored for the session. "
+            "Content compressed by the proxy has a shorter TTL (5 minutes).",
+        }
 
     async def _retrieve_via_proxy(
         self,
@@ -188,69 +361,237 @@ class CCRMCPServer:
     ) -> dict[str, Any]:
         """Retrieve content via proxy's HTTP endpoint."""
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(timeout=15.0)
 
         url = f"{self.proxy_url}/v1/retrieve"
-        payload = {"hash": hash_key}
+        payload: dict[str, str] = {"hash": hash_key}
         if query:
             payload["query"] = query
 
         response = await self._http_client.post(url, json=payload)
 
         if response.status_code == 404:
-            return {
-                "error": "Entry not found or expired (TTL: 5 minutes)",
-                "hash": hash_key,
-            }
+            return {"error": "Not found in proxy store", "hash": hash_key}
 
         response.raise_for_status()
         result: dict[str, Any] = response.json()
         return result
 
-    async def _retrieve_direct(
-        self,
-        hash_key: str,
-        query: str | None,
-    ) -> dict[str, Any]:
-        """Retrieve content directly from CompressionStore."""
-        from headroom.cache.compression_store import get_compression_store
+    def _setup_handlers(self) -> None:
+        """Register all MCP tool handlers."""
 
-        store = get_compression_store()
+        @self.server.list_tools()
+        async def list_tools() -> list[Tool]:
+            return [
+                Tool(
+                    name=COMPRESS_TOOL_NAME,
+                    description=(
+                        "Compress content to save context window space. "
+                        "Use this on large tool outputs, file contents, search results, "
+                        "or any content you want to shrink before reasoning over it. "
+                        "The original is stored and can be retrieved later via headroom_retrieve. "
+                        "Returns compressed text + a hash for retrieval."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": (
+                                    "The content to compress. Can be any text: file contents, "
+                                    "JSON, search results, logs, code, etc."
+                                ),
+                            },
+                        },
+                        "required": ["content"],
+                    },
+                ),
+                Tool(
+                    name=CCR_TOOL_NAME,
+                    description=(
+                        "Retrieve original uncompressed content by hash. "
+                        "Use this when you need full details from previously compressed content. "
+                        "The hash comes from headroom_compress results or from compression "
+                        "markers like [N items compressed... hash=abc123]."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "hash": {
+                                "type": "string",
+                                "description": "Hash key from compression (e.g., 'abc123' from hash=abc123)",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "Optional search query to filter results. "
+                                    "If provided, returns only items matching the query."
+                                ),
+                            },
+                        },
+                        "required": ["hash"],
+                    },
+                ),
+                Tool(
+                    name=STATS_TOOL_NAME,
+                    description=(
+                        "Show compression statistics for this session: "
+                        "total compressions, tokens saved, estimated cost savings, "
+                        "and recent compression events."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                    },
+                ),
+            ]
 
-        if query:
-            results = store.search(hash_key, query)
-            return {
-                "hash": hash_key,
-                "query": query,
-                "results": results,
-                "count": len(results),
+        @self.server.call_tool()
+        async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+            try:
+                if name == COMPRESS_TOOL_NAME:
+                    return await self._handle_compress(arguments)
+                elif name == CCR_TOOL_NAME:
+                    return await self._handle_retrieve(arguments)
+                elif name == STATS_TOOL_NAME:
+                    return await self._handle_stats()
+                else:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps({"error": f"Unknown tool: {name}"}),
+                        )
+                    ]
+            except Exception as e:
+                logger.error(f"Tool {name} failed: {e}", exc_info=True)
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps({"error": str(e)}),
+                    )
+                ]
+
+    async def _handle_compress(self, arguments: dict[str, Any]) -> list[TextContent]:
+        """Handle headroom_compress tool call."""
+        content = arguments.get("content")
+        if not content:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "content parameter is required"}),
+                )
+            ]
+
+        # Run compression in thread pool (it's CPU-bound)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, self._compress_content, content)
+
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    async def _handle_retrieve(self, arguments: dict[str, Any]) -> list[TextContent]:
+        """Handle headroom_retrieve tool call."""
+        hash_key = arguments.get("hash")
+        if not hash_key:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "hash parameter is required"}),
+                )
+            ]
+
+        query = arguments.get("query")
+        result = await self._retrieve_content(hash_key, query)
+
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    async def _handle_stats(self) -> list[TextContent]:
+        """Handle headroom_stats tool call."""
+        stats = self._stats.to_dict()
+
+        # Add local store stats if available
+        if self._local_store is not None:
+            store_stats = self._local_store.get_stats()
+            stats["store"] = {
+                "entries": store_stats.get("entry_count", 0),
+                "max_entries": store_stats.get("max_entries", 0),
             }
-        else:
-            entry = store.retrieve(hash_key)
-            if entry:
-                return {
-                    "hash": hash_key,
-                    "original_content": entry.original_content,
-                    "original_item_count": entry.original_item_count,
-                    "compressed_item_count": entry.compressed_item_count,
-                    "retrieval_count": entry.retrieval_count,
+
+        # Aggregate cross-process stats (main session + sub-agents)
+        my_pid = os.getpid()
+        shared_events = _read_shared_events()
+        other_events = [e for e in shared_events if e.get("pid") != my_pid]
+        if other_events:
+            other_compressions = [e for e in other_events if e.get("type") == "compress"]
+            other_input = sum(e.get("input_tokens", 0) for e in other_compressions)
+            other_output = sum(e.get("output_tokens", 0) for e in other_compressions)
+            other_saved = max(0, other_input - other_output)
+            stats["sub_agents"] = {
+                "compressions": len(other_compressions),
+                "retrievals": sum(1 for e in other_events if e.get("type") == "retrieve"),
+                "tokens_saved": other_saved,
+                "total_input_tokens": other_input,
+                "total_output_tokens": other_output,
+            }
+            # Combined totals
+            all_input = self._stats.total_input_tokens + other_input
+            all_saved = self._stats.total_tokens_saved + other_saved
+            stats["combined"] = {
+                "total_compressions": self._stats.compressions + len(other_compressions),
+                "total_tokens_saved": all_saved,
+                "savings_percent": round(all_saved / all_input * 100, 1) if all_input > 0 else 0,
+                "estimated_cost_saved_usd": round(all_saved * 3.0 / 1_000_000, 4),
+            }
+
+        # Fetch proxy stats (prefix cache hits, etc.) if proxy is reachable
+        if self.check_proxy and HTTPX_AVAILABLE:
+            proxy_stats = await self._fetch_proxy_stats()
+            if proxy_stats:
+                stats["proxy"] = proxy_stats
+
+        return [TextContent(type="text", text=json.dumps(stats, indent=2))]
+
+    async def _fetch_proxy_stats(self) -> dict[str, Any] | None:
+        """Fetch stats from the proxy, including prefix cache hit info."""
+        try:
+            if self._http_client is None:
+                self._http_client = httpx.AsyncClient(timeout=15.0)
+            response = await self._http_client.get(f"{self.proxy_url}/stats")
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            # Extract the most useful fields
+            result: dict[str, Any] = {}
+            if "requests_total" in data:
+                result["requests_total"] = data["requests_total"]
+            if "tokens_saved_total" in data:
+                result["tokens_saved_total"] = data["tokens_saved_total"]
+            # Prefix cache stats
+            cache = data.get("cache", data.get("caching", {}))
+            if cache:
+                result["cache"] = {
+                    "hits": cache.get("hits", cache.get("cache_hits", 0)),
+                    "misses": cache.get("misses", cache.get("cache_misses", 0)),
+                    "hit_rate": cache.get("hit_rate", cache.get("cache_hit_rate", 0)),
                 }
-            return {
-                "error": "Entry not found or expired (TTL: 5 minutes)",
-                "hash": hash_key,
-            }
+            # Cost tracking
+            cost = data.get("cost", {})
+            if cost:
+                result["cost_saved_usd"] = cost.get("total_saved", cost.get("saved", 0))
+            return result if result else None
+        except Exception:
+            return None
 
-    async def run_stdio(self):
+    async def run_stdio(self) -> None:
         """Run the server with stdio transport."""
         async with stdio_server() as (read_stream, write_stream):
-            logger.info(f"CCR MCP Server starting (proxy: {self.proxy_url})")
+            logger.info(f"Headroom MCP Server starting (proxy: {self.proxy_url})")
             await self.server.run(
                 read_stream,
                 write_stream,
                 self.server.create_initialization_options(),
             )
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Clean up resources."""
         if self._http_client:
             await self._http_client.aclose()
@@ -259,39 +600,33 @@ class CCRMCPServer:
 def create_ccr_mcp_server(
     proxy_url: str = DEFAULT_PROXY_URL,
     direct_mode: bool = False,
-) -> CCRMCPServer:
-    """Create a CCR MCP server instance.
+) -> HeadroomMCPServer:
+    """Create a Headroom MCP server instance.
 
     Args:
-        proxy_url: URL of the Headroom proxy server.
-        direct_mode: If True, access CompressionStore directly.
+        proxy_url: URL of the Headroom proxy server (for retrieval fallback).
+        direct_mode: Ignored (kept for backward compatibility).
 
     Returns:
-        CCRMCPServer instance.
-
-    Example:
-        ```python
-        server = create_ccr_mcp_server()
-        await server.run_stdio()
-        ```
+        HeadroomMCPServer instance.
     """
-    return CCRMCPServer(proxy_url=proxy_url, direct_mode=direct_mode)
+    return HeadroomMCPServer(proxy_url=proxy_url)
 
 
-async def main():
-    """Run the CCR MCP server."""
+async def main() -> None:
+    """Run the Headroom MCP server."""
     parser = argparse.ArgumentParser(
-        description="CCR MCP Server - Retrieve compressed content via MCP"
+        description="Headroom MCP Server — Context engineering toolkit"
     )
     parser.add_argument(
         "--proxy-url",
         default=DEFAULT_PROXY_URL,
-        help=f"Headroom proxy URL (default: {DEFAULT_PROXY_URL})",
+        help=f"Headroom proxy URL for retrieval fallback (default: {DEFAULT_PROXY_URL})",
     )
     parser.add_argument(
         "--direct",
         action="store_true",
-        help="Use direct CompressionStore access instead of HTTP",
+        help="(Deprecated, ignored) Use direct CompressionStore access",
     )
     parser.add_argument(
         "--debug",
@@ -304,12 +639,9 @@ async def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     else:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.WARNING)
 
-    server = create_ccr_mcp_server(
-        proxy_url=args.proxy_url,
-        direct_mode=args.direct,
-    )
+    server = HeadroomMCPServer(proxy_url=args.proxy_url)
 
     try:
         await server.run_stdio()

@@ -260,55 +260,55 @@ class KompressCompressor(Transform):
 
         try:
             model, tokenizer = _load_kompress(self.config.device)
-
-            # Tokenize
-            encoding = tokenizer(
-                words,
-                is_split_into_words=True,
-                truncation=True,
-                max_length=8192,
-                padding=True,
-                return_tensors="pt",
-            )
-
             device = next(model.parameters()).device
-            input_ids = encoding["input_ids"].to(device)
-            attention_mask = encoding["attention_mask"].to(device)
 
-            word_ids = encoding.word_ids(batch_index=0)
+            # Chunk at 512 tokens ≈ 350 words (matches training max_length)
+            max_chunk_words = 350
+            kept_ids: set[int] = set()
 
-            if target_ratio is not None:
-                # User explicitly asked for a specific ratio — use scores + top-k
-                scores = model.get_scores(input_ids, attention_mask)[0].cpu()
-                word_scores: dict[int, float] = {}
-                for idx, wid in enumerate(word_ids):
-                    if wid is None:
-                        continue
-                    s = scores[idx].item()
-                    if wid not in word_scores or s > word_scores[wid]:
-                        word_scores[wid] = s
-                if not word_scores:
-                    return self._passthrough(content, n_words)
-                sorted_wids = sorted(word_scores, key=lambda w: word_scores[w], reverse=True)
-                num_keep = max(1, int(len(sorted_wids) * target_ratio))
-                kept_ids = set(sorted_wids[:num_keep])
-            else:
-                # Model decides — no threshold, no ratio, just argmax
-                keep_mask = model.get_keep_mask(input_ids, attention_mask)[0].cpu()
-                # Map subword decisions to word-level (keep word if ANY subword says keep)
-                word_keep: dict[int, bool] = {}
-                for idx, wid in enumerate(word_ids):
-                    if wid is None:
-                        continue
-                    if keep_mask[idx].item():
-                        word_keep[wid] = True
-                    elif wid not in word_keep:
-                        word_keep[wid] = False
-                kept_ids = {wid for wid, keep in word_keep.items() if keep}
-                if not kept_ids:
-                    return self._passthrough(content, n_words)
+            for chunk_start in range(0, n_words, max_chunk_words):
+                chunk_words = words[chunk_start : chunk_start + max_chunk_words]
 
-            # Reconstruct in original word order
+                encoding = tokenizer(
+                    chunk_words,
+                    is_split_into_words=True,
+                    truncation=True,
+                    max_length=512,
+                    padding=True,
+                    return_tensors="pt",
+                )
+
+                input_ids = encoding["input_ids"].to(device)
+                attention_mask = encoding["attention_mask"].to(device)
+                word_ids = encoding.word_ids(batch_index=0)
+
+                if target_ratio is not None:
+                    scores = model.get_scores(input_ids, attention_mask)[0].cpu()
+                    word_scores: dict[int, float] = {}
+                    for idx, wid in enumerate(word_ids):
+                        if wid is None:
+                            continue
+                        s = scores[idx].item()
+                        if wid not in word_scores or s > word_scores[wid]:
+                            word_scores[wid] = s
+                    if word_scores:
+                        sorted_wids = sorted(
+                            word_scores, key=lambda w: word_scores[w], reverse=True
+                        )
+                        num_keep = max(1, int(len(sorted_wids) * target_ratio))
+                        for wid in sorted_wids[:num_keep]:
+                            kept_ids.add(wid + chunk_start)
+                else:
+                    keep_mask = model.get_keep_mask(input_ids, attention_mask)[0].cpu()
+                    for idx, wid in enumerate(word_ids):
+                        if wid is None:
+                            continue
+                        if keep_mask[idx].item():
+                            kept_ids.add(wid + chunk_start)
+
+            if not kept_ids:
+                return self._passthrough(content, n_words)
+
             compressed_words = [words[w] for w in sorted(kept_ids) if w < n_words]
             compressed = " ".join(compressed_words)
             compressed_count = len(compressed_words)

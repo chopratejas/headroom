@@ -80,7 +80,7 @@ class TransformPipeline:
         # 2. Content-aware Compression
         # ContentRouter handles ALL content types intelligently:
         # - JSON arrays -> SmartCrusher
-        # - Plain text -> LLMLingua (ML-based) or TextCompressor
+        # - Plain text -> Kompress (ML-based) or passthrough
         # - Code -> CodeCompressor (AST-aware)
         # - Logs -> LogCompressor
         # - Search results -> SearchCompressor

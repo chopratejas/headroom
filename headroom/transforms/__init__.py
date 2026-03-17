@@ -23,7 +23,6 @@ from .search_compressor import (
     SearchCompressorConfig,
 )
 from .smart_crusher import SmartCrusher, SmartCrusherConfig
-from .text_compressor import TextCompressionResult, TextCompressor, TextCompressorConfig
 from .tool_crusher import ToolCrusher
 
 # ML-based compression (optional dependency)
@@ -101,9 +100,6 @@ __all__ = [
     "DiffCompressor",
     "DiffCompressorConfig",
     "DiffCompressionResult",
-    "TextCompressor",
-    "TextCompressorConfig",
-    "TextCompressionResult",
     # Code-aware compression (AST-based)
     "CodeAwareCompressor",
     "CodeCompressorConfig",

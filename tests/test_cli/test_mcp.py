@@ -361,7 +361,7 @@ class TestMCPServerInitialization:
 
         # Verify the server was created with correct configuration
         assert server.server is not None
-        assert server.server.name == "headroom-ccr"
+        assert server.server.name == "headroom"
         # The tool name should be headroom_retrieve
         assert CCR_TOOL_NAME == "headroom_retrieve"
 

@@ -60,11 +60,11 @@ from .tool_injection import (
 
 # MCP server is optional (requires mcp package)
 try:
-    from .mcp_server import CCRMCPServer, create_ccr_mcp_server
+    from .mcp_server import HeadroomMCPServer, create_ccr_mcp_server
 
     MCP_SERVER_AVAILABLE = True
 except ImportError:
-    CCRMCPServer = None  # type: ignore
+    HeadroomMCPServer = None  # type: ignore
     create_ccr_mcp_server = None  # type: ignore
     MCP_SERVER_AVAILABLE = False
 
@@ -100,7 +100,7 @@ __all__ = [
     "process_batch_results",
     "reset_batch_context_store",
     # MCP server
-    "CCRMCPServer",
+    "HeadroomMCPServer",
     "create_ccr_mcp_server",
     "MCP_SERVER_AVAILABLE",
 ]

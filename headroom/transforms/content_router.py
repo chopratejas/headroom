@@ -10,7 +10,7 @@ Supported Compressors:
 - SearchCompressor: grep/ripgrep results
 - LogCompressor: Build/test output
 - LLMLinguaCompressor: Plain text (ML-based)
-- TextCompressor: Plain text (heuristic-based)
+- Kompress: Plain text (ML-based, requires [ml] extra)
 
 Routing Strategy:
 1. Use source hint if available (highest confidence)
@@ -637,7 +637,6 @@ class ContentRouter(Transform):
         self._html_extractor: Any = None
         self._kompress: Any = None
         self._llmlingua: Any = None
-        self._text_compressor: Any = None
         self._image_optimizer: Any = None
 
         # TOIN integration for cross-strategy learning
@@ -1000,7 +999,7 @@ class ContentRouter(Transform):
 
             elif strategy == CompressionStrategy.TEXT:
                 # Prefer ML compressor (Kompress > LLMLingua) for text
-                # Falls back to heuristic TextCompressor if neither available
+                # Passes through unchanged if neither Kompress nor LLMLingua available
                 compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
 
         except Exception as e:
@@ -1220,17 +1219,6 @@ class ContentRouter(Transform):
             except ImportError:
                 logger.debug("LLMLinguaCompressor not available")
         return self._llmlingua
-
-    def _get_text_compressor(self) -> Any:
-        """Get TextCompressor (lazy load)."""
-        if self._text_compressor is None:
-            try:
-                from .text_compressor import TextCompressor
-
-                self._text_compressor = TextCompressor()
-            except ImportError:
-                logger.debug("TextCompressor not available")
-        return self._text_compressor
 
     def _get_image_optimizer(self) -> Any:
         """Get ImageCompressor (lazy load).

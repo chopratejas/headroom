@@ -12,7 +12,7 @@ TEXT COMPRESSION IS OPT-IN: For text-based content, Headroom provides standalone
 utilities that applications can use explicitly:
 - SearchCompressor: For grep/ripgrep output (file:line:content format)
 - LogCompressor: For build/test logs (pytest, npm, cargo output)
-- TextCompressor: For generic plain text with anchor preservation
+- Kompress: For generic plain text (ML-based, requires [ml] extra)
 
 Applications should decide when and how to use text compression based on their
 specific needs. This design prevents lossy text compression from being applied

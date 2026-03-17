@@ -69,14 +69,20 @@ def mcp() -> None:
     Quick Start:
         headroom mcp install    # Configure Claude Code
         headroom proxy          # Start the proxy (in another terminal)
-        claude                  # Start Claude Code - it now has headroom!
+        ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
+
+    \b
+    The MCP server provides on-demand tools (compress, retrieve, stats).
+    For automatic compression of ALL traffic, also set ANTHROPIC_BASE_URL
+    to route through the proxy.
 
     \b
     How it works:
-        1. The proxy compresses large tool outputs (file listings, search results)
-        2. Claude sees compressed summaries with hash markers
-        3. When Claude needs full details, it calls headroom_retrieve
-        4. The MCP server fetches original content from the proxy
+        1. ANTHROPIC_BASE_URL routes all requests through the proxy
+        2. The proxy compresses large tool outputs (file listings, search results)
+        3. Claude sees compressed summaries with hash markers
+        4. When Claude needs full details, it calls headroom_retrieve
+        5. The MCP server fetches original content from the proxy
     """
     pass
 
@@ -190,14 +196,17 @@ Next steps:
   1. Start the Headroom proxy (if not running):
      headroom proxy
 
-  2. Start Claude Code:
-     claude
+  2. Start Claude Code WITH the proxy base URL:
+     ANTHROPIC_BASE_URL={proxy_url} claude
 
-  3. Claude Code now has access to headroom_retrieve tool!
-     Compressed content will show hash markers like:
-     [47 items compressed... hash=abc123]
+  3. Claude Code now has:
+     - All requests compressed through the proxy (saves tokens & cost)
+     - Access to headroom_retrieve tool for CCR retrieval
+     - Stats visible at {proxy_url}/stats
 
-     Claude can retrieve full details when needed.
+NOTE: The MCP server provides on-demand compression tools
+(headroom_compress, headroom_retrieve, headroom_stats). For automatic
+compression of ALL traffic, also set ANTHROPIC_BASE_URL as shown above.
 
 Proxy URL: {proxy_url}
 """)
