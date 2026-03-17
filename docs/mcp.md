@@ -1,91 +1,166 @@
-# MCP Server for Claude Code Subscriptions
+# MCP Server — Context Engineering Toolkit
 
-Headroom's MCP (Model Context Protocol) server enables **CCR (Compress-Cache-Retrieve)** for Claude Code subscription users who don't have direct API access.
+Headroom's MCP server exposes **compression, retrieval, and observability** as tools that any MCP-compatible AI coding tool can use — Claude Code, Cursor, Codex, and more.
 
 ## Quick Start
 
 ```bash
-# Install MCP dependencies
-pip install "headroom-ai[mcp]"
+# Install (MCP is included with proxy, or standalone)
+pip install "headroom-ai[proxy]"    # Proxy + MCP tools
+pip install "headroom-ai[mcp]"      # MCP tools only (lightweight)
 
-# Configure Claude Code (one-time)
+# Register with Claude Code (one-time)
 headroom mcp install
 
-# Start the proxy
-headroom proxy
-
-# Use Claude Code - it now has headroom_retrieve!
+# Start Claude Code — it now has headroom tools!
 claude
 ```
 
-## Why MCP?
+That's it. Claude Code can now compress content on demand, retrieve originals, and check session stats — **no proxy required**.
 
-| Authentication | Custom Tools | Solution |
-|----------------|--------------|----------|
-| **API Key** | Direct injection via Messages API | Works automatically |
-| **Subscription** | Claude Code's built-in tools only | MCP server |
+For automatic compression of ALL traffic, also run the proxy:
 
-Claude Code subscription users can't inject custom tools programmatically. MCP is Claude's official extension mechanism that works with subscriptions.
+```bash
+# Terminal 1
+headroom proxy
 
-## How It Works
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Claude Code   │────▶│  Headroom Proxy │────▶│   LLM Provider  │
-└────────┬────────┘     └────────┬────────┘     └─────────────────┘
-         │                       │
-         │ MCP                   │ Stores compressed
-         │                       │ content
-         ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐
-│   MCP Server    │◀───▶│ Compression     │
-│ (headroom_      │     │ Store           │
-│  retrieve)      │     └─────────────────┘
-└─────────────────┘
+# Terminal 2
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
 ```
 
-1. **Proxy compresses** large tool outputs (file listings, search results, logs)
-2. **Claude sees** compressed summaries with hash markers: `[47 items compressed... hash=abc123]`
-3. **When needed**, Claude calls `headroom_retrieve` to get the original content
-4. **MCP server** fetches from the proxy's compression store
+## Tools
+
+The MCP server provides three tools:
+
+### headroom_compress
+
+Compress content on demand. The LLM calls this when it wants to shrink large content before reasoning over it.
+
+```
+Tool: headroom_compress
+
+Parameters:
+  - content (required): Text to compress (files, JSON, logs, search results, etc.)
+
+Returns:
+  - compressed: Compressed text
+  - hash: Key for retrieving the original later
+  - original_tokens / compressed_tokens / savings_percent
+  - transforms: Which compression algorithms were applied
+```
+
+Example — Claude reads a large file, then compresses it:
+
+```
+Claude: Let me compress this large output to save context space.
+
+→ headroom_compress(content="[5000 lines of grep results...]")
+
+← {
+    "compressed": "[key matches with context...]",
+    "hash": "a1b2c3d4e5f6...",
+    "original_tokens": 12000,
+    "compressed_tokens": 3200,
+    "savings_percent": 73.3,
+    "transforms": ["router:search:0.27"]
+  }
+```
+
+The original is stored locally for the session (1-hour TTL). If Claude needs the full content later, it calls `headroom_retrieve`.
+
+### headroom_retrieve
+
+Retrieve original uncompressed content by hash.
+
+```
+Tool: headroom_retrieve
+
+Parameters:
+  - hash (required): Hash key from compression
+  - query (optional): Search within the original to return only matching items
+
+Returns:
+  - original_content (full retrieval) or results (search)
+  - source: "local" or "proxy"
+```
+
+Retrieval checks the local store first (content compressed via `headroom_compress`), then falls back to the proxy's store (content compressed automatically by the proxy). Hashes from either source work transparently.
+
+### headroom_stats
+
+Session compression statistics — including sub-agent stats and proxy cache info.
+
+```
+Tool: headroom_stats
+
+Returns:
+  - compressions, retrievals, tokens_saved, savings_percent
+  - estimated_cost_saved_usd
+  - recent_events (last 10 compression/retrieval events)
+  - sub_agents (stats from sub-agent MCP instances, if any)
+  - combined (main + sub-agent totals)
+  - proxy (request count, cache hits, cost saved — if proxy is running)
+```
+
+Sub-agent stats are aggregated via a shared stats file (`~/.headroom/session_stats.jsonl`). Each MCP server instance (main session and sub-agents) writes events there, and `headroom_stats` reads across all of them.
+
+## Architecture
+
+### MCP Only (no proxy)
+
+```
+┌─────────────────────────────────────────────┐
+│  Claude Code / Cursor / Codex               │
+│                                              │
+│  LLM calls headroom_compress on demand       │
+│  ↓                                           │
+│  Compression happens locally in MCP process  │
+│  Original stored in local CompressionStore   │
+│  ↓                                           │
+│  LLM calls headroom_retrieve when needed     │
+└─────────────────────────────────────────────┘
+```
+
+### MCP + Proxy (full setup)
+
+```
+┌─────────────────────────────────────────────┐
+│  Claude Code                                 │
+│                                              │
+│  1. Sends request ──→ Proxy (auto-compress)  │
+│  2. Gets response with compressed outputs    │
+│  3. Can call headroom_compress for more      │
+│  4. headroom_retrieve checks:                │
+│     local store → proxy store                │
+└──────────────────┬──────────────────────────┘
+                   │ MCP (stdio)
+                   ▼
+┌─────────────────────────────────────────────┐
+│  Headroom MCP Server                         │
+│  ├── headroom_compress  (local compression)  │
+│  ├── headroom_retrieve  (local + proxy)      │
+│  └── headroom_stats     (aggregated stats)   │
+└─────────────────────────────────────────────┘
+```
+
+No double-compression: the proxy compresses at the HTTP level (before the LLM sees content). MCP tools operate after the LLM receives content. They don't touch the same data.
 
 ## CLI Commands
 
-### Install MCP Configuration
+### Install
 
 ```bash
-headroom mcp install
+headroom mcp install                              # Default setup
+headroom mcp install --proxy-url http://host:9000  # Custom proxy URL
+headroom mcp install --force                       # Overwrite existing
 ```
 
-This writes to `~/.claude/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "headroom": {
-      "command": "headroom",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
-
-Options:
-- `--proxy-url URL` - Custom proxy URL (default: `http://127.0.0.1:8787`)
-- `--force` - Overwrite existing configuration
-
-### Check Status
+### Status
 
 ```bash
 headroom mcp status
 ```
 
-Shows:
-- MCP SDK installation status
-- Claude Code configuration status
-- Proxy connectivity
-
-Example output:
 ```
 Headroom MCP Status
 ========================================
@@ -102,62 +177,22 @@ Proxy Status:   ✓ Running at http://127.0.0.1:8787
 headroom mcp uninstall
 ```
 
-Removes headroom from `~/.claude/mcp.json` while preserving other MCP servers.
-
-### Manual Server Start
-
-```bash
-headroom mcp serve
-```
-
-This is called by Claude Code automatically. For debugging:
+### Debug
 
 ```bash
 headroom mcp serve --debug
 ```
 
-## The headroom_retrieve Tool
+## Cross-Tool Compatibility
 
-When the MCP server is active, Claude has access to:
+The MCP server works with any MCP-compatible host:
 
-```
-Tool: headroom_retrieve
-
-Parameters:
-  - hash (required): Hash key from compression marker
-  - query (optional): Search query to filter results
-
-Returns:
-  - Full original content, or
-  - Filtered results matching query
-```
-
-Example interaction:
-
-```
-Claude sees:
-  [47 log entries compressed. Showing first 3 + anomalies.
-   Use headroom_retrieve(hash="a1b2c3") for full logs]
-
-Claude calls:
-  headroom_retrieve(hash="a1b2c3", query="error")
-
-Returns:
-  [All log entries containing "error"]
-```
-
-## Custom Proxy URL
-
-If your proxy runs on a different port:
-
-```bash
-# During install
-headroom mcp install --proxy-url http://localhost:9000
-
-# Or via environment variable
-export HEADROOM_PROXY_URL=http://localhost:9000
-headroom mcp serve
-```
+| Tool | MCP Support | Setup |
+|------|-------------|-------|
+| Claude Code | Native | `headroom mcp install` |
+| Cursor | Supported | Add to Cursor MCP settings |
+| Codex | If supported | Configure MCP server |
+| Any MCP host | Yes | Point to `headroom mcp serve` |
 
 ## Troubleshooting
 
@@ -167,26 +202,24 @@ headroom mcp serve
 pip install "headroom-ai[mcp]"
 ```
 
-### "Proxy not running"
-
-Start the proxy in another terminal:
+### "Proxy not running" (when using proxy features)
 
 ```bash
-headroom proxy
+headroom proxy  # In another terminal
 ```
 
 ### "Entry not found or expired"
 
-Compressed entries expire after 5 minutes (TTL). The proxy must be running continuously during your session.
+- Content compressed via `headroom_compress`: stored for 1 hour (session TTL)
+- Content compressed by the proxy: stored for 5 minutes (proxy TTL)
+- The proxy must be running for proxy-compressed content
 
-### Claude doesn't see headroom_retrieve
+### Claude doesn't see headroom tools
 
-1. Check status: `headroom mcp status`
+1. Check: `headroom mcp status`
 2. Restart Claude Code after installing MCP
-3. Verify `~/.claude/mcp.json` exists and contains headroom
+3. Verify with `/mcp` in Claude Code — should show 3 headroom tools
 
-## API Users
+### Sub-agent stats not showing
 
-If you have an `ANTHROPIC_API_KEY`, you don't need MCP. The proxy automatically injects the `headroom_retrieve` tool into API requests.
-
-MCP is specifically for subscription users who authenticate via Claude Code's OAuth flow rather than an API key.
+Sub-agent stats appear in `headroom_stats` only after sub-agents have run compressions. The shared stats file is at `~/.headroom/session_stats.jsonl`.
