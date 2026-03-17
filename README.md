@@ -296,7 +296,7 @@ Context compression is a new space. Here's how the approaches differ:
 | ASGI middleware | **Stable** | [Integration Guide](docs/integration-guide.md#asgi-middleware) |
 | Proxy server | **Stable** | [Proxy Docs](docs/proxy.md) |
 | Agno | **Stable** | [Agno Guide](docs/agno.md) |
-| MCP (Claude Code) | **Stable** | [MCP Guide](docs/mcp.md) |
+| MCP (Claude Code, Cursor, etc.) | **Stable** | [MCP Guide](docs/mcp.md) |
 | Strands | **Stable** | [Strands Guide](docs/strands.md) |
 | LangChain | **Experimental** | [LangChain Guide](docs/langchain.md) |
 
@@ -318,8 +318,9 @@ headroom proxy --backend openrouter                     # OpenRouter (400+ model
 ```bash
 pip install headroom-ai                # Core library
 pip install "headroom-ai[all]"         # Everything including evals (recommended)
-pip install "headroom-ai[proxy]"       # Proxy server
-pip install "headroom-ai[mcp]"         # MCP for Claude Code
+pip install "headroom-ai[proxy]"       # Proxy server + MCP tools
+pip install "headroom-ai[mcp]"         # MCP tools only (no proxy)
+pip install "headroom-ai[ml]"          # ML compression (Kompress, requires torch)
 pip install "headroom-ai[agno]"        # Agno integration
 pip install "headroom-ai[langchain]"   # LangChain (experimental)
 pip install "headroom-ai[evals]"       # Evaluation framework only
@@ -343,7 +344,7 @@ Python 3.10+
 | [Evals Framework](headroom/evals/README.md) | Prove compression preserves accuracy |
 | [Memory](docs/memory.md) | Persistent memory |
 | [Agno](docs/agno.md) | Agno agent framework |
-| [MCP](docs/mcp.md) | Claude Code subscriptions |
+| [MCP](docs/mcp.md) | Context engineering toolkit (compress, retrieve, stats) |
 | [Learn](docs/learn.md) | Offline failure learning for coding agents |
 | [Configuration](docs/configuration.md) | All options |
 
