@@ -2243,7 +2243,9 @@ class HeadroomProxy:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     pipeline_timing = result.timing
-                    original_tokens = result.tokens_before
+                    # Keep original_tokens as the REAL original (pre-Zone-1-swap)
+                    # so tokens_saved captures both Zone 1 + Zone 2 savings.
+                    # original_tokens was set at line ~2183 from uncompressed messages.
                     optimized_tokens = result.tokens_after
                 else:
                     result = self.anthropic_pipeline.apply(
@@ -4802,7 +4804,8 @@ class HeadroomProxy:
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     pipeline_timing = result.timing
-                    original_tokens = result.tokens_before
+                    # Keep original_tokens as the REAL original (pre-Zone-1-swap)
+                    # so tokens_saved captures both Zone 1 + Zone 2 savings.
                     optimized_tokens = result.tokens_after
                 else:
                     result = self.openai_pipeline.apply(
