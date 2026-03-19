@@ -6398,6 +6398,31 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # Calculate total tokens before compression
         total_tokens_before = m.tokens_input_total + m.tokens_saved_total
 
+        # Compression cache stats (token_headroom mode)
+        compression_cache_stats: dict = {}
+        if proxy.config.mode == "token_headroom" and proxy._compression_caches:
+            total_entries = 0
+            total_hits = 0
+            total_misses = 0
+            total_tokens_saved = 0
+            for cache in proxy._compression_caches.values():
+                s = cache.get_stats()
+                total_entries += s.get("entries", 0)
+                total_hits += s.get("hits", 0)
+                total_misses += s.get("misses", 0)
+                total_tokens_saved += s.get("total_tokens_saved", 0)
+            compression_cache_stats = {
+                "mode": "token_headroom",
+                "active_sessions": len(proxy._compression_caches),
+                "total_entries": total_entries,
+                "total_hits": total_hits,
+                "total_misses": total_misses,
+                "hit_rate": round(total_hits / max(1, total_hits + total_misses) * 100, 1),
+                "total_tokens_saved": total_tokens_saved,
+            }
+        else:
+            compression_cache_stats = {"mode": "cost_savings"}
+
         # Build unified savings summary (all layers)
         compression_tokens = m.tokens_saved_total
         cache_net_usd = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
@@ -6489,6 +6514,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "compressed_tokens_cached": compression_stats.get("total_compressed_tokens", 0),
                 "ccr_retrievals": compression_stats.get("total_retrievals", 0),
             },
+            "compression_cache": compression_cache_stats,
             "telemetry": {
                 "enabled": telemetry_stats.get("enabled", False),
                 "total_compressions": telemetry_stats.get("total_compressions", 0),
