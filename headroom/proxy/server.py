@@ -2102,23 +2102,55 @@ class HeadroomProxy:
         if self.config.optimize and messages:
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
-                result = self.anthropic_pipeline.apply(
-                    messages=messages,
-                    model=model,
-                    model_limit=context_limit,
-                    frozen_message_count=frozen_message_count,
-                    biases=self.config.hooks.compute_biases(messages, _hook_ctx)
+                biases = (
+                    self.config.hooks.compute_biases(messages, _hook_ctx)
                     if self.config.hooks
-                    else None,
+                    else None
                 )
 
-                if result.messages != messages:
+                if self.config.mode == "token_headroom":
+                    comp_cache = self._get_compression_cache(session_id)
+
+                    # Zone 1: Swap cached compressed versions into working copy
+                    working_messages = comp_cache.apply_cached(messages)
+
+                    # Re-freeze boundary: consecutive stable messages from start
+                    frozen_message_count = comp_cache.compute_frozen_count(messages)
+
+                    result = self.anthropic_pipeline.apply(
+                        messages=working_messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=frozen_message_count,
+                        biases=biases,
+                    )
+
+                    # Cache newly compressed messages (index-aligned diff)
+                    if result.messages != working_messages:
+                        comp_cache.update_from_result(messages, result.messages)
+
+                    # Always use pipeline result — Zone 1 swaps are already applied
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     pipeline_timing = result.timing
-                    # Use pipeline's token counts for consistency with pipeline logs
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                else:
+                    result = self.anthropic_pipeline.apply(
+                        messages=messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=frozen_message_count,
+                        biases=biases,
+                    )
+
+                    if result.messages != messages:
+                        optimized_messages = result.messages
+                        transforms_applied = result.transforms_applied
+                        pipeline_timing = result.timing
+                        original_tokens = result.tokens_before
+                        optimized_tokens = result.tokens_after
+
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
