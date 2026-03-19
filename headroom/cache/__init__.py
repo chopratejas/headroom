@@ -36,6 +36,7 @@ from .base import (
     CacheStrategy,
     OptimizationContext,
 )
+from .compression_cache import CompressionCache
 from .dynamic_detector import (
     DetectorConfig,
     DynamicCategory,
@@ -74,6 +75,8 @@ __all__ = [
     # Semantic caching
     "SemanticCacheLayer",
     "SemanticCache",
+    # Compression cache (token headroom mode)
+    "CompressionCache",
     # Prefix cache tracking
     "PrefixCacheTracker",
     "PrefixFreezeConfig",

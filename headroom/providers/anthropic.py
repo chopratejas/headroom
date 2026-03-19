@@ -45,6 +45,8 @@ _UNKNOWN_MODEL_WARNINGS: set[str] = set()
 # Anthropic model context limits
 # All Claude 3+ models have 200K context
 ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
+    # Claude 4.6 (Opus 4.6) - 1M context
+    "claude-opus-4-6": 1000000,
     # Claude 4.5 (Opus 4.5)
     "claude-opus-4-5-20251101": 200000,
     # Claude 4 (Sonnet 4, Haiku 4)
@@ -70,6 +72,8 @@ ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
 # NOTE: These are ESTIMATES. Always verify against actual Anthropic billing.
 # Last updated: 2025-01-14
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
+    # Claude 4.6 (Opus tier pricing)
+    "claude-opus-4-6": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     # Claude 4.5 (Opus tier pricing)
     "claude-opus-4-5-20251101": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     # Claude 4 (Sonnet/Haiku tier pricing)

@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from ..cache.compression_cache import CompressionCache
     from ..memory.tracker import ComponentStats, MemoryTracker
 
 import httpx
@@ -411,6 +412,116 @@ def _merge_cost_stats(
     }
 
 
+def _build_session_summary(
+    proxy: HeadroomProxy,
+    metrics: Any,
+    prefix_cache_stats: dict,
+    cli_tokens_avoided: int,
+    total_tokens_before: int,
+) -> dict[str, Any]:
+    """Build a human-readable session summary from metrics and request logs.
+
+    This is the headline view users see first in /stats — designed to answer
+    "is Headroom working?" at a glance.
+    """
+    # Analyze per-request compression from the logger
+    compressed_requests: list[dict] = []
+    uncompressed_reasons: dict[str, int] = {
+        "prefix_frozen": 0,
+        "too_small": 0,
+        "passthrough": 0,
+        "no_compressible_content": 0,
+    }
+
+    if proxy.logger:
+        for entry in proxy.logger._logs:
+            if entry.model and "count_tokens" in entry.model:
+                uncompressed_reasons["passthrough"] += 1
+                continue
+            if entry.tokens_saved > 0 and entry.savings_percent > 0:
+                compressed_requests.append(
+                    {
+                        "savings_pct": round(entry.savings_percent, 1),
+                        "tokens_saved": entry.tokens_saved,
+                        "original": entry.input_tokens_original,
+                        "optimized": entry.input_tokens_optimized,
+                    }
+                )
+            elif entry.input_tokens_original > 0:
+                # Categorize why it wasn't compressed
+                transforms = entry.transforms_applied or []
+                if not transforms:
+                    # Pipeline returned unchanged — likely all frozen
+                    uncompressed_reasons["prefix_frozen"] += 1
+                elif all("excluded" in t or "protected" in t for t in transforms):
+                    uncompressed_reasons["no_compressible_content"] += 1
+                elif entry.input_tokens_original < 500:
+                    uncompressed_reasons["too_small"] += 1
+                else:
+                    uncompressed_reasons["prefix_frozen"] += 1
+
+    # Compute compression stats for requests that DID compress
+    avg_compression = 0.0
+    best_compression = 0.0
+    best_detail = ""
+    if compressed_requests:
+        avg_compression = round(
+            sum(r["savings_pct"] for r in compressed_requests) / len(compressed_requests),
+            1,
+        )
+        best = max(compressed_requests, key=lambda r: r["savings_pct"])
+        best_compression = best["savings_pct"]
+        best_detail = f"{best['original']:,} → {best['optimized']:,} tokens"
+
+    # Cost summary
+    cost_stats = proxy.cost_tracker.stats() if proxy.cost_tracker else {}
+    cost_without = cost_stats.get("cost_without_headroom_usd", 0.0)
+    cache_net = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
+    compression_savings = cost_stats.get("savings_usd", 0.0) if cost_stats else 0.0
+    total_saved_usd = round(compression_savings + cache_net, 2)
+    cost_with = round(cost_without - total_saved_usd, 2) if cost_without else 0.0
+    savings_pct_cost = round(total_saved_usd / cost_without * 100, 1) if cost_without > 0 else 0.0
+
+    # Primary models used
+    models = dict(metrics.requests_by_model)
+    primary_model = max(models, key=lambda k: models[k]) if models else "unknown"
+    api_requests = sum(v for k, v in models.items() if "count_tokens" not in k)
+
+    # Build the summary
+    summary: dict[str, Any] = {
+        "mode": proxy.config.mode,
+        "api_requests": api_requests,
+        "primary_model": primary_model,
+        "compression": {
+            "requests_compressed": len(compressed_requests),
+            "avg_compression_pct": avg_compression,
+            "best_compression_pct": best_compression,
+            "best_detail": best_detail,
+            "total_tokens_removed": metrics.tokens_saved_total,
+        },
+        "uncompressed_requests": {k: v for k, v in uncompressed_reasons.items() if v > 0},
+        "cost": {
+            "without_headroom_usd": round(cost_without, 2),
+            "with_headroom_usd": cost_with,
+            "total_saved_usd": total_saved_usd,
+            "savings_pct": savings_pct_cost,
+            "breakdown": {
+                "cache_savings_usd": round(cache_net, 2),
+                "compression_savings_usd": round(compression_savings, 2),
+            },
+        },
+    }
+
+    # Add tip if token_headroom mode would help
+    if proxy.config.mode == "cost_savings" and uncompressed_reasons["prefix_frozen"] > 10:
+        summary["tip"] = (
+            "Most requests are prefix-frozen. Set HEADROOM_MODE=token_headroom "
+            "to compress frozen messages and extend your session by ~25-35%."
+        )
+
+    return summary
+
+
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
@@ -491,6 +602,11 @@ class ProxyConfig:
     bedrock_region: str = "us-west-2"  # AWS region for Bedrock/LiteLLM
     bedrock_profile: str | None = None  # AWS profile (optional)
     anyllm_provider: str = "openai"  # any-llm provider (openai, mistral, groq, etc.)
+
+    # Optimization mode: "cost_savings" (default) or "token_headroom"
+    # cost_savings: preserve prefix cache for cost reduction
+    # token_headroom: compress older messages for session extension
+    mode: str = "cost_savings"
 
     # Optimization
     optimize: bool = True
@@ -1422,6 +1538,9 @@ class HeadroomProxy:
                 tool_profiles=config.tool_profiles,
                 read_lifecycle=ReadLifecycleConfig(enabled=config.read_lifecycle),
             )
+            # Token headroom mode: allow compression of older excluded-tool results
+            if config.mode == "token_headroom":
+                router_config.protect_recent_reads_fraction = 0.3
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=True)),
                 ContentRouter(router_config),
@@ -1500,6 +1619,9 @@ class HeadroomProxy:
                 session_ttl_seconds=config.prefix_freeze_session_ttl,
             )
         )
+
+        # Compression cache store for token_headroom mode (session-scoped)
+        self._compression_caches: dict[str, CompressionCache] = {}
 
         self.logger = (
             RequestLogger(
@@ -1618,6 +1740,14 @@ class HeadroomProxy:
             )
             self.memory_handler = MemoryHandler(memory_config)
 
+    def _get_compression_cache(self, session_id: str) -> CompressionCache:
+        """Get or create a CompressionCache for a session."""
+        if session_id not in self._compression_caches:
+            from headroom.cache.compression_cache import CompressionCache
+
+            self._compression_caches[session_id] = CompressionCache()
+        return self._compression_caches[session_id]
+
     def _setup_llmlingua(self, config: ProxyConfig, transforms: list) -> str:
         """Set up LLMLingua compression if enabled.
 
@@ -1698,6 +1828,17 @@ class HeadroomProxy:
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
+        if self.config.mode not in ("cost_savings", "token_headroom"):
+            logger.warning(
+                f"Unknown HEADROOM_MODE '{self.config.mode}', falling back to 'cost_savings'"
+            )
+            self.config.mode = "cost_savings"
+        logger.info(f"Mode: {self.config.mode}")
+        if self.config.mode == "token_headroom":
+            logger.info("  Prefix freeze: re-freeze after compression")
+            logger.info("  Read protection window: 30%% of excluded-tool messages")
+            logger.info("  CCR TTL: extended for session lifetime")
+            logger.info("  Compression cache: active")
         logger.info(f"Caching: {'ENABLED' if self.config.cache_enabled else 'DISABLED'}")
         logger.info(f"Rate Limiting: {'ENABLED' if self.config.rate_limit_enabled else 'DISABLED'}")
         logger.info(
@@ -2071,23 +2212,55 @@ class HeadroomProxy:
         if self.config.optimize and messages:
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
-                result = self.anthropic_pipeline.apply(
-                    messages=messages,
-                    model=model,
-                    model_limit=context_limit,
-                    frozen_message_count=frozen_message_count,
-                    biases=self.config.hooks.compute_biases(messages, _hook_ctx)
+                biases = (
+                    self.config.hooks.compute_biases(messages, _hook_ctx)
                     if self.config.hooks
-                    else None,
+                    else None
                 )
 
-                if result.messages != messages:
+                if self.config.mode == "token_headroom":
+                    comp_cache = self._get_compression_cache(session_id)
+
+                    # Zone 1: Swap cached compressed versions into working copy
+                    working_messages = comp_cache.apply_cached(messages)
+
+                    # Re-freeze boundary: consecutive stable messages from start
+                    frozen_message_count = comp_cache.compute_frozen_count(messages)
+
+                    result = self.anthropic_pipeline.apply(
+                        messages=working_messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=frozen_message_count,
+                        biases=biases,
+                    )
+
+                    # Cache newly compressed messages (index-aligned diff)
+                    if result.messages != working_messages:
+                        comp_cache.update_from_result(messages, result.messages)
+
+                    # Always use pipeline result — Zone 1 swaps are already applied
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     pipeline_timing = result.timing
-                    # Use pipeline's token counts for consistency with pipeline logs
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                else:
+                    result = self.anthropic_pipeline.apply(
+                        messages=messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=frozen_message_count,
+                        biases=biases,
+                    )
+
+                    if result.messages != messages:
+                        optimized_messages = result.messages
+                        transforms_applied = result.transforms_applied
+                        pipeline_timing = result.timing
+                        original_tokens = result.tokens_before
+                        optimized_tokens = result.tokens_after
+
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
@@ -4604,19 +4777,49 @@ class HeadroomProxy:
         if self.config.optimize and messages:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
-                result = self.openai_pipeline.apply(
-                    messages=messages,
-                    model=model,
-                    model_limit=context_limit,
-                    frozen_message_count=openai_frozen_count,
-                    biases=_hook_biases,
-                )
-                if result.messages != messages:
+
+                if self.config.mode == "token_headroom":
+                    comp_cache = self._get_compression_cache(openai_session_id)
+
+                    # Zone 1: Swap cached compressed versions
+                    working_messages = comp_cache.apply_cached(messages)
+
+                    # Re-freeze boundary
+                    openai_frozen_count = comp_cache.compute_frozen_count(messages)
+
+                    result = self.openai_pipeline.apply(
+                        messages=working_messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=openai_frozen_count,
+                        biases=_hook_biases,
+                    )
+
+                    if result.messages != working_messages:
+                        comp_cache.update_from_result(messages, result.messages)
+
+                    # Always use pipeline result in token_headroom mode
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     pipeline_timing = result.timing
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                else:
+                    result = self.openai_pipeline.apply(
+                        messages=messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=openai_frozen_count,
+                        biases=_hook_biases,
+                    )
+
+                    if result.messages != messages:
+                        optimized_messages = result.messages
+                        transforms_applied = result.transforms_applied
+                        pipeline_timing = result.timing
+                        original_tokens = result.tokens_before
+                        optimized_tokens = result.tokens_after
+
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
@@ -6305,12 +6508,43 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # Calculate total tokens before compression
         total_tokens_before = m.tokens_input_total + m.tokens_saved_total
 
+        # Build human-readable summary
+        summary = _build_session_summary(
+            proxy, m, prefix_cache_stats, cli_tokens_avoided, total_tokens_before
+        )
+
+        # Compression cache stats (token_headroom mode)
+        compression_cache_stats: dict = {}
+        if proxy.config.mode == "token_headroom" and proxy._compression_caches:
+            total_entries = 0
+            total_hits = 0
+            total_misses = 0
+            total_tokens_saved = 0
+            for cache in proxy._compression_caches.values():
+                s = cache.get_stats()
+                total_entries += s.get("entries", 0)
+                total_hits += s.get("hits", 0)
+                total_misses += s.get("misses", 0)
+                total_tokens_saved += s.get("total_tokens_saved", 0)
+            compression_cache_stats = {
+                "mode": "token_headroom",
+                "active_sessions": len(proxy._compression_caches),
+                "total_entries": total_entries,
+                "total_hits": total_hits,
+                "total_misses": total_misses,
+                "hit_rate": round(total_hits / max(1, total_hits + total_misses) * 100, 1),
+                "total_tokens_saved": total_tokens_saved,
+            }
+        else:
+            compression_cache_stats = {"mode": "cost_savings"}
+
         # Build unified savings summary (all layers)
         compression_tokens = m.tokens_saved_total
         cache_net_usd = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
         total_tokens_all_layers = compression_tokens + cli_tokens_avoided
 
         return {
+            "summary": summary,
             "savings": {
                 "total_tokens": total_tokens_all_layers,
                 "by_layer": {
@@ -6396,6 +6630,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "compressed_tokens_cached": compression_stats.get("total_compressed_tokens", 0),
                 "ccr_retrievals": compression_stats.get("total_retrievals", 0),
             },
+            "compression_cache": compression_cache_stats,
             "telemetry": {
                 "enabled": telemetry_stats.get("enabled", False),
                 "total_compressions": telemetry_stats.get("total_compressions", 0),
@@ -7606,6 +7841,7 @@ if __name__ == "__main__":
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),
         http2=not args.no_http2 and _get_env_bool("HEADROOM_HTTP2", True),
         tool_profiles=tool_profiles if tool_profiles else None,
+        mode=_get_env_str("HEADROOM_MODE", "cost_savings"),
     )
 
     # Get worker and concurrency settings

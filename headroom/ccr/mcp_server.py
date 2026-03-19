@@ -69,6 +69,85 @@ logger = logging.getLogger("headroom.ccr.mcp")
 
 DEFAULT_PROXY_URL = os.environ.get("HEADROOM_PROXY_URL", "http://127.0.0.1:8787")
 
+
+def _format_session_summary(summary: dict[str, Any], local_stats: dict[str, Any]) -> str:
+    """Format the proxy summary + local MCP stats into clean readable text."""
+    lines: list[str] = []
+    lines.append("Headroom Session Summary")
+    lines.append("=" * 40)
+
+    mode = summary.get("mode", "cost_savings")
+    api_reqs = summary.get("api_requests", 0)
+    model = summary.get("primary_model", "unknown")
+    lines.append(f"Mode: {mode} | {api_reqs} API requests | {model}")
+    lines.append("")
+
+    # Compression section
+    comp = summary.get("compression", {})
+    n_compressed = comp.get("requests_compressed", 0)
+    if n_compressed > 0:
+        lines.append(f"Compression ({n_compressed} requests compressed):")
+        lines.append(f"  Avg compression:  {comp.get('avg_compression_pct', 0)}%")
+        best = comp.get("best_compression_pct", 0)
+        detail = comp.get("best_detail", "")
+        if best > 0:
+            lines.append(f"  Best compression: {best}% ({detail})")
+        removed = comp.get("total_tokens_removed", 0)
+        lines.append(f"  Tokens removed:   {removed:,}")
+    else:
+        lines.append("Compression: no requests compressed yet")
+    lines.append("")
+
+    # Uncompressed reasons
+    uncomp = summary.get("uncompressed_requests", {})
+    if uncomp:
+        total_uncomp = sum(uncomp.values())
+        lines.append(f"Uncompressed requests ({total_uncomp}):")
+        reason_labels = {
+            "prefix_frozen": "Prefix-frozen (cached by provider)",
+            "too_small": "Too small (< 500 tokens)",
+            "passthrough": "Passthrough (token counting)",
+            "no_compressible_content": "No compressible content (user/assistant only)",
+        }
+        for key, count in uncomp.items():
+            label = reason_labels.get(key, key)
+            lines.append(f"  {label}: {count}")
+        lines.append("")
+
+    # Cost section
+    cost = summary.get("cost", {})
+    without = cost.get("without_headroom_usd", 0)
+    with_hr = cost.get("with_headroom_usd", 0)
+    saved = cost.get("total_saved_usd", 0)
+    pct = cost.get("savings_pct", 0)
+    if without > 0:
+        lines.append("Cost Impact:")
+        lines.append(f"  Without Headroom:  ${without:.2f}")
+        lines.append(f"  With Headroom:     ${with_hr:.2f}")
+        lines.append(f"  You saved:         ${saved:.2f} ({pct}%)")
+        breakdown = cost.get("breakdown", {})
+        cache_s = breakdown.get("cache_savings_usd", 0)
+        comp_s = breakdown.get("compression_savings_usd", 0)
+        if cache_s > 0 or comp_s > 0:
+            lines.append(f"    Cache savings:       ${cache_s:.2f}")
+            lines.append(f"    Compression savings: ${comp_s:.2f}")
+        lines.append("")
+
+    # MCP-local stats (compressions done by MCP tool directly)
+    local_compressions = local_stats.get("compressions", 0)
+    local_saved = local_stats.get("total_tokens_saved", 0)
+    if local_compressions > 0:
+        lines.append(f"MCP Tool: {local_compressions} compressions, {local_saved:,} tokens saved")
+        lines.append("")
+
+    # Tip
+    tip = summary.get("tip")
+    if tip:
+        lines.append(f"Tip: {tip}")
+
+    return "\n".join(lines)
+
+
 # Session-scoped TTL: content persists for the session (1 hour), not 5 minutes.
 # The MCP server process lives as long as the coding session.
 MCP_SESSION_TTL = 3600
@@ -542,44 +621,54 @@ class HeadroomMCPServer:
                 "estimated_cost_saved_usd": round(all_saved * 3.0 / 1_000_000, 4),
             }
 
-        # Fetch proxy stats (prefix cache hits, etc.) if proxy is reachable
+        # Fetch proxy stats and format summary if proxy is reachable
         if self.check_proxy and HTTPX_AVAILABLE:
-            proxy_stats = await self._fetch_proxy_stats()
-            if proxy_stats:
-                stats["proxy"] = proxy_stats
+            proxy_data = await self._fetch_full_proxy_stats()
+            if proxy_data:
+                summary = proxy_data.get("summary")
+                if summary:
+                    # Return clean formatted summary instead of raw JSON
+                    formatted = _format_session_summary(summary, stats)
+                    return [TextContent(type="text", text=formatted)]
+                # Fallback: add proxy stats to local stats
+                proxy_stats = self._extract_proxy_stats(proxy_data)
+                if proxy_stats:
+                    stats["proxy"] = proxy_stats
 
         return [TextContent(type="text", text=json.dumps(stats, indent=2))]
 
-    async def _fetch_proxy_stats(self) -> dict[str, Any] | None:
-        """Fetch stats from the proxy, including prefix cache hit info."""
+    async def _fetch_full_proxy_stats(self) -> dict[str, Any] | None:
+        """Fetch full stats from the proxy (includes summary)."""
         try:
             if self._http_client is None:
                 self._http_client = httpx.AsyncClient(timeout=15.0)
             response = await self._http_client.get(f"{self.proxy_url}/stats")
             if response.status_code != 200:
                 return None
-            data = response.json()
-            # Extract the most useful fields
-            result: dict[str, Any] = {}
-            if "requests_total" in data:
-                result["requests_total"] = data["requests_total"]
-            if "tokens_saved_total" in data:
-                result["tokens_saved_total"] = data["tokens_saved_total"]
-            # Prefix cache stats
-            cache = data.get("cache", data.get("caching", {}))
-            if cache:
-                result["cache"] = {
-                    "hits": cache.get("hits", cache.get("cache_hits", 0)),
-                    "misses": cache.get("misses", cache.get("cache_misses", 0)),
-                    "hit_rate": cache.get("hit_rate", cache.get("cache_hit_rate", 0)),
-                }
-            # Cost tracking
-            cost = data.get("cost", {})
-            if cost:
-                result["cost_saved_usd"] = cost.get("total_saved", cost.get("saved", 0))
-            return result if result else None
+            result: dict[str, Any] = response.json()
+            return result
         except Exception:
             return None
+
+    @staticmethod
+    def _extract_proxy_stats(data: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract key fields from full proxy stats (fallback when no summary)."""
+        result: dict[str, Any] = {}
+        if "requests_total" in data:
+            result["requests_total"] = data["requests_total"]
+        if "tokens_saved_total" in data:
+            result["tokens_saved_total"] = data["tokens_saved_total"]
+        cache = data.get("cache", data.get("caching", {}))
+        if cache:
+            result["cache"] = {
+                "hits": cache.get("hits", cache.get("cache_hits", 0)),
+                "misses": cache.get("misses", cache.get("cache_misses", 0)),
+                "hit_rate": cache.get("hit_rate", cache.get("cache_hit_rate", 0)),
+            }
+        cost = data.get("cost", {})
+        if cost:
+            result["cost_saved_usd"] = cost.get("total_saved", cost.get("saved", 0))
+        return result if result else None
 
     async def run_stdio(self) -> None:
         """Run the server with stdio transport."""
