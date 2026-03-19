@@ -412,6 +412,116 @@ def _merge_cost_stats(
     }
 
 
+def _build_session_summary(
+    proxy: HeadroomProxy,
+    metrics: Any,
+    prefix_cache_stats: dict,
+    cli_tokens_avoided: int,
+    total_tokens_before: int,
+) -> dict[str, Any]:
+    """Build a human-readable session summary from metrics and request logs.
+
+    This is the headline view users see first in /stats — designed to answer
+    "is Headroom working?" at a glance.
+    """
+    # Analyze per-request compression from the logger
+    compressed_requests: list[dict] = []
+    uncompressed_reasons: dict[str, int] = {
+        "prefix_frozen": 0,
+        "too_small": 0,
+        "passthrough": 0,
+        "no_compressible_content": 0,
+    }
+
+    if proxy.logger:
+        for entry in proxy.logger._logs:
+            if entry.model and "count_tokens" in entry.model:
+                uncompressed_reasons["passthrough"] += 1
+                continue
+            if entry.tokens_saved > 0 and entry.savings_percent > 0:
+                compressed_requests.append(
+                    {
+                        "savings_pct": round(entry.savings_percent, 1),
+                        "tokens_saved": entry.tokens_saved,
+                        "original": entry.input_tokens_original,
+                        "optimized": entry.input_tokens_optimized,
+                    }
+                )
+            elif entry.input_tokens_original > 0:
+                # Categorize why it wasn't compressed
+                transforms = entry.transforms_applied or []
+                if not transforms:
+                    # Pipeline returned unchanged — likely all frozen
+                    uncompressed_reasons["prefix_frozen"] += 1
+                elif all("excluded" in t or "protected" in t for t in transforms):
+                    uncompressed_reasons["no_compressible_content"] += 1
+                elif entry.input_tokens_original < 500:
+                    uncompressed_reasons["too_small"] += 1
+                else:
+                    uncompressed_reasons["prefix_frozen"] += 1
+
+    # Compute compression stats for requests that DID compress
+    avg_compression = 0.0
+    best_compression = 0.0
+    best_detail = ""
+    if compressed_requests:
+        avg_compression = round(
+            sum(r["savings_pct"] for r in compressed_requests) / len(compressed_requests),
+            1,
+        )
+        best = max(compressed_requests, key=lambda r: r["savings_pct"])
+        best_compression = best["savings_pct"]
+        best_detail = f"{best['original']:,} → {best['optimized']:,} tokens"
+
+    # Cost summary
+    cost_stats = proxy.cost_tracker.stats() if proxy.cost_tracker else {}
+    cost_without = cost_stats.get("cost_without_headroom_usd", 0.0)
+    cache_net = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
+    compression_savings = cost_stats.get("savings_usd", 0.0) if cost_stats else 0.0
+    total_saved_usd = round(compression_savings + cache_net, 2)
+    cost_with = round(cost_without - total_saved_usd, 2) if cost_without else 0.0
+    savings_pct_cost = round(total_saved_usd / cost_without * 100, 1) if cost_without > 0 else 0.0
+
+    # Primary models used
+    models = dict(metrics.requests_by_model)
+    primary_model = max(models, key=lambda k: models[k]) if models else "unknown"
+    api_requests = sum(v for k, v in models.items() if "count_tokens" not in k)
+
+    # Build the summary
+    summary: dict[str, Any] = {
+        "mode": proxy.config.mode,
+        "api_requests": api_requests,
+        "primary_model": primary_model,
+        "compression": {
+            "requests_compressed": len(compressed_requests),
+            "avg_compression_pct": avg_compression,
+            "best_compression_pct": best_compression,
+            "best_detail": best_detail,
+            "total_tokens_removed": metrics.tokens_saved_total,
+        },
+        "uncompressed_requests": {k: v for k, v in uncompressed_reasons.items() if v > 0},
+        "cost": {
+            "without_headroom_usd": round(cost_without, 2),
+            "with_headroom_usd": cost_with,
+            "total_saved_usd": total_saved_usd,
+            "savings_pct": savings_pct_cost,
+            "breakdown": {
+                "cache_savings_usd": round(cache_net, 2),
+                "compression_savings_usd": round(compression_savings, 2),
+            },
+        },
+    }
+
+    # Add tip if token_headroom mode would help
+    if proxy.config.mode == "cost_savings" and uncompressed_reasons["prefix_frozen"] > 10:
+        summary["tip"] = (
+            "Most requests are prefix-frozen. Set HEADROOM_MODE=token_headroom "
+            "to compress frozen messages and extend your session by ~25-35%."
+        )
+
+    return summary
+
+
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
@@ -6398,6 +6508,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # Calculate total tokens before compression
         total_tokens_before = m.tokens_input_total + m.tokens_saved_total
 
+        # Build human-readable summary
+        summary = _build_session_summary(
+            proxy, m, prefix_cache_stats, cli_tokens_avoided, total_tokens_before
+        )
+
         # Compression cache stats (token_headroom mode)
         compression_cache_stats: dict = {}
         if proxy.config.mode == "token_headroom" and proxy._compression_caches:
@@ -6429,6 +6544,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         total_tokens_all_layers = compression_tokens + cli_tokens_avoided
 
         return {
+            "summary": summary,
             "savings": {
                 "total_tokens": total_tokens_all_layers,
                 "by_layer": {
