@@ -4667,19 +4667,49 @@ class HeadroomProxy:
         if self.config.optimize and messages:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
-                result = self.openai_pipeline.apply(
-                    messages=messages,
-                    model=model,
-                    model_limit=context_limit,
-                    frozen_message_count=openai_frozen_count,
-                    biases=_hook_biases,
-                )
-                if result.messages != messages:
+
+                if self.config.mode == "token_headroom":
+                    comp_cache = self._get_compression_cache(openai_session_id)
+
+                    # Zone 1: Swap cached compressed versions
+                    working_messages = comp_cache.apply_cached(messages)
+
+                    # Re-freeze boundary
+                    openai_frozen_count = comp_cache.compute_frozen_count(messages)
+
+                    result = self.openai_pipeline.apply(
+                        messages=working_messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=openai_frozen_count,
+                        biases=_hook_biases,
+                    )
+
+                    if result.messages != working_messages:
+                        comp_cache.update_from_result(messages, result.messages)
+
+                    # Always use pipeline result in token_headroom mode
                     optimized_messages = result.messages
                     transforms_applied = result.transforms_applied
                     pipeline_timing = result.timing
                     original_tokens = result.tokens_before
                     optimized_tokens = result.tokens_after
+                else:
+                    result = self.openai_pipeline.apply(
+                        messages=messages,
+                        model=model,
+                        model_limit=context_limit,
+                        frozen_message_count=openai_frozen_count,
+                        biases=_hook_biases,
+                    )
+
+                    if result.messages != messages:
+                        optimized_messages = result.messages
+                        transforms_applied = result.transforms_applied
+                        pipeline_timing = result.timing
+                        original_tokens = result.tokens_before
+                        optimized_tokens = result.tokens_after
+
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
