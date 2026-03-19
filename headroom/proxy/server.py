@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from ..cache.compression_cache import CompressionCache
     from ..memory.tracker import ComponentStats, MemoryTracker
 
 import httpx
@@ -1427,6 +1428,9 @@ class HeadroomProxy:
                 tool_profiles=config.tool_profiles,
                 read_lifecycle=ReadLifecycleConfig(enabled=config.read_lifecycle),
             )
+            # Token headroom mode: allow compression of older excluded-tool results
+            if config.mode == "token_headroom":
+                router_config.protect_recent_reads_fraction = 0.3
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=True)),
                 ContentRouter(router_config),
@@ -1505,6 +1509,9 @@ class HeadroomProxy:
                 session_ttl_seconds=config.prefix_freeze_session_ttl,
             )
         )
+
+        # Compression cache store for token_headroom mode (session-scoped)
+        self._compression_caches: dict[str, CompressionCache] = {}
 
         self.logger = (
             RequestLogger(
@@ -1623,6 +1630,14 @@ class HeadroomProxy:
             )
             self.memory_handler = MemoryHandler(memory_config)
 
+    def _get_compression_cache(self, session_id: str) -> CompressionCache:
+        """Get or create a CompressionCache for a session."""
+        if session_id not in self._compression_caches:
+            from headroom.cache.compression_cache import CompressionCache
+
+            self._compression_caches[session_id] = CompressionCache()
+        return self._compression_caches[session_id]
+
     def _setup_llmlingua(self, config: ProxyConfig, transforms: list) -> str:
         """Set up LLMLingua compression if enabled.
 
@@ -1709,6 +1724,11 @@ class HeadroomProxy:
             )
             self.config.mode = "cost_savings"
         logger.info(f"Mode: {self.config.mode}")
+        if self.config.mode == "token_headroom":
+            logger.info("  Prefix freeze: re-freeze after compression")
+            logger.info("  Read protection window: 30%% of excluded-tool messages")
+            logger.info("  CCR TTL: extended for session lifetime")
+            logger.info("  Compression cache: active")
         logger.info(f"Caching: {'ENABLED' if self.config.cache_enabled else 'DISABLED'}")
         logger.info(f"Rate Limiting: {'ENABLED' if self.config.rate_limit_enabled else 'DISABLED'}")
         logger.info(
