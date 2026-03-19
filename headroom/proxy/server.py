@@ -492,6 +492,11 @@ class ProxyConfig:
     bedrock_profile: str | None = None  # AWS profile (optional)
     anyllm_provider: str = "openai"  # any-llm provider (openai, mistral, groq, etc.)
 
+    # Optimization mode: "cost_savings" (default) or "token_headroom"
+    # cost_savings: preserve prefix cache for cost reduction
+    # token_headroom: compress older messages for session extension
+    mode: str = "cost_savings"
+
     # Optimization
     optimize: bool = True
     image_optimize: bool = True  # Compress images using trained ML router
@@ -1698,6 +1703,12 @@ class HeadroomProxy:
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
+        if self.config.mode not in ("cost_savings", "token_headroom"):
+            logger.warning(
+                f"Unknown HEADROOM_MODE '{self.config.mode}', falling back to 'cost_savings'"
+            )
+            self.config.mode = "cost_savings"
+        logger.info(f"Mode: {self.config.mode}")
         logger.info(f"Caching: {'ENABLED' if self.config.cache_enabled else 'DISABLED'}")
         logger.info(f"Rate Limiting: {'ENABLED' if self.config.rate_limit_enabled else 'DISABLED'}")
         logger.info(
@@ -7606,6 +7617,7 @@ if __name__ == "__main__":
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),
         http2=not args.no_http2 and _get_env_bool("HEADROOM_HTTP2", True),
         tool_profiles=tool_profiles if tool_profiles else None,
+        mode=_get_env_str("HEADROOM_MODE", "cost_savings"),
     )
 
     # Get worker and concurrency settings
