@@ -107,3 +107,177 @@ class TestCompressionCache:
     def test_content_hash_string_length(self) -> None:
         h = CompressionCache.content_hash("test")
         assert len(h) == 16
+
+
+class TestCompressionCacheFrozenCount:
+    def test_empty_cache_returns_zero(self, cache: CompressionCache) -> None:
+        assert cache.compute_frozen_count([]) == 0
+
+    def test_user_assistant_always_stable(self, cache: CompressionCache) -> None:
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "how are you"},
+        ]
+        assert cache.compute_frozen_count(messages) == 3
+
+    def test_tool_result_with_cache_hit_is_stable(self, cache: CompressionCache) -> None:
+        tool_content = "tool output data"
+        h = CompressionCache.content_hash(tool_content)
+        cache.store_compressed(h, "compressed tool output", tokens_saved=5)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "my_tool", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}],
+            },
+        ]
+        assert cache.compute_frozen_count(messages) == 3
+
+    def test_tool_result_cache_miss_stops_frozen(self, cache: CompressionCache) -> None:
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "uncached stuff"}
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        assert cache.compute_frozen_count(messages) == 1
+
+    def test_frozen_count_with_dropped_messages(self, cache: CompressionCache) -> None:
+        cached_content = "cached tool output"
+        h = CompressionCache.content_hash(cached_content)
+        cache.store_compressed(h, "compressed", tokens_saved=3)
+
+        messages = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": cached_content}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "not cached"}],
+            },
+        ]
+        assert cache.compute_frozen_count(messages) == 2
+
+
+class TestCompressionCacheApplyAndUpdate:
+    def test_apply_cached_swaps_tool_results(self, cache: CompressionCache) -> None:
+        original_content = "big tool output"
+        h = CompressionCache.content_hash(original_content)
+        cache.store_compressed(h, "small output", tokens_saved=5)
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": original_content}
+                ],
+            },
+        ]
+        result = cache.apply_cached(messages)
+        assert result[1]["content"][0]["content"] == "small output"
+
+    def test_apply_cached_preserves_uncached_messages(self, cache: CompressionCache) -> None:
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        result = cache.apply_cached(messages)
+        assert result[0] is messages[0]
+        assert result[1] is messages[1]
+
+    def test_apply_cached_never_adds_messages(self, cache: CompressionCache) -> None:
+        # Store something in cache that doesn't correspond to any message
+        cache.store_compressed("orphan_hash", "orphan_value", tokens_saved=1)
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result = cache.apply_cached(messages)
+        assert len(result) == len(messages)
+
+    def test_update_from_result_caches_changes(self, cache: CompressionCache) -> None:
+        originals = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "original output"}
+                ],
+            },
+        ]
+        compressed = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "compressed output"}
+                ],
+            },
+        ]
+        cache.update_from_result(originals, compressed)
+
+        h = CompressionCache.content_hash("original output")
+        assert cache.get_compressed(h) == "compressed output"
+
+    def test_update_from_result_ignores_unchanged(self, cache: CompressionCache) -> None:
+        originals = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "same content"}
+                ],
+            },
+        ]
+        compressed = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "same content"}
+                ],
+            },
+        ]
+        cache.update_from_result(originals, compressed)
+        h = CompressionCache.content_hash("same content")
+        assert cache.get_compressed(h) is None
+
+    def test_apply_does_not_modify_original_messages(self, cache: CompressionCache) -> None:
+        original_content = "big tool output"
+        h = CompressionCache.content_hash(original_content)
+        cache.store_compressed(h, "small output", tokens_saved=5)
+
+        msg = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": original_content}],
+        }
+        messages = [msg]
+        cache.apply_cached(messages)
+
+        # Original must be untouched
+        assert msg["content"][0]["content"] == original_content
+
+    def test_openai_format_tool_result(self, cache: CompressionCache) -> None:
+        original_content = "openai tool output"
+        h = CompressionCache.content_hash(original_content)
+        cache.store_compressed(h, "compressed openai", tokens_saved=4)
+
+        messages = [
+            {"role": "tool", "tool_call_id": "tc1", "content": original_content},
+        ]
+        result = cache.apply_cached(messages)
+        assert result[0]["content"] == "compressed openai"
+        # Original untouched
+        assert messages[0]["content"] == original_content
