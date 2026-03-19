@@ -151,7 +151,7 @@ class CompressionCache:
                 content = _extract_tool_result_content(msg)
                 if content is not None:
                     h = self.content_hash(content)
-                    if self.get_compressed(h) is None:
+                    if h not in self._cache:
                         break
                 else:
                     # tool_result with non-string content; treat as unstable
@@ -202,5 +202,5 @@ class CompressionCache:
             if orig_content == comp_content:
                 continue
             h = self.content_hash(orig_content)
-            tokens_saved = len(orig_content) - len(comp_content)
+            tokens_saved = len(orig_content) // 4 - len(comp_content) // 4
             self.store_compressed(h, comp_content, tokens_saved=max(tokens_saved, 0))
