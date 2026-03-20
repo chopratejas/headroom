@@ -980,6 +980,11 @@ class CostTracker:
         self._tokens_sent_by_model: dict[str, int] = {}
         self._requests_by_model: dict[str, int] = {}
 
+        # API-reported cache breakdown per model (for accurate cost calculation)
+        self._api_cache_read_by_model: dict[str, int] = {}
+        self._api_cache_write_by_model: dict[str, int] = {}
+        self._api_uncached_by_model: dict[str, int] = {}
+
     # Cache resolved model names to avoid repeated litellm lookups.
     # This is critical: litellm.cost_per_token() is synchronous and can block
     # the async event loop if it triggers I/O (lazy model info download).
@@ -1095,13 +1100,39 @@ class CostTracker:
         while self._costs and self._costs[0][0] < cutoff:
             self._costs.popleft()
 
-    def record_tokens(self, model: str, tokens_saved: int, tokens_sent: int):
-        """Record token counts per model. This is exact — no estimation."""
+    def record_tokens(
+        self,
+        model: str,
+        tokens_saved: int,
+        tokens_sent: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        uncached_tokens: int = 0,
+    ):
+        """Record token counts per model.
+
+        Args:
+            model: Model name.
+            tokens_saved: Tokens removed by compression (Headroom's count).
+            tokens_sent: Compressed message tokens sent (Headroom's count).
+            cache_read_tokens: Cache read tokens from API response usage.
+            cache_write_tokens: Cache write tokens from API response usage.
+            uncached_tokens: Non-cached input tokens from API response usage.
+        """
         self._tokens_saved_by_model[model] = (
             self._tokens_saved_by_model.get(model, 0) + tokens_saved
         )
         self._tokens_sent_by_model[model] = self._tokens_sent_by_model.get(model, 0) + tokens_sent
         self._requests_by_model[model] = self._requests_by_model.get(model, 0) + 1
+        self._api_cache_read_by_model[model] = (
+            self._api_cache_read_by_model.get(model, 0) + cache_read_tokens
+        )
+        self._api_cache_write_by_model[model] = (
+            self._api_cache_write_by_model.get(model, 0) + cache_write_tokens
+        )
+        self._api_uncached_by_model[model] = (
+            self._api_uncached_by_model.get(model, 0) + uncached_tokens
+        )
 
     def get_period_cost(self) -> float:
         """Get cost for current budget period."""
@@ -1137,6 +1168,26 @@ class CostTracker:
         except Exception:
             return None
 
+    def _get_cache_prices(self, model: str) -> tuple[float, float, float] | None:
+        """Get per-token prices for cache read, cache write, and uncached input.
+
+        Returns (cache_read, cache_write, uncached) per-token costs, or None
+        if pricing is unavailable. Uses LiteLLM's native cache pricing data.
+        """
+        if not LITELLM_AVAILABLE:
+            return None
+        try:
+            resolved = self._resolve_litellm_model(model)
+            info = litellm.model_cost.get(resolved, {})
+            uncached = info.get("input_cost_per_token")
+            if not uncached:
+                return None
+            cache_read = info.get("cache_read_input_token_cost", uncached)
+            cache_write = info.get("cache_creation_input_token_cost", uncached)
+            return (cache_read, cache_write, uncached)
+        except Exception:
+            return None
+
     def stats(self) -> dict:
         """Get token statistics per model."""
         per_model = {}
@@ -1155,21 +1206,38 @@ class CostTracker:
                 else 0,
             }
 
-        # Compute counterfactual: what would you have paid without Headroom?
-        # Note: uses input token pricing only. Output tokens and cache pricing
-        # are excluded since Headroom only compresses input tokens.
+        # Compute actual input cost using API-reported cache breakdown and
+        # LiteLLM's per-category pricing (cache reads discounted, writes at
+        # premium, uncached at list). Falls back to list price when cache
+        # data is unavailable.
         cost_with_headroom = 0.0
         cost_without_headroom = 0.0
+        total_input_tokens = 0
         for model in self._tokens_saved_by_model:
             saved = self._tokens_saved_by_model[model]
             sent = self._tokens_sent_by_model.get(model, 0)
-            price_per_1m = self._get_list_price(model)
-            if price_per_1m:
-                cost_with_headroom += (sent / 1_000_000) * price_per_1m
-                cost_without_headroom += ((saved + sent) / 1_000_000) * price_per_1m
+            cr = self._api_cache_read_by_model.get(model, 0)
+            cw = self._api_cache_write_by_model.get(model, 0)
+            uncached = self._api_uncached_by_model.get(model, 0)
+            total_input_tokens += sent
+
+            prices = self._get_cache_prices(model)
+            if prices:
+                cr_price, cw_price, uncached_price = prices
+                if cr + cw + uncached > 0:
+                    # Use API's real cache breakdown with LiteLLM pricing
+                    model_cost = cr * cr_price + cw * cw_price + uncached * uncached_price
+                else:
+                    # No cache data from API — fall back to list price
+                    model_cost = sent * uncached_price
+                cost_with_headroom += model_cost
+                # Counterfactual: saved tokens would have been new content at list price
+                cost_without_headroom += model_cost + saved * uncached_price
 
         return {
             "total_tokens_saved": total_saved,
+            "total_input_tokens": total_input_tokens,
+            "total_input_cost_usd": round(cost_with_headroom, 4),
             "per_model": per_model,
             "cost_with_headroom_usd": round(cost_with_headroom, 4),
             "cost_without_headroom_usd": round(cost_without_headroom, 4),
@@ -2783,11 +2851,13 @@ class HeadroomProxy:
                 output_tokens = 0
                 cr_tokens = 0
                 cw_tokens = 0
+                uncached_input_tokens = 0
                 if resp_json:
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
                     cr_tokens = usage.get("cache_read_input_tokens", 0)
                     cw_tokens = usage.get("cache_creation_input_tokens", 0)
+                    uncached_input_tokens = usage.get("input_tokens", 0)
 
                 # Update prefix cache tracker for next turn
                 prefix_tracker.update_from_response(
@@ -2797,7 +2867,14 @@ class HeadroomProxy:
                 )
 
                 if self.cost_tracker:
-                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
+                    self.cost_tracker.record_tokens(
+                        model,
+                        tokens_saved,
+                        optimized_tokens,
+                        cache_read_tokens=cr_tokens,
+                        cache_write_tokens=cw_tokens,
+                        uncached_tokens=uncached_input_tokens,
+                    )
 
                 # Cache response
                 if self.cache and response.status_code == 200:
@@ -4509,6 +4586,7 @@ class HeadroomProxy:
                 # misleading for aggregation (often just 1 with prompt caching).
                 cache_read_tokens = stream_state["cache_read_input_tokens"]
                 cache_write_tokens = stream_state["cache_creation_input_tokens"]
+                uncached_input_tokens = stream_state.get("input_tokens") or 0
 
                 # Structured perf log line for `headroom perf` analysis
                 num_msgs = len(body.get("messages", []))
@@ -4537,7 +4615,14 @@ class HeadroomProxy:
                     )
 
                 if self.cost_tracker:
-                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
+                    self.cost_tracker.record_tokens(
+                        model,
+                        tokens_saved,
+                        optimized_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        uncached_tokens=uncached_input_tokens,
+                    )
 
                 await self.metrics.record_request(
                     provider=provider,
@@ -5133,7 +5218,12 @@ class HeadroomProxy:
                 )
 
                 if self.cost_tracker:
-                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
+                    self.cost_tracker.record_tokens(
+                        model,
+                        tokens_saved,
+                        optimized_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                    )
 
                 # Cache
                 if self.cache and response.status_code == 200:
@@ -6164,7 +6254,12 @@ class HeadroomProxy:
                     )
 
                 if self.cost_tracker:
-                    self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
+                    self.cost_tracker.record_tokens(
+                        model,
+                        tokens_saved,
+                        optimized_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                    )
 
                 await self.metrics.record_request(
                     provider="gemini",
