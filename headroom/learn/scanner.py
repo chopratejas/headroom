@@ -441,6 +441,14 @@ def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:
         if result:
             return result
 
+    # Try joining with . (this part has a literal dot, encoded as - by Claude Code)
+    if len(parts) > 1:
+        dot_name = f"{parts[0]}.{parts[1]}"
+        dot_path = base / dot_name
+        result = _greedy_path_decode(dot_path, parts[2:])
+        if result:
+            return result
+
     # If we've exhausted parts, check if current path exists
     return base if base.exists() else None
 

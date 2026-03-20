@@ -26,6 +26,7 @@ from headroom.learn.models import (
     Recommendation,
     RecommendationTarget,
 )
+from headroom.learn.scanner import _decode_project_path, _greedy_path_decode
 from headroom.learn.writer import ClaudeCodeWriter, CodexWriter
 
 # =============================================================================
@@ -201,6 +202,42 @@ class TestClaudeCodeIntegration:
             assert write_result.dry_run is True
             for fp in write_result.files_written:
                 assert "CLAUDE.md" in fp.name or "MEMORY.md" in fp.name
+
+
+class TestDecodeProjectPath:
+    """Unit tests for _greedy_path_decode — covers dot-in-path bug (GitHub.nosync)."""
+
+    def test_dot_in_directory_name(self, tmp_path):
+        """Paths with dots (e.g. GitHub.nosync) must decode correctly.
+
+        Claude Code encodes '/' and '.' both as '-', so 'GitHub.nosync'
+        becomes 'GitHub-nosync' in the directory name.
+        _greedy_path_decode must reconstruct it by trying '.' as a join.
+        """
+        # base = tmp_path, remaining parts = ["GitHub", "nosync", "myproject"]
+        # which came from encoding "GitHub.nosync/myproject" as "GitHub-nosync-myproject"
+        (tmp_path / "GitHub.nosync" / "myproject").mkdir(parents=True)
+        result = _greedy_path_decode(tmp_path, ["GitHub", "nosync", "myproject"])
+        assert result == tmp_path / "GitHub.nosync" / "myproject"
+
+    def test_hyphen_in_directory_name(self, tmp_path):
+        """Paths with literal hyphens decode correctly (existing behavior preserved)."""
+        (tmp_path / "my-project").mkdir()
+        result = _greedy_path_decode(tmp_path, ["my", "project"])
+        assert result == tmp_path / "my-project"
+
+    def test_simple_path_no_ambiguity(self, tmp_path):
+        """Plain paths with no special chars still decode correctly."""
+        (tmp_path / "myproject").mkdir()
+        result = _greedy_path_decode(tmp_path, ["myproject"])
+        assert result == tmp_path / "myproject"
+
+    def test_dot_preferred_over_slash_when_slash_missing(self, tmp_path):
+        """When GitHub/nosync doesn't exist but GitHub.nosync does, use dot."""
+        # Only create the dot version, not the slash version
+        (tmp_path / "GitHub.nosync").mkdir()
+        result = _greedy_path_decode(tmp_path, ["GitHub", "nosync"])
+        assert result == tmp_path / "GitHub.nosync"
 
 
 @pytest.mark.skipif(not CODEX_DIR.exists(), reason="No Codex data")
