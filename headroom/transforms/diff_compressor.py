@@ -150,12 +150,10 @@ class DiffCompressor:
     _DELETED_FILE_MODE_PATTERN = re.compile(r"^deleted file mode")
     _RENAME_PATTERN = re.compile(r"^(rename|similarity|copy) ")
 
-    # Priority patterns for context-aware hunk selection
-    _PRIORITY_PATTERNS = [
-        re.compile(r"\b(error|exception|fail|bug|fix)\b", re.IGNORECASE),
-        re.compile(r"\b(todo|fixme|hack|xxx)\b", re.IGNORECASE),
-        re.compile(r"\b(security|auth|password|secret|token)\b", re.IGNORECASE),
-    ]
+    # Priority patterns for context-aware hunk selection (centralized)
+    from headroom.transforms.error_detection import PRIORITY_PATTERNS_DIFF
+
+    _PRIORITY_PATTERNS = PRIORITY_PATTERNS_DIFF
 
     def __init__(self, config: DiffCompressorConfig | None = None):
         """Initialize diff compressor.

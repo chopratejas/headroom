@@ -13,7 +13,6 @@ Compression Strategy:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 
@@ -47,14 +46,10 @@ class TextCompressor:
         >>> print(result.compressed)
     """
 
-    # Patterns that indicate important lines
-    _IMPORTANT_PATTERNS = [
-        re.compile(r"\b(error|exception|fail|warning)\b", re.IGNORECASE),
-        re.compile(r"\b(important|note|todo|fixme)\b", re.IGNORECASE),
-        re.compile(r"^#+\s"),  # Markdown headers
-        re.compile(r"^\*\*"),  # Bold text
-        re.compile(r"^>\s"),  # Quotes
-    ]
+    # Patterns that indicate important lines (centralized in error_detection module)
+    from headroom.transforms.error_detection import PRIORITY_PATTERNS_TEXT
+
+    _IMPORTANT_PATTERNS = PRIORITY_PATTERNS_TEXT
 
     def __init__(self, config: TextCompressorConfig | None = None):
         """Initialize text compressor.

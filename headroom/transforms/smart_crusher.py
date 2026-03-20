@@ -77,6 +77,7 @@ from ..utils import (
 from .anchor_selector import AnchorSelector
 from .anchor_selector import DataPattern as AnchorDataPattern
 from .base import Transform
+from .error_detection import ERROR_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
@@ -623,22 +624,8 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
 # Error keywords for PRESERVATION guarantee (not crushability detection)
 # This is for the quality guarantee: "ALL error items are ALWAYS preserved"
 # regardless of how common they are. Used in _prioritize_indices().
-_ERROR_KEYWORDS_FOR_PRESERVATION = frozenset(
-    {
-        "error",
-        "exception",
-        "failed",
-        "failure",
-        "critical",
-        "fatal",
-        "crash",
-        "panic",
-        "abort",
-        "timeout",
-        "denied",
-        "rejected",
-    }
-)
+# Centralized in error_detection module for consistency across transforms.
+_ERROR_KEYWORDS_FOR_PRESERVATION = ERROR_KEYWORDS
 
 
 def _detect_error_items_for_preservation(items: list[dict]) -> list[int]:

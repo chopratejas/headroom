@@ -79,12 +79,10 @@ def _create_message_signature(messages: list[dict[str, Any]]) -> Any:
             content = msg.get("content", "")
             if isinstance(content, str):
                 total_content_length += len(content)
-                # Check for error patterns (learned from TOIN, but basic heuristic here)
-                content_lower = content.lower()
-                if any(
-                    indicator in content_lower
-                    for indicator in ["error", "fail", "exception", "traceback"]
-                ):
+                # Check for error patterns (centralized, TOIN takes priority when available)
+                from headroom.transforms.error_detection import content_has_error_indicators
+
+                if content_has_error_indicators(content):
                     has_error_indicators = True
             elif isinstance(content, list):
                 # Anthropic format with content blocks

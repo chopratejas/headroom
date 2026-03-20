@@ -87,12 +87,10 @@ class SearchCompressor:
     # Pattern for ripgrep with context (file-line-content or file:line:content)
     _RG_CONTEXT_PATTERN = re.compile(r"^([^:-]+)[:-](\d+)[:-](.*)$")
 
-    # Error/important patterns to prioritize
-    _PRIORITY_PATTERNS = [
-        re.compile(r"\b(error|exception|fail|fatal)\b", re.IGNORECASE),
-        re.compile(r"\b(warn|warning)\b", re.IGNORECASE),
-        re.compile(r"\b(todo|fixme|hack|xxx)\b", re.IGNORECASE),
-    ]
+    # Error/important patterns to prioritize (centralized)
+    from headroom.transforms.error_detection import PRIORITY_PATTERNS_SEARCH
+
+    _PRIORITY_PATTERNS = PRIORITY_PATTERNS_SEARCH
 
     def __init__(self, config: SearchCompressorConfig | None = None):
         """Initialize search compressor.
