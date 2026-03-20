@@ -344,7 +344,7 @@ def wrap() -> None:
 # =============================================================================
 
 
-@wrap.command()
+@wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and hook registration")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
@@ -355,10 +355,12 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: 
 
     \b
     Sets ANTHROPIC_BASE_URL to route all Anthropic API calls through Headroom.
+    All unknown flags are passed through to claude (e.g. --resume, --model).
 
     \b
     Examples:
         headroom wrap claude                # Start everything
+        headroom wrap claude --resume <id>  # Resume a session
         headroom wrap claude -- -p          # Claude in print mode
         headroom wrap claude --port 9999    # Custom proxy port
         headroom wrap claude --no-rtk       # Skip rtk (proxy only)
@@ -417,7 +419,7 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: 
 # =============================================================================
 
 
-@wrap.command()
+@wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and AGENTS.md injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
@@ -476,7 +478,7 @@ def codex(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, codex_args: tu
 # =============================================================================
 
 
-@wrap.command()
+@wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and conventions injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
@@ -535,7 +537,7 @@ def aider(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, aider_args: tu
 # =============================================================================
 
 
-@wrap.command()
+@wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and .cursorrules injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
