@@ -272,7 +272,7 @@ def _build_prefix_cache_stats(
         "bust_count": 0,
         "bust_write_tokens": 0,
         "savings_usd": 0.0,
-        "bust_penalty_usd": 0.0,
+        "write_premium_usd": 0.0,
     }
 
     for provider, pc in metrics.cache_by_provider.items():
@@ -302,19 +302,21 @@ def _build_prefix_cache_stats(
                         break
 
         # Calculate savings:
-        # Without cache: all tokens at 1.0x input price
-        # With cache: read tokens at read_mult, write tokens at write_mult
+        # Cache reads save (1.0 - read_mult) per token vs uncached input price.
+        # Cache write premium is NOT deducted — it's baseline cost that the
+        # client (e.g. Claude Code) pays regardless of Headroom. We track it
+        # for observability but don't penalise our savings number.
         read_tokens: int = pc["cache_read_tokens"]  # type: ignore[assignment]
         write_tokens: int = pc["cache_write_tokens"]  # type: ignore[assignment]
         savings_usd = 0.0
-        bust_penalty_usd = 0.0
+        write_premium_usd = 0.0
 
         if input_price_per_token:
             # Savings from reads: tokens * price * (1.0 - read_multiplier)
             savings_usd = read_tokens * input_price_per_token * (1.0 - read_mult)
-            # Penalty from writes: tokens * price * (write_multiplier - 1.0)
+            # Write premium (observability only — not subtracted from savings)
             if write_mult > 1.0:
-                bust_penalty_usd = write_tokens * input_price_per_token * (write_mult - 1.0)
+                write_premium_usd = write_tokens * input_price_per_token * (write_mult - 1.0)
 
         hit_rate = round(pc["hit_requests"] / pc["requests"] * 100, 1) if pc["requests"] > 0 else 0
 
@@ -329,8 +331,8 @@ def _build_prefix_cache_stats(
             "read_discount": f"{(1.0 - read_mult) * 100:.0f}%",
             "write_premium": f"{(write_mult - 1.0) * 100:.0f}%" if write_mult > 1.0 else "none",
             "savings_usd": round(savings_usd, 4),
-            "bust_penalty_usd": round(bust_penalty_usd, 4),
-            "net_savings_usd": round(savings_usd - bust_penalty_usd, 4),
+            "write_premium_usd": round(write_premium_usd, 4),
+            "net_savings_usd": round(savings_usd, 4),
             "label": str(econ["label"]),
         }
         by_provider[provider] = provider_stats
@@ -343,11 +345,11 @@ def _build_prefix_cache_stats(
         totals["bust_count"] += pc["bust_count"]
         totals["bust_write_tokens"] += pc["bust_write_tokens"]
         totals["savings_usd"] += savings_usd
-        totals["bust_penalty_usd"] += bust_penalty_usd
+        totals["write_premium_usd"] += write_premium_usd
 
-    totals["net_savings_usd"] = round(totals["savings_usd"] - totals["bust_penalty_usd"], 4)
+    totals["net_savings_usd"] = round(totals["savings_usd"], 4)
     totals["savings_usd"] = round(totals["savings_usd"], 4)
-    totals["bust_penalty_usd"] = round(totals["bust_penalty_usd"], 4)
+    totals["write_premium_usd"] = round(totals["write_premium_usd"], 4)
     totals["hit_rate"] = (
         round(totals["hit_requests"] / totals["requests"] * 100, 1) if totals["requests"] > 0 else 0
     )

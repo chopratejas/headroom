@@ -156,7 +156,7 @@
                     <div>
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Cache Writes</div>
                         <div class="text-2xl font-light tabular-nums text-amber-400" x-text="formatNumber(stats.prefix_cache?.totals?.cache_write_tokens || 0)"></div>
-                        <div class="text-xs text-amber-400/70" x-text="'$' + formatCurrency(stats.prefix_cache?.totals?.bust_penalty_usd || 0) + ' penalty'"></div>
+                        <div class="text-xs text-amber-400/70" x-text="'$' + formatCurrency(stats.prefix_cache?.totals?.write_premium_usd || 0) + ' write premium'"></div>
                     </div>
                     <div>
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Hit Rate</div>

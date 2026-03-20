@@ -10,6 +10,12 @@ from .main import main
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
 @click.option("--port", "-p", default=8787, type=int, help="Port to bind to (default: 8787)")
+@click.option(
+    "--mode",
+    default=None,
+    type=click.Choice(["cost_savings", "token_headroom"]),
+    help="Optimization mode: cost_savings (preserve prefix cache) or token_headroom (compress for session extension). Default: cost_savings. Env: HEADROOM_MODE",
+)
 @click.option("--no-optimize", is_flag=True, help="Disable optimization (passthrough mode)")
 @click.option("--no-cache", is_flag=True, help="Disable semantic caching")
 @click.option("--no-rate-limit", is_flag=True, help="Disable rate limiting")
@@ -117,6 +123,7 @@ from .main import main
 @click.pass_context
 def proxy(
     ctx: click.Context,
+    mode: str | None,
     host: str,
     port: int,
     no_optimize: bool,
@@ -176,11 +183,15 @@ def proxy(
     # Resolve anyllm provider: env var takes precedence over CLI default (matches argparse path)
     effective_anyllm_provider = os.environ.get("HEADROOM_ANYLLM_PROVIDER") or anyllm_provider
 
+    # Resolve mode: CLI flag > env var > default
+    effective_mode = mode or os.environ.get("HEADROOM_MODE", "cost_savings")
+
     config = ProxyConfig(
         host=host,
         port=port,
         openai_api_url=effective_openai_api_url,
         gemini_api_url=effective_gemini_api_url,
+        mode=effective_mode,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
         rate_limit_enabled=not no_rate_limit,
@@ -280,6 +291,7 @@ Starting proxy server...
 
   URL:          http://{config.host}:{config.port}
   Backend:      {backend_status}
+  Mode:         {config.mode}
   Optimization: {"ENABLED" if config.optimize else "DISABLED"}
   Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}

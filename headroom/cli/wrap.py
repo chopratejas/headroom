@@ -56,6 +56,11 @@ def _start_proxy(port: int) -> subprocess.Popen:
     """
     cmd = [sys.executable, "-m", "headroom.cli", "proxy", "--port", str(port)]
 
+    # Forward HEADROOM_MODE env var so the proxy respects the user's mode choice
+    headroom_mode = os.environ.get("HEADROOM_MODE")
+    if headroom_mode:
+        cmd.extend(["--mode", headroom_mode])
+
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
 
