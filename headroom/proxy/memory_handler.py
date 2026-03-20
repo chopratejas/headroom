@@ -1412,6 +1412,16 @@ To SAVE: create /memories/<topic>.txt "content"
             logger.error(f"Memory: Semantic rename failed: {e}")
             return f"Error: {e}"
 
+    @property
+    def backend(self) -> Any:
+        """Expose the backend for external components (e.g., TrafficLearner)."""
+        return self._backend
+
+    @property
+    def initialized(self) -> bool:
+        """Whether the backend has been initialized."""
+        return self._initialized
+
     async def close(self) -> None:
         """Close the memory backend."""
         if self._backend and hasattr(self._backend, "close"):

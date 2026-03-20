@@ -47,7 +47,7 @@ def _get_log_path() -> Path:
     return log_dir / "proxy.log"
 
 
-def _start_proxy(port: int) -> subprocess.Popen:
+def _start_proxy(port: int, *, learn: bool = False) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
 
     Logs are written to ~/.headroom/logs/proxy.log to avoid pipe buffer
@@ -60,6 +60,10 @@ def _start_proxy(port: int) -> subprocess.Popen:
     headroom_mode = os.environ.get("HEADROOM_MODE")
     if headroom_mode:
         cmd.extend(["--mode", headroom_mode])
+
+    # Forward --learn flag to proxy subprocess
+    if learn:
+        cmd.append("--learn")
 
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
@@ -217,7 +221,9 @@ def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
     return True
 
 
-def _ensure_proxy(port: int, no_proxy: bool) -> subprocess.Popen | None:
+def _ensure_proxy(
+    port: int, no_proxy: bool, *, learn: bool = False
+) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
     if not no_proxy:
         if _check_proxy(port):
@@ -226,7 +232,7 @@ def _ensure_proxy(port: int, no_proxy: bool) -> subprocess.Popen | None:
         else:
             click.echo(f"  Starting Headroom proxy on port {port}...")
             try:
-                proc = _start_proxy(port)
+                proc = _start_proxy(port, learn=learn)
                 click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
                 return proc
             except RuntimeError as e:
@@ -285,6 +291,8 @@ def _launch_tool(
     no_proxy: bool,
     tool_label: str,
     env_vars_display: list[str],
+    *,
+    learn: bool = False,
 ) -> None:
     """Common logic: start proxy, launch tool, clean up."""
     proxy_holder: list[subprocess.Popen | None] = [None]
@@ -300,7 +308,7 @@ def _launch_tool(
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
-        proxy_holder[0] = _ensure_proxy(port, no_proxy)
+        proxy_holder[0] = _ensure_proxy(port, no_proxy, learn=learn)
 
         click.echo()
         click.echo(f"  Launching {tool_label} (API routed through Headroom)...")
@@ -348,9 +356,10 @@ def wrap() -> None:
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and hook registration")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
+@click.option("--learn", is_flag=True, help="Enable live traffic learning (patterns saved to MEMORY.md)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
-def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: tuple) -> None:
+def claude(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, claude_args: tuple) -> None:
     """Launch Claude Code through Headroom proxy.
 
     \b
@@ -384,7 +393,7 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: 
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
-        proxy_holder[0] = _ensure_proxy(port, no_proxy)
+        proxy_holder[0] = _ensure_proxy(port, no_proxy, learn=learn)
 
         if not no_rtk:
             click.echo("  Setting up rtk...")
@@ -423,9 +432,10 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, claude_args: 
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and AGENTS.md injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
+@click.option("--learn", is_flag=True, help="Enable live traffic learning (patterns saved to AGENTS.md)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("codex_args", nargs=-1, type=click.UNPROCESSED)
-def codex(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, codex_args: tuple) -> None:
+def codex(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, codex_args: tuple) -> None:
     """Launch OpenAI Codex CLI through Headroom proxy.
 
     \b
@@ -470,6 +480,7 @@ def codex(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, codex_args: tu
         no_proxy=no_proxy,
         tool_label="CODEX",
         env_vars_display=[f"OPENAI_BASE_URL=http://127.0.0.1:{port}/v1"],
+        learn=learn,
     )
 
 
@@ -482,9 +493,10 @@ def codex(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, codex_args: tu
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and conventions injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
+@click.option("--learn", is_flag=True, help="Enable live traffic learning")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("aider_args", nargs=-1, type=click.UNPROCESSED)
-def aider(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, aider_args: tuple) -> None:
+def aider(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, aider_args: tuple) -> None:
     """Launch aider through Headroom proxy.
 
     \b
@@ -529,6 +541,7 @@ def aider(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, aider_args: tu
             f"OPENAI_API_BASE=http://127.0.0.1:{port}/v1",
             f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}",
         ],
+        learn=learn,
     )
 
 
@@ -541,8 +554,9 @@ def aider(port: int, no_rtk: bool, no_proxy: bool, verbose: bool, aider_args: tu
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and .cursorrules injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
+@click.option("--learn", is_flag=True, help="Enable live traffic learning (patterns saved to .cursor/rules/)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def cursor(port: int, no_rtk: bool, no_proxy: bool, verbose: bool) -> None:
+def cursor(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool) -> None:
     """Start Headroom proxy for use with Cursor.
 
     \b
@@ -572,7 +586,7 @@ def cursor(port: int, no_rtk: bool, no_proxy: bool, verbose: bool) -> None:
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
-        proxy_holder[0] = _ensure_proxy(port, no_proxy)
+        proxy_holder[0] = _ensure_proxy(port, no_proxy, learn=learn)
 
         # Setup rtk for Cursor (binary + .cursorrules instructions)
         if not no_rtk:

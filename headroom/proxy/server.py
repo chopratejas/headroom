@@ -715,6 +715,7 @@ class ProxyConfig:
     memory_backend: Literal["local", "qdrant-neo4j"] = "local"  # Backend type
     memory_db_path: str = "headroom_memory.db"  # Path for local backend
     memory_inject_tools: bool = True  # Auto-inject memory tools
+    traffic_learning_enabled: bool = False  # Live traffic pattern learning (--learn)
     memory_use_native_tool: bool = False  # Use Anthropic's native memory_20250818 tool
     memory_inject_context: bool = True  # Inject searched memories into context
     memory_top_k: int = 10  # Number of memories to inject
@@ -1841,6 +1842,16 @@ class HeadroomProxy:
             )
             self.memory_handler = MemoryHandler(memory_config)
 
+        # Traffic Learner (live pattern extraction from proxy traffic)
+        # Only activates with --learn flag; requires --memory for backend
+        self.traffic_learner: TrafficLearner | None = None
+        if config.traffic_learning_enabled:
+            from headroom.memory.traffic_learner import TrafficLearner
+
+            self.traffic_learner = TrafficLearner(
+                user_id=os.environ.get("HEADROOM_USER_ID", os.environ.get("USER", "default")),
+            )
+
     def _get_compression_cache(self, session_id: str) -> CompressionCache:
         """Get or create a CompressionCache for a session."""
         if session_id not in self._compression_caches:
@@ -2519,6 +2530,35 @@ class HeadroomProxy:
                                     **last_msg,
                                     "content": content + "\n\n" + expansion_text,
                                 }
+
+        # Traffic Learner: Extract patterns from inbound tool results
+        if self.traffic_learner:
+            try:
+                # Wire backend on first use (lazy init after memory handler is ready)
+                if (
+                    self.traffic_learner._backend is None
+                    and self.memory_handler
+                    and self.memory_handler.initialized
+                    and self.memory_handler.backend
+                ):
+                    self.traffic_learner.set_backend(self.memory_handler.backend)
+
+                # Extract tool results from messages and learn from them
+                tool_results = self.traffic_learner.extract_tool_results_from_messages(
+                    optimized_messages
+                )
+                for tr in tool_results[-5:]:  # Only recent results
+                    await self.traffic_learner.on_tool_result(
+                        tool_name=tr["tool_name"],
+                        tool_input=tr["input"],
+                        tool_output=tr["output"],
+                        is_error=tr["is_error"],
+                    )
+
+                # Also extract preference signals from user messages
+                await self.traffic_learner.on_messages(optimized_messages)
+            except Exception as e:
+                logger.debug(f"[{request_id}] Traffic learner: {e}")
 
         # Memory: Inject context and tools
         if self.memory_handler and memory_user_id:
@@ -6648,9 +6688,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         await proxy.startup()
         # Start background task for periodic TOIN stats logging
         asyncio.create_task(_log_toin_stats_periodically())
+        # Start traffic learner background save worker
+        if proxy.traffic_learner:
+            await proxy.traffic_learner.start()
 
     @app.on_event("shutdown")
     async def shutdown():
+        if proxy.traffic_learner:
+            await proxy.traffic_learner.stop()
         await proxy.shutdown()
 
     # Health & Metrics

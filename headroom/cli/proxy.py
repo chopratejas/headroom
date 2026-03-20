@@ -81,6 +81,19 @@ from .main import main
     default=10,
     help="Number of memories to inject as context (default: 10)",
 )
+# Traffic Learning (live pattern extraction from proxy traffic)
+@click.option(
+    "--learn",
+    is_flag=True,
+    help="Enable live traffic learning: extract error→recovery patterns, environment facts, "
+    "and user preferences from proxy traffic. Implies --memory. "
+    "Learned patterns are saved to agent-native memory files (MEMORY.md, .cursor/rules, AGENTS.md).",
+)
+@click.option(
+    "--no-learn",
+    is_flag=True,
+    help="Explicitly disable traffic learning even when --memory is set.",
+)
 # Backend configuration
 @click.option(
     "--backend",
@@ -144,6 +157,8 @@ def proxy(
     no_memory_tools: bool,
     no_memory_context: bool,
     memory_top_k: int,
+    learn: bool,
+    no_learn: bool,
     backend: str,
     anyllm_provider: str,
     openai_api_url: str | None,
@@ -210,11 +225,14 @@ def proxy(
         intelligent_context_scoring=not no_intelligent_scoring,
         intelligent_context_compress_first=not no_compress_first,
         # Memory System (Multi-Provider with auto-detection)
-        memory_enabled=memory,
+        # --learn implies --memory (need backend for storing patterns)
+        memory_enabled=memory or (learn and not no_learn),
         memory_db_path=memory_db_path,
         memory_inject_tools=not no_memory_tools,
         memory_inject_context=not no_memory_context,
         memory_top_k=memory_top_k,
+        # Traffic Learning: only with --learn, never with --no-learn
+        traffic_learning_enabled=learn and not no_learn,
         # Backend (Anthropic direct, Bedrock, LiteLLM, or any-llm)
         backend=backend,
         bedrock_region=bedrock_region or region,
