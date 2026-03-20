@@ -527,6 +527,21 @@ def _build_session_summary(
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
 
+# Maximum SSE buffer size (10MB - prevents memory exhaustion from malformed streams)
+MAX_SSE_BUFFER_SIZE = 10 * 1024 * 1024
+
+# Maximum message array length (prevents DoS from deeply nested payloads)
+MAX_MESSAGE_ARRAY_LENGTH = 10000
+
+# Maximum compression cache sessions (prevents unbounded memory growth)
+MAX_COMPRESSION_CACHE_SESSIONS = 500
+
+# Maximum rate limiter buckets (prevents DoS via spoofed API keys)
+MAX_RATE_LIMITER_BUCKETS = 1000
+
+# Compression pipeline timeout in seconds
+COMPRESSION_TIMEOUT_SECONDS = 30
+
 
 # =============================================================================
 # Data Models
@@ -605,10 +620,10 @@ class ProxyConfig:
     bedrock_profile: str | None = None  # AWS profile (optional)
     anyllm_provider: str = "openai"  # any-llm provider (openai, mistral, groq, etc.)
 
-    # Optimization mode: "cost_savings" (default) or "token_headroom"
-    # cost_savings: preserve prefix cache for cost reduction
+    # Optimization mode: "token_headroom" (default) or "cost_savings"
     # token_headroom: compress older messages for session extension
-    mode: str = "cost_savings"
+    # cost_savings: preserve prefix cache for cost reduction
+    mode: str = "token_headroom"
 
     # Optimization
     optimize: bool = True
@@ -872,6 +887,19 @@ class TokenBucketRateLimiter:
         )
         self._lock = asyncio.Lock()
 
+    async def _cleanup_stale_buckets(self) -> None:
+        """Remove buckets that haven't been used in the last 10 minutes."""
+        now = time.time()
+        stale_threshold = now - 600  # 10 minutes
+        stale_keys = [
+            k for k, v in self._request_buckets.items() if v.last_update < stale_threshold
+        ]
+        for k in stale_keys:
+            del self._request_buckets[k]
+            self._token_buckets.pop(k, None)
+        if stale_keys:
+            logger.debug(f"Cleaned up {len(stale_keys)} stale rate limiter buckets")
+
     def _refill(self, state: RateLimitState, rate_per_minute: float) -> float:
         """Refill bucket based on elapsed time."""
         now = time.time()
@@ -884,6 +912,9 @@ class TokenBucketRateLimiter:
     async def check_request(self, key: str = "default") -> tuple[bool, float]:
         """Check if request is allowed. Returns (allowed, wait_seconds)."""
         async with self._lock:
+            # Prevent unbounded bucket growth from spoofed keys
+            if len(self._request_buckets) > MAX_RATE_LIMITER_BUCKETS:
+                await self._cleanup_stale_buckets()
             state = self._request_buckets[key]
             available = self._refill(state, self.requests_per_minute)
 
@@ -1747,6 +1778,20 @@ class HeadroomProxy:
         if session_id not in self._compression_caches:
             from headroom.cache.compression_cache import CompressionCache
 
+            # Evict oldest caches if at capacity
+            if len(self._compression_caches) >= MAX_COMPRESSION_CACHE_SESSIONS:
+                # Remove oldest quarter to amortize cleanup cost
+                oldest_keys = list(self._compression_caches.keys())[
+                    : MAX_COMPRESSION_CACHE_SESSIONS // 4
+                ]
+                for key in oldest_keys:
+                    del self._compression_caches[key]
+                logger.info(
+                    "Evicted %d compression caches (exceeded %d max sessions)",
+                    len(oldest_keys),
+                    MAX_COMPRESSION_CACHE_SESSIONS,
+                )
+
             self._compression_caches[session_id] = CompressionCache()
         return self._compression_caches[session_id]
 
@@ -1834,7 +1879,7 @@ class HeadroomProxy:
             logger.warning(
                 f"Unknown HEADROOM_MODE '{self.config.mode}', falling back to 'cost_savings'"
             )
-            self.config.mode = "cost_savings"
+            self.config.mode = "token_headroom"
         logger.info(f"Mode: {self.config.mode}")
         if self.config.mode == "token_headroom":
             logger.info("  Prefix freeze: re-freeze after compression")
@@ -2104,6 +2149,21 @@ class HeadroomProxy:
             )
         model = body.get("model", "unknown")
         messages = body.get("messages", [])
+
+        # Validate message array size
+        if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": f"Message array too large ({len(messages)} messages). "
+                        f"Maximum is {MAX_MESSAGE_ARRAY_LENGTH}.",
+                    },
+                },
+            )
+
         stream = body.get("stream", False)
 
         # Image compression (before text optimization)
@@ -2127,7 +2187,9 @@ class HeadroomProxy:
 
         # Rate limiting
         if self.rate_limiter:
-            rate_key = headers.get("x-api-key", "default")[:16]
+            api_key = headers.get("x-api-key", "")
+            client_ip = request.client.host if request.client else "unknown"
+            rate_key = f"{api_key[:16]}:{client_ip}" if api_key else client_ip
             allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
             if not allowed:
                 await self.metrics.record_rate_limited()
@@ -2211,6 +2273,7 @@ class HeadroomProxy:
         prefix_tracker = self.session_tracker_store.get_or_create(session_id, "anthropic")
         frozen_message_count = prefix_tracker.get_frozen_message_count()
 
+        _compression_failed = False
         if self.config.optimize and messages:
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
@@ -2229,12 +2292,17 @@ class HeadroomProxy:
                     # Re-freeze boundary: consecutive stable messages from start
                     frozen_message_count = comp_cache.compute_frozen_count(messages)
 
-                    result = self.anthropic_pipeline.apply(
-                        messages=working_messages,
-                        model=model,
-                        model_limit=context_limit,
-                        frozen_message_count=frozen_message_count,
-                        biases=biases,
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            lambda: self.anthropic_pipeline.apply(
+                                messages=working_messages,
+                                model=model,
+                                model_limit=context_limit,
+                                frozen_message_count=frozen_message_count,
+                                biases=biases,
+                            )
+                        ),
+                        timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
 
                     # Cache newly compressed messages (index-aligned diff)
@@ -2250,12 +2318,17 @@ class HeadroomProxy:
                     # original_tokens was set at line ~2183 from uncompressed messages.
                     optimized_tokens = result.tokens_after
                 else:
-                    result = self.anthropic_pipeline.apply(
-                        messages=messages,
-                        model=model,
-                        model_limit=context_limit,
-                        frozen_message_count=frozen_message_count,
-                        biases=biases,
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            lambda: self.anthropic_pipeline.apply(
+                                messages=messages,
+                                model=model,
+                                model_limit=context_limit,
+                                frozen_message_count=frozen_message_count,
+                                biases=biases,
+                            )
+                        ),
+                        timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
 
                     if result.messages != messages:
@@ -2269,6 +2342,8 @@ class HeadroomProxy:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
+                # Flag compression failure for observability
+                _compression_failed = True
 
         tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
@@ -2811,6 +2886,8 @@ class HeadroomProxy:
                     response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
                 if cache_hit:
                     response_headers["x-headroom-cached"] = "true"
+                if _compression_failed:
+                    response_headers["x-headroom-compression-failed"] = "true"
 
                 return Response(
                     content=response.content,
@@ -4234,7 +4311,7 @@ class HeadroomProxy:
         )
 
         async def generate():
-            nonlocal body  # May need to modify for continuation requests
+            nonlocal body, memory_enabled  # May need to modify for continuation requests
 
             # For memory mode, we buffer the response to check for tool calls
             buffered_chunks: list[bytes] = []
@@ -4255,10 +4332,27 @@ class HeadroomProxy:
                         chunk_str = chunk.decode("utf-8", errors="ignore")
                         stream_state["sse_buffer"] += chunk_str
 
+                        # Safety: prevent unbounded buffer growth
+                        if len(stream_state["sse_buffer"]) > MAX_SSE_BUFFER_SIZE:
+                            logger.error(
+                                "SSE buffer exceeded maximum size (%d bytes), "
+                                "truncating to prevent memory exhaustion",
+                                MAX_SSE_BUFFER_SIZE,
+                            )
+                            stream_state["sse_buffer"] = stream_state["sse_buffer"][
+                                -MAX_SSE_BUFFER_SIZE // 2 :
+                            ]
+
                         if memory_enabled:
                             # Buffer for memory tool detection
                             buffered_chunks.append(chunk)
                             full_sse_data += chunk_str
+                            if len(full_sse_data) > MAX_SSE_BUFFER_SIZE:
+                                logger.warning(
+                                    "Memory-mode SSE buffer exceeded maximum size, "
+                                    "disabling memory detection for this request"
+                                )
+                                memory_enabled = False
                         else:
                             # Immediate streaming when memory not enabled
                             yield chunk
@@ -4696,6 +4790,21 @@ class HeadroomProxy:
             )
         model = body.get("model", "unknown")
         messages = body.get("messages", [])
+
+        # Validate message array size
+        if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": f"Message array too large ({len(messages)} messages). "
+                        f"Maximum is {MAX_MESSAGE_ARRAY_LENGTH}.",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request",
+                    }
+                },
+            )
+
         stream = body.get("stream", False)
 
         # Image compression (before text optimization)
@@ -4778,6 +4887,7 @@ class HeadroomProxy:
         )
         openai_frozen_count = openai_prefix_tracker.get_frozen_message_count()
 
+        _compression_failed = False
         if self.config.optimize and messages:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
@@ -4791,12 +4901,17 @@ class HeadroomProxy:
                     # Re-freeze boundary
                     openai_frozen_count = comp_cache.compute_frozen_count(messages)
 
-                    result = self.openai_pipeline.apply(
-                        messages=working_messages,
-                        model=model,
-                        model_limit=context_limit,
-                        frozen_message_count=openai_frozen_count,
-                        biases=_hook_biases,
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            lambda: self.openai_pipeline.apply(
+                                messages=working_messages,
+                                model=model,
+                                model_limit=context_limit,
+                                frozen_message_count=openai_frozen_count,
+                                biases=_hook_biases,
+                            )
+                        ),
+                        timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
 
                     if result.messages != working_messages:
@@ -4810,12 +4925,17 @@ class HeadroomProxy:
                     # so tokens_saved captures both Zone 1 + Zone 2 savings.
                     optimized_tokens = result.tokens_after
                 else:
-                    result = self.openai_pipeline.apply(
-                        messages=messages,
-                        model=model,
-                        model_limit=context_limit,
-                        frozen_message_count=openai_frozen_count,
-                        biases=_hook_biases,
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            lambda: self.openai_pipeline.apply(
+                                messages=messages,
+                                model=model,
+                                model_limit=context_limit,
+                                frozen_message_count=openai_frozen_count,
+                                biases=_hook_biases,
+                            )
+                        ),
+                        timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
 
                     if result.messages != messages:
@@ -4829,6 +4949,8 @@ class HeadroomProxy:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
                 logger.warning(f"Optimization failed: {e}")
+                # Flag compression failure for observability
+                _compression_failed = True
 
         tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
@@ -5052,6 +5174,8 @@ class HeadroomProxy:
                     response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
                 if cache_read_tokens > 0:
                     response_headers["x-headroom-cached"] = "true"
+                if _compression_failed:
+                    response_headers["x-headroom-compression-failed"] = "true"
 
                 return Response(
                     content=response.content,
@@ -5941,6 +6065,7 @@ class HeadroomProxy:
         optimized_messages = messages
         optimized_tokens = original_tokens
 
+        _compression_failed = False
         if self.config.optimize and messages:
             try:
                 # Use OpenAI pipeline (similar message format)
@@ -5959,6 +6084,7 @@ class HeadroomProxy:
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
+                _compression_failed = True
                 logger.warning(f"[{request_id}] Gemini optimization failed: {e}")
 
         tokens_saved = max(0, original_tokens - optimized_tokens)
@@ -6074,6 +6200,8 @@ class HeadroomProxy:
                     response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
                 if cache_read_tokens > 0:
                     response_headers["x-headroom-cached"] = "true"
+                if _compression_failed:
+                    response_headers["x-headroom-compression-failed"] = "true"
 
                 return Response(
                     content=response.content,
@@ -6541,7 +6669,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "total_tokens_saved": total_tokens_saved,
             }
         else:
-            compression_cache_stats = {"mode": "cost_savings"}
+            compression_cache_stats = {"mode": "token_headroom"}
 
         # Build unified savings summary (all layers)
         compression_tokens = m.tokens_saved_total
@@ -7846,7 +7974,7 @@ if __name__ == "__main__":
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),
         http2=not args.no_http2 and _get_env_bool("HEADROOM_HTTP2", True),
         tool_profiles=tool_profiles if tool_profiles else None,
-        mode=_get_env_str("HEADROOM_MODE", "cost_savings"),
+        mode=_get_env_str("HEADROOM_MODE", "token_headroom"),
     )
 
     # Get worker and concurrency settings

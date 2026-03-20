@@ -76,7 +76,7 @@ def _format_session_summary(summary: dict[str, Any], local_stats: dict[str, Any]
     lines.append("Headroom Session Summary")
     lines.append("=" * 40)
 
-    mode = summary.get("mode", "cost_savings")
+    mode = summary.get("mode", "token_headroom")
     api_reqs = summary.get("api_requests", 0)
     model = summary.get("primary_model", "unknown")
     lines.append(f"Mode: {mode} | {api_reqs} API requests | {model}")

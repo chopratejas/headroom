@@ -14,7 +14,7 @@ from .main import main
     "--mode",
     default=None,
     type=click.Choice(["cost_savings", "token_headroom"]),
-    help="Optimization mode: cost_savings (preserve prefix cache) or token_headroom (compress for session extension). Default: cost_savings. Env: HEADROOM_MODE",
+    help="Optimization mode: token_headroom (compress for session extension) or cost_savings (preserve prefix cache). Default: token_headroom. Env: HEADROOM_MODE",
 )
 @click.option("--no-optimize", is_flag=True, help="Disable optimization (passthrough mode)")
 @click.option("--no-cache", is_flag=True, help="Disable semantic caching")
@@ -184,7 +184,7 @@ def proxy(
     effective_anyllm_provider = os.environ.get("HEADROOM_ANYLLM_PROVIDER") or anyllm_provider
 
     # Resolve mode: CLI flag > env var > default
-    effective_mode = mode or os.environ.get("HEADROOM_MODE", "cost_savings")
+    effective_mode = mode or os.environ.get("HEADROOM_MODE", "token_headroom")
 
     config = ProxyConfig(
         host=host,
