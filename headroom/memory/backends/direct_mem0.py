@@ -50,8 +50,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -91,8 +92,15 @@ class Mem0Config:
     neo4j_password: str = "password"
 
     # Qdrant settings
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    qdrant_host: str = field(
+        default_factory=lambda: os.environ.get("QDRANT_URL", "localhost")
+    )
+    qdrant_port: int = field(
+        default_factory=lambda: int(os.environ.get("QDRANT_PORT", "6333"))
+    )
+    qdrant_api_key: str | None = field(
+        default_factory=lambda: os.environ.get("QDRANT_API_KEY") or None
+    )
 
     # Embedding settings
     embedder_model: str = "text-embedding-3-small"
@@ -163,10 +171,14 @@ class DirectMem0Adapter:
         try:
             from qdrant_client import QdrantClient
 
-            self._qdrant_client = QdrantClient(
-                host=self._config.qdrant_host,
-                port=self._config.qdrant_port,
-            )
+            qdrant_kwargs: dict[str, Any] = {
+                "host": self._config.qdrant_host,
+                "port": self._config.qdrant_port,
+            }
+            if self._config.qdrant_api_key:
+                qdrant_kwargs["api_key"] = self._config.qdrant_api_key
+
+            self._qdrant_client = QdrantClient(**qdrant_kwargs)
         except ImportError:
             raise ImportError(
                 "qdrant-client not installed. Install with: pip install qdrant-client"
@@ -189,14 +201,18 @@ class DirectMem0Adapter:
         try:
             from mem0 import Memory as Mem0Memory
 
+            mem0_qdrant_cfg: dict[str, Any] = {
+                "host": self._config.qdrant_host,
+                "port": self._config.qdrant_port,
+                "collection_name": self._config.collection_name,
+            }
+            if self._config.qdrant_api_key:
+                mem0_qdrant_cfg["api_key"] = self._config.qdrant_api_key
+
             mem0_config: dict[str, Any] = {
                 "vector_store": {
                     "provider": "qdrant",
-                    "config": {
-                        "host": self._config.qdrant_host,
-                        "port": self._config.qdrant_port,
-                        "collection_name": self._config.collection_name,
-                    },
+                    "config": mem0_qdrant_cfg,
                 },
                 "llm": {
                     "provider": "openai",

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -63,8 +64,15 @@ class MemoryConfig:
     use_native_tool: bool = False
     native_memory_dir: str = ""  # Directory for native memory files (default: ~/.headroom/memories)
     # Qdrant+Neo4j config
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    qdrant_host: str = field(
+        default_factory=lambda: os.environ.get("QDRANT_URL", "localhost")
+    )
+    qdrant_port: int = field(
+        default_factory=lambda: int(os.environ.get("QDRANT_PORT", "6333"))
+    )
+    qdrant_api_key: str | None = field(
+        default_factory=lambda: os.environ.get("QDRANT_API_KEY") or None
+    )
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
@@ -150,6 +158,7 @@ class MemoryHandler:
                 mem0_config = Mem0Config(
                     qdrant_host=self.config.qdrant_host,
                     qdrant_port=self.config.qdrant_port,
+                    qdrant_api_key=self.config.qdrant_api_key,
                     neo4j_uri=self.config.neo4j_uri,
                     neo4j_user=self.config.neo4j_user,
                     neo4j_password=self.config.neo4j_password,
