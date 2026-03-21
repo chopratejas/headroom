@@ -8,7 +8,6 @@ making it impossible to reconstruct names formed from three or more tokens.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
