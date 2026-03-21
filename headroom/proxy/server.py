@@ -58,6 +58,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom import __version__
+from headroom.utils import safe_int
 from headroom.backends import AnyLLMBackend, LiteLLMBackend
 from headroom.backends.base import Backend
 from headroom.cache.compression_feedback import get_compression_feedback
@@ -707,7 +708,7 @@ class ProxyConfig:
         default_factory=lambda: os.environ.get("QDRANT_URL", "localhost")
     )
     memory_qdrant_port: int = field(
-        default_factory=lambda: int(os.environ.get("QDRANT_PORT", "6333"))
+        default_factory=lambda: safe_int(os.environ.get("QDRANT_PORT"), 6333)
     )
     memory_qdrant_api_key: str | None = field(
         default_factory=lambda: os.environ.get("QDRANT_API_KEY") or None

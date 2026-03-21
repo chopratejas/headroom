@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from headroom.utils import safe_int
+
 if TYPE_CHECKING:
     from headroom.memory.ports import MemorySearchResult
 
@@ -116,7 +118,7 @@ class Memory:
         # Config for qdrant-neo4j backend
         # Explicit constructor args take priority over environment variables
         self._qdrant_host = qdrant_host or os.environ.get("QDRANT_URL", "localhost")
-        self._qdrant_port = qdrant_port if qdrant_port is not None else int(os.environ.get("QDRANT_PORT", "6333"))
+        self._qdrant_port = qdrant_port if qdrant_port is not None else safe_int(os.environ.get("QDRANT_PORT"), 6333)
         self._qdrant_api_key = qdrant_api_key or os.environ.get("QDRANT_API_KEY") or None
         self._neo4j_uri = neo4j_uri
         self._neo4j_user = neo4j_user

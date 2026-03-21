@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from headroom.utils import safe_int
+
 if TYPE_CHECKING:
     from headroom.memory.backends.local import LocalBackend
 
@@ -68,7 +70,7 @@ class MemoryConfig:
         default_factory=lambda: os.environ.get("QDRANT_URL", "localhost")
     )
     qdrant_port: int = field(
-        default_factory=lambda: int(os.environ.get("QDRANT_PORT", "6333"))
+        default_factory=lambda: safe_int(os.environ.get("QDRANT_PORT"), 6333)
     )
     qdrant_api_key: str | None = field(
         default_factory=lambda: os.environ.get("QDRANT_API_KEY") or None

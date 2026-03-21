@@ -20,6 +20,7 @@ from typing import Any
 
 from headroom.memory.models import Memory
 from headroom.memory.ports import MemoryFilter, VectorFilter, VectorSearchResult
+from headroom.utils import safe_int
 
 
 @dataclass
@@ -34,6 +35,7 @@ class Mem0Config:
         neo4j_password: Neo4j password for local mode.
         qdrant_host: Qdrant host for local mode.
         qdrant_port: Qdrant port for local mode.
+        qdrant_api_key: API key for Qdrant Cloud authentication (optional).
         llm_model: LLM model for entity extraction.
         embedder_model: Embedding model for vector search.
         collection_name: Name of the collection/namespace in Mem0.
@@ -52,7 +54,7 @@ class Mem0Config:
         default_factory=lambda: os.environ.get("QDRANT_URL", "localhost")
     )
     qdrant_port: int = field(
-        default_factory=lambda: int(os.environ.get("QDRANT_PORT", "6333"))
+        default_factory=lambda: safe_int(os.environ.get("QDRANT_PORT"), 6333)
     )
     qdrant_api_key: str | None = field(
         default_factory=lambda: os.environ.get("QDRANT_API_KEY") or None
