@@ -58,6 +58,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom import __version__
+from headroom.utils import safe_int
 from headroom.backends import AnyLLMBackend, LiteLLMBackend
 from headroom.backends.base import Backend
 from headroom.cache.compression_feedback import get_compression_feedback
@@ -721,8 +722,15 @@ class ProxyConfig:
     memory_top_k: int = 10  # Number of memories to inject
     memory_min_similarity: float = 0.3  # Minimum similarity threshold
     # Qdrant+Neo4j config (only used when memory_backend="qdrant-neo4j")
-    memory_qdrant_host: str = "localhost"
-    memory_qdrant_port: int = 6333
+    memory_qdrant_host: str = field(
+        default_factory=lambda: os.environ.get("QDRANT_URL", "localhost")
+    )
+    memory_qdrant_port: int = field(
+        default_factory=lambda: safe_int(os.environ.get("QDRANT_PORT"), 6333)
+    )
+    memory_qdrant_api_key: str | None = field(
+        default_factory=lambda: os.environ.get("QDRANT_API_KEY") or None
+    )
     memory_neo4j_uri: str = "neo4j://localhost:7687"
     memory_neo4j_user: str = "neo4j"
     memory_neo4j_password: str = "password"
@@ -1831,6 +1839,7 @@ class HeadroomProxy:
                 min_similarity=config.memory_min_similarity,
                 qdrant_host=config.memory_qdrant_host,
                 qdrant_port=config.memory_qdrant_port,
+                qdrant_api_key=config.memory_qdrant_api_key,
                 neo4j_uri=config.memory_neo4j_uri,
                 neo4j_user=config.memory_neo4j_user,
                 neo4j_password=config.memory_neo4j_password,
