@@ -2120,8 +2120,14 @@ class HeadroomProxy:
             existing_system = body.get("system", "")
             if isinstance(existing_system, str):
                 body["system"] = (existing_system + "\n\n" + context).strip()
+            elif isinstance(existing_system, list):
+                # system is a list of content blocks (e.g., with cache_control).
+                # Append memory context as a new text block — never overwrite.
+                body["system"] = existing_system + [
+                    {"type": "text", "text": context}
+                ]
             else:
-                # system can be a list of content blocks
+                # No existing system prompt — set as string
                 body["system"] = context
             return messages
 
@@ -2245,8 +2251,19 @@ class HeadroomProxy:
 
         stream = body.get("stream", False)
 
+        # Bypass: skip ALL compression, TOIN learning, and CCR injection
+        # when the caller explicitly opts out via header.
+        # Prevents Headroom from corrupting sub-agent API calls
+        # (e.g., Claude Code sub-agents that inherit ANTHROPIC_BASE_URL).
+        _bypass = (
+            request.headers.get("x-headroom-bypass", "").lower() == "true"
+            or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
+        )
+        if _bypass:
+            logger.info(f"[{request_id}] Bypass: skipping compression (header)")
+
         # Image compression (before text optimization)
-        if self.config.image_optimize and messages:
+        if self.config.image_optimize and messages and not _bypass:
             compressor = _get_image_compressor()
             if compressor and compressor.has_images(messages):
                 messages = compressor.compress(messages, provider="anthropic")
@@ -2353,7 +2370,8 @@ class HeadroomProxy:
         frozen_message_count = prefix_tracker.get_frozen_message_count()
 
         _compression_failed = False
-        if self.config.optimize and messages:
+        original_messages = messages  # Preserve for 400-retry fallback
+        if self.config.optimize and messages and not _bypass:
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
                 biases = (
@@ -2451,7 +2469,8 @@ class HeadroomProxy:
 
         # CCR Tool Injection: Inject retrieval tool if compression occurred
         tools = body.get("tools")
-        if self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions:
+        _original_tools = tools  # Preserve for diagnostic / future retry
+        if (self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions) and not _bypass:
             # Create fresh injector to avoid state leakage between requests
             injector = CCRToolInjector(
                 provider="anthropic",
@@ -2725,6 +2744,89 @@ class HeadroomProxy:
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
+
+                # Full diagnostic dump on upstream errors.
+                # Writes pre/post compression messages, tools, and error
+                # to ~/.headroom/logs/debug_400/ for offline analysis.
+                if response.status_code >= 400:
+                    try:
+                        err_body = response.json()
+                        err_msg = err_body.get("error", {}).get("message", "")
+                        err_type = err_body.get("error", {}).get("type", "")
+                    except Exception:
+                        err_body = {"raw": response.text[:2000]}
+                        err_msg = str(response.text[:500])
+                        err_type = "parse_error"
+
+                    logger.warning(
+                        f"[{request_id}] UPSTREAM_ERROR "
+                        f"status={response.status_code} "
+                        f"error_type={err_type} "
+                        f"error_msg={err_msg!r} "
+                        f"model={model} "
+                        f"compressed={'yes' if transforms_applied else 'no'} "
+                        f"transforms={transforms_applied} "
+                        f"original_tokens={original_tokens} "
+                        f"optimized_tokens={optimized_tokens} "
+                        f"message_count={len(body.get('messages', []))} "
+                        f"stream={stream}"
+                    )
+
+                    # Dump full request details to debug file
+                    try:
+                        debug_dir = Path.home() / ".headroom" / "logs" / "debug_400"
+                        debug_dir.mkdir(parents=True, exist_ok=True)
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        debug_file = debug_dir / f"{ts}_{request_id}.json"
+
+                        # Sanitize headers (redact API keys)
+                        safe_headers = {}
+                        for k, v in headers.items():
+                            if k.lower() in ("x-api-key", "authorization"):
+                                safe_headers[k] = v[:12] + "..." if v else ""
+                            else:
+                                safe_headers[k] = v
+
+                        debug_payload = {
+                            "request_id": request_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "status_code": response.status_code,
+                            "error_response": err_body,
+                            "model": model,
+                            "stream": stream,
+                            "headers": safe_headers,
+                            "compression": {
+                                "was_compressed": bool(transforms_applied),
+                                "transforms": transforms_applied,
+                                "original_tokens": original_tokens,
+                                "optimized_tokens": optimized_tokens,
+                                "tokens_saved": tokens_saved,
+                                "compression_failed": _compression_failed,
+                            },
+                            "tools_sent": body.get("tools"),
+                            "tool_count": len(body.get("tools") or []),
+                            "original_tool_count": len(_original_tools or []),
+                            "messages_sent": body.get("messages"),
+                            "message_count": len(body.get("messages", [])),
+                            "original_messages": (
+                                original_messages
+                                if original_messages is not body.get("messages")
+                                else "__same_as_sent__"
+                            ),
+                            "original_message_count": len(original_messages),
+                            "system_prompt": body.get("system"),
+                        }
+
+                        with open(debug_file, "w") as f:
+                            json.dump(debug_payload, f, indent=2, default=str)
+
+                        logger.warning(
+                            f"[{request_id}] Full debug dump: {debug_file}"
+                        )
+                    except Exception as dump_err:
+                        logger.error(
+                            f"[{request_id}] Failed to write debug dump: {dump_err}"
+                        )
 
                 # Parse response for CCR handling
                 resp_json = None
@@ -4932,8 +5034,16 @@ class HeadroomProxy:
 
         stream = body.get("stream", False)
 
+        # Bypass: skip ALL compression for explicit opt-out
+        _bypass = (
+            request.headers.get("x-headroom-bypass", "").lower() == "true"
+            or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
+        )
+        if _bypass:
+            logger.info(f"[{request_id}] Bypass: skipping compression (header)")
+
         # Image compression (before text optimization)
-        if self.config.image_optimize and messages:
+        if self.config.image_optimize and messages and not _bypass:
             compressor = _get_image_compressor()
             if compressor and compressor.has_images(messages):
                 messages = compressor.compress(messages, provider="openai")
@@ -5013,7 +5123,8 @@ class HeadroomProxy:
         openai_frozen_count = openai_prefix_tracker.get_frozen_message_count()
 
         _compression_failed = False
-        if self.config.optimize and messages:
+        original_messages = messages  # Preserve for 400-retry fallback
+        if self.config.optimize and messages and not _bypass:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
 
@@ -5103,7 +5214,8 @@ class HeadroomProxy:
 
         # CCR Tool Injection: Inject retrieval tool if compression occurred
         tools = body.get("tools")
-        if self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions:
+        _original_tools = tools  # Preserve for diagnostic / future retry
+        if (self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions) and not _bypass:
             injector = CCRToolInjector(
                 provider="openai",
                 inject_tool=self.config.ccr_inject_tool,
@@ -5231,6 +5343,86 @@ class HeadroomProxy:
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
+
+                # Full diagnostic dump on upstream errors (OpenAI handler)
+                if response.status_code >= 400:
+                    try:
+                        err_body = response.json()
+                        err_msg = err_body.get("error", {}).get("message", "")
+                        err_type = err_body.get("error", {}).get("type", "")
+                    except Exception:
+                        err_body = {"raw": response.text[:2000]}
+                        err_msg = str(response.text[:500])
+                        err_type = "parse_error"
+
+                    logger.warning(
+                        f"[{request_id}] UPSTREAM_ERROR "
+                        f"status={response.status_code} "
+                        f"error_type={err_type} "
+                        f"error_msg={err_msg!r} "
+                        f"model={model} "
+                        f"compressed={'yes' if transforms_applied else 'no'} "
+                        f"transforms={transforms_applied} "
+                        f"original_tokens={original_tokens} "
+                        f"optimized_tokens={optimized_tokens} "
+                        f"message_count={len(body.get('messages', []))} "
+                        f"stream={stream}"
+                    )
+
+                    try:
+                        debug_dir = Path.home() / ".headroom" / "logs" / "debug_400"
+                        debug_dir.mkdir(parents=True, exist_ok=True)
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        debug_file = debug_dir / f"{ts}_{request_id}.json"
+
+                        safe_headers = {}
+                        for k, v in headers.items():
+                            if k.lower() in ("x-api-key", "authorization"):
+                                safe_headers[k] = v[:12] + "..." if v else ""
+                            else:
+                                safe_headers[k] = v
+
+                        debug_payload = {
+                            "request_id": request_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "status_code": response.status_code,
+                            "error_response": err_body,
+                            "model": model,
+                            "stream": stream,
+                            "headers": safe_headers,
+                            "compression": {
+                                "was_compressed": bool(transforms_applied),
+                                "transforms": transforms_applied,
+                                "original_tokens": original_tokens,
+                                "optimized_tokens": optimized_tokens,
+                                "tokens_saved": tokens_saved,
+                                "compression_failed": _compression_failed,
+                            },
+                            "tools_sent": body.get("tools"),
+                            "tool_count": len(body.get("tools") or []),
+                            "original_tool_count": len(_original_tools or []),
+                            "messages_sent": body.get("messages"),
+                            "message_count": len(body.get("messages", [])),
+                            "original_messages": (
+                                original_messages
+                                if original_messages is not body.get("messages")
+                                else "__same_as_sent__"
+                            ),
+                            "original_message_count": len(original_messages),
+                            "system_prompt": body.get("system"),
+                        }
+
+                        with open(debug_file, "w") as f:
+                            json.dump(debug_payload, f, indent=2, default=str)
+
+                        logger.warning(
+                            f"[{request_id}] Full debug dump: {debug_file}"
+                        )
+                    except Exception as dump_err:
+                        logger.error(
+                            f"[{request_id}] Failed to write debug dump: {dump_err}"
+                        )
+
                 total_latency = (time.time() - start_time) * 1000
 
                 total_input_tokens = optimized_tokens  # fallback
