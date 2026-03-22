@@ -149,6 +149,9 @@ class ToolPattern:
     # This enables zero-latency signal detection without hardcoded patterns
     field_semantics: dict[str, FieldSemantics] = field(default_factory=dict)
 
+    # === Observation Counter ===
+    observations: int = 0  # How many times get_recommendation() was called for this pattern
+
     # === Confidence ===
     sample_size: int = 0
     user_count: int = 0  # Number of unique users (anonymized)
@@ -198,6 +201,7 @@ class ToolPattern:
             "preserve_fields": self.preserve_fields,
             # Field-level semantics (TOIN Evolution)
             "field_semantics": {k: v.to_dict() for k, v in self.field_semantics.items()},
+            "observations": self.observations,
             "sample_size": self.sample_size,
             "user_count": self.user_count,
             "confidence": self.confidence,
@@ -236,6 +240,7 @@ class ToolPattern:
             "optimal_max_items",
             "skip_compression_recommended",
             "preserve_fields",
+            "observations",
             "sample_size",
             "user_count",
             "confidence",
@@ -872,6 +877,10 @@ class ToolIntelligenceNetwork:
                     source="default",
                     reason="No pattern data for this tool type",
                 )
+
+            # Track observation: TOIN was consulted for this pattern
+            pattern.observations += 1
+            self._dirty = True
 
             # Not enough samples for reliable recommendation
             if pattern.sample_size < self._config.min_samples_for_recommendation:

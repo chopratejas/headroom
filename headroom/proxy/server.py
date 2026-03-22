@@ -2139,9 +2139,7 @@ class HeadroomProxy:
             elif isinstance(existing_system, list):
                 # system is a list of content blocks (e.g., with cache_control).
                 # Append memory context as a new text block — never overwrite.
-                body["system"] = existing_system + [
-                    {"type": "text", "text": context}
-                ]
+                body["system"] = existing_system + [{"type": "text", "text": context}]
             else:
                 # No existing system prompt — set as string
                 body["system"] = context
@@ -2487,7 +2485,9 @@ class HeadroomProxy:
         # CCR Tool Injection: Inject retrieval tool if compression occurred
         tools = body.get("tools")
         _original_tools = tools  # Preserve for diagnostic / future retry
-        if (self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions) and not _bypass:
+        if (
+            self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions
+        ) and not _bypass:
             # Create fresh injector to avoid state leakage between requests
             injector = CCRToolInjector(
                 provider="anthropic",
@@ -2837,13 +2837,9 @@ class HeadroomProxy:
                         with open(debug_file, "w") as f:
                             json.dump(debug_payload, f, indent=2, default=str)
 
-                        logger.warning(
-                            f"[{request_id}] Full debug dump: {debug_file}"
-                        )
+                        logger.warning(f"[{request_id}] Full debug dump: {debug_file}")
                     except Exception as dump_err:
-                        logger.error(
-                            f"[{request_id}] Failed to write debug dump: {dump_err}"
-                        )
+                        logger.error(f"[{request_id}] Failed to write debug dump: {dump_err}")
 
                 # Parse response for CCR handling
                 resp_json = None
@@ -4497,6 +4493,53 @@ class HeadroomProxy:
 
         return events
 
+    def _record_ccr_feedback_from_response(
+        self, response: dict, provider: str, request_id: str
+    ) -> None:
+        """Extract headroom_retrieve tool calls from a response and record feedback.
+
+        This closes the TOIN feedback loop for streaming responses where
+        the proxy can't intercept and handle retrieval calls inline.
+        """
+        from headroom.cache.compression_store import get_compression_store
+
+        content = response.get("content", [])
+        if not isinstance(content, list):
+            return
+
+        store = get_compression_store()
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_use":
+                continue
+            if block.get("name") != "headroom_retrieve":
+                continue
+
+            input_data = block.get("input", {})
+            hash_key = input_data.get("hash")
+            query = input_data.get("query")
+
+            if not hash_key:
+                continue
+
+            logger.info(
+                f"[{request_id}] CCR Feedback: Recording retrieval "
+                f"hash={hash_key[:8]}... query={query!r}"
+            )
+
+            # Call store.retrieve()/search() for the side effect of triggering
+            # the feedback chain: _log_retrieval -> process_pending_feedback
+            # -> toin.record_retrieval(). We discard the returned content.
+            try:
+                if query:
+                    store.search(hash_key, query)
+                else:
+                    store.retrieve(hash_key, query=None)
+            except Exception as e:
+                logger.debug(f"[{request_id}] CCR Feedback recording failed: {e}")
+
     async def _stream_response(
         self,
         url: str,
@@ -4643,6 +4686,19 @@ class HeadroomProxy:
                                 f"[{request_id}] Memory: Tool calls executed silently "
                                 "(streaming mode — no continuation)"
                             )
+
+                # CCR Feedback: Record headroom_retrieve tool calls for TOIN learning.
+                # In streaming mode, the client handles actual retrieval, but we
+                # still need to record the event so TOIN learns which fields matter.
+                if self.config.ccr_inject_tool and full_sse_data:
+                    ccr_parsed = (
+                        parsed_response
+                        if parsed_response
+                        else self._parse_sse_to_response(full_sse_data, provider)
+                    )
+                    if ccr_parsed:
+                        self._record_ccr_feedback_from_response(ccr_parsed, provider, request_id)
+
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
                 logger.error(f"[{request_id}] Connection error to upstream API: {e}")
                 error_event = {
@@ -5171,7 +5227,9 @@ class HeadroomProxy:
         # CCR Tool Injection: Inject retrieval tool if compression occurred
         tools = body.get("tools")
         _original_tools = tools  # Preserve for diagnostic / future retry
-        if (self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions) and not _bypass:
+        if (
+            self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions
+        ) and not _bypass:
             injector = CCRToolInjector(
                 provider="openai",
                 inject_tool=self.config.ccr_inject_tool,
@@ -5371,13 +5429,9 @@ class HeadroomProxy:
                         with open(debug_file, "w") as f:
                             json.dump(debug_payload, f, indent=2, default=str)
 
-                        logger.warning(
-                            f"[{request_id}] Full debug dump: {debug_file}"
-                        )
+                        logger.warning(f"[{request_id}] Full debug dump: {debug_file}")
                     except Exception as dump_err:
-                        logger.error(
-                            f"[{request_id}] Failed to write debug dump: {dump_err}"
-                        )
+                        logger.error(f"[{request_id}] Failed to write debug dump: {dump_err}")
 
                 total_latency = (time.time() - start_time) * 1000
 
