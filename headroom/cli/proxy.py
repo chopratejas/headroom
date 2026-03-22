@@ -201,6 +201,9 @@ def proxy(
     # Resolve mode: CLI flag > env var > default
     effective_mode = mode or os.environ.get("HEADROOM_MODE", "token_headroom")
 
+    # License key for managed/enterprise deployments (optional)
+    license_key = os.environ.get("HEADROOM_LICENSE_KEY")
+
     config = ProxyConfig(
         host=host,
         port=port,
@@ -238,11 +241,17 @@ def proxy(
         bedrock_region=bedrock_region or region,
         bedrock_profile=bedrock_profile,
         anyllm_provider=effective_anyllm_provider,
+        # License / Usage Reporting (managed/enterprise)
+        license_key=license_key,
     )
 
     memory_status = "DISABLED"
     if config.memory_enabled:
         memory_status = "ENABLED (multi-provider)"
+
+    license_status = "OSS (no license key)"
+    if license_key:
+        license_status = f"MANAGED (key={license_key[:8]}...)"
 
     effective_region = bedrock_region or region
     backend_status = "Anthropic (direct API)"
@@ -314,6 +323,7 @@ Starting proxy server...
   Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
+  License:      {license_status}
 {backend_section}
 Usage with Claude Code:
   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude

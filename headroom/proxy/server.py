@@ -733,6 +733,11 @@ class ProxyConfig:
     memory_bridge_auto_import: bool = False
     memory_bridge_export_path: str = ""
 
+    # License / Usage Reporting (managed/enterprise deployments)
+    license_key: str | None = None  # HEADROOM_LICENSE_KEY env var
+    license_cloud_url: str = "https://app.headroomlabs.ai"
+    license_report_interval: int = 300  # seconds (5 min)
+
     # Compression Hooks (for SaaS and advanced customization)
     hooks: Any = None  # CompressionHooks instance, or None for default behavior
 
@@ -1842,6 +1847,17 @@ class HeadroomProxy:
             )
             self.memory_handler = MemoryHandler(memory_config)
 
+        # Usage Reporter (license validation + phone-home for managed/enterprise)
+        self.usage_reporter: UsageReporter | None = None
+        if config.license_key:
+            from headroom.telemetry.reporter import UsageReporter
+
+            self.usage_reporter = UsageReporter(
+                license_key=config.license_key,
+                cloud_url=config.license_cloud_url,
+                report_interval=config.license_report_interval,
+            )
+
         # Traffic Learner (live pattern extraction from proxy traffic)
         # Only activates with --learn flag; requires --memory for backend
         self.traffic_learner: TrafficLearner | None = None
@@ -2371,7 +2387,8 @@ class HeadroomProxy:
 
         _compression_failed = False
         original_messages = messages  # Preserve for 400-retry fallback
-        if self.config.optimize and messages and not _bypass:
+        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+        if self.config.optimize and messages and not _bypass and _license_ok:
             try:
                 context_limit = self.anthropic_provider.get_context_limit(model)
                 biases = (
@@ -4562,8 +4579,12 @@ class HeadroomProxy:
                                 -MAX_SSE_BUFFER_SIZE // 2 :
                             ]
 
+                        # Always stream immediately — buffering breaks
+                        # real-time clients (LangGraph, LangChain, etc.)
+                        yield chunk
+
                         if memory_enabled:
-                            # Buffer for memory tool detection
+                            # Also buffer for post-stream memory processing
                             buffered_chunks.append(chunk)
                             full_sse_data += chunk_str
                             if len(full_sse_data) > MAX_SSE_BUFFER_SIZE:
@@ -4572,9 +4593,6 @@ class HeadroomProxy:
                                     "disabling memory detection for this request"
                                 )
                                 memory_enabled = False
-                        else:
-                            # Immediate streaming when memory not enabled
-                            yield chunk
 
                         # Parse complete SSE events from buffer
                         usage = self._parse_sse_usage_from_buffer(stream_state, provider)
@@ -4593,17 +4611,16 @@ class HeadroomProxy:
                                 ]
 
                 # Memory tool handling after stream completes
+                # Chunks were already yielded in real-time above, so we only
+                # do silent background processing here — no yielding.
                 if memory_enabled and full_sse_data:
-                    # Check for Claude Code credential error in initial response
+                    # Check for Claude Code credential error
                     if "only authorized for use with Claude Code" in full_sse_data:
                         logger.warning(
                             f"[{request_id}] Memory: Claude Code subscription credentials "
                             "do not support custom tool injection. Set ANTHROPIC_API_KEY "
                             "environment variable or use --no-memory-tools flag."
                         )
-                        # Yield buffered error response as-is (contains error details)
-                        for chunk in buffered_chunks:
-                            yield chunk
                         return
 
                     # Parse SSE to get response JSON
@@ -4616,78 +4633,16 @@ class HeadroomProxy:
                             f"[{request_id}] Memory: Detected tool calls in streaming response"
                         )
 
-                        # Execute memory tool calls
+                        # Execute memory tool calls silently — response already
+                        # streamed so we cannot make a continuation request.
                         tool_results = await self.memory_handler.handle_memory_tool_calls(
                             parsed_response, memory_user_id, provider
                         )
-
                         if tool_results:
-                            # Build continuation messages
-                            # Filter out system role messages (Anthropic uses top-level 'system' param)
-                            messages = [
-                                m for m in body.get("messages", []) if m.get("role") != "system"
-                            ]
-                            assistant_msg = {
-                                "role": "assistant",
-                                "content": parsed_response.get("content", []),
-                            }
-                            user_msg = {"role": "user", "content": tool_results}
-                            continuation_messages = messages + [assistant_msg, user_msg]
-
-                            # Make continuation request (streaming to support Claude Code API key)
-                            continuation_body = {
-                                **body,
-                                "messages": continuation_messages,
-                                "stream": True,
-                            }
-
                             logger.info(
-                                f"[{request_id}] Memory: Tool execution complete, streaming continuation"
+                                f"[{request_id}] Memory: Tool calls executed silently "
+                                "(streaming mode — no continuation)"
                             )
-
-                            # Stream continuation response directly
-                            async with self.http_client.stream(
-                                "POST", url, json=continuation_body, headers=headers
-                            ) as cont_response:
-                                cont_buffer = ""
-                                async for chunk in cont_response.aiter_bytes():
-                                    chunk_str = chunk.decode("utf-8", errors="ignore")
-                                    cont_buffer += chunk_str
-
-                                    # Check for Claude Code credential error
-                                    if "only authorized for use with Claude Code" in cont_buffer:
-                                        logger.warning(
-                                            f"[{request_id}] Memory: Claude Code subscription "
-                                            "credentials do not support custom tool injection. "
-                                            "Set ANTHROPIC_API_KEY environment variable to use "
-                                            "memory tools, or disable memory tools with "
-                                            "--no-memory-tools flag."
-                                        )
-                                        # Yield a helpful error message in SSE format
-                                        error_msg = (
-                                            "Memory tools require a regular Anthropic API key. "
-                                            "Claude Code subscription credentials do not allow "
-                                            "custom tool injection. "
-                                            "To fix: (1) Set ANTHROPIC_API_KEY=your_api_key before "
-                                            "starting the proxy, or (2) Run proxy with "
-                                            "--no-memory-tools flag."
-                                        )
-                                        error_event = (
-                                            f'data: {{"type":"error","error":{{"type":"permission_error",'
-                                            f'"message":"{error_msg}"}}}}\n\n'
-                                        )
-                                        yield error_event.encode()
-                                        return
-
-                                    yield chunk
-                        else:
-                            # No tool results, yield original buffered chunks
-                            for chunk in buffered_chunks:
-                                yield chunk
-                    else:
-                        # No memory tool calls, yield original buffered chunks
-                        for chunk in buffered_chunks:
-                            yield chunk
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
                 logger.error(f"[{request_id}] Connection error to upstream API: {e}")
                 error_event = {
@@ -5124,7 +5079,8 @@ class HeadroomProxy:
 
         _compression_failed = False
         original_messages = messages  # Preserve for 400-retry fallback
-        if self.config.optimize and messages and not _bypass:
+        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+        if self.config.optimize and messages and not _bypass and _license_ok:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
 
@@ -6388,7 +6344,8 @@ class HeadroomProxy:
         optimized_tokens = original_tokens
 
         _compression_failed = False
-        if self.config.optimize and messages:
+        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+        if self.config.optimize and messages and _license_ok:
             try:
                 # Use OpenAI pipeline (similar message format)
                 context_limit = self.openai_provider.get_context_limit(model)
@@ -6880,12 +6837,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         await proxy.startup()
         # Start background task for periodic TOIN stats logging
         asyncio.create_task(_log_toin_stats_periodically())
+        # Start usage reporter (license validation + phone-home)
+        if proxy.usage_reporter:
+            await proxy.usage_reporter.start(proxy)
         # Start traffic learner background save worker
         if proxy.traffic_learner:
             await proxy.traffic_learner.start()
 
     @app.on_event("shutdown")
     async def shutdown():
+        if proxy.usage_reporter:
+            await proxy.usage_reporter.stop()
         if proxy.traffic_learner:
             await proxy.traffic_learner.stop()
         await proxy.shutdown()
