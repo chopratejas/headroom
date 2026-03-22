@@ -172,3 +172,6 @@ CLAUDE.md
 
 # Vitals provenance data
 .vitals/
+
+# Managed platform (separate private repo)
+headroom-managed/
