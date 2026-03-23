@@ -151,16 +151,12 @@ class ClaudeCodeScanner(ConversationScanner):
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
 
-            # Decode project path from escaped directory name
-            # e.g., "-Users-tchopra-claude-projects-headroom" → "/Users/tchopra/claude-projects/headroom"
-            project_path = Path("/" + entry.name.replace("-", "/", entry.name.count("-")))
-
-            # Try smarter decoding: split on segments that look like path components
-            # The escaping replaces / with - but also - in names stays as -
-            # Heuristic: try the decoded path, if it exists use it
-            decoded = _decode_project_path(entry.name)
-            if decoded:
-                project_path = decoded
+            # Decode project path from escaped directory name. Fall back to a
+            # simple slash replacement for display if we can't recover the real
+            # on-disk path from the filesystem.
+            project_path = _decode_project_path(entry.name) or Path(
+                "/" + entry.name[1:].replace("-", "/")
+            )
 
             # Derive human-readable name
             name = project_path.name if project_path != Path("/") else entry.name
@@ -423,26 +419,71 @@ def _decode_project_path(escaped_name: str) -> Path | None:
 
 
 def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:
-    """Greedily decode remaining path parts, trying - as / first."""
+    """Greedily decode remaining path parts using real child directories.
+
+    Claude's project directory escaping is ambiguous: both ``/`` and literal
+    punctuation such as ``-`` or ``.`` may show up as ``-`` in the escaped
+    directory name. Instead of guessing every separator combination, walk the
+    actual filesystem and match each child directory against the remaining
+    escaped tokens.
+    """
     if not parts:
         return base if base.exists() else None
 
-    # Try using / (this part is a directory component)
-    slash_path = base / parts[0]
-    result = _greedy_path_decode(slash_path, parts[1:])
-    if result:
-        return result
+    if not base.exists() or not base.is_dir():
+        return None
 
-    # Try joining with - (this part has a literal hyphen)
-    if len(parts) > 1:
-        hyphen_name = f"{parts[0]}-{parts[1]}"
-        hyphen_path = base / hyphen_name
-        result = _greedy_path_decode(hyphen_path, parts[2:])
-        if result:
-            return result
+    try:
+        children = sorted(child for child in base.iterdir() if child.is_dir())
+    except OSError:
+        return None
 
-    # If we've exhausted parts, check if current path exists
-    return base if base.exists() else None
+    for child in children:
+        for tokenization in _component_tokenizations(child.name):
+            n_tokens = len(tokenization)
+            if parts[:n_tokens] != tokenization:
+                continue
+
+            result = _greedy_path_decode(child, parts[n_tokens:])
+            if result:
+                return result
+
+    return None
+
+
+def _component_tokenizations(component: str) -> list[list[str]]:
+    """Return possible escaped token sequences for a real path component."""
+    tokenizations: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def add(tokens: list[str]) -> None:
+        key = tuple(tokens)
+        if tokens and key not in seen:
+            seen.add(key)
+            tokenizations.append(tokens)
+
+    add([component])
+
+    for separator in ("-", ".", None):
+        if separator is None:
+            tokens = [token for token in re.split(r"[-.]", component) if token]
+        else:
+            tokens = [token for token in component.split(separator) if token]
+        add(tokens)
+
+    # Claude's flattened encoding can turn a leading "." in hidden directory
+    # names into an empty token followed by the remaining component tokens.
+    if component.startswith(".") and len(component) > 1:
+        hidden_component = component[1:]
+        add(["", hidden_component])
+        for separator in ("-", ".", None):
+            if separator is None:
+                tokens = [token for token in re.split(r"[-.]", hidden_component) if token]
+            else:
+                tokens = [token for token in hidden_component.split(separator) if token]
+            add(["", *tokens])
+
+    return tokenizations
 
 
 # =============================================================================
@@ -465,6 +506,12 @@ class CodexScanner(ConversationScanner):
         self.codex_dir = codex_dir or Path.home() / ".codex"
         self.sessions_dir = self.codex_dir / "sessions"
 
+    def _iter_session_files(self, root: Path | None = None) -> list[Path]:
+        """Return all known Codex session files, including nested rollouts."""
+        search_root = root or self.sessions_dir
+        session_files = list(search_root.rglob("*.json")) + list(search_root.rglob("*.jsonl"))
+        return sorted(path for path in session_files if path.is_file())
+
     def discover_projects(self) -> list[ProjectInfo]:
         """Codex doesn't organize by project — return a single 'codex' project.
 
@@ -474,7 +521,7 @@ class CodexScanner(ConversationScanner):
         if not self.sessions_dir.exists():
             return []
 
-        session_files = list(self.sessions_dir.glob("*.json"))
+        session_files = self._iter_session_files()
         if not session_files:
             return []
 
@@ -495,13 +542,19 @@ class CodexScanner(ConversationScanner):
     def scan_project(self, project: ProjectInfo) -> list[SessionData]:
         """Scan all Codex session JSON files."""
         sessions = []
-        for json_path in sorted(project.data_path.glob("*.json")):
+        for json_path in self._iter_session_files(project.data_path):
             session = self._scan_session(json_path)
             if session and session.tool_calls:
                 sessions.append(session)
         return sessions
 
     def _scan_session(self, json_path: Path) -> SessionData | None:
+        """Parse a single Codex session file."""
+        if json_path.suffix == ".jsonl":
+            return self._scan_jsonl_session(json_path)
+        return self._scan_json_session(json_path)
+
+    def _scan_json_session(self, json_path: Path) -> SessionData | None:
         """Parse a single Codex session file."""
         try:
             with open(json_path) as f:
@@ -592,3 +645,121 @@ class CodexScanner(ConversationScanner):
                 )
 
         return SessionData(session_id=session_id, tool_calls=tool_calls)
+
+    def _scan_jsonl_session(self, jsonl_path: Path) -> SessionData | None:
+        """Parse a modern Codex rollout session stored as JSONL."""
+        session_id = jsonl_path.stem
+        func_calls: dict[str, tuple[str, dict]] = {}
+        tool_calls: list[ToolCall] = []
+        msg_index = 0
+
+        try:
+            with open(jsonl_path) as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if entry.get("type") == "session_meta":
+                        payload = entry.get("payload", {})
+                        if isinstance(payload, dict):
+                            session_id = payload.get("id", session_id)
+                        continue
+
+                    if entry.get("type") != "response_item":
+                        continue
+
+                    payload = entry.get("payload", {})
+                    if not isinstance(payload, dict):
+                        continue
+
+                    msg_index += 1
+                    item_type = payload.get("type", "")
+
+                    if item_type in ("function_call", "custom_tool_call"):
+                        call_id = payload.get("call_id", "")
+                        name = payload.get("name", "")
+                        parsed = self._parse_codex_arguments(payload)
+                        name, parsed = self._normalize_codex_tool(name, parsed)
+                        if call_id and name:
+                            func_calls[call_id] = (name, parsed)
+                        continue
+
+                    if item_type not in ("function_call_output", "custom_tool_call_output"):
+                        continue
+
+                    call_id = payload.get("call_id", "")
+                    if call_id not in func_calls:
+                        continue
+
+                    name, inp = func_calls[call_id]
+                    result_content = self._parse_codex_output(payload.get("output", ""))
+                    is_err = is_error_content(result_content)
+                    error_cat = classify_error(result_content) if is_err else ErrorCategory.UNKNOWN
+
+                    tool_calls.append(
+                        ToolCall(
+                            name=name,
+                            tool_call_id=call_id,
+                            input_data=inp,
+                            output=result_content,
+                            is_error=is_err,
+                            error_category=error_cat,
+                            msg_index=msg_index,
+                            output_bytes=len(result_content.encode("utf-8")),
+                        )
+                    )
+
+        except OSError as e:
+            logger.debug("Failed to read Codex session %s: %s", jsonl_path, e)
+            return None
+
+        if not tool_calls:
+            return None
+
+        return SessionData(session_id=session_id, tool_calls=tool_calls)
+
+    def _parse_codex_arguments(self, payload: dict) -> dict:
+        """Parse arguments for either legacy or rollout Codex tool calls."""
+        raw_args = payload.get("arguments", payload.get("input", ""))
+        if isinstance(raw_args, str):
+            try:
+                parsed = json.loads(raw_args)
+                return parsed if isinstance(parsed, dict) else {"raw": raw_args}
+            except (json.JSONDecodeError, TypeError):
+                return {"raw": raw_args}
+        if isinstance(raw_args, dict):
+            return raw_args
+        return {"raw": str(raw_args)}
+
+    def _normalize_codex_tool(self, name: str, parsed: dict) -> tuple[str, dict]:
+        """Normalize modern Codex tool names to the cross-agent schema."""
+        if name == "shell" and "command" in parsed:
+            cmd = parsed["command"]
+            if isinstance(cmd, list):
+                parsed["command"] = cmd[-1] if cmd else ""
+            return "Bash", parsed
+
+        if name == "exec_command" and "cmd" in parsed:
+            parsed = dict(parsed)
+            parsed["command"] = parsed.get("cmd", "")
+            return "Bash", parsed
+
+        return name, parsed
+
+    def _parse_codex_output(self, output_raw: object) -> str:
+        """Parse tool output from Codex rollout records."""
+        if isinstance(output_raw, str):
+            try:
+                parsed_out = json.loads(output_raw)
+            except (json.JSONDecodeError, TypeError):
+                return output_raw
+
+            if isinstance(parsed_out, dict):
+                if "output" in parsed_out:
+                    return str(parsed_out["output"])
+                return json.dumps(parsed_out)
+            return output_raw
+
+        return str(output_raw)

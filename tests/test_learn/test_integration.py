@@ -26,6 +26,7 @@ from headroom.learn.models import (
     Recommendation,
     RecommendationTarget,
 )
+from headroom.learn.scanner import _greedy_path_decode
 from headroom.learn.writer import ClaudeCodeWriter, CodexWriter
 
 # =============================================================================
@@ -122,6 +123,9 @@ class TestFalsePositiveFiltering:
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 CODEX_DIR = Path.home() / ".codex" / "sessions"
 HAS_API_KEY = bool(os.environ.get("ANTHROPIC_API_KEY"))
+HAS_CODEX_DATA = CODEX_DIR.exists() and (
+    any(CODEX_DIR.rglob("*.json")) or any(CODEX_DIR.rglob("*.jsonl"))
+)
 
 
 @pytest.mark.skipif(not CLAUDE_DIR.exists(), reason="No Claude Code data")
@@ -192,7 +196,7 @@ class TestClaudeCodeIntegration:
         }
         with patch("headroom.learn.analyzer._call_llm", return_value=mock_response):
             sessions = scanner.scan_project(best)
-            result = SessionAnalyzer().analyze(best, sessions)
+            result = SessionAnalyzer(model="gpt-4o").analyze(best, sessions)
             recs = result.recommendations
 
             writer = ClaudeCodeWriter()
@@ -203,7 +207,43 @@ class TestClaudeCodeIntegration:
                 assert "CLAUDE.md" in fp.name or "MEMORY.md" in fp.name
 
 
-@pytest.mark.skipif(not CODEX_DIR.exists(), reason="No Codex data")
+class TestDecodeProjectPath:
+    """Unit tests for _greedy_path_decode — covers dot-in-path bug (GitHub.nosync)."""
+
+    def test_dot_in_directory_name(self, tmp_path):
+        """Paths with dots (e.g. GitHub.nosync) must decode correctly.
+
+        Claude Code encodes '/' and '.' both as '-', so 'GitHub.nosync'
+        becomes 'GitHub-nosync' in the directory name.
+        _greedy_path_decode must reconstruct it by trying '.' as a join.
+        """
+        # base = tmp_path, remaining parts = ["GitHub", "nosync", "myproject"]
+        # which came from encoding "GitHub.nosync/myproject" as "GitHub-nosync-myproject"
+        (tmp_path / "GitHub.nosync" / "myproject").mkdir(parents=True)
+        result = _greedy_path_decode(tmp_path, ["GitHub", "nosync", "myproject"])
+        assert result == tmp_path / "GitHub.nosync" / "myproject"
+
+    def test_hyphen_in_directory_name(self, tmp_path):
+        """Paths with literal hyphens decode correctly (existing behavior preserved)."""
+        (tmp_path / "my-project").mkdir()
+        result = _greedy_path_decode(tmp_path, ["my", "project"])
+        assert result == tmp_path / "my-project"
+
+    def test_simple_path_no_ambiguity(self, tmp_path):
+        """Plain paths with no special chars still decode correctly."""
+        (tmp_path / "myproject").mkdir()
+        result = _greedy_path_decode(tmp_path, ["myproject"])
+        assert result == tmp_path / "myproject"
+
+    def test_dot_preferred_over_slash_when_slash_missing(self, tmp_path):
+        """When GitHub/nosync doesn't exist but GitHub.nosync does, use dot."""
+        # Only create the dot version, not the slash version
+        (tmp_path / "GitHub.nosync").mkdir()
+        result = _greedy_path_decode(tmp_path, ["GitHub", "nosync"])
+        assert result == tmp_path / "GitHub.nosync"
+
+
+@pytest.mark.skipif(not HAS_CODEX_DATA, reason="No Codex data")
 class TestCodexIntegration:
     """Integration tests against real Codex session data."""
 
