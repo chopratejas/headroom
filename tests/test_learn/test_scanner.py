@@ -9,11 +9,11 @@ making it impossible to reconstruct names formed from three or more tokens.
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from headroom.learn.scanner import _decode_project_path, _greedy_path_decode
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -169,7 +169,6 @@ class TestDecodeProjectPath:
         Falls back to tmp_path so tests still run on non-macOS platforms
         (where the greedy branch isn't reached but no crash occurs either).
         """
-        import os
 
         home = Path.home()
         if str(home).startswith("/Users/"):
@@ -179,9 +178,7 @@ class TestDecodeProjectPath:
             except PermissionError:
                 pytest.skip("Cannot create /Users-rooted temp dir in this environment")
             # Use a sub-directory unique to this test invocation
-            import uuid
-
-            unique = base / uuid.uuid4().hex
+            unique = base / uuid4().hex
             try:
                 unique.mkdir()
             except PermissionError:

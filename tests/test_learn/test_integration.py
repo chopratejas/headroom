@@ -26,7 +26,7 @@ from headroom.learn.models import (
     Recommendation,
     RecommendationTarget,
 )
-from headroom.learn.scanner import _decode_project_path, _greedy_path_decode
+from headroom.learn.scanner import _greedy_path_decode
 from headroom.learn.writer import ClaudeCodeWriter, CodexWriter
 
 # =============================================================================
