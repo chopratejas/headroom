@@ -471,6 +471,18 @@ def _component_tokenizations(component: str) -> list[list[str]]:
             tokens = [token for token in component.split(separator) if token]
         add(tokens)
 
+    # Claude's flattened encoding can turn a leading "." in hidden directory
+    # names into an empty token followed by the remaining component tokens.
+    if component.startswith(".") and len(component) > 1:
+        hidden_component = component[1:]
+        add(["", hidden_component])
+        for separator in ("-", ".", None):
+            if separator is None:
+                tokens = [token for token in re.split(r"[-.]", hidden_component) if token]
+            else:
+                tokens = [token for token in hidden_component.split(separator) if token]
+            add(["", *tokens])
+
     return tokenizations
 
 
