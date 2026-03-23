@@ -151,16 +151,12 @@ class ClaudeCodeScanner(ConversationScanner):
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
 
-            # Decode project path from escaped directory name
-            # e.g., "-Users-tchopra-claude-projects-headroom" → "/Users/tchopra/claude-projects/headroom"
-            project_path = Path("/" + entry.name.replace("-", "/", entry.name.count("-")))
-
-            # Try smarter decoding: split on segments that look like path components
-            # The escaping replaces / with - but also - in names stays as -
-            # Heuristic: try the decoded path, if it exists use it
-            decoded = _decode_project_path(entry.name)
-            if decoded:
-                project_path = decoded
+            # Decode project path from escaped directory name. Fall back to a
+            # simple slash replacement for display if we can't recover the real
+            # on-disk path from the filesystem.
+            project_path = _decode_project_path(entry.name) or Path(
+                "/" + entry.name[1:].replace("-", "/")
+            )
 
             # Derive human-readable name
             name = project_path.name if project_path != Path("/") else entry.name
@@ -423,34 +419,61 @@ def _decode_project_path(escaped_name: str) -> Path | None:
 
 
 def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:
-    """Greedily decode remaining path parts, trying - as / first."""
+    """Greedily decode remaining path parts using real child directories.
+
+    Claude's project directory escaping is ambiguous: both ``/`` and literal
+    punctuation such as ``-`` or ``.`` may show up as ``-`` in the escaped
+    directory name. Instead of guessing every separator combination, walk the
+    actual filesystem and match each child directory against the remaining
+    escaped tokens.
+    """
     if not parts:
         return base if base.exists() else None
 
-    # Try using / (this part is a directory component)
-    slash_path = base / parts[0]
-    result = _greedy_path_decode(slash_path, parts[1:])
-    if result:
-        return result
+    if not base.exists() or not base.is_dir():
+        return None
 
-    # Try joining with - (this part has a literal hyphen)
-    if len(parts) > 1:
-        hyphen_name = f"{parts[0]}-{parts[1]}"
-        hyphen_path = base / hyphen_name
-        result = _greedy_path_decode(hyphen_path, parts[2:])
-        if result:
-            return result
+    try:
+        children = sorted(
+            child for child in base.iterdir() if child.is_dir() and not child.name.startswith(".")
+        )
+    except OSError:
+        return None
 
-    # Try joining with . (this part has a literal dot, encoded as - by Claude Code)
-    if len(parts) > 1:
-        dot_name = f"{parts[0]}.{parts[1]}"
-        dot_path = base / dot_name
-        result = _greedy_path_decode(dot_path, parts[2:])
-        if result:
-            return result
+    for child in children:
+        for tokenization in _component_tokenizations(child.name):
+            n_tokens = len(tokenization)
+            if parts[:n_tokens] != tokenization:
+                continue
 
-    # If we've exhausted parts, check if current path exists
-    return base if base.exists() else None
+            result = _greedy_path_decode(child, parts[n_tokens:])
+            if result:
+                return result
+
+    return None
+
+
+def _component_tokenizations(component: str) -> list[list[str]]:
+    """Return possible escaped token sequences for a real path component."""
+    tokenizations: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def add(tokens: list[str]) -> None:
+        key = tuple(tokens)
+        if tokens and key not in seen:
+            seen.add(key)
+            tokenizations.append(tokens)
+
+    add([component])
+
+    for separator in ("-", ".", None):
+        if separator is None:
+            tokens = [token for token in re.split(r"[-.]", component) if token]
+        else:
+            tokens = [token for token in component.split(separator) if token]
+        add(tokens)
+
+    return tokenizations
 
 
 # =============================================================================

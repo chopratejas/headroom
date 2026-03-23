@@ -145,11 +145,14 @@ def learn(
     total_projects = 0
     total_failures = 0
     total_recommendations = 0
+    matched_projects = 0
+    available_projects: list[tuple[str, Path]] = []
 
     for agent_name, scanner, writer in agent_configs:
         all_projects = scanner.discover_projects()
         if not all_projects:
             continue
+        available_projects.extend((agent_name, p.project_path) for p in all_projects)
 
         # Filter to target project(s)
         if analyze_all:
@@ -176,6 +179,7 @@ def learn(
                 return
 
         for proj in targets:
+            matched_projects += 1
             click.echo(f"\n{'=' * 60}")
             click.echo(f"[{agent_name}] {proj.name}")
             click.echo(f"Path: {proj.project_path}")
@@ -222,6 +226,14 @@ def learn(
 
             if result.dry_run:
                 click.echo("\n  Dry run — use --apply to write.")
+
+    if project and matched_projects == 0:
+        click.echo(f"No project data found for {project.resolve()}")
+        if available_projects:
+            click.echo("\nAvailable discovered projects:")
+            for agent_name, project_path in available_projects[:10]:
+                click.echo(f"  [{agent_name}] {project_path}")
+        return
 
     # Summary
     if total_projects > 1:
