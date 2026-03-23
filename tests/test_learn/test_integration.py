@@ -123,6 +123,9 @@ class TestFalsePositiveFiltering:
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 CODEX_DIR = Path.home() / ".codex" / "sessions"
 HAS_API_KEY = bool(os.environ.get("ANTHROPIC_API_KEY"))
+HAS_CODEX_DATA = CODEX_DIR.exists() and (
+    any(CODEX_DIR.rglob("*.json")) or any(CODEX_DIR.rglob("*.jsonl"))
+)
 
 
 @pytest.mark.skipif(not CLAUDE_DIR.exists(), reason="No Claude Code data")
@@ -193,7 +196,7 @@ class TestClaudeCodeIntegration:
         }
         with patch("headroom.learn.analyzer._call_llm", return_value=mock_response):
             sessions = scanner.scan_project(best)
-            result = SessionAnalyzer().analyze(best, sessions)
+            result = SessionAnalyzer(model="gpt-4o").analyze(best, sessions)
             recs = result.recommendations
 
             writer = ClaudeCodeWriter()
@@ -240,7 +243,7 @@ class TestDecodeProjectPath:
         assert result == tmp_path / "GitHub.nosync"
 
 
-@pytest.mark.skipif(not CODEX_DIR.exists(), reason="No Codex data")
+@pytest.mark.skipif(not HAS_CODEX_DATA, reason="No Codex data")
 class TestCodexIntegration:
     """Integration tests against real Codex session data."""
 
