@@ -398,6 +398,10 @@ def _decode_project_path(escaped_name: str) -> Path | None:
 
     Since - is ambiguous (path separator vs literal hyphen), we try
     progressively and check which decoded path actually exists.
+
+    Handles directory names that contain dots (e.g. ``GitHub.nosync``) or
+    multiple hyphens (e.g. ``my-cool-project``) by trying all possible ways
+    to merge consecutive dash-split tokens back into a single path component.
     """
     if not escaped_name.startswith("-"):
         return None
@@ -423,26 +427,28 @@ def _decode_project_path(escaped_name: str) -> Path | None:
 
 
 def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:
-    """Greedily decode remaining path parts, trying - as / first."""
+    """Greedily decode remaining path parts, trying - as / first.
+
+    For each position we try treating parts[0] alone as the next directory
+    component, then parts[0]-parts[1], then parts[0]-parts[1]-parts[2], etc.
+    This correctly handles directory names that contain both dots and multiple
+    hyphens (e.g. ``GitHub.nosync``, ``my-cool-project.nosync``).
+    """
     if not parts:
         return base if base.exists() else None
 
-    # Try using / (this part is a directory component)
-    slash_path = base / parts[0]
-    result = _greedy_path_decode(slash_path, parts[1:])
-    if result:
-        return result
-
-    # Try joining with - (this part has a literal hyphen)
-    if len(parts) > 1:
-        hyphen_name = f"{parts[0]}-{parts[1]}"
-        hyphen_path = base / hyphen_name
-        result = _greedy_path_decode(hyphen_path, parts[2:])
+    # Try using 1, 2, 3, … consecutive tokens as a single directory component
+    # (tokens joined with literal hyphens).  The single-token case handles the
+    # common path-separator interpretation; multi-token cases handle directory
+    # names that themselves contain hyphens.
+    for n_tokens in range(1, len(parts) + 1):
+        component = "-".join(parts[:n_tokens])
+        candidate = base / component
+        result = _greedy_path_decode(candidate, parts[n_tokens:])
         if result:
             return result
 
-    # If we've exhausted parts, check if current path exists
-    return base if base.exists() else None
+    return None
 
 
 # =============================================================================
