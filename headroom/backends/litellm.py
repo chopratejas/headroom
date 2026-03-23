@@ -55,6 +55,75 @@ class ProviderConfig:
 # Cache for dynamically fetched inference profiles
 _bedrock_profiles_cache: dict[str, dict[str, str]] = {}  # region -> model_map
 
+# Region prefix used in cross-region Bedrock inference profile IDs.
+# EU regions use "eu.", AP regions use "apac.", US (and everything else) use "us.".
+_BEDROCK_REGION_PREFIXES: dict[str, str] = {
+    "eu": "eu",
+    "ap": "apac",
+}
+
+
+def _bedrock_region_prefix(region: str) -> str:
+    """Return the inference-profile region prefix for an AWS region.
+
+    AWS Bedrock cross-region inference profiles are prefixed with a
+    geographic tag: ``us.``, ``eu.``, or ``apac.``.  This helper maps
+    an AWS region name (e.g. ``eu-west-1``) to the correct prefix.
+
+    >>> _bedrock_region_prefix("us-east-1")
+    'us'
+    >>> _bedrock_region_prefix("eu-central-1")
+    'eu'
+    >>> _bedrock_region_prefix("ap-southeast-1")
+    'apac'
+    """
+    for key, prefix in _BEDROCK_REGION_PREFIXES.items():
+        if region.startswith(key):
+            return prefix
+    return "us"
+
+
+def _build_bedrock_fallback_map(region: str) -> dict[str, str]:
+    """Build a static Bedrock model map using the region prefix.
+
+    When ``_fetch_bedrock_inference_profiles`` cannot reach the AWS API
+    (wrong credentials, network error, permissions, etc.) we fall back
+    to this map so that the proxy can still route requests.  The map
+    covers all currently GA Claude models on Bedrock.
+    """
+    prefix = _bedrock_region_prefix(region)
+
+    # Base model IDs without region prefix
+    _CLAUDE_MODELS = [
+        # Claude 4.6
+        ("claude-opus-4-6", "anthropic.claude-opus-4-6-v1:0"),
+        ("claude-sonnet-4-6", "anthropic.claude-sonnet-4-6-v1:0"),
+        # Claude 4.5
+        ("claude-sonnet-4-5-20250929", "anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        ("claude-opus-4-5-20251101", "anthropic.claude-opus-4-5-20251101-v1:0"),
+        # Claude 4.1
+        ("claude-opus-4-1-20250805", "anthropic.claude-opus-4-1-20250805-v1:0"),
+        # Claude 4
+        ("claude-sonnet-4-20250514", "anthropic.claude-sonnet-4-20250514-v1:0"),
+        ("claude-opus-4-20250514", "anthropic.claude-opus-4-20250514-v1:0"),
+        # Claude 3.7
+        ("claude-3-7-sonnet-20250219", "anthropic.claude-3-7-sonnet-20250219-v1:0"),
+        # Claude 3.5
+        ("claude-3-5-sonnet-20241022", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+        ("claude-3-5-sonnet-20240620", "anthropic.claude-3-5-sonnet-20240620-v1:0"),
+        ("claude-3-5-haiku-20241022", "anthropic.claude-3-5-haiku-20241022-v1:0"),
+        # Claude 3
+        ("claude-3-opus-20240229", "anthropic.claude-3-opus-20240229-v1:0"),
+        ("claude-3-sonnet-20240229", "anthropic.claude-3-sonnet-20240229-v1:0"),
+        ("claude-3-haiku-20240307", "anthropic.claude-3-haiku-20240307-v1:0"),
+        # Haiku 4.5
+        ("claude-haiku-4-5-20251001", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+    ]
+
+    return {
+        name: f"bedrock/{prefix}.{model_id}" for name, model_id in _CLAUDE_MODELS
+    }
+
 
 def _fetch_bedrock_inference_profiles(region: str | None) -> dict[str, str]:
     """Fetch available Bedrock inference profiles from AWS API.
@@ -62,19 +131,16 @@ def _fetch_bedrock_inference_profiles(region: str | None) -> dict[str, str]:
     Uses boto3 list_inference_profiles() to get all available profiles
     for the given region, then builds a model map.
 
+    If the API call fails (wrong credentials, network error, permission
+    denied, etc.) the function logs a warning and returns a static
+    fallback map so the proxy can still start.
+
     Args:
         region: AWS region (e.g., "us-east-1", "eu-central-1")
 
     Returns:
         Model map: anthropic_model_name -> bedrock inference profile ID
-
-    Raises:
-        ImportError: If boto3 is not installed
-        Exception: If API call fails
     """
-
-    import boto3
-
     region = region or "us-east-1"
 
     # Check cache first
@@ -83,36 +149,54 @@ def _fetch_bedrock_inference_profiles(region: str | None) -> dict[str, str]:
 
     model_map: dict[str, str] = {}
 
-    bedrock_client = boto3.client("bedrock", region_name=region)
-    response = bedrock_client.list_inference_profiles(typeEquals="SYSTEM_DEFINED")
-
-    for profile in response.get("inferenceProfileSummaries", []):
-        profile_id = profile.get("inferenceProfileId", "")
-
-        # Only process Anthropic Claude profiles
-        if "anthropic" not in profile_id.lower():
-            continue
-
-        # Extract the standard model name from the profile ID
-        # e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0" -> "claude-sonnet-4-20250514"
-        normalized = _normalize_bedrock_profile_id(profile_id)
-        if normalized:
-            model_map[normalized] = f"bedrock/{profile_id}"
-
-    # Handle pagination if needed
-    while response.get("nextToken"):
-        response = bedrock_client.list_inference_profiles(
-            typeEquals="SYSTEM_DEFINED", nextToken=response["nextToken"]
+    try:
+        import boto3
+    except ImportError:
+        logger.warning(
+            "boto3 is not installed — using static Bedrock model map. "
+            "Install boto3 for dynamic model discovery: pip install boto3"
         )
+        model_map = _build_bedrock_fallback_map(region)
+        _bedrock_profiles_cache[region] = model_map
+        return model_map
+
+    try:
+        bedrock_client = boto3.client("bedrock", region_name=region)
+        response = bedrock_client.list_inference_profiles(typeEquals="SYSTEM_DEFINED")
+
         for profile in response.get("inferenceProfileSummaries", []):
             profile_id = profile.get("inferenceProfileId", "")
+
+            # Only process Anthropic Claude profiles
             if "anthropic" not in profile_id.lower():
                 continue
+
+            # Extract the standard model name from the profile ID
+            # e.g., "us.anthropic.claude-sonnet-4-20250514-v1:0" -> "claude-sonnet-4-20250514"
             normalized = _normalize_bedrock_profile_id(profile_id)
             if normalized:
                 model_map[normalized] = f"bedrock/{profile_id}"
 
-    logger.info(f"Fetched {len(model_map)} Bedrock inference profiles for region {region}")
+        # Handle pagination if needed
+        while response.get("nextToken"):
+            response = bedrock_client.list_inference_profiles(
+                typeEquals="SYSTEM_DEFINED", nextToken=response["nextToken"]
+            )
+            for profile in response.get("inferenceProfileSummaries", []):
+                profile_id = profile.get("inferenceProfileId", "")
+                if "anthropic" not in profile_id.lower():
+                    continue
+                normalized = _normalize_bedrock_profile_id(profile_id)
+                if normalized:
+                    model_map[normalized] = f"bedrock/{profile_id}"
+
+        logger.info(f"Fetched {len(model_map)} Bedrock inference profiles for region {region}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to fetch Bedrock inference profiles for region {region}: {e}. "
+            "Using static fallback model map."
+        )
+        model_map = _build_bedrock_fallback_map(region)
 
     # Cache the result
     _bedrock_profiles_cache[region] = model_map
@@ -358,6 +442,14 @@ class LiteLLMBackend(Backend):
             normalized = _normalize_bedrock_profile_id(anthropic_model)
             if normalized and normalized in self._model_map:
                 return self._model_map[normalized]
+
+            # Bedrock fallback: construct a valid region-prefixed model ID.
+            # Without this, bare model names like "claude-sonnet-4-20250514"
+            # would become "bedrock/claude-sonnet-4-20250514" which is not a
+            # valid Bedrock model identifier.
+            if "/" not in anthropic_model and anthropic_model.startswith("claude"):
+                region_prefix = _bedrock_region_prefix(self.region or "us-east-1")
+                return f"bedrock/{region_prefix}.anthropic.{anthropic_model}-v1:0"
 
         # Pass-through providers: prepend provider prefix
         if self._config.pass_through:
