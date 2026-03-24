@@ -6867,12 +6867,47 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     if not FASTAPI_AVAILABLE:
         raise ImportError("FastAPI required. Install: pip install fastapi uvicorn httpx")
 
+    from contextlib import asynccontextmanager
+
     config = config or ProxyConfig()
+
+    proxy = HeadroomProxy(config)
+
+    # Telemetry beacon (anonymous aggregate stats)
+    from headroom.telemetry.beacon import TelemetryBeacon
+
+    _beacon = TelemetryBeacon(
+        port=config.port if hasattr(config, "port") else 8787,
+        sdk="proxy",
+        backend=config.backend if hasattr(config, "backend") else "anthropic",
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+        # Startup
+        await proxy.startup()
+        asyncio.create_task(_log_toin_stats_periodically())
+        if proxy.usage_reporter:
+            await proxy.usage_reporter.start(proxy)
+        if proxy.traffic_learner:
+            await proxy.traffic_learner.start()
+        await _beacon.start()
+
+        yield
+
+        # Shutdown
+        await _beacon.stop()
+        if proxy.usage_reporter:
+            await proxy.usage_reporter.stop()
+        if proxy.traffic_learner:
+            await proxy.traffic_learner.stop()
+        await proxy.shutdown()
 
     app = FastAPI(
         title="Headroom Proxy",
         description="Production-ready LLM optimization proxy",
         version=__version__,
+        lifespan=lifespan,
     )
 
     # CORS
@@ -6883,28 +6918,6 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    proxy = HeadroomProxy(config)
-
-    @app.on_event("startup")
-    async def startup():
-        await proxy.startup()
-        # Start background task for periodic TOIN stats logging
-        asyncio.create_task(_log_toin_stats_periodically())
-        # Start usage reporter (license validation + phone-home)
-        if proxy.usage_reporter:
-            await proxy.usage_reporter.start(proxy)
-        # Start traffic learner background save worker
-        if proxy.traffic_learner:
-            await proxy.traffic_learner.start()
-
-    @app.on_event("shutdown")
-    async def shutdown():
-        if proxy.usage_reporter:
-            await proxy.usage_reporter.stop()
-        if proxy.traffic_learner:
-            await proxy.traffic_learner.stop()
-        await proxy.shutdown()
 
     # Health & Metrics
     @app.get("/health")

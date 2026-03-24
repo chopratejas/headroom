@@ -133,6 +133,11 @@ from .main import main
     default=None,
     help="AWS profile name for Bedrock (default: use default credentials)",
 )
+@click.option(
+    "--no-telemetry",
+    is_flag=True,
+    help="Disable anonymous usage telemetry (env: HEADROOM_TELEMETRY=off)",
+)
 @click.pass_context
 def proxy(
     ctx: click.Context,
@@ -166,6 +171,7 @@ def proxy(
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
+    no_telemetry: bool,
 ) -> None:
     """Start the optimization proxy server.
 
@@ -199,7 +205,11 @@ def proxy(
     effective_anyllm_provider = os.environ.get("HEADROOM_ANYLLM_PROVIDER") or anyllm_provider
 
     # Resolve mode: CLI flag > env var > default
-    effective_mode = mode or os.environ.get("HEADROOM_MODE", "token_headroom")
+    effective_mode: str = mode or os.environ.get("HEADROOM_MODE") or "token_headroom"
+
+    # Telemetry opt-out: --no-telemetry flag sets the env var
+    if no_telemetry:
+        os.environ["HEADROOM_TELEMETRY"] = "off"
 
     # License key for managed/enterprise deployments (optional)
     license_key = os.environ.get("HEADROOM_LICENSE_KEY")
