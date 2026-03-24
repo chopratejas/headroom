@@ -221,9 +221,7 @@ def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
     return True
 
 
-def _ensure_proxy(
-    port: int, no_proxy: bool, *, learn: bool = False
-) -> subprocess.Popen | None:
+def _ensure_proxy(port: int, no_proxy: bool, *, learn: bool = False) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
     if not no_proxy:
         if _check_proxy(port):
@@ -356,10 +354,14 @@ def wrap() -> None:
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and hook registration")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
-@click.option("--learn", is_flag=True, help="Enable live traffic learning (patterns saved to MEMORY.md)")
+@click.option(
+    "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to MEMORY.md)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
-def claude(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, claude_args: tuple) -> None:
+def claude(
+    port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, claude_args: tuple
+) -> None:
     """Launch Claude Code through Headroom proxy.
 
     \b
@@ -432,10 +434,14 @@ def claude(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, 
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and AGENTS.md injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
-@click.option("--learn", is_flag=True, help="Enable live traffic learning (patterns saved to AGENTS.md)")
+@click.option(
+    "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to AGENTS.md)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("codex_args", nargs=-1, type=click.UNPROCESSED)
-def codex(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, codex_args: tuple) -> None:
+def codex(
+    port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, codex_args: tuple
+) -> None:
     """Launch OpenAI Codex CLI through Headroom proxy.
 
     \b
@@ -496,7 +502,9 @@ def codex(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, c
 @click.option("--learn", is_flag=True, help="Enable live traffic learning")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("aider_args", nargs=-1, type=click.UNPROCESSED)
-def aider(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, aider_args: tuple) -> None:
+def aider(
+    port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, aider_args: tuple
+) -> None:
     """Launch aider through Headroom proxy.
 
     \b
@@ -554,7 +562,9 @@ def aider(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, a
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and .cursorrules injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
-@click.option("--learn", is_flag=True, help="Enable live traffic learning (patterns saved to .cursor/rules/)")
+@click.option(
+    "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to .cursor/rules/)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def cursor(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool) -> None:
     """Start Headroom proxy for use with Cursor.

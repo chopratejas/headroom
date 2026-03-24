@@ -120,9 +120,7 @@ def _build_bedrock_fallback_map(region: str) -> dict[str, str]:
         ("claude-haiku-4-5-20251001", "anthropic.claude-haiku-4-5-20251001-v1:0"),
     ]
 
-    return {
-        name: f"bedrock/{prefix}.{model_id}" for name, model_id in _CLAUDE_MODELS
-    }
+    return {name: f"bedrock/{prefix}.{model_id}" for name, model_id in _CLAUDE_MODELS}
 
 
 def _fetch_bedrock_inference_profiles(region: str | None) -> dict[str, str]:

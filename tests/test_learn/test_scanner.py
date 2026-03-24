@@ -88,9 +88,7 @@ class TestGreedyPathDecode:
     def test_multi_hyphen_dot_dir_containing_subproject(self, tmp_path: Path) -> None:
         """Path like my-cool-project.nosync/headroom — hardest combination."""
         _make_dirs(tmp_path, "my-cool-project.nosync/headroom")
-        result = _greedy_path_decode(
-            tmp_path, ["my", "cool", "project.nosync", "headroom"]
-        )
+        result = _greedy_path_decode(tmp_path, ["my", "cool", "project.nosync", "headroom"])
         assert result == tmp_path / "my-cool-project.nosync" / "headroom"
 
     def test_dot_flattened_into_separate_tokens(self, tmp_path: Path) -> None:
