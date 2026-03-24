@@ -5,12 +5,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import pytest
-
 from headroom.memory.writers.base import (
     MARKER_END,
     MARKER_START,
-    ExportResult,
     MemoryEntry,
     _estimate_tokens,
     _merge_section,
@@ -19,7 +16,6 @@ from headroom.memory.writers.claude_writer import ClaudeCodeMemoryWriter
 from headroom.memory.writers.codex_writer import CodexMemoryWriter
 from headroom.memory.writers.cursor_writer import CursorMemoryWriter
 from headroom.memory.writers.generic_writer import GenericMemoryWriter
-
 
 # =============================================================================
 # Test Data
@@ -31,14 +27,16 @@ def _make_entries(count: int = 5) -> list[MemoryEntry]:
     entries = []
     categories = ["error_recovery", "environment", "preference", "architecture"]
     for i in range(count):
-        entries.append(MemoryEntry(
-            content=f"Test memory entry {i}: use pytest not unittest",
-            importance=0.5 + (i % 3) * 0.15,
-            category=categories[i % len(categories)],
-            entity_refs=[f"/path/to/file{i}.py"],
-            created_at=time.time() - i * 3600,  # Each an hour older
-            access_count=max(0, 3 - i),
-        ))
+        entries.append(
+            MemoryEntry(
+                content=f"Test memory entry {i}: use pytest not unittest",
+                importance=0.5 + (i % 3) * 0.15,
+                category=categories[i % len(categories)],
+                entity_refs=[f"/path/to/file{i}.py"],
+                created_at=time.time() - i * 3600,  # Each an hour older
+                access_count=max(0, 3 - i),
+            )
+        )
     return entries
 
 
@@ -94,9 +92,7 @@ class TestMergeSection:
 
     def test_replace_existing_markers(self, tmp_path: Path):
         existing = tmp_path / "marked.md"
-        existing.write_text(
-            f"# Header\n\n{MARKER_START}\nold content\n{MARKER_END}\n\n# Footer"
-        )
+        existing.write_text(f"# Header\n\n{MARKER_START}\nold content\n{MARKER_END}\n\n# Footer")
         result = _merge_section(existing, f"{MARKER_START}\nnew content\n{MARKER_END}")
         assert "new content" in result
         assert "old content" not in result
@@ -204,7 +200,7 @@ class TestCursorWriter:
     def test_creates_mdc_with_frontmatter(self, tmp_path: Path):
         writer = CursorMemoryWriter(project_path=tmp_path)
         entries = _make_entries(3)
-        result = writer.export(entries, dry_run=False)
+        writer.export(entries, dry_run=False)
 
         mdc_path = tmp_path / ".cursor" / "rules" / "headroom-memory.mdc"
         assert mdc_path.exists()
@@ -252,7 +248,7 @@ class TestCodexWriter:
     def test_export(self, tmp_path: Path):
         writer = CodexMemoryWriter(project_path=tmp_path)
         entries = _make_entries(3)
-        result = writer.export(entries, dry_run=False)
+        writer.export(entries, dry_run=False)
 
         agents_md = tmp_path / "AGENTS.md"
         assert agents_md.exists()

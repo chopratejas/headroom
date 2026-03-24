@@ -6,9 +6,6 @@ a real memory backend.
 
 from __future__ import annotations
 
-import asyncio
-import time
-
 import pytest
 
 from headroom.memory.traffic_learner import (
@@ -18,7 +15,6 @@ from headroom.memory.traffic_learner import (
     _classify_error,
     _is_error,
 )
-
 
 # =============================================================================
 # Error Classification Tests
@@ -124,9 +120,11 @@ class TestTrafficLearner:
     @pytest.mark.asyncio
     async def test_preference_extraction(self, learner: TrafficLearner):
         """Test extraction of user preference signals."""
-        await learner.on_messages([
-            {"role": "user", "content": "don't use git push, I'll push manually"},
-        ])
+        await learner.on_messages(
+            [
+                {"role": "user", "content": "don't use git push, I'll push manually"},
+            ]
+        )
 
         stats = learner.get_stats()
         assert stats["patterns_extracted"] >= 1
@@ -134,14 +132,16 @@ class TestTrafficLearner:
     @pytest.mark.asyncio
     async def test_preference_from_content_blocks(self, learner: TrafficLearner):
         """Test preference extraction from Anthropic content block format."""
-        await learner.on_messages([
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "stop running the full test suite without asking"},
-                ],
-            },
-        ])
+        await learner.on_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "stop running the full test suite without asking"},
+                    ],
+                },
+            ]
+        )
 
         stats = learner.get_stats()
         assert stats["patterns_extracted"] >= 1

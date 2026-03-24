@@ -11,10 +11,7 @@ Verifies that:
 
 from __future__ import annotations
 
-import pytest
-
 from headroom.proxy.server import HeadroomProxy, ProxyConfig
-
 
 # =============================================================================
 # ProxyConfig Flag Resolution Tests
@@ -217,12 +214,11 @@ class TestWrapCLILearnFlag:
 
     def test_start_proxy_builds_learn_command(self):
         """_start_proxy with learn=True adds --learn to command."""
-        import sys
-
-        from headroom.cli.wrap import _start_proxy
 
         # We can't actually run the proxy, but we can check the function signature
         import inspect
+
+        from headroom.cli.wrap import _start_proxy
 
         sig = inspect.signature(_start_proxy)
         assert "learn" in sig.parameters

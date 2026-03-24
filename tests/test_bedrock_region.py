@@ -20,7 +20,6 @@ from headroom.backends.litellm import (
     _normalize_bedrock_profile_id,
 )
 
-
 # =============================================================================
 # Region Prefix Mapping
 # =============================================================================
@@ -123,12 +122,12 @@ class TestFetchBedrockInferenceProfiles:
         """Should return static map when boto3 is not installed."""
         with patch.dict("sys.modules", {"boto3": None}):
             # Force reimport failure
-            import importlib
-
-            import headroom.backends.litellm as mod
 
             # Temporarily break boto3 import inside the function
-            original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+            original_import = (
+                __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+            )
+
             def mock_import(name, *args, **kwargs):
                 if name == "boto3":
                     raise ImportError("No module named 'boto3'")
@@ -155,12 +154,13 @@ class TestFetchBedrockInferenceProfiles:
 
         with patch("headroom.backends.litellm.boto3", mock_boto3, create=True):
             # Patch the import inside the function
-            original_fn = _fetch_bedrock_inference_profiles.__code__
+            _fetch_bedrock_inference_profiles.__code__  # noqa: B018
             _bedrock_profiles_cache.clear()
 
             # We need to actually test the function, so let's just use the
             # mock_boto3 and make sure the function catches the exception
             import builtins
+
             real_import = builtins.__import__
 
             def patched_import(name, *args, **kwargs):
@@ -191,6 +191,7 @@ class TestFetchBedrockInferenceProfiles:
         mock_boto3.client.return_value = mock_client
 
         import builtins
+
         real_import = builtins.__import__
 
         def patched_import(name, *args, **kwargs):
@@ -339,9 +340,10 @@ class TestNormalizeBedrockProfileId:
         )
 
     def test_with_bedrock_slash_prefix(self):
-        assert _normalize_bedrock_profile_id(
-            "bedrock/eu.anthropic.claude-sonnet-4-20250514-v1:0"
-        ) == "claude-sonnet-4-20250514"
+        assert (
+            _normalize_bedrock_profile_id("bedrock/eu.anthropic.claude-sonnet-4-20250514-v1:0")
+            == "claude-sonnet-4-20250514"
+        )
 
     def test_non_claude_returns_none(self):
         assert _normalize_bedrock_profile_id("eu.meta.llama-3-70b-v1:0") is None

@@ -9,7 +9,6 @@ import pytest
 
 from headroom.memory.budget import (
     BudgetConfig,
-    BudgetReport,
     MemoryBudgetManager,
 )
 from headroom.memory.writers.base import MemoryEntry
@@ -49,7 +48,10 @@ class TestBudgetManager:
 
     def test_budget_limits(self, manager: MemoryBudgetManager):
         # Create many entries that exceed budget
-        entries = [_make_entry(f"A long memory content string number {i} " * 10, importance=0.8) for i in range(50)]
+        entries = [
+            _make_entry(f"A long memory content string number {i} " * 10, importance=0.8)
+            for i in range(50)
+        ]
         optimized, report = manager.optimize(entries, "claude")  # 2000 token budget
 
         assert report.pruned_budget > 0
@@ -77,8 +79,12 @@ class TestBudgetManager:
 
     def test_merge_similar(self, manager: MemoryBudgetManager):
         entries = [
-            _make_entry("Use source .venv/bin/activate && pytest for running tests", importance=0.5),
-            _make_entry("Use source .venv/bin/activate && pytest for running tests", importance=0.8),
+            _make_entry(
+                "Use source .venv/bin/activate && pytest for running tests", importance=0.5
+            ),
+            _make_entry(
+                "Use source .venv/bin/activate && pytest for running tests", importance=0.8
+            ),
             _make_entry("Something completely different about architecture", importance=0.6),
         ]
         optimized, report = manager.optimize(entries, "generic")
@@ -101,7 +107,10 @@ class TestBudgetManager:
 
     def test_report_tokens(self, manager: MemoryBudgetManager):
         # Use entries large enough to trigger budget pruning
-        entries = [_make_entry(f"A very long memory content entry {i} " * 30, importance=0.8) for i in range(20)]
+        entries = [
+            _make_entry(f"A very long memory content entry {i} " * 30, importance=0.8)
+            for i in range(20)
+        ]
         _, report = manager.optimize(entries, "claude")  # 2000 token budget
 
         assert report.tokens_before > 0
