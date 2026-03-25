@@ -23,7 +23,7 @@ def generate_request_id() -> str:
 def compute_hash(data: str | bytes) -> str:
     """Compute SHA256 hash, returning hex string."""
     if isinstance(data, str):
-        data = data.encode("utf-8")
+        data = data.encode("utf-8", errors="surrogatepass")
     return hashlib.sha256(data).hexdigest()
 
 

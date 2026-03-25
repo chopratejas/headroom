@@ -1249,10 +1249,10 @@ class TestHashCollisionDetection:
         # Should not have collision warning
         assert "Hash collision detected" not in caplog.text
 
-    def test_hash_uses_sha256_truncated(self, store: CompressionStore):
-        """Hash is SHA256 truncated to 24 characters."""
+    def test_hash_uses_md5_truncated(self, store: CompressionStore):
+        """Hash is MD5 truncated to 24 characters (fast, non-crypto)."""
         content = "test content"
-        expected_hash = hashlib.sha256(content.encode()).hexdigest()[:24]
+        expected_hash = hashlib.md5(content.encode()).hexdigest()[:24]
 
         hash_key = store.store(original=content, compressed="[]")
 
