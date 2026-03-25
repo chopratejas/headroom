@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from ..cache.compression_cache import CompressionCache
     from ..memory.tracker import ComponentStats, MemoryTracker
 
+import contextlib
+
 import httpx
 
 try:
@@ -4589,6 +4591,33 @@ class HeadroomProxy:
             and provider == "anthropic"
         )
 
+        # Open connection before generator to capture upstream response headers
+        # (needed to forward ratelimit headers to the client via StreamingResponse)
+        assert self.http_client is not None, "http_client must be initialized before streaming"
+        try:
+            _upstream_req = self.http_client.build_request("POST", url, json=body, headers=headers)
+            upstream_response = await self.http_client.send(_upstream_req, stream=True)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            error_msg = str(e)
+            logger.error(f"[{request_id}] Connection error to upstream API: {error_msg}")
+
+            async def _error_gen():
+                error_event = {
+                    "type": "error",
+                    "error": {
+                        "type": "connection_error",
+                        "message": f"Failed to connect to upstream API: {error_msg}",
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+
+            return StreamingResponse(_error_gen(), media_type="text/event-stream")
+
+        # Forward upstream ratelimit headers to the client
+        forwarded_headers = {
+            k: v for k, v in upstream_response.headers.items() if "ratelimit" in k.lower()
+        }
+
         async def generate():
             nonlocal body, memory_enabled  # May need to modify for continuation requests
 
@@ -4597,9 +4626,7 @@ class HeadroomProxy:
             full_sse_data = ""
 
             try:
-                async with self.http_client.stream(
-                    "POST", url, json=body, headers=headers
-                ) as response:
+                async with contextlib.aclosing(upstream_response) as response:
                     async for chunk in response.aiter_bytes():
                         # Record TTFB on first chunk
                         if stream_state["ttfb_ms"] is None:
@@ -4794,6 +4821,7 @@ class HeadroomProxy:
         return StreamingResponse(
             generate(),
             media_type="text/event-stream",
+            headers=forwarded_headers,
         )
 
     async def _stream_response_bedrock(
