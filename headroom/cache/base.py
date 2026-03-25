@@ -320,7 +320,7 @@ class BaseCacheOptimizer(ABC):
         """Compute a short hash of content."""
         import hashlib
 
-        return hashlib.sha256(content.encode()).hexdigest()[:12]
+        return hashlib.md5(content.encode()).hexdigest()[:12]
 
     def _extract_system_content(self, messages: list[dict[str, Any]]) -> str:
         """Extract content from system messages."""

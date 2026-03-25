@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -120,6 +122,8 @@ def _create_content_signature(
         structure_hint = hashlib.sha256(content_sample.encode()).hexdigest()[:8]
         hash_input = f"{hash_input}:{structure_hint}"
 
+        # Keep SHA256: structure_hash feeds into TOIN which persists to disk.
+        # Changing hash function would invalidate all learned patterns.
         structure_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:24]
 
         return ToolSignature(
@@ -716,6 +720,14 @@ class ContentRouter(Transform):
         except Exception as e:
             # TOIN recording should never break compression
             logger.debug("TOIN recording failed (non-fatal): %s", e)
+
+    def _timed_compress(
+        self, content: str, context: str, bias: float
+    ) -> tuple[RouterCompressionResult, float]:
+        """Compress with wall-clock timing.  Used by parallel executor."""
+        t0 = time.perf_counter()
+        result = self.compress(content, context=context, bias=bias)
+        return result, (time.perf_counter() - t0) * 1000
 
     def compress(
         self,
@@ -1514,12 +1526,33 @@ class ContentRouter(Transform):
 
         frozen_message_count = kwargs.get("frozen_message_count", 0)
 
+        # ------------------------------------------------------------------
+        # Two-pass parallel compression.
+        #
+        # Pass 1 (sequential): categorise every message — frozen, protected,
+        #   cached, small, etc. are resolved immediately.  Cache-miss messages
+        #   that need full compression are collected into *pending_tasks*.
+        #
+        # Pass 2 (parallel): all cache-miss compressions run concurrently in
+        #   a thread pool.  Each self.compress() call is independent.
+        #
+        # Pass 3 (sequential): results are stitched back into message order,
+        #   caches updated, and counters incremented.
+        # ------------------------------------------------------------------
+
+        # Pre-allocate result slots — None means "pending compression".
+        result_slots: list[dict[str, Any] | None] = [None] * num_messages
+
+        # Tasks: list of (slot_index, content, context, bias, content_key)
+        _PendingTask = tuple[int, str, str, float, int]
+        pending_tasks: list[_PendingTask] = []
+
         for i, message in enumerate(messages):
             # Skip frozen messages (in provider's prefix cache).
             # Modifying these would invalidate the cache, replacing a 90%
             # read discount with a 25% write penalty (Anthropic).
             if i < frozen_message_count:
-                transformed_messages.append(message)
+                result_slots[i] = message
                 continue
 
             role = message.get("role", "")
@@ -1544,13 +1577,13 @@ class ContentRouter(Transform):
                     messages_from_end=messages_from_end,
                     compressor_timing=compressor_timing,
                 )
-                transformed_messages.append(transformed_message)
+                result_slots[i] = transformed_message
                 route_counts["content_blocks"] += 1
                 continue
 
             # Skip non-string content (other types)
             if not isinstance(content, str):
-                transformed_messages.append(message)
+                result_slots[i] = message
                 route_counts["non_string"] += 1
                 continue
 
@@ -1562,7 +1595,7 @@ class ContentRouter(Transform):
                 if tool_call_id in excluded_tool_ids:
                     if messages_from_end <= read_protection_window:
                         # Recent — protect as before
-                        transformed_messages.append(message)
+                        result_slots[i] = message
                         transforms_applied.append("router:excluded:tool")
                         route_counts["excluded_tool"] += 1
                         continue
@@ -1575,14 +1608,14 @@ class ContentRouter(Transform):
 
             # Protection 1: Never compress user messages
             if self.config.skip_user_messages and role == "user":
-                transformed_messages.append(message)
+                result_slots[i] = message
                 transforms_applied.append("router:protected:user_message")
                 route_counts["user_msg"] += 1
                 continue
 
             if not content or len(content.split()) < 50:
                 # Skip small content
-                transformed_messages.append(message)
+                result_slots[i] = message
                 route_counts["small"] += 1
                 continue
 
@@ -1597,14 +1630,14 @@ class ContentRouter(Transform):
                 and messages_from_end <= self.config.protect_recent_code
                 and is_code
             ):
-                transformed_messages.append(message)
+                result_slots[i] = message
                 transforms_applied.append("router:protected:recent_code")
                 route_counts["recent_code"] += 1
                 continue
 
             # Protection 3: Don't compress CODE when analysis intent detected
             if analysis_intent and is_code:
-                transformed_messages.append(message)
+                result_slots[i] = message
                 transforms_applied.append("router:protected:analysis_context")
                 route_counts["analysis_ctx"] += 1
                 continue
@@ -1614,7 +1647,7 @@ class ContentRouter(Transform):
             # Recompressing would change byte content and break provider
             # prefix caching with no meaningful further reduction.
             if "Retrieve more: hash=" in content or "Retrieve original: hash=" in content:
-                transformed_messages.append(message)
+                result_slots[i] = message
                 route_counts.setdefault("already_compressed", 0)
                 route_counts["already_compressed"] += 1
                 continue
@@ -1632,7 +1665,7 @@ class ContentRouter(Transform):
 
             # Tier 1: skip set — instant rejection
             if self._cache.is_skipped(content_key):
-                transformed_messages.append(message)
+                result_slots[i] = message
                 route_counts["ratio_too_high"] += 1
                 route_counts.setdefault("cache_hit", 0)
                 route_counts["cache_hit"] += 1
@@ -1644,47 +1677,83 @@ class ContentRouter(Transform):
                 cached_compressed, cached_ratio, cached_strategy = cached
                 # Re-check ratio against current min_ratio (shifts with context pressure)
                 if cached_ratio < min_ratio:
-                    transformed_messages.append({**message, "content": cached_compressed})
+                    result_slots[i] = {**message, "content": cached_compressed}
                     transforms_applied.append(f"router:{cached_strategy}:{cached_ratio:.2f}")
                     compressed_details.append(f"{cached_strategy}:{cached_ratio:.2f}")
                 else:
                     # Threshold tightened — no longer qualifies. Move to skip.
                     self._cache.move_to_skip(content_key)
-                    transformed_messages.append(message)
+                    result_slots[i] = message
                     route_counts["ratio_too_high"] += 1
                 route_counts.setdefault("cache_hit", 0)
                 route_counts["cache_hit"] += 1
                 continue
 
-            # Cache miss — run full compression
+            # Cache miss — defer to parallel compression pass
             route_counts.setdefault("cache_miss", 0)
             route_counts["cache_miss"] += 1
-            t0 = time.perf_counter()
-            result = self.compress(content, context=context, bias=msg_bias)
-            compress_ms = (time.perf_counter() - t0) * 1000
-            strategy_key = f"compressor:{result.strategy_used.value}"
-            compressor_timing[strategy_key] = compressor_timing.get(strategy_key, 0.0) + compress_ms
+            pending_tasks.append((i, content, context, msg_bias, content_key))
 
-            if result.compression_ratio < min_ratio:
-                # Compressed — store in result cache
-                self._cache.put(
-                    content_key,
-                    result.compressed,
-                    result.compression_ratio,
-                    result.strategy_used.value,
-                )
-                transformed_messages.append({**message, "content": result.compressed})
-                transforms_applied.append(
-                    f"router:{result.strategy_used.value}:{result.compression_ratio:.2f}"
-                )
-                compressed_details.append(
-                    f"{result.strategy_used.value}:{result.compression_ratio:.2f}"
-                )
+        # --- Pass 2: Parallel compression of all cache-miss messages ---
+        if pending_tasks:
+            max_workers = min(
+                len(pending_tasks), int(os.environ.get("HEADROOM_COMPRESS_WORKERS", "4"))
+            )
+            t_parallel_start = time.perf_counter()
+
+            if max_workers <= 1 or len(pending_tasks) == 1:
+                # Single task or parallelism disabled — compress inline
+                task_results = []
+                for _, task_content, task_ctx, task_bias, _ in pending_tasks:
+                    t0 = time.perf_counter()
+                    r = self.compress(task_content, context=task_ctx, bias=task_bias)
+                    task_results.append((r, (time.perf_counter() - t0) * 1000))
             else:
-                # Didn't compress — add to skip set
-                self._cache.mark_skip(content_key)
-                transformed_messages.append(message)
-                route_counts["ratio_too_high"] += 1
+                # Parallel compression via thread pool
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = []
+                    for _, task_content, task_ctx, task_bias, _ in pending_tasks:
+                        futures.append(
+                            executor.submit(self._timed_compress, task_content, task_ctx, task_bias)
+                        )
+                    task_results = [f.result() for f in futures]
+
+            parallel_ms = (time.perf_counter() - t_parallel_start) * 1000
+            compressor_timing["parallel_compress_total"] = parallel_ms
+
+            # --- Pass 3: Merge results back (sequential, updates caches) ---
+            for (slot_idx, _, _, _, content_key), (result, compress_ms) in zip(
+                pending_tasks, task_results
+            ):
+                message = messages[slot_idx]
+                strategy_key = f"compressor:{result.strategy_used.value}"
+                compressor_timing[strategy_key] = (
+                    compressor_timing.get(strategy_key, 0.0) + compress_ms
+                )
+
+                if result.compression_ratio < min_ratio:
+                    # Compressed — store in result cache
+                    self._cache.put(
+                        content_key,
+                        result.compressed,
+                        result.compression_ratio,
+                        result.strategy_used.value,
+                    )
+                    result_slots[slot_idx] = {**message, "content": result.compressed}
+                    transforms_applied.append(
+                        f"router:{result.strategy_used.value}:{result.compression_ratio:.2f}"
+                    )
+                    compressed_details.append(
+                        f"{result.strategy_used.value}:{result.compression_ratio:.2f}"
+                    )
+                else:
+                    # Didn't compress — add to skip set
+                    self._cache.mark_skip(content_key)
+                    result_slots[slot_idx] = message
+                    route_counts["ratio_too_high"] += 1
+
+        # Build final message list from slots
+        transformed_messages = [m for m in result_slots if m is not None]
 
         tokens_after = sum(
             tokenizer.count_text(str(m.get("content", ""))) for m in transformed_messages

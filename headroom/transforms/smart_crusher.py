@@ -1689,7 +1689,7 @@ class SmartCrusher(Transform):
                 else:
                     # Non-dict items: use string representation
                     content = str(item)
-                item_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+                item_hash = hashlib.md5(content.encode()).hexdigest()[:16]
             except (TypeError, ValueError, RecursionError) as e:
                 # Serialization failed - keep the item (fail-safe)
                 logger.debug("Dedup hash failed for item at index %d: %s. Keeping item.", idx, e)
@@ -1759,7 +1759,7 @@ class SmartCrusher(Transform):
                         content = json.dumps(item, sort_keys=True, default=str)
                     else:
                         content = str(item)
-                    seen_hashes.add(hashlib.sha256(content.encode()).hexdigest()[:16])
+                    seen_hashes.add(hashlib.md5(content.encode()).hexdigest()[:16])
                 except (TypeError, ValueError, RecursionError):
                     pass  # Skip hash computation failures
 
@@ -1792,7 +1792,7 @@ class SmartCrusher(Transform):
                         content = json.dumps(item, sort_keys=True, default=str)
                     else:
                         content = str(item)
-                    item_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+                    item_hash = hashlib.md5(content.encode()).hexdigest()[:16]
                 except (TypeError, ValueError, RecursionError):
                     # Hash failure - use index as unique hash (fail-safe)
                     item_hash = f"__idx_{idx}__"

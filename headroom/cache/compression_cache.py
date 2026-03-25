@@ -135,7 +135,7 @@ class CompressionCache:
             raw = json.dumps(content, sort_keys=True, ensure_ascii=False)
         else:
             raw = content
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
     def compute_frozen_count(self, messages: list[dict]) -> int:
         """Count consecutive stable messages from the start.

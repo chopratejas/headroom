@@ -177,7 +177,9 @@ class TransformPipeline:
             )
 
         # Start with original tokens
+        t_count = time.perf_counter()
         tokens_before = tokenizer.count_messages(messages)
+        count_ms = (time.perf_counter() - t_count) * 1000
 
         logger.debug(
             "Pipeline starting: %d messages, %d tokens, model=%s",
@@ -196,7 +198,13 @@ class TransformPipeline:
         transform_diffs: list[TransformDiff] = []
         generate_diff = self.config.generate_diff_artifact
 
+        t_copy = time.perf_counter()
         current_messages = deep_copy_messages(messages)
+        copy_ms = (time.perf_counter() - t_copy) * 1000
+
+        all_timing["_deep_copy"] = copy_ms
+        all_timing["_initial_token_count"] = count_ms
+
         pipeline_start = time.perf_counter()
 
         frozen_count = kwargs.get("frozen_message_count", 0)
@@ -212,9 +220,6 @@ class TransformPipeline:
             if not transform.should_apply(current_messages, tokenizer, **kwargs):
                 continue
 
-            # Track tokens before this transform (for diff)
-            tokens_before_transform = tokenizer.count_messages(current_messages)
-
             # Time the transform
             t0 = time.perf_counter()
             result = transform.apply(current_messages, tokenizer, **kwargs)
@@ -223,8 +228,10 @@ class TransformPipeline:
             # Update messages for next transform
             current_messages = result.messages
 
-            # Track tokens after this transform (for diff)
-            tokens_after_transform = tokenizer.count_messages(current_messages)
+            # Use token counts reported by the transform itself — avoids
+            # redundant O(N) recount of the full message list after each step.
+            tokens_before_transform = result.tokens_before
+            tokens_after_transform = result.tokens_after
 
             # Accumulate results
             all_transforms.extend(result.transforms_applied)
@@ -264,8 +271,12 @@ class TransformPipeline:
                     )
                 )
 
-        # Final token count
+        # Single final token count — the only full recount in the pipeline.
+        # Earlier per-transform counts come from each transform's own result.
+        t_final_count = time.perf_counter()
         tokens_after = tokenizer.count_messages(current_messages)
+        all_timing["_final_token_count"] = (time.perf_counter() - t_final_count) * 1000
+
         pipeline_ms = (time.perf_counter() - pipeline_start) * 1000
         all_timing["pipeline_total"] = pipeline_ms
 

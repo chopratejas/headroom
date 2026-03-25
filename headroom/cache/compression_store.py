@@ -206,7 +206,7 @@ class CompressionStore:
         # collision resistance. Birthday paradox: 50% collision at sqrt(2^n) entries.
         # - 64 bits: ~4 billion entries for 50% collision
         # - 96 bits: ~280 trillion entries for 50% collision
-        hash_key = hashlib.sha256(original.encode()).hexdigest()[:24]
+        hash_key = hashlib.md5(original.encode()).hexdigest()[:24]
 
         entry = CompressionEntry(
             hash=hash_key,

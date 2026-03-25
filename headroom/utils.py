@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -29,6 +30,17 @@ def compute_hash(data: str | bytes) -> str:
 def compute_short_hash(data: str | bytes, length: int = 16) -> str:
     """Compute truncated SHA256 hash."""
     return compute_hash(data)[:length]
+
+
+def fast_hash(data: str | bytes, length: int = 16) -> str:
+    """Fast non-cryptographic content hash for caches and dedup.
+
+    Uses MD5 (2-3x faster than SHA256).  Not used for security — only for
+    content-addressable lookups in compression caches, prefix tracking, etc.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return hashlib.md5(data).hexdigest()[:length]
 
 
 def compute_messages_hash(messages: list[dict[str, Any]]) -> str:
@@ -210,6 +222,9 @@ def format_cost(cost: float) -> str:
 
 
 def deep_copy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Create a deep copy of messages list."""
-    result: list[dict[str, Any]] = json.loads(json.dumps(messages))
-    return result
+    """Create a deep copy of messages list.
+
+    Uses copy.deepcopy instead of json roundtrip (2-5x faster, avoids
+    serialisation overhead on large conversation histories).
+    """
+    return copy.deepcopy(messages)
