@@ -209,8 +209,8 @@ class MagikaDetector:
         magika = self._ensure_magika()
         result: MagikaResult = magika.identify_bytes(content.encode("utf-8"))
 
-        raw_label = result.output.ct_label
-        confidence = result.output.score
+        raw_label = result.output.label
+        confidence = result.score
 
         # Map to our content type
         content_type, language = self._map_label(raw_label)
@@ -233,8 +233,6 @@ class MagikaDetector:
     def detect_batch(self, contents: list[str]) -> list[DetectionResult]:
         """Detect content types for multiple contents.
 
-        More efficient than calling detect() in a loop.
-
         Args:
             contents: List of content strings to analyze.
 
@@ -244,16 +242,9 @@ class MagikaDetector:
         if not contents:
             return []
 
-        magika = self._ensure_magika()
         results = []
 
-        # Convert to bytes for Magika
-        byte_contents = [c.encode("utf-8") for c in contents]
-
-        # Batch detection
-        magika_results = magika.identify_bytes_batch(byte_contents)
-
-        for content, magika_result in zip(contents, magika_results):
+        for content in contents:
             if not content or not content.strip():
                 results.append(
                     DetectionResult(
@@ -264,8 +255,9 @@ class MagikaDetector:
                 )
                 continue
 
-            raw_label = magika_result.output.ct_label
-            confidence = magika_result.output.score
+            magika_result = self._ensure_magika().identify_bytes(content.encode("utf-8"))
+            raw_label = magika_result.output.label
+            confidence = magika_result.score
             content_type, language = self._map_label(raw_label)
 
             if confidence < self.min_confidence:

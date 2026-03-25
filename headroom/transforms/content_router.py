@@ -428,6 +428,7 @@ class ContentRouterConfig:
 _CODE_FENCE_PATTERN = re.compile(r"^```(\w*)\s*$", re.MULTILINE)
 _JSON_BLOCK_START = re.compile(r"^\s*[\[{]", re.MULTILINE)
 _SEARCH_RESULT_PATTERN = re.compile(r"^\S+:\d+:", re.MULTILINE)
+_PROSE_PATTERN = re.compile(r"[A-Z][a-z]+\s+\w+\s+\w+")
 
 
 def is_mixed_content(content: str) -> bool:
@@ -442,7 +443,7 @@ def is_mixed_content(content: str) -> bool:
     indicators = {
         "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
         "has_json_blocks": bool(_JSON_BLOCK_START.search(content)),
-        "has_prose": len(re.findall(r"[A-Z][a-z]+\s+\w+\s+\w+", content)) > 5,
+        "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
         "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
     }
 
@@ -1168,30 +1169,97 @@ class ContentRouter(Transform):
                 logger.debug("HTMLExtractor not available (install trafilatura)")
         return self._html_extractor
 
-    def eager_load_compressors(self) -> None:
+    def eager_load_compressors(self) -> dict[str, str]:
         """Pre-load compressors at startup to avoid first-request latency.
 
-        Call this during proxy startup to load models (~5s)
-        before any requests arrive.
+        Call this during proxy startup to load models and parsers
+        before any requests arrive. Eliminates cold-start latency spikes.
+
+        Returns:
+            Dict of component name -> status string for logging.
         """
-        # Prefer Kompress (faster, smaller, better on structured data)
+        status: dict[str, str] = {}
+
+        # 1. ML text compressor: Kompress or LLMLingua fallback
         if self.config.enable_kompress:
             compressor = self._get_kompress()
             if compressor:
                 logger.info("Kompress model pre-loaded at startup")
-                return  # No need to also load LLMLingua
+                status["kompress"] = "enabled"
+            else:
+                status["kompress"] = "unavailable"
+        if "kompress" not in status or status["kompress"] != "enabled":
+            if self.config.enable_llmlingua:
+                compressor = self._get_llmlingua()
+                if compressor:
+                    try:
+                        from .llmlingua_compressor import _get_llmlingua_compressor
 
-        if self.config.enable_llmlingua:
-            compressor = self._get_llmlingua()
-            if compressor:
+                        device = compressor._resolve_device()
+                        _get_llmlingua_compressor(compressor.config.model_name, device)
+                        logger.info("LLMLingua model pre-loaded at startup")
+                        status["llmlingua"] = "enabled"
+                    except Exception as e:
+                        logger.warning("Failed to pre-load LLMLingua model: %s", e)
+                        status["llmlingua"] = f"failed: {e}"
+
+        # 2. Magika content detector (avoids 100-200ms on first content detection)
+        try:
+            from ..compression.detector import _get_magika, _magika_available
+
+            if _magika_available():
+                _get_magika()  # Initializes the singleton
+                logger.info("Magika content detector pre-loaded at startup")
+                status["magika"] = "enabled"
+            else:
+                status["magika"] = "not installed"
+        except Exception as e:
+            logger.debug("Magika pre-load skipped: %s", e)
+            status["magika"] = "skipped"
+
+        # 3. CodeAware compressor + common tree-sitter parsers
+        if self.config.enable_code_aware:
+            code_compressor = self._get_code_compressor()
+            if code_compressor:
+                status["code_aware"] = "enabled"
+                # Pre-load tree-sitter parsers for common languages
+                # Each parser is ~50ms to load; doing it here avoids 500ms+ on first code hit
                 try:
-                    from .llmlingua_compressor import _get_llmlingua_compressor
+                    from .code_compressor import _check_tree_sitter_available, _get_parser
 
-                    device = compressor._resolve_device()
-                    _get_llmlingua_compressor(compressor.config.model_name, device)
-                    logger.info("LLMLingua model pre-loaded at startup")
+                    if _check_tree_sitter_available():
+                        common_languages = [
+                            "python",
+                            "javascript",
+                            "typescript",
+                            "go",
+                            "rust",
+                            "java",
+                            "c",
+                            "cpp",
+                        ]
+                        loaded = []
+                        for lang in common_languages:
+                            try:
+                                _get_parser(lang)
+                                loaded.append(lang)
+                            except (ValueError, ImportError):
+                                pass  # Language not available, skip
+                        if loaded:
+                            logger.info("Tree-sitter parsers pre-loaded: %s", ", ".join(loaded))
+                            status["tree_sitter"] = f"loaded ({len(loaded)} languages)"
                 except Exception as e:
-                    logger.warning("Failed to pre-load LLMLingua model: %s", e)
+                    logger.debug("Tree-sitter pre-load skipped: %s", e)
+                    status["tree_sitter"] = "skipped"
+            else:
+                status["code_aware"] = "not installed"
+
+        # 4. SmartCrusher (lightweight init, but ensures import + TOIN ready)
+        smart_crusher = self._get_smart_crusher()
+        if smart_crusher:
+            status["smart_crusher"] = "ready"
+
+        return status
 
     def _get_kompress(self) -> Any:
         """Get KompressCompressor (lazy load). Downloads from HuggingFace on first use."""

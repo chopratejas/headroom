@@ -1995,36 +1995,32 @@ class HeadroomProxy:
         else:
             logger.info("Smart Routing: DISABLED (legacy sequential mode)")
 
-        # Eagerly load ML compressors at startup (avoids download on first request)
-        # Kompress requires [ml] extra (torch + transformers). If not installed, skip.
+        # Eagerly load ALL compressors, parsers, and detectors at startup
+        # This eliminates cold-start latency spikes on first requests
         self._kompress_status = "not installed"
-        from headroom.transforms.kompress_compressor import is_kompress_available
+        eager_status: dict[str, str] = {}
 
-        if is_kompress_available() and self.config.optimize:
-            logger.info("Kompress: Downloading model (first-time only)...")
+        if self.config.optimize:
+            logger.info("Pre-loading compressors and parsers...")
             for transform in self.anthropic_pipeline.transforms:
                 if hasattr(transform, "eager_load_compressors"):
-                    transform.eager_load_compressors()
-                    self._kompress_status = "enabled"
-                    break
-            if self._kompress_status == "enabled":
-                logger.info("Kompress: ENABLED (ModernBERT token compressor)")
-        else:
-            if self.config.optimize:
-                logger.info(
-                    "Kompress: not installed (pip install headroom-ai[ml] for ML compression)"
-                )
-
-        # LLMLingua fallback (only loads if Kompress is not available)
-        if self._kompress_status != "enabled" and self.config.llmlingua_enabled:
-            for transform in self.anthropic_pipeline.transforms:
-                if hasattr(transform, "_get_llmlingua"):
-                    llmlingua = transform._get_llmlingua()
-                    if llmlingua:
-                        self._llmlingua_status = "enabled"
+                    eager_status = transform.eager_load_compressors()
                     break
 
-        # LLMLingua status
+        # Update internal status from eager loading results
+        if eager_status.get("kompress") == "enabled":
+            self._kompress_status = "enabled"
+        if eager_status.get("llmlingua") == "enabled":
+            self._llmlingua_status = "enabled"
+        if eager_status.get("code_aware") == "enabled":
+            self._code_aware_status = "enabled"
+
+        # Log component status
+        if self._kompress_status == "enabled":
+            logger.info("Kompress: ENABLED (ModernBERT token compressor)")
+        elif self.config.optimize:
+            logger.info("Kompress: not installed (pip install headroom-ai[ml] for ML compression)")
+
         if self._llmlingua_status == "enabled":
             logger.info(
                 f"LLMLingua: ENABLED (device={self.config.llmlingua_device}, "
@@ -2037,9 +2033,10 @@ class HeadroomProxy:
         elif self._llmlingua_status == "disabled":
             logger.info("LLMLingua: DISABLED")
 
-        # Code-aware status
         if self._code_aware_status == "enabled":
             logger.info("Code-Aware: ENABLED (AST-based compression)")
+            if "tree_sitter" in eager_status:
+                logger.info(f"Tree-Sitter: {eager_status['tree_sitter']}")
         elif self._code_aware_status == "lazy":
             logger.info("Code-Aware: LAZY (will load when code content detected)")
         elif self._code_aware_status == "available":
@@ -2048,6 +2045,9 @@ class HeadroomProxy:
             logger.info("Code-Aware: not installed (pip install headroom-ai[code])")
         elif self._code_aware_status == "disabled":
             logger.info("Code-Aware: DISABLED")
+
+        if eager_status.get("magika") == "enabled":
+            logger.info("Magika: ENABLED (ML content detection)")
 
         # CCR status
         ccr_features = []

@@ -92,6 +92,10 @@ _HOSTNAME_PATTERN = re.compile(
 _QUOTED_STRING_PATTERN = re.compile(r"['\"]([^'\"]{1,50})['\"]")  # Short quoted strings
 _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 
+# Temporal detection patterns (compiled once, used in SmartAnalyzer._detect_temporal_field)
+_ISO_DATETIME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 def extract_query_anchors(text: str) -> set[str]:
     """Extract query anchors from user text (legacy regex-based method).
@@ -628,7 +632,10 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
 _ERROR_KEYWORDS_FOR_PRESERVATION = ERROR_KEYWORDS
 
 
-def _detect_error_items_for_preservation(items: list[dict]) -> list[int]:
+def _detect_error_items_for_preservation(
+    items: list[dict],
+    item_strings: list[str] | None = None,
+) -> list[int]:
     """Detect items containing error keywords for PRESERVATION guarantee.
 
     This is NOT for crushability analysis - it's for ensuring ALL error items
@@ -636,6 +643,10 @@ def _detect_error_items_for_preservation(items: list[dict]) -> list[int]:
     are NEVER dropped, even if errors are common in the dataset.
 
     Uses keywords because error semantics are well-defined across domains.
+
+    Args:
+        items: List of items to check.
+        item_strings: Pre-computed JSON serializations to avoid redundant json.dumps.
     """
     error_indices: list[int] = []
 
@@ -643,9 +654,12 @@ def _detect_error_items_for_preservation(items: list[dict]) -> list[int]:
         if not isinstance(item, dict):
             continue
 
-        # Serialize item to check all content
+        # Reuse cached serialization if available, otherwise serialize
         try:
-            item_str = json.dumps(item).lower()
+            if item_strings is not None and i < len(item_strings):
+                item_str = item_strings[i].lower()
+            else:
+                item_str = json.dumps(item).lower()
         except Exception:
             continue
 
@@ -694,13 +708,18 @@ def _detect_items_by_learned_semantics(
     if not confident_semantics:
         return []
 
+    # Pre-compute field name hashes to avoid redundant SHA256 per item
+    _field_hash_cache: dict[str, str] = {}
+
     for i, item in enumerate(items):
         if not isinstance(item, dict):
             continue
 
         for field_name, value in item.items():
-            # Hash the field name to match TOIN's format
-            field_hash = hashlib.sha256(field_name.encode()).hexdigest()[:8]
+            # Hash the field name to match TOIN's format (cached per unique field name)
+            if field_name not in _field_hash_cache:
+                _field_hash_cache[field_name] = _hash_field_name(field_name)
+            field_hash = _field_hash_cache[field_name]
 
             if field_hash not in confident_semantics:
                 continue
@@ -1080,9 +1099,9 @@ class SmartAnalyzer:
 
         Uses STRUCTURAL detection based on value format, not field names.
         """
-        # Check string fields for ISO 8601 patterns
-        iso_datetime_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
-        iso_date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        # Check string fields for ISO 8601 patterns (module-level compiled)
+        iso_datetime_pattern = _ISO_DATETIME_PATTERN
+        iso_date_pattern = _ISO_DATE_PATTERN
 
         for name, stats in field_stats.items():
             if stats.field_type == "string":
@@ -2464,12 +2483,14 @@ class SmartCrusher(Transform):
             # Create compression plan with relevance scoring
             # Pass TOIN preserve_fields so items with those fields get priority
             # Pass effective_max_items for thread-safe compression
+            # Pass item_strings to avoid redundant json.dumps across plan methods
             plan = self._create_plan(
                 analysis,
                 items,
                 query_context,
                 preserve_fields=toin_preserve_fields or None,
                 effective_max_items=effective_max_items,
+                item_strings=item_strings,
             )
 
             # Execute compression
@@ -2483,7 +2504,8 @@ class SmartCrusher(Transform):
                 and len(result) < len(items)  # Only cache if compression actually happened
             ):
                 store = self._get_compression_store()
-                original_json = json.dumps(items, default=str)
+                # Reuse cached item_strings to avoid re-serializing
+                original_json = "[" + ", ".join(item_strings) + "]"
                 compressed_json = json.dumps(result, default=str)
 
                 ccr_hash = store.store(
@@ -2521,8 +2543,8 @@ class SmartCrusher(Transform):
 
             # TOIN: Record compression event for cross-user learning
             try:
-                # Calculate token counts (approximate)
-                original_tokens = len(json.dumps(items, default=str)) // 4
+                # Calculate token counts (approximate) - reuse cached item_strings
+                original_tokens = sum(len(s) for s in item_strings) // 4
                 compressed_tokens = len(json.dumps(result, default=str)) // 4
 
                 toin.record_compression(
@@ -2573,18 +2595,29 @@ class SmartCrusher(Transform):
     # Universal JSON type handlers (string, number, mixed arrays)
     # =================================================================
 
-    def _compute_k_split(self, items: list, bias: float = 1.0) -> tuple[int, int, int, int]:
+    def _compute_k_split(
+        self,
+        items: list,
+        bias: float = 1.0,
+        item_strings: list[str] | None = None,
+    ) -> tuple[int, int, int, int]:
         """Compute adaptive K split into first/last/importance slots.
 
         Uses the existing Kneedle-based adaptive_sizer for K_total, then
         splits according to configurable first_fraction / last_fraction.
+
+        Args:
+            items: List of items (used as fallback for serialization).
+            bias: Compression bias multiplier.
+            item_strings: Pre-computed JSON serializations to avoid redundant json.dumps.
 
         Returns:
             (k_total, k_first, k_last, k_importance)
         """
         from .adaptive_sizer import compute_optimal_k
 
-        item_strings = [json.dumps(item, default=str) for item in items]
+        if item_strings is None:
+            item_strings = [json.dumps(item, default=str) for item in items]
         k_total = compute_optimal_k(
             item_strings,
             bias=bias,
@@ -2997,6 +3030,7 @@ class SmartCrusher(Transform):
         query_context: str = "",
         preserve_fields: list[str] | None = None,
         effective_max_items: int | None = None,
+        item_strings: list[str] | None = None,
     ) -> CompressionPlan:
         """Create a detailed compression plan using relevance scoring.
 
@@ -3006,6 +3040,7 @@ class SmartCrusher(Transform):
             query_context: Context string from user messages for relevance scoring.
             preserve_fields: TOIN-learned fields that users commonly retrieve.
                 Items with values in these fields get higher priority.
+            item_strings: Pre-computed JSON serializations to avoid redundant json.dumps.
             effective_max_items: Thread-safe max items limit (defaults to config value).
         """
         # Use provided effective_max_items or fall back to config
@@ -3027,22 +3062,46 @@ class SmartCrusher(Transform):
 
         if analysis.recommended_strategy == CompressionStrategy.TIME_SERIES:
             plan = self._plan_time_series(
-                analysis, items, plan, query_context, preserve_fields, max_items
+                analysis,
+                items,
+                plan,
+                query_context,
+                preserve_fields,
+                max_items,
+                item_strings=item_strings,
             )
 
         elif analysis.recommended_strategy == CompressionStrategy.CLUSTER_SAMPLE:
             plan = self._plan_cluster_sample(
-                analysis, items, plan, query_context, preserve_fields, max_items
+                analysis,
+                items,
+                plan,
+                query_context,
+                preserve_fields,
+                max_items,
+                item_strings=item_strings,
             )
 
         elif analysis.recommended_strategy == CompressionStrategy.TOP_N:
             plan = self._plan_top_n(
-                analysis, items, plan, query_context, preserve_fields, max_items
+                analysis,
+                items,
+                plan,
+                query_context,
+                preserve_fields,
+                max_items,
+                item_strings=item_strings,
             )
 
         else:  # SMART_SAMPLE or NONE
             plan = self._plan_smart_sample(
-                analysis, items, plan, query_context, preserve_fields, max_items
+                analysis,
+                items,
+                plan,
+                query_context,
+                preserve_fields,
+                max_items,
+                item_strings=item_strings,
             )
 
         return plan
@@ -3055,6 +3114,7 @@ class SmartCrusher(Transform):
         query_context: str = "",
         preserve_fields: list[str] | None = None,
         max_items: int | None = None,
+        item_strings: list[str] | None = None,
     ) -> CompressionPlan:
         """Plan compression for time series data.
 
@@ -3111,7 +3171,12 @@ class SmartCrusher(Transform):
 
         # 5. Items with high relevance to query context (PROBABILISTIC semantic match)
         if query_context:
-            item_strs = [json.dumps(item, default=str) for item in items]
+            # Reuse pre-computed item_strings if available
+            item_strs = (
+                item_strings
+                if item_strings is not None
+                else [json.dumps(item, default=str) for item in items]
+            )
             scores = self._scorer.score_batch(item_strs, query_context)
             for i, score in enumerate(scores):
                 if score.score >= self._relevance_threshold:
@@ -3138,6 +3203,7 @@ class SmartCrusher(Transform):
         query_context: str = "",
         preserve_fields: list[str] | None = None,
         max_items: int | None = None,
+        item_strings: list[str] | None = None,
     ) -> CompressionPlan:
         """Plan compression for clusterable data (like logs).
 
@@ -3211,7 +3277,12 @@ class SmartCrusher(Transform):
 
         # 5. Items with high relevance to query context (PROBABILISTIC semantic match)
         if query_context:
-            item_strs = [json.dumps(item, default=str) for item in items]
+            # Reuse pre-computed item_strings if available
+            item_strs = (
+                item_strings
+                if item_strings is not None
+                else [json.dumps(item, default=str) for item in items]
+            )
             scores = self._scorer.score_batch(item_strs, query_context)
             for i, score in enumerate(scores):
                 if score.score >= self._relevance_threshold:
@@ -3238,6 +3309,7 @@ class SmartCrusher(Transform):
         query_context: str = "",
         preserve_fields: list[str] | None = None,
         max_items: int | None = None,
+        item_strings: list[str] | None = None,
     ) -> CompressionPlan:
         """Plan compression for scored/ranked data.
 
@@ -3269,7 +3341,13 @@ class SmartCrusher(Transform):
 
         if not score_field:
             return self._plan_smart_sample(
-                analysis, items, plan, query_context, preserve_fields, effective_max
+                analysis,
+                items,
+                plan,
+                query_context,
+                preserve_fields,
+                effective_max,
+                item_strings=item_strings,
             )
 
         plan.sort_field = score_field
@@ -3307,7 +3385,12 @@ class SmartCrusher(Transform):
         # Only add items that are NOT already in top N but match the query strongly
         # Use a higher threshold (0.5) since the score field already captures relevance
         if query_context:
-            item_strs = [json.dumps(item, default=str) for item in items]
+            # Reuse pre-computed item_strings if available
+            item_strs = (
+                item_strings
+                if item_strings is not None
+                else [json.dumps(item, default=str) for item in items]
+            )
             scores = self._scorer.score_batch(item_strs, query_context)
             # Higher threshold and limit count to avoid adding everything
             high_threshold = max(0.5, self._relevance_threshold * 2)
@@ -3340,6 +3423,7 @@ class SmartCrusher(Transform):
         query_context: str = "",
         preserve_fields: list[str] | None = None,
         max_items: int | None = None,
+        item_strings: list[str] | None = None,
     ) -> CompressionPlan:
         """Plan smart statistical sampling using STATISTICAL detection.
 
@@ -3415,7 +3499,12 @@ class SmartCrusher(Transform):
 
         # 6. Items with high relevance to query context (PROBABILISTIC semantic match)
         if query_context:
-            item_strs = [json.dumps(item, default=str) for item in items]
+            # Reuse pre-computed item_strings if available
+            item_strs = (
+                item_strings
+                if item_strings is not None
+                else [json.dumps(item, default=str) for item in items]
+            )
             scores = self._scorer.score_batch(item_strs, query_context)
             for i, score in enumerate(scores):
                 if score.score >= self._relevance_threshold:
