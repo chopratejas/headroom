@@ -64,8 +64,19 @@ except ImportError:
 CCR_TOOL_NAME = "headroom_retrieve"
 COMPRESS_TOOL_NAME = "headroom_compress"
 STATS_TOOL_NAME = "headroom_stats"
+READ_TOOL_NAME = "headroom_read"
 
 logger = logging.getLogger("headroom.ccr.mcp")
+
+# Feature flag: enable headroom_read tool (file read caching via CCR)
+# Set HEADROOM_MCP_READ=on to enable
+_READ_ENABLED = os.environ.get("HEADROOM_MCP_READ", "off").lower().strip() in (
+    "on",
+    "true",
+    "1",
+    "yes",
+    "enabled",
+)
 
 DEFAULT_PROXY_URL = os.environ.get("HEADROOM_PROXY_URL", "http://127.0.0.1:8787")
 
@@ -315,6 +326,8 @@ class HeadroomMCPServer:
         self._stats = SessionStats()
         self._local_store: Any = None  # Lazy-initialized CompressionStore
         self._compressor_initialized = False
+        # File read cache: path → (content_hash, ccr_hash, line_count, token_count)
+        self._file_cache: dict[str, tuple[str, str, int, int]] = {}
 
         if not MCP_AVAILABLE:
             raise ImportError("MCP SDK not installed. Install with: pip install mcp")
@@ -461,7 +474,7 @@ class HeadroomMCPServer:
 
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
-            return [
+            tools = [
                 Tool(
                     name=COMPRESS_TOOL_NAME,
                     description=(
@@ -525,6 +538,41 @@ class HeadroomMCPServer:
                 ),
             ]
 
+            # Conditionally add headroom_read (behind feature flag)
+            if _READ_ENABLED:
+                tools.append(
+                    Tool(
+                        name=READ_TOOL_NAME,
+                        description=(
+                            "Read a file with smart caching. First read returns full content "
+                            "and caches it. Subsequent reads of the same unchanged file return "
+                            "a lightweight cache marker (~20 tokens instead of thousands). "
+                            "Use headroom_retrieve with the hash to get full content if needed. "
+                            "Use this INSTEAD of the built-in Read tool for significant token savings."
+                        ),
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "file_path": {
+                                    "type": "string",
+                                    "description": "Absolute path to the file to read.",
+                                },
+                                "fresh": {
+                                    "type": "boolean",
+                                    "description": (
+                                        "Force a fresh read, bypassing cache. Use after context "
+                                        "compaction, in subagents, or when you need guaranteed "
+                                        "current content."
+                                    ),
+                                },
+                            },
+                            "required": ["file_path"],
+                        },
+                    )
+                )
+
+            return tools
+
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             try:
@@ -534,6 +582,8 @@ class HeadroomMCPServer:
                     return await self._handle_retrieve(arguments)
                 elif name == STATS_TOOL_NAME:
                     return await self._handle_stats()
+                elif name == READ_TOOL_NAME and _READ_ENABLED:
+                    return await self._handle_read(arguments)
                 else:
                     return [
                         TextContent(
@@ -669,6 +719,114 @@ class HeadroomMCPServer:
         if cost:
             result["cost_saved_usd"] = cost.get("total_saved", cost.get("saved", 0))
         return result if result else None
+
+    async def _handle_read(self, arguments: dict[str, Any]) -> list[TextContent]:
+        """Handle headroom_read tool call — file read with session caching."""
+        import hashlib
+        from pathlib import Path
+
+        file_path = arguments.get("file_path", "")
+        fresh = arguments.get("fresh", False)
+
+        if not file_path:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "file_path parameter is required"}),
+                )
+            ]
+
+        path = Path(file_path).expanduser().resolve()
+        if not path.exists():
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"File not found: {file_path}"}),
+                )
+            ]
+        if not path.is_file():
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"Not a file: {file_path}"}),
+                )
+            ]
+
+        # Read file from disk
+        try:
+            content = path.read_text(errors="replace")
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"Cannot read file: {e}"}),
+                )
+            ]
+
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:24]
+        line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        str_path = str(path)
+
+        # Check cache (unless fresh=true)
+        if not fresh and str_path in self._file_cache:
+            cached_hash, ccr_hash, cached_lines, cached_tokens = self._file_cache[str_path]
+            if cached_hash == content_hash:
+                # File unchanged — but is the CCR entry still alive?
+                store = self._get_local_store()
+                if store.exists(ccr_hash):
+                    # CCR alive — return cache marker
+                    self._stats.record_compression(cached_tokens, 5, "read_cache_hit")
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                {
+                                    "status": "cached",
+                                    "file": file_path,
+                                    "lines": cached_lines,
+                                    "unchanged": True,
+                                    "hash": ccr_hash,
+                                    "note": (
+                                        f"File unchanged since first read ({cached_lines} lines, "
+                                        f"~{cached_tokens} tokens). Content already in your context "
+                                        f"from the first read. Call headroom_retrieve(hash='{ccr_hash}') "
+                                        f"if you need the full content again."
+                                    ),
+                                },
+                                indent=2,
+                            ),
+                        )
+                    ]
+                # CCR expired — clear stale cache, fall through to fresh read
+                del self._file_cache[str_path]
+            # File changed — fall through to fresh read
+
+        # Fresh read: store in CCR and cache the hash
+        store = self._get_local_store()
+        ccr_hash = store.store(
+            original=content,
+            compressed=f"[File: {path.name}, {line_count} lines]",
+            original_tokens=len(content.split()),
+            compressed_tokens=5,
+            tool_name="headroom_read",
+            ttl=MCP_SESSION_TTL,
+        )
+
+        token_estimate = len(content.split())
+        self._file_cache[str_path] = (content_hash, ccr_hash, line_count, token_estimate)
+
+        # Return full content with line numbers (like Claude Code's Read tool)
+        numbered_lines = []
+        for i, line in enumerate(content.split("\n"), 1):
+            numbered_lines.append(f"{i:>6}\t{line}")
+        numbered_content = "\n".join(numbered_lines)
+
+        return [
+            TextContent(
+                type="text",
+                text=numbered_content,
+            )
+        ]
 
     async def run_stdio(self) -> None:
         """Run the server with stdio transport."""
