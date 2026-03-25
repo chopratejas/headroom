@@ -213,3 +213,16 @@ def deep_copy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Create a deep copy of messages list."""
     result: list[dict[str, Any]] = json.loads(json.dumps(messages))
     return result
+
+
+def safe_int(val: Any, default: int) -> int:
+    """Safely parse *val* as an integer, returning *default* on failure.
+
+    Handles ``None``, empty strings, and non-numeric strings without
+    raising ``TypeError`` or ``ValueError`` — useful for environment
+    variables that may contain unexpected values.
+    """
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default

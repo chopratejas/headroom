@@ -33,9 +33,12 @@ Backends:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from headroom.utils import safe_int
 
 if TYPE_CHECKING:
     from headroom.memory.ports import MemorySearchResult
@@ -93,8 +96,9 @@ class Memory:
         self,
         backend: str = "local",
         db_path: str | Path | None = None,
-        qdrant_host: str = "localhost",
-        qdrant_port: int = 6333,
+        qdrant_host: str | None = None,
+        qdrant_port: int | None = None,
+        qdrant_api_key: str | None = None,
         neo4j_uri: str = "neo4j://localhost:7687",
         neo4j_user: str = "neo4j",
         neo4j_password: str = "password",
@@ -112,8 +116,10 @@ class Memory:
         self._db_path = Path(db_path)
 
         # Config for qdrant-neo4j backend
-        self._qdrant_host = qdrant_host
-        self._qdrant_port = qdrant_port
+        # Explicit constructor args take priority over environment variables
+        self._qdrant_host = qdrant_host or os.environ.get("QDRANT_URL", "localhost")
+        self._qdrant_port = qdrant_port if qdrant_port is not None else safe_int(os.environ.get("QDRANT_PORT"), 6333)
+        self._qdrant_api_key = qdrant_api_key or os.environ.get("QDRANT_API_KEY") or None
         self._neo4j_uri = neo4j_uri
         self._neo4j_user = neo4j_user
         self._neo4j_password = neo4j_password
@@ -139,6 +145,7 @@ class Memory:
                 mem0_config = Mem0Config(
                     qdrant_host=self._qdrant_host,
                     qdrant_port=self._qdrant_port,
+                    qdrant_api_key=self._qdrant_api_key,
                     neo4j_uri=self._neo4j_uri,
                     neo4j_user=self._neo4j_user,
                     neo4j_password=self._neo4j_password,
