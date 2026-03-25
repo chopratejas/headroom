@@ -11,15 +11,19 @@ On by default. Opt out with:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import platform
 import sys
 import time
+import uuid
 
 logger = logging.getLogger(__name__)
 
-# Supabase endpoint (write-only: anon key can INSERT, not read/update/delete)
+# Supabase endpoint (anon key can INSERT+UPDATE for upsert, not read/delete)
+# NOTE: Table requires a UNIQUE constraint on session_id for upsert to work.
+#       RLS policy must allow UPDATE (in addition to INSERT) for the anon role.
 _SUPABASE_URL = "https://dtlllcsudcoasebbamcq.supabase.co"
 _SUPABASE_KEY = "sb_publishable_kHcSIX2Ip0_m0C3WuwZlaQ_33my7qya"
 _TABLE = "proxy_telemetry"
@@ -44,6 +48,10 @@ class TelemetryBeacon:
         self._backend = backend
         self._task: asyncio.Task[None] | None = None
         self._start_time = time.time()
+        # Unique per proxy run — used as upsert key so each session produces 1 row
+        self._session_id = uuid.uuid4().hex
+        # Stable across restarts — anonymous machine fingerprint (SHA256 of hostname)
+        self._instance_id = hashlib.sha256(platform.node().encode()).hexdigest()[:16]
 
     async def start(self) -> None:
         """Start the periodic beacon. Call from proxy startup."""
@@ -112,6 +120,8 @@ class TelemetryBeacon:
             headroom_version = "unknown"
 
         payload = {
+            "session_id": self._session_id,
+            "instance_id": self._instance_id,
             "headroom_version": headroom_version,
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             "os": f"{platform.system()} {platform.machine()}",
@@ -136,7 +146,8 @@ class TelemetryBeacon:
                         "apikey": _SUPABASE_KEY,
                         "Authorization": f"Bearer {_SUPABASE_KEY}",
                         "Content-Type": "application/json",
-                        "Prefer": "return=minimal",
+                        # Upsert: on conflict with session_id, merge (overwrite) the row
+                        "Prefer": "resolution=merge-duplicates,return=minimal",
                     },
                 )
         except Exception:
