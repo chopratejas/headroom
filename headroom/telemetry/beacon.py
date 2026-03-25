@@ -99,6 +99,11 @@ class TelemetryBeacon:
         models_by = requests.get("by_model", {})
         models = [m for m in models_by.keys() if not m.startswith("passthrough:")]
 
+        # Don't send empty stats — no point reporting zeros
+        total_requests = requests.get("total", 0)
+        if total_requests == 0:
+            return
+
         session_minutes = max(1, int((time.time() - self._start_time) / 60))
 
         try:
