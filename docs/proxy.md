@@ -2,6 +2,8 @@
 
 The Headroom proxy server is a production-ready HTTP server that applies context optimization to all requests passing through it.
 
+> **New:** The proxy now supports the [TypeScript SDK](typescript-sdk.md) via the `POST /v1/compress` endpoint, enabling compression-as-a-service for any HTTP client without calling an LLM.
+
 ## Starting the Proxy
 
 ```bash
@@ -119,6 +121,36 @@ POST /v1/messages
 # OpenAI format
 POST /v1/chat/completions
 ```
+
+### `POST /v1/compress`
+
+Compression-only endpoint. Compresses messages without calling any LLM. Used by the [TypeScript SDK](typescript-sdk.md) and any HTTP client that wants compression as a service.
+
+**Request:**
+```json
+{
+  "messages": [...],     // OpenAI chat format
+  "model": "gpt-4o"     // model name (for token counting)
+}
+```
+
+**Response:**
+```json
+{
+  "messages": [...],            // compressed messages
+  "tokens_before": 15000,
+  "tokens_after": 3500,
+  "tokens_saved": 11500,
+  "compression_ratio": 0.23,
+  "transforms_applied": ["router:smart_crusher:0.35"],
+  "ccr_hashes": ["a1b2c3"]
+}
+```
+
+**Headers:**
+- `x-headroom-bypass: true` — skip compression, return messages as-is
+
+**Error responses:** 400 (missing fields), 401 (bad API key), 503 (compression failed)
 
 ## Using with Claude Code
 

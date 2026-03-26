@@ -439,3 +439,11 @@ report = generate_report(
     period="day",
 )
 ```
+
+---
+
+## TypeScript SDK
+
+For the TypeScript SDK API reference, see [TypeScript SDK](typescript-sdk.md).
+
+The TypeScript SDK provides `compress()`, `HeadroomClient`, and framework adapters for Vercel AI SDK, OpenAI, and Anthropic.

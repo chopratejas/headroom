@@ -176,5 +176,8 @@ CLAUDE.md
 # Vitals provenance data
 .vitals/
 
+# Superpowers working files (plans, specs, brainstorming)
+docs/superpowers/
+
 # Managed platform (separate private repo)
 headroom-managed/

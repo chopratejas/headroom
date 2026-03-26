@@ -2153,6 +2153,116 @@ class HeadroomProxy:
 
         raise last_error  # type: ignore[misc]
 
+    async def handle_compress(self, request: Request) -> JSONResponse:
+        """Compress messages without calling an LLM.
+
+        POST /v1/compress
+        Body: {"messages": [...], "model": "...", "config": {}}
+        Returns compressed messages + metrics.
+        """
+        # Check bypass header
+        if request.headers.get("x-headroom-bypass", "").lower() == "true":
+            body = await request.json()
+            messages = body.get("messages", [])
+            return JSONResponse(
+                {
+                    "messages": messages,
+                    "tokens_before": 0,
+                    "tokens_after": 0,
+                    "tokens_saved": 0,
+                    "compression_ratio": 1.0,
+                    "transforms_applied": [],
+                    "ccr_hashes": [],
+                }
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "type": "invalid_request",
+                        "message": "Invalid JSON in request body.",
+                    }
+                },
+            )
+
+        messages = body.get("messages")
+        model = body.get("model")
+
+        if messages is None:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "type": "invalid_request",
+                        "message": "Missing required field: messages",
+                    }
+                },
+            )
+
+        if model is None:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "type": "invalid_request",
+                        "message": "Missing required field: model",
+                    }
+                },
+            )
+
+        if not messages:
+            return JSONResponse(
+                {
+                    "messages": [],
+                    "tokens_before": 0,
+                    "tokens_after": 0,
+                    "tokens_saved": 0,
+                    "compression_ratio": 1.0,
+                    "transforms_applied": [],
+                    "ccr_hashes": [],
+                }
+            )
+
+        try:
+            # Use OpenAI pipeline (messages are in OpenAI format from TS SDK)
+            context_limit = self.openai_provider.get_context_limit(model)
+            result = self.openai_pipeline.apply(
+                messages=messages,
+                model=model,
+                model_limit=context_limit,
+            )
+
+            return JSONResponse(
+                {
+                    "messages": result.messages,
+                    "tokens_before": result.tokens_before,
+                    "tokens_after": result.tokens_after,
+                    "tokens_saved": result.tokens_before - result.tokens_after,
+                    "compression_ratio": (
+                        result.tokens_after / result.tokens_before
+                        if result.tokens_before > 0
+                        else 1.0
+                    ),
+                    "transforms_applied": result.transforms_applied,
+                    "ccr_hashes": result.markers_inserted,
+                }
+            )
+        except Exception as e:
+            logger.exception("Compression failed: %s", e)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "type": "compression_error",
+                        "message": str(e),
+                    }
+                },
+            )
+
     async def handle_anthropic_messages(
         self,
         request: Request,
@@ -7631,6 +7741,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "success": "error" not in retrieval_data,
             "data": retrieval_data,
         }
+
+    # Compression-only endpoint (for TypeScript SDK and other HTTP clients)
+    @app.post("/v1/compress")
+    async def compress_messages(request: Request):
+        return await proxy.handle_compress(request)
 
     # Anthropic endpoints
     @app.post("/v1/messages")

@@ -7,7 +7,7 @@
     Every tool call, DB query, file read, and RAG retrieval your agent makes is 70-95% boilerplate.<br>
     Headroom compresses it away before it hits the model.<br><br>
     Works with <b>any agent</b> — coding agents (Claude Code, Codex, Cursor, Aider), custom agents<br>
-    (LangChain, LangGraph, Agno, Strands), or your own Python code.
+    (LangChain, LangGraph, Agno, Strands), or your own Python and TypeScript code.
   </p>
 </p>
 
@@ -23,6 +23,9 @@
   </a>
   <a href="https://pypistats.org/packages/headroom-ai">
     <img src="https://img.shields.io/pypi/dm/headroom-ai.svg" alt="Downloads">
+  </a>
+  <a href="https://www.npmjs.com/package/headroom-ai">
+    <img src="https://img.shields.io/npm/v/headroom-ai.svg" alt="npm">
   </a>
   <a href="https://github.com/chopratejas/headroom/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
@@ -46,7 +49,7 @@ Your Agent / App
       │
       │  tool calls, logs, DB reads, RAG results, file reads, API responses
       ▼
-   Headroom  ← proxy, Python library, or framework integration
+   Headroom  ← proxy, Python/TypeScript SDK, or framework integration
       │
       ▼
  LLM Provider  (OpenAI, Anthropic, Google, Bedrock, 100+ via LiteLLM)
@@ -69,12 +72,19 @@ Headroom optimizes any data your agent injects into a prompt:
 
 ## Quick Start
 
+**Python:**
 ```bash
 pip install "headroom-ai[all]"
 ```
 
+**TypeScript / Node.js:**
+```bash
+npm install headroom-ai
+```
+
 ### Any agent — one function
 
+**Python:**
 ```python
 from headroom import compress
 
@@ -83,7 +93,16 @@ response = client.messages.create(model="claude-sonnet-4-5-20250929", messages=r
 print(f"Saved {result.tokens_saved} tokens ({result.compression_ratio:.0%})")
 ```
 
-Works with any Python LLM client — Anthropic, OpenAI, LiteLLM, Bedrock, httpx, anything. Works with any agent framework — LangChain, LangGraph, Agno, Strands, or your own code.
+**TypeScript:**
+```typescript
+import { compress } from 'headroom-ai';
+
+const result = await compress(messages, { model: 'gpt-4o' });
+const response = await openai.chat.completions.create({ model: 'gpt-4o', messages: result.messages });
+console.log(`Saved ${result.tokensSaved} tokens`);
+```
+
+Works with any LLM client — Anthropic, OpenAI, LiteLLM, Bedrock, Vercel AI SDK, or your own code.
 
 ### Any agent — proxy (zero code changes)
 
@@ -136,6 +155,10 @@ Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `h
 | Your setup | Add Headroom | One-liner |
 |------------|-------------|-----------|
 | **Any Python app** | `compress()` | `result = compress(messages, model="gpt-4o")` |
+| **Any TypeScript app** | `compress()` | `const result = await compress(messages, { model: 'gpt-4o' })` |
+| **Vercel AI SDK** | Middleware | `wrapLanguageModel({ model, middleware: headroomMiddleware() })` |
+| **OpenAI Node SDK** | Wrap client | `const client = withHeadroom(new OpenAI())` |
+| **Anthropic TS SDK** | Wrap client | `const client = withHeadroom(new Anthropic())` |
 | **Multi-agent** | SharedContext | `ctx = SharedContext(); ctx.put("key", data)` |
 | **LiteLLM** | Callback | `litellm.callbacks = [HeadroomCallback()]` |
 | **Any Python proxy** | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
@@ -144,7 +167,7 @@ Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `h
 | **Claude Code** | Wrap | `headroom wrap claude` |
 | **Codex / Aider** | Wrap | `headroom wrap codex` or `headroom wrap aider` |
 
-**[Full Integration Guide](docs/integration-guide.md)** — detailed setup for every framework.
+**[Full Integration Guide](docs/integration-guide.md)** | **[TypeScript SDK](docs/typescript-sdk.md)**
 
 ---
 

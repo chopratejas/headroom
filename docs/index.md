@@ -102,6 +102,18 @@ Headroom works as a **transparent proxy** (zero code changes), a **Python functi
 
     Starts the proxy, points your tool at it, compresses everything automatically.
 
+=== "TypeScript SDK"
+
+    ```typescript
+    import { compress } from 'headroom-ai';
+
+    const result = await compress(messages, { model: 'claude-sonnet-4-5-20250929' });
+    // Use result.messages with any LLM client
+    console.log(`Saved ${result.tokensSaved} tokens`);
+    ```
+
+    Works with Vercel AI SDK, OpenAI Node SDK, and Anthropic TS SDK. [Full TS guide &rarr;](typescript-sdk.md)
+
 === "LiteLLM Callback"
 
     ```python
@@ -179,6 +191,20 @@ headroom mcp install && claude
 ```
 
 [MCP Guide &rarr;](mcp.md)
+
+</div>
+
+<div class="grid-item" markdown>
+
+### TypeScript SDK
+
+`compress()`, Vercel AI SDK middleware, OpenAI and Anthropic client wrappers.
+
+```bash
+npm install headroom-ai
+```
+
+[TypeScript SDK Guide &rarr;](typescript-sdk.md)
 
 </div>
 
@@ -346,8 +372,9 @@ Or via LiteLLM for 100+ providers (Together, Groq, Fireworks, Ollama, vLLM, etc.
 ## Installation
 
 ```bash
-pip install headroom-ai                # Core library
+pip install headroom-ai                # Core library (Python)
 pip install "headroom-ai[all]"         # Everything (recommended)
+npm install headroom-ai                # TypeScript / Node.js
 pip install "headroom-ai[proxy]"       # Proxy server + MCP tools
 pip install "headroom-ai[ml]"          # ML compression (Kompress, requires torch)
 pip install "headroom-ai[langchain]"   # LangChain integration

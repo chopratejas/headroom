@@ -4,6 +4,8 @@ This guide will help you get up and running with Headroom in under 5 minutes.
 
 ## Installation
 
+**Python:**
+
 ```bash
 # Core package (minimal dependencies)
 pip install headroom
@@ -16,6 +18,12 @@ pip install headroom[relevance]
 
 # Everything
 pip install headroom[all]
+```
+
+**TypeScript / Node.js:**
+
+```bash
+npm install headroom-ai
 ```
 
 ## Quick Start: Proxy Mode (Recommended)

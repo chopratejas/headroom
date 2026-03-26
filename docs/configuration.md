@@ -419,3 +419,38 @@ if not result["valid"]:
     for issue in result["issues"]:
         print(f"  - {issue}")
 ```
+
+---
+
+## TypeScript SDK Configuration
+
+The TypeScript SDK is configured via environment variables or constructor options.
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `HEADROOM_BASE_URL` | Base URL of the Headroom proxy or cloud API | `http://localhost:8787` |
+| `HEADROOM_API_KEY` | API key for Headroom Cloud authentication | - |
+
+### Usage
+
+```bash
+export HEADROOM_BASE_URL=http://localhost:8787
+export HEADROOM_API_KEY=your-api-key
+```
+
+```typescript
+import { HeadroomClient } from 'headroom-ai';
+
+// Reads from HEADROOM_BASE_URL and HEADROOM_API_KEY automatically
+const client = new HeadroomClient();
+
+// Or configure explicitly
+const client = new HeadroomClient({
+  baseUrl: 'http://localhost:8787',
+  apiKey: 'your-api-key',
+});
+```
+
+See the [TypeScript SDK Guide](typescript-sdk.md) for full configuration options.

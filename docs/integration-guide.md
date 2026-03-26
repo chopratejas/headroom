@@ -13,6 +13,10 @@ You don't need to run the Headroom proxy. Headroom is a compression library that
 | Agno agents | [Agno integration](#agno) | Wrap model |
 | LangChain | [LangChain integration](#langchain) | Wrap model |
 | Non-Python app | [Headroom proxy](#proxy) | HTTP |
+| TypeScript SDK | [`compress()`](#typescript-sdk) | `npm install headroom-ai` |
+| Vercel AI SDK | [`headroomMiddleware()`](#typescript-sdk) | Middleware adapter |
+| OpenAI Node SDK | [`withHeadroom()`](#typescript-sdk) | Client wrapper |
+| Anthropic TS SDK | [`withHeadroom()`](#typescript-sdk) | Client wrapper |
 
 ---
 
@@ -246,6 +250,18 @@ response = llm.invoke("Hello!")
 ```
 
 See [LangChain Guide](langchain.md) for details and known limitations.
+
+---
+
+## TypeScript SDK
+
+For Node.js, Next.js, and any TypeScript/JavaScript application.
+
+```bash
+npm install headroom-ai
+```
+
+See the [TypeScript SDK Guide](typescript-sdk.md) for full documentation including Vercel AI SDK middleware, OpenAI SDK wrapper, and Anthropic SDK wrapper.
 
 ---
 

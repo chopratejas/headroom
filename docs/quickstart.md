@@ -6,6 +6,8 @@ Get Headroom running in 5 minutes with these copy-paste examples.
 
 ## Installation
 
+**Python:**
+
 ```bash
 # Core only (minimal dependencies)
 pip install headroom-ai
@@ -15,6 +17,12 @@ pip install "headroom-ai[proxy]"
 
 # Everything
 pip install "headroom-ai[all]"
+```
+
+**TypeScript / Node.js:**
+
+```bash
+npm install headroom-ai
 ```
 
 ---
