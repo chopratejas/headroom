@@ -63,9 +63,27 @@ def compute_optimal_k(
     curve = compute_unique_bigram_curve(items)
     knee = find_knee(curve)
 
+    # Diversity ratio: what fraction of items are genuinely unique?
+    # 1.0 = every item is distinct, 0.1 = mostly near-duplicates.
+    diversity_ratio = unique_count / n
+
     if knee is None:
-        # No clear knee — content is uniformly diverse, keep ~30% as heuristic
-        knee = max(min_k, int(n * 0.3))
+        # No saturation found — each item adds new information.
+        # Scale keep-fraction continuously with diversity:
+        #   diversity ~1.0 → keep 100%  (all unique — dropping any loses info)
+        #   diversity ~0.5 → keep ~65%  (moderate)
+        #   diversity ~0.2 → keep ~44%  (low-ish)
+        #   diversity ~0.0 → keep ~30%  (mostly dupes, same as old default)
+        # No arbitrary cap — if items are all unique, keep them all.
+        keep_fraction = 0.3 + 0.7 * diversity_ratio
+        knee = max(min_k, int(n * keep_fraction))
+    else:
+        # Knee found, but if diversity is very high the knee may be
+        # a weak signal (e.g., minor bigram overlap causing a shallow
+        # curve bend).  Don't drop below a diversity floor.
+        if diversity_ratio > 0.7:
+            diversity_floor = max(min_k, int(n * (0.3 + 0.7 * diversity_ratio)))
+            knee = max(knee, diversity_floor)
 
     # Apply bias multiplier
     k = max(min_k, int(knee * bias))
@@ -77,9 +95,10 @@ def compute_optimal_k(
     k = max(min_k, min(k, effective_max))
 
     logger.debug(
-        "adaptive_sizer: n=%d unique=%d knee=%s bias=%.1f → k=%d",
+        "adaptive_sizer: n=%d unique=%d diversity=%.2f knee=%s bias=%.1f → k=%d",
         n,
         unique_count,
+        diversity_ratio,
         knee,
         bias,
         k,

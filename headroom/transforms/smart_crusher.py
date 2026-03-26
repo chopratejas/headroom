@@ -177,6 +177,79 @@ def _hash_field_name(field_name: str) -> str:
     return hashlib.sha256(field_name.encode()).hexdigest()[:8]
 
 
+# Minimum chars for a text field to be worth compressing within an item
+_MIN_FIELD_CHARS_FOR_WITHIN = 200
+
+# Lazy-loaded compressor for within-item text compression
+_within_compressor: Any = None
+_within_compressor_checked = False
+
+
+def _get_within_compressor() -> Any:
+    """Get a text compressor for within-item field compression.
+
+    Returns Kompress if available (requires [ml] extra), else None.
+    """
+    global _within_compressor, _within_compressor_checked
+    if not _within_compressor_checked:
+        _within_compressor_checked = True
+        try:
+            from .kompress_compressor import KompressCompressor, is_kompress_available
+
+            if is_kompress_available():
+                _within_compressor = KompressCompressor()
+                logger.debug("Within-item compression: using Kompress")
+        except ImportError:
+            pass
+    return _within_compressor
+
+
+def _compress_text_within_items(items: list[dict], context: str = "") -> list[dict]:
+    """Compress long text fields WITHIN each item, keeping all items.
+
+    Used when diversity is high (all items are unique) — instead of dropping
+    items, compress the verbose text inside each one.  Falls back to the
+    original list unchanged if no compressor is available or no field is
+    long enough to benefit.
+
+    Args:
+        items: JSON-parsed list of dicts.
+        context: User query context for relevance-aware compression.
+
+    Returns:
+        Compressed items (new list) or the *same* ``items`` object if
+        nothing was compressed (caller checks identity).
+    """
+    compressor = _get_within_compressor()
+    if compressor is None:
+        return items  # No ML compressor available — pass through
+
+    any_compressed = False
+    result: list[dict] = []
+
+    for item in items:
+        new_item = dict(item)  # Shallow copy
+        item_changed = False
+
+        for key, value in item.items():
+            if not isinstance(value, str) or len(value) < _MIN_FIELD_CHARS_FOR_WITHIN:
+                continue
+
+            try:
+                compressed = compressor.compress(value, context=context)
+                if compressed.compressed and len(compressed.compressed) < len(value) * 0.9:
+                    new_item[key] = compressed.compressed
+                    item_changed = True
+            except Exception:
+                pass  # Compression failed for this field — keep original
+
+        result.append(new_item if item_changed else item)
+        if item_changed:
+            any_compressed = True
+
+    return result if any_compressed else items
+
+
 def _get_preserve_field_values(
     item: dict,
     preserve_field_hashes: list[str],
@@ -2355,6 +2428,12 @@ class SmartCrusher(Transform):
         )
 
         if len(items) <= adaptive_k:
+            # All items kept (high diversity or small array).
+            # Instead of passing through unchanged, try to compress the TEXT
+            # WITHIN each item — reduce token count without losing any item.
+            compressed_items = _compress_text_within_items(items, query_context)
+            if compressed_items is not items:
+                return compressed_items, "compress_within:diversity", None, ""
             return items, "none:adaptive_at_limit", None, ""
 
         # Get feedback hints if enabled
