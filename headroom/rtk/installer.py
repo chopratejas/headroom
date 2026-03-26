@@ -115,8 +115,9 @@ def download_rtk(version: str | None = None) -> Path:
     except (tarfile.TarError, zipfile.BadZipFile) as e:
         raise RuntimeError(f"Failed to extract rtk archive: {e}") from e
 
-    # Make executable
-    RTK_BIN_PATH.chmod(RTK_BIN_PATH.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    # Make executable (skip on Windows — no Unix permissions)
+    if platform.system() != "Windows":
+        RTK_BIN_PATH.chmod(RTK_BIN_PATH.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     # Verify
     try:

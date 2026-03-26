@@ -6,12 +6,14 @@ enters the LLM context window. Headroom downloads and manages the rtk binary.
 
 from __future__ import annotations
 
+import platform
 import shutil
 from pathlib import Path
 
 RTK_VERSION = "v0.28.2"
 RTK_BIN_DIR = Path.home() / ".headroom" / "bin"
-RTK_BIN_PATH = RTK_BIN_DIR / "rtk"
+_RTK_NAME = "rtk.exe" if platform.system() == "Windows" else "rtk"
+RTK_BIN_PATH = RTK_BIN_DIR / _RTK_NAME
 
 
 def get_rtk_path() -> Path | None:
