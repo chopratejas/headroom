@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="The Context Optimization Layer for LLM Applications">
+        <meta name="description" content="The Context Optimization Layer for LLM Applications — compress everything your AI agent reads.">
       
       
       
@@ -44,10 +44,12 @@
         
         
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
-        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
       
     
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
     
     <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
@@ -65,7 +67,7 @@
     
     
     
-    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber">
   
     
     <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
@@ -86,12 +88,14 @@
     
       
 
-<header class="md-header" data-md-component="header">
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
     <a href="../../.." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -121,7 +125,7 @@
     
     
     
-    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
     
       <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
@@ -131,7 +135,7 @@
     
     
     
-    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
     
       <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
@@ -164,6 +168,11 @@
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
       </label>
       <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
         
         <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
           
@@ -203,14 +212,8 @@
     
   </nav>
   
-</header>
     
-    <div class="md-container" data-md-component="container">
       
-      
-        
-          
-            
 <nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
   <div class="md-grid">
     <ul class="md-tabs__list">
@@ -246,30 +249,13 @@
           
   
   
+    
+  
   Getting Started
 
         </a>
       </li>
     
-  
-
-      
-        
-  
-  
-  
-  
-    <li class="md-tabs__item">
-      <a href="../../../benchmarks/" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Benchmarks
-
-      </a>
-    </li>
   
 
       
@@ -284,6 +270,8 @@
         <a href="../../../proxy/" class="md-tabs__link">
           
   
+  
+    
   
   User Guide
 
@@ -305,6 +293,8 @@
           
   
   
+    
+  
   Integrations
 
         </a>
@@ -321,11 +311,35 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../../llmlingua/" class="md-tabs__link">
+        <a href="../../../ARCHITECTURE/" class="md-tabs__link">
           
   
   
-  Advanced
+    
+  
+  How It Works
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../benchmarks/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Benchmarks
 
         </a>
       </li>
@@ -344,6 +358,8 @@
         <a href="../../../api/" class="md-tabs__link">
           
   
+  
+    
   
   Reference
 
@@ -365,27 +381,9 @@
           
   
   
+    
+  
   Deployment
-
-        </a>
-      </li>
-    
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../../../memory/" class="md-tabs__link">
-          
-  
-  
-  Memory
 
         </a>
       </li>
@@ -396,7 +394,13 @@
     </ul>
   </div>
 </nav>
-          
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
         
       
       <main class="md-main" data-md-component="main">
@@ -418,7 +422,7 @@
     <a href="../../.." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
 
     </a>
     Headroom
@@ -473,6 +477,14 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -485,7 +497,9 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
         
           
           <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
@@ -573,6 +587,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -586,34 +628,23 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="../../../benchmarks/" class="md-nav__link">
+    
+    
+      
         
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Benchmarks
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
       
+        
       
-  
-  
-  
-  
-    
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
     
     
     
@@ -627,10 +658,12 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
             
   
   
@@ -648,8 +681,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -701,7 +734,35 @@
   <span class="md-ellipsis">
     
   
-    Compression
+    Compression Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../ccr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CCR (Lossless Retrieval)
   
 
     
@@ -750,14 +811,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../ccr/" class="md-nav__link">
+      <a href="../../../memory/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    CCR (Compress-Cache-Retrieve)
+    Memory System
   
 
     
@@ -778,14 +839,42 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../configuration/" class="md-nav__link">
+      <a href="../../../shared-context/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Configuration
+    Shared Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../learn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Failure Learning
   
 
     
@@ -814,6 +903,18 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -826,10 +927,12 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
         
           
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
             
   
   
@@ -847,8 +950,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -872,7 +975,7 @@
   <span class="md-ellipsis">
     
   
-    Integration Guide
+    Overview
   
 
     
@@ -1013,6 +1116,16 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -1025,17 +1138,19 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
             
   
   
   <span class="md-ellipsis">
     
   
-    Advanced
+    How It Works
   
 
     
@@ -1046,12 +1161,12 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Advanced
+    How It Works
   
 
           </label>
@@ -1064,14 +1179,42 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../llmlingua/" class="md-nav__link">
+      <a href="../../../ARCHITECTURE/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    LLMLingua
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../transforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transforms Pipeline
   
 
     
@@ -1120,42 +1263,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../transforms/" class="md-nav__link">
+      <a href="../../../llmlingua/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Transforms
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../ARCHITECTURE/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture
+    LLMLingua
   
 
     
@@ -1184,6 +1299,14 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -1196,7 +1319,166 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../LATENCY_BENCHMARKS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Latency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../LIMITATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Limitations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
@@ -1298,7 +1580,7 @@
   <span class="md-ellipsis">
     
   
-    Metrics
+    Metrics & Observability
   
 
     
@@ -1326,7 +1608,7 @@
   <span class="md-ellipsis">
     
   
-    Errors
+    Error Codes
   
 
     
@@ -1383,6 +1665,10 @@
   
     
     
+      
+        
+      
+    
     
     
       
@@ -1395,7 +1681,9 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
           <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
@@ -1441,94 +1729,7 @@
   <span class="md-ellipsis">
     
   
-    macOS
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
-        
-          
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Memory
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Memory
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../memory/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Overview
+    macOS LaunchAgent
   
 
     
@@ -1798,8 +1999,8 @@
 <p><strong>Files:</strong>
 - Create: <code>headroom/cache/compression_cache.py</code>
 - Test: <code>tests/test_compression_cache.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Write failing tests for CompressionCache core</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests for CompressionCache core</strong></li>
 </ul>
 <p>Create <code>tests/test_compression_cache.py</code>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="sd">&quot;&quot;&quot;Tests for CompressionCache — content-addressed compression result cache.&quot;&quot;&quot;</span>
@@ -1868,13 +2069,13 @@
 </span><span id="__span-0-64"><a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a>        <span class="k">assert</span> <span class="n">cache</span><span class="o">.</span><span class="n">get_compressed</span><span class="p">(</span><span class="s2">&quot;h1&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;c1&quot;</span>  <span class="c1"># refreshed, still present</span>
 </span><span id="__span-0-65"><a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>        <span class="k">assert</span> <span class="n">cache</span><span class="o">.</span><span class="n">get_compressed</span><span class="p">(</span><span class="s2">&quot;h2&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span>  <span class="c1"># evicted</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Run tests to verify they fail</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run tests to verify they fail</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/test_compression_cache.py -v</code>
 Expected: FAIL — <code>ModuleNotFoundError: No module named 'headroom.cache.compression_cache'</code></p>
-<ul>
-<li>[ ] <strong>Step 3: Write CompressionCache implementation</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Write CompressionCache implementation</strong></li>
 </ul>
 <p>Create <code>headroom/cache/compression_cache.py</code>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="sd">&quot;&quot;&quot;Content-addressed compression cache for token headroom mode.</span>
@@ -2002,13 +2203,13 @@ Expected: FAIL — <code>ModuleNotFoundError: No module named 'headroom.cache.co
 </span><span id="__span-1-123"><a id="__codelineno-1-123" name="__codelineno-1-123" href="#__codelineno-1-123"></a>            <span class="n">text</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">content</span><span class="p">)</span>
 </span><span id="__span-1-124"><a id="__codelineno-1-124" name="__codelineno-1-124" href="#__codelineno-1-124"></a>        <span class="k">return</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span><span class="n">text</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">,</span> <span class="n">errors</span><span class="o">=</span><span class="s2">&quot;replace&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()[:</span><span class="mi">16</span><span class="p">]</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 4: Run tests to verify they pass</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Run tests to verify they pass</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/test_compression_cache.py -v</code>
 Expected: All 7 tests PASS</p>
-<ul>
-<li>[ ] <strong>Step 5: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/cache/compression_cache.py<span class="w"> </span>tests/test_compression_cache.py
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add CompressionCache with LRU eviction for token headroom mode&quot;</span>
@@ -2018,8 +2219,8 @@ Expected: All 7 tests PASS</p>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/cache/compression_cache.py</code>
 - Modify: <code>tests/test_compression_cache.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Write failing tests for frozen count and apply/update</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write failing tests for frozen count and apply/update</strong></li>
 </ul>
 <p>Append to <code>tests/test_compression_cache.py</code>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestCompressionCacheFrozenCount</span><span class="p">:</span>
@@ -2168,13 +2369,13 @@ Expected: All 7 tests PASS</p>
 </span><span id="__span-3-144"><a id="__codelineno-3-144" name="__codelineno-3-144" href="#__codelineno-3-144"></a>        <span class="n">cache</span><span class="o">.</span><span class="n">apply_cached</span><span class="p">(</span><span class="n">messages</span><span class="p">)</span>
 </span><span id="__span-3-145"><a id="__codelineno-3-145" name="__codelineno-3-145" href="#__codelineno-3-145"></a>        <span class="k">assert</span> <span class="n">messages</span> <span class="o">==</span> <span class="n">original_copy</span>  <span class="c1"># original not mutated</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Run tests to verify they fail</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run tests to verify they fail</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/test_compression_cache.py -v</code>
 Expected: FAIL — <code>AttributeError: 'CompressionCache' object has no attribute 'compute_frozen_count'</code></p>
-<ul>
-<li>[ ] <strong>Step 3: Add compute_frozen_count, apply_cached, update_from_result to CompressionCache</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Add compute_frozen_count, apply_cached, update_from_result to CompressionCache</strong></li>
 </ul>
 <p>Add these methods to <code>headroom/cache/compression_cache.py</code> in the <code>CompressionCache</code> class:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">_is_tool_result_message</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
@@ -2306,13 +2507,13 @@ Expected: FAIL — <code>AttributeError: 'CompressionCache' object has no attrib
 </span><span id="__span-4-127"><a id="__codelineno-4-127" name="__codelineno-4-127" href="#__codelineno-4-127"></a>
 </span><span id="__span-4-128"><a id="__codelineno-4-128" name="__codelineno-4-128" href="#__codelineno-4-128"></a>    <span class="k">return</span> <span class="n">new_msg</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 4: Run tests to verify they pass</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Run tests to verify they pass</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/test_compression_cache.py -v</code>
 Expected: All 18 tests PASS</p>
-<ul>
-<li>[ ] <strong>Step 5: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/cache/compression_cache.py<span class="w"> </span>tests/test_compression_cache.py
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add frozen count, apply_cached, update_from_result to CompressionCache&quot;</span>
@@ -2321,20 +2522,20 @@ Expected: All 18 tests PASS</p>
 <h3 id="task-3-export-compressioncache-from-cache-package">Task 3: Export CompressionCache from cache package<a class="headerlink" href="#task-3-export-compressioncache-from-cache-package" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/cache/__init__.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Add import and export</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add import and export</strong></li>
 </ul>
 <p>In <code>headroom/cache/__init__.py</code>, add to imports:
 <div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">.compression_cache</span><span class="w"> </span><span class="kn">import</span> <span class="n">CompressionCache</span>
 </span></code></pre></div></p>
 <p>Add <code>"CompressionCache"</code> to the <code>__all__</code> list.</p>
-<ul>
-<li>[ ] <strong>Step 2: Verify import works</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Verify import works</strong></li>
 </ul>
 <p>Run: <code>python -c "from headroom.cache import CompressionCache; print('OK')"</code>
 Expected: <code>OK</code></p>
-<ul>
-<li>[ ] <strong>Step 3: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/cache/__init__.py
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: export CompressionCache from cache package&quot;</span>
@@ -2344,8 +2545,8 @@ Expected: <code>OK</code></p>
 <h3 id="task-4-add-mode-field-to-proxyconfig">Task 4: Add <code>mode</code> field to ProxyConfig<a class="headerlink" href="#task-4-add-mode-field-to-proxyconfig" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/proxy/server.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Add <code>mode</code> field to ProxyConfig dataclass</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add <code>mode</code> field to ProxyConfig dataclass</strong></li>
 </ul>
 <p>In <code>headroom/proxy/server.py</code>, find the <code>ProxyConfig</code> class (around line 496, after the <code>optimize</code> field). Add:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>    <span class="c1"># Optimization mode: &quot;cost_savings&quot; (default) or &quot;token_headroom&quot;</span>
@@ -2353,14 +2554,14 @@ Expected: <code>OK</code></p>
 </span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="c1"># token_headroom: compress older messages for session extension</span>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;cost_savings&quot;</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Add HEADROOM_MODE env var in config construction</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Add HEADROOM_MODE env var in config construction</strong></li>
 </ul>
 <p>Find the <code>ProxyConfig(...)</code> constructor call (around line 7576). Add the <code>mode</code> parameter:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>    <span class="n">mode</span><span class="o">=</span><span class="n">_get_env_str</span><span class="p">(</span><span class="s2">&quot;HEADROOM_MODE&quot;</span><span class="p">,</span> <span class="s2">&quot;cost_savings&quot;</span><span class="p">),</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 3: Add mode validation at startup</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Add mode validation at startup</strong></li>
 </ul>
 <p>Find the startup logging section (around line 1700 where <code>logger.info(f"Optimization: ...")</code> is). Add after it:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">mode</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;cost_savings&quot;</span><span class="p">,</span> <span class="s2">&quot;token_headroom&quot;</span><span class="p">):</span>
@@ -2370,13 +2571,13 @@ Expected: <code>OK</code></p>
 </span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">mode</span> <span class="o">=</span> <span class="s2">&quot;cost_savings&quot;</span>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Mode: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">mode</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 4: Verify proxy starts with default mode</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Verify proxy starts with default mode</strong></li>
 </ul>
 <p>Run: <code>python -c "from headroom.proxy.server import ProxyConfig; c = ProxyConfig(); print(c.mode)"</code>
 Expected: <code>cost_savings</code></p>
-<ul>
-<li>[ ] <strong>Step 5: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/proxy/server.py
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add HEADROOM_MODE config to ProxyConfig&quot;</span>
@@ -2385,8 +2586,8 @@ Expected: <code>cost_savings</code></p>
 <h3 id="task-5-mode-based-pipeline-configuration-at-startup">Task 5: Mode-Based Pipeline Configuration at Startup<a class="headerlink" href="#task-5-mode-based-pipeline-configuration-at-startup" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/proxy/server.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Set ContentRouterConfig based on mode</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Set ContentRouterConfig based on mode</strong></li>
 </ul>
 <p>Find where <code>ContentRouterConfig</code> is instantiated (around line 1419, inside the <code>if config.smart_routing:</code> block). After the <code>router_config = ContentRouterConfig(...)</code> line, add:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>            <span class="c1"># Token headroom mode: allow compression of older excluded-tool results</span>
@@ -2394,8 +2595,8 @@ Expected: <code>cost_savings</code></p>
 </span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>                <span class="n">router_config</span><span class="o">.</span><span class="n">protect_recent_reads_fraction</span> <span class="o">=</span> <span class="mf">0.3</span>
 </span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>                <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Token headroom mode: protect_recent_reads_fraction=0.3&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Set CCR TTL based on mode</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Set CCR TTL based on mode</strong></li>
 </ul>
 <p>In the same pipeline construction area, find where <code>CodeCompressorConfig</code> or <code>ReadLifecycleConfig</code> is used. After the router_config modification, add:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>                <span class="c1"># Extend CCR TTL for long sessions</span>
@@ -2403,8 +2604,8 @@ Expected: <code>cost_savings</code></p>
 </span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>                    <span class="n">router_config</span><span class="o">.</span><span class="n">read_lifecycle</span><span class="o">.</span><span class="n">ccr_ttl</span> <span class="o">=</span> <span class="mi">14400</span>  <span class="c1"># 4 hours</span>
 </span></code></pre></div>
 <p>Also check: if <code>CodeAwareCompressor</code> is configured separately, its <code>ccr_ttl</code> should also be set. Look for <code>CodeCompressorConfig</code> instantiation in the same block and set <code>ccr_ttl=14400</code>.</p>
-<ul>
-<li>[ ] <strong>Step 3: Initialize CompressionCache store</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Initialize CompressionCache store</strong></li>
 </ul>
 <p>Find where <code>self.session_tracker_store</code> is initialized (in <code>__init__</code> or <code>_build_pipelines</code>). Add nearby:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>        <span class="c1"># Compression cache for token_headroom mode (session-scoped)</span>
@@ -2418,8 +2619,8 @@ Expected: <code>cost_savings</code></p>
 </span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_compression_caches</span><span class="p">[</span><span class="n">session_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">CompressionCache</span><span class="p">()</span>
 </span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compression_caches</span><span class="p">[</span><span class="n">session_id</span><span class="p">]</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 4: Add startup logging for token_headroom mode</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Add startup logging for token_headroom mode</strong></li>
 </ul>
 <p>In the startup logging section (around line 1700), add:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">mode</span> <span class="o">==</span> <span class="s2">&quot;token_headroom&quot;</span><span class="p">:</span>
@@ -2429,13 +2630,13 @@ Expected: <code>cost_savings</code></p>
 </span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;  CCR TTL: 4 hours&quot;</span><span class="p">)</span>
 </span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;  Compression cache: active&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 5: Verify startup with HEADROOM_MODE=token_headroom</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 5: Verify startup with HEADROOM_MODE=token_headroom</strong></li>
 </ul>
 <p>Run: <code>HEADROOM_MODE=token_headroom python -c "from headroom.proxy.server import ProxyConfig; c = ProxyConfig(mode='token_headroom'); print(c.mode)"</code>
 Expected: <code>token_headroom</code></p>
-<ul>
-<li>[ ] <strong>Step 6: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 6: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/proxy/server.py
 </span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: configure pipeline based on HEADROOM_MODE at startup&quot;</span>
@@ -2445,8 +2646,8 @@ Expected: <code>token_headroom</code></p>
 <h3 id="task-6-token-headroom-branch-in-anthropic-handler">Task 6: Token Headroom Branch in Anthropic Handler<a class="headerlink" href="#task-6-token-headroom-branch-in-anthropic-handler" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/proxy/server.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Add token_headroom branch in handle_anthropic_messages</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add token_headroom branch in handle_anthropic_messages</strong></li>
 </ul>
 <p>Find the optimization block in <code>handle_anthropic_messages</code> (around line 2071). The current code is:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">optimize</span> <span class="ow">and</span> <span class="n">messages</span><span class="p">:</span>
@@ -2532,13 +2733,13 @@ Expected: <code>token_headroom</code></p>
 </span><span id="__span-21-12"><a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>                    <span class="n">original_tokens</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">tokens_before</span>
 </span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>                    <span class="n">optimized_tokens</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">tokens_after</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Verify no side effects — cost_savings mode unchanged</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Verify no side effects — cost_savings mode unchanged</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/ -k "anthropic" --timeout=30 -x -q</code>
 Expected: Existing tests pass (cost_savings is default, no behavior change)</p>
-<ul>
-<li>[ ] <strong>Step 3: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/proxy/server.py
 </span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add token_headroom branch to Anthropic handler&quot;</span>
@@ -2547,8 +2748,8 @@ Expected: Existing tests pass (cost_savings is default, no behavior change)</p>
 <h3 id="task-7-token-headroom-branch-in-openai-handler">Task 7: Token Headroom Branch in OpenAI Handler<a class="headerlink" href="#task-7-token-headroom-branch-in-openai-handler" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/proxy/server.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Apply same pattern to handle_openai_chat</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Apply same pattern to handle_openai_chat</strong></li>
 </ul>
 <p>Find the optimization block in <code>handle_openai_chat</code> (around line 4604). Apply the exact same pattern as the Anthropic handler:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">optimize</span> <span class="ow">and</span> <span class="n">messages</span><span class="p">:</span>
@@ -2597,13 +2798,13 @@ Expected: Existing tests pass (cost_savings is default, no behavior change)</p>
 </span><span id="__span-23-44"><a id="__codelineno-23-44" name="__codelineno-23-44" href="#__codelineno-23-44"></a>            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
 </span><span id="__span-23-45"><a id="__codelineno-23-45" name="__codelineno-23-45" href="#__codelineno-23-45"></a>                <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Optimization failed: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Verify no side effects</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Verify no side effects</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/ -k "openai" --timeout=30 -x -q</code>
 Expected: Existing tests pass</p>
-<ul>
-<li>[ ] <strong>Step 3: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/proxy/server.py
 </span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add token_headroom branch to OpenAI handler&quot;</span>
@@ -2612,8 +2813,8 @@ Expected: Existing tests pass</p>
 <h3 id="task-8-add-compressioncache-stats-to-stats-endpoint">Task 8: Add CompressionCache Stats to /stats Endpoint<a class="headerlink" href="#task-8-add-compressioncache-stats-to-stats-endpoint" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/proxy/server.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Add compression_cache stats to the stats response</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add compression_cache stats to the stats response</strong></li>
 </ul>
 <p>Find the <code>/stats</code> endpoint handler (around line 6243). Find where the response dict is built. Add a new key:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>        <span class="c1"># Compression cache stats (token_headroom mode)</span>
@@ -2637,8 +2838,8 @@ Expected: Existing tests pass</p>
 <p>Add it to the response dict:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>        <span class="s2">&quot;compression_cache&quot;</span><span class="p">:</span> <span class="n">compression_cache_stats</span><span class="p">,</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/proxy/server.py
 </span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;feat: add compression_cache stats to /stats endpoint&quot;</span>
@@ -2647,8 +2848,8 @@ Expected: Existing tests pass</p>
 <h3 id="task-9-fix-missing-model-entry-claude-opus-4-6">Task 9: Fix Missing Model Entry (claude-opus-4-6)<a class="headerlink" href="#task-9-fix-missing-model-entry-claude-opus-4-6" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Modify: <code>headroom/providers/anthropic.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Add claude-opus-4-6 to ANTHROPIC_CONTEXT_LIMITS</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Add claude-opus-4-6 to ANTHROPIC_CONTEXT_LIMITS</strong></li>
 </ul>
 <p>In <code>headroom/providers/anthropic.py</code>, find <code>ANTHROPIC_CONTEXT_LIMITS</code> (line 47). Add after the claude-opus-4-5 entry:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>    <span class="s2">&quot;claude-opus-4-6&quot;</span><span class="p">:</span> <span class="mi">1000000</span><span class="p">,</span>
@@ -2656,13 +2857,13 @@ Expected: Existing tests pass</p>
 <p>Also add to <code>ANTHROPIC_PRICING</code> (line 72):</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>    <span class="s2">&quot;claude-opus-4-6&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;input&quot;</span><span class="p">:</span> <span class="mf">15.00</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">:</span> <span class="mf">75.00</span><span class="p">,</span> <span class="s2">&quot;cached_input&quot;</span><span class="p">:</span> <span class="mf">1.50</span><span class="p">},</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Verify</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Verify</strong></li>
 </ul>
 <p>Run: <code>python -c "from headroom.providers.anthropic import AnthropicProvider; p = AnthropicProvider.__new__(AnthropicProvider); p._context_limits = {}; from headroom.providers.anthropic import ANTHROPIC_CONTEXT_LIMITS; print(ANTHROPIC_CONTEXT_LIMITS.get('claude-opus-4-6'))"</code>
 Expected: <code>1000000</code></p>
-<ul>
-<li>[ ] <strong>Step 3: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>git<span class="w"> </span>add<span class="w"> </span>headroom/providers/anthropic.py
 </span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;fix: add claude-opus-4-6 (1M context) to ANTHROPIC_CONTEXT_LIMITS&quot;</span>
@@ -2672,8 +2873,8 @@ Expected: <code>1000000</code></p>
 <h3 id="task-10-integration-tests-token-headroom-pipeline">Task 10: Integration Tests — Token Headroom Pipeline<a class="headerlink" href="#task-10-integration-tests-token-headroom-pipeline" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong>
 - Create: <code>tests/test_token_headroom_mode.py</code></p>
-<ul>
-<li>[ ] <strong>Step 1: Write integration tests</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Write integration tests</strong></li>
 </ul>
 <p>Create <code>tests/test_token_headroom_mode.py</code>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="sd">&quot;&quot;&quot;Integration tests for token_headroom mode.</span>
@@ -2871,13 +3072,13 @@ Expected: <code>1000000</code></p>
 </span><span id="__span-31-193"><a id="__codelineno-31-193" name="__codelineno-31-193" href="#__codelineno-31-193"></a>        <span class="c1"># msg 4: tool_result (NOT cached → stop)</span>
 </span><span id="__span-31-194"><a id="__codelineno-31-194" name="__codelineno-31-194" href="#__codelineno-31-194"></a>        <span class="k">assert</span> <span class="n">frozen</span> <span class="o">==</span> <span class="mi">4</span>
 </span></code></pre></div>
-<ul>
-<li>[ ] <strong>Step 2: Run tests</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run tests</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/test_token_headroom_mode.py -v</code>
 Expected: All tests PASS</p>
-<ul>
-<li>[ ] <strong>Step 3: Commit</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Commit</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a>git<span class="w"> </span>add<span class="w"> </span>tests/test_token_headroom_mode.py
 </span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;test: add integration tests for token_headroom mode&quot;</span>
@@ -2885,25 +3086,25 @@ Expected: All tests PASS</p>
 <hr />
 <h3 id="task-11-run-full-test-suite-no-side-effects">Task 11: Run Full Test Suite — No Side Effects<a class="headerlink" href="#task-11-run-full-test-suite-no-side-effects" title="Permanent link">&para;</a></h3>
 <p><strong>Files:</strong> None (verification only)</p>
-<ul>
-<li>[ ] <strong>Step 1: Run full test suite</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 1: Run full test suite</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/ --timeout=60 -x -q --ignore=tests/test_token_headroom_mode.py</code>
 Expected: All existing tests PASS — no side effects from the new code. The default mode is <code>cost_savings</code> so all existing behavior is unchanged.</p>
-<ul>
-<li>[ ] <strong>Step 2: Run new tests</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 2: Run new tests</strong></li>
 </ul>
 <p>Run: <code>python -m pytest tests/test_compression_cache.py tests/test_token_headroom_mode.py -v</code>
 Expected: All new tests PASS</p>
-<ul>
-<li>[ ] <strong>Step 3: Run linting</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 3: Run linting</strong></li>
 </ul>
 <p>Run: <code>ruff check headroom/cache/compression_cache.py headroom/proxy/server.py headroom/providers/anthropic.py</code>
 Expected: No errors</p>
 <p>Run: <code>ruff format --check headroom/cache/compression_cache.py</code>
 Expected: No formatting issues</p>
-<ul>
-<li>[ ] <strong>Step 4: Final commit if any fixes needed</strong></li>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Step 4: Final commit if any fixes needed</strong></li>
 </ul>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a>git<span class="w"> </span>add<span class="w"> </span>-A<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;fix: address linting issues from token headroom implementation&quot;</span>
 </span></code></pre></div>
@@ -2945,11 +3146,6 @@ Expected: No formatting issues</p>
       <div class="md-copyright">
   
   
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
-  
 </div>
       
         
@@ -2977,6 +3173,17 @@ Expected: No formatting issues</p>
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
     </a>
   
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://discord.gg/QEyNhaGA" target="_blank" rel="noopener" title="discord.gg" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M492.5 69.8c-.2-.3-.4-.6-.8-.7-38.1-17.5-78.4-30-119.7-37.1-.4-.1-.8 0-1.1.1s-.6.4-.8.8c-5.5 9.9-10.5 20.2-14.9 30.6-44.6-6.8-89.9-6.8-134.4 0-4.5-10.5-9.5-20.7-15.1-30.6-.2-.3-.5-.6-.8-.8s-.7-.2-1.1-.2C162.5 39 122.2 51.5 84.1 69c-.3.1-.6.4-.8.7C7.1 183.5-13.8 294.6-3.6 404.2c0 .3.1.5.2.8s.3.4.5.6c44.4 32.9 94 58 146.8 74.2.4.1.8.1 1.1 0s.7-.4.9-.7c11.3-15.4 21.4-31.8 30-48.8.1-.2.2-.5.2-.8s0-.5-.1-.8-.2-.5-.4-.6-.4-.3-.7-.4c-15.8-6.1-31.2-13.4-45.9-21.9-.3-.2-.5-.4-.7-.6s-.3-.6-.3-.9 0-.6.2-.9.3-.5.6-.7c3.1-2.3 6.2-4.7 9.1-7.1.3-.2.6-.4.9-.4s.7 0 1 .1c96.2 43.9 200.4 43.9 295.5 0 .3-.1.7-.2 1-.2s.7.2.9.4c2.9 2.4 6 4.9 9.1 7.2.2.2.4.4.6.7s.2.6.2.9-.1.6-.3.9-.4.5-.6.6c-14.7 8.6-30 15.9-45.9 21.8-.2.1-.5.2-.7.4s-.3.4-.4.7-.1.5-.1.8.1.5.2.8c8.8 17 18.8 33.3 30 48.8.2.3.6.6.9.7s.8.1 1.1 0c52.9-16.2 102.6-41.3 147.1-74.2.2-.2.4-.4.5-.6s.2-.5.2-.8c12.3-126.8-20.5-236.9-86.9-334.5zm-302 267.7c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.2-52.8 59.2m195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.2 59.2-52.8 59.2"/></svg>
+    </a>
+  
 </div>
       
     </div>
@@ -2988,11 +3195,13 @@ Expected: No formatting issues</p>
       <div class="md-dialog__inner md-typeset"></div>
     </div>
     
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
     
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["content.code.copy", "content.tabs.link", "navigation.instant", "navigation.tabs", "navigation.sections", "navigation.top", "search.highlight", "search.suggest", "toc.follow"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
       <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>

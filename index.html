@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="The Context Optimization Layer for LLM Applications">
+        <meta name="description" content="The Context Optimization Layer for LLM Applications — compress everything your AI agent reads.">
       
       
       
@@ -46,10 +46,12 @@
         
         
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
-        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
       
     
+    
+      <link rel="stylesheet" href="stylesheets/extra.css">
     
     <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
@@ -67,7 +69,7 @@
     
     
     
-    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber">
   
     
     <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
@@ -88,12 +90,14 @@
     
       
 
-<header class="md-header" data-md-component="header">
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
     <a href="." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -123,7 +127,7 @@
     
     
     
-    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
     
       <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
@@ -133,7 +137,7 @@
     
     
     
-    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
     
       <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
@@ -166,6 +170,11 @@
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
       </label>
       <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
         
         <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
           
@@ -205,14 +214,8 @@
     
   </nav>
   
-</header>
     
-    <div class="md-container" data-md-component="container">
       
-      
-        
-          
-            
 <nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
   <div class="md-grid">
     <ul class="md-tabs__list">
@@ -250,30 +253,13 @@
           
   
   
+    
+  
   Getting Started
 
         </a>
       </li>
     
-  
-
-      
-        
-  
-  
-  
-  
-    <li class="md-tabs__item">
-      <a href="benchmarks/" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Benchmarks
-
-      </a>
-    </li>
   
 
       
@@ -288,6 +274,8 @@
         <a href="proxy/" class="md-tabs__link">
           
   
+  
+    
   
   User Guide
 
@@ -309,6 +297,8 @@
           
   
   
+    
+  
   Integrations
 
         </a>
@@ -325,11 +315,35 @@
     
     
       <li class="md-tabs__item">
-        <a href="llmlingua/" class="md-tabs__link">
+        <a href="ARCHITECTURE/" class="md-tabs__link">
           
   
   
-  Advanced
+    
+  
+  How It Works
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="benchmarks/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Benchmarks
 
         </a>
       </li>
@@ -348,6 +362,8 @@
         <a href="api/" class="md-tabs__link">
           
   
+  
+    
   
   Reference
 
@@ -369,27 +385,9 @@
           
   
   
+    
+  
   Deployment
-
-        </a>
-      </li>
-    
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="memory/" class="md-tabs__link">
-          
-  
-  
-  Memory
 
         </a>
       </li>
@@ -400,7 +398,13 @@
     </ul>
   </div>
 </nav>
-          
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
         
       
       <main class="md-main" data-md-component="main">
@@ -422,7 +426,7 @@
     <a href="." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
 
     </a>
     Headroom
@@ -509,10 +513,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#quick-install" class="md-nav__link">
+  <a href="#what-it-does" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick Install
+        What It Does
       
     </span>
   </a>
@@ -528,14 +532,25 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Quick Start">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#framework-integrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework Integrations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Framework Integrations">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#option-1-proxy-zero-code-changes" class="md-nav__link">
+  <a href="#langchain" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Option 1: Proxy (Zero Code Changes)
+        LangChain
       
     </span>
   </a>
@@ -543,10 +558,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#option-2-python-sdk" class="md-nav__link">
+  <a href="#agno" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Option 2: Python SDK
+        Agno
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#strands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strands
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mcp-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MCP Tools
       
     </span>
   </a>
@@ -555,28 +592,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#why-headroom" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why Headroom?
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#results" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Results
-      
-    </span>
-  </a>
   
 </li>
       
@@ -592,10 +607,154 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#integrations" class="md-nav__link">
+  <a href="#results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Integrations
+        Results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#real-workloads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real Workloads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accuracy-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Features
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Key Features">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lossless-compression-ccr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lossless Compression (CCR)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#smart-content-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Smart Content Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-optimization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache Optimization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#image-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image Compression
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persistent-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent Memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#failure-learning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failure Learning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-agent-context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-Agent Context
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metrics-observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics &amp; Observability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cloud-providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Providers
       
     </span>
   </a>
@@ -603,10 +762,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#installation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Installation
       
     </span>
   </a>
@@ -618,17 +777,6 @@
     <span class="md-ellipsis">
       
         Next Steps
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        License
       
     </span>
   </a>
@@ -651,6 +799,14 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -663,7 +819,9 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
         
           
           <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
@@ -751,6 +909,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -764,34 +950,23 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="benchmarks/" class="md-nav__link">
+    
+    
+      
         
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Benchmarks
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
       
+        
       
-  
-  
-  
-  
-    
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
     
     
     
@@ -805,10 +980,12 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
             
   
   
@@ -826,8 +1003,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -879,7 +1056,35 @@
   <span class="md-ellipsis">
     
   
-    Compression
+    Compression Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="ccr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CCR (Lossless Retrieval)
   
 
     
@@ -928,14 +1133,14 @@
   
   
     <li class="md-nav__item">
-      <a href="ccr/" class="md-nav__link">
+      <a href="memory/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    CCR (Compress-Cache-Retrieve)
+    Memory System
   
 
     
@@ -956,14 +1161,42 @@
   
   
     <li class="md-nav__item">
-      <a href="configuration/" class="md-nav__link">
+      <a href="shared-context/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Configuration
+    Shared Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="learn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Failure Learning
   
 
     
@@ -992,6 +1225,18 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -1004,10 +1249,12 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
         
           
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
             
   
   
@@ -1025,8 +1272,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1050,7 +1297,7 @@
   <span class="md-ellipsis">
     
   
-    Integration Guide
+    Overview
   
 
     
@@ -1191,6 +1438,16 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -1203,17 +1460,19 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
             
   
   
   <span class="md-ellipsis">
     
   
-    Advanced
+    How It Works
   
 
     
@@ -1224,12 +1483,12 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Advanced
+    How It Works
   
 
           </label>
@@ -1242,14 +1501,42 @@
   
   
     <li class="md-nav__item">
-      <a href="llmlingua/" class="md-nav__link">
+      <a href="ARCHITECTURE/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    LLMLingua
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="transforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transforms Pipeline
   
 
     
@@ -1298,42 +1585,14 @@
   
   
     <li class="md-nav__item">
-      <a href="transforms/" class="md-nav__link">
+      <a href="llmlingua/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Transforms
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="ARCHITECTURE/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture
+    LLMLingua
   
 
     
@@ -1362,6 +1621,14 @@
   
     
     
+      
+        
+      
+        
+      
+        
+      
+    
     
     
       
@@ -1374,7 +1641,166 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Accuracy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="LATENCY_BENCHMARKS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Latency
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="LIMITATIONS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Limitations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
@@ -1476,7 +1902,7 @@
   <span class="md-ellipsis">
     
   
-    Metrics
+    Metrics & Observability
   
 
     
@@ -1504,7 +1930,7 @@
   <span class="md-ellipsis">
     
   
-    Errors
+    Error Codes
   
 
     
@@ -1561,6 +1987,10 @@
   
     
     
+      
+        
+      
+    
     
     
       
@@ -1573,7 +2003,9 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
           <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
@@ -1619,94 +2051,7 @@
   <span class="md-ellipsis">
     
   
-    macOS
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
-        
-          
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Memory
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Memory
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="memory/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Overview
+    macOS LaunchAgent
   
 
     
@@ -1754,10 +2099,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#quick-install" class="md-nav__link">
+  <a href="#what-it-does" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick Install
+        What It Does
       
     </span>
   </a>
@@ -1773,14 +2118,25 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Quick Start">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#framework-integrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework Integrations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Framework Integrations">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#option-1-proxy-zero-code-changes" class="md-nav__link">
+  <a href="#langchain" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Option 1: Proxy (Zero Code Changes)
+        LangChain
       
     </span>
   </a>
@@ -1788,10 +2144,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#option-2-python-sdk" class="md-nav__link">
+  <a href="#agno" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Option 2: Python SDK
+        Agno
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#strands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strands
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mcp-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MCP Tools
       
     </span>
   </a>
@@ -1800,28 +2178,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#why-headroom" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why Headroom?
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#results" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Results
-      
-    </span>
-  </a>
   
 </li>
       
@@ -1837,10 +2193,154 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#integrations" class="md-nav__link">
+  <a href="#results" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Integrations
+        Results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#real-workloads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real Workloads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accuracy-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Features
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Key Features">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lossless-compression-ccr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lossless Compression (CCR)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#smart-content-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Smart Content Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-optimization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache Optimization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#image-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image Compression
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persistent-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent Memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#failure-learning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failure Learning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi-agent-context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-Agent Context
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metrics-observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics &amp; Observability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cloud-providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cloud Providers
       
     </span>
   </a>
@@ -1848,10 +2348,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#installation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Installation
       
     </span>
   </a>
@@ -1863,17 +2363,6 @@
     <span class="md-ellipsis">
       
         Next Steps
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        License
       
     </span>
   </a>
@@ -1901,64 +2390,204 @@
 
 
 <h1 id="headroom">Headroom<a class="headerlink" href="#headroom" title="Permanent link">&para;</a></h1>
+<div class="hero">
 <p><strong>The Context Optimization Layer for LLM Applications</strong></p>
-<p>Tool outputs are 70-95% redundant. Headroom compresses that away—without losing information.</p>
+<p>Compress everything your AI agent reads. Same answers, fraction of the tokens.</p>
+</div>
+<div class="badges">
+<p><a href="https://pypi.org/project/headroom-ai/"><img alt="PyPI" src="https://img.shields.io/pypi/v/headroom-ai.svg" /></a>
+<a href="https://pypi.org/project/headroom-ai/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/headroom-ai.svg" /></a>
+<a href="https://github.com/chopratejas/headroom/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" /></a>
+<a href="https://discord.gg/QEyNhaGA"><img alt="Discord" src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&amp;logoColor=white" /></a></p>
+</div>
+<div class="stats-bar">
+<div class="stat">
+<span class="number">87%</span>
+<span class="label">Avg Token Reduction</span>
+</div>
+<div class="stat">
+<span class="number">100%</span>
+<span class="label">Answer Accuracy</span>
+</div>
+<div class="stat">
+<span class="number">6</span>
+<span class="label">Compression Algorithms</span>
+</div>
+<div class="stat">
+<span class="number">100+</span>
+<span class="label">LLM Providers</span>
+</div>
+</div>
 <hr />
-<h2 id="quick-install">Quick Install<a class="headerlink" href="#quick-install" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>headroom-ai<span class="o">[</span>all<span class="o">]</span>
+<h2 id="what-it-does">What It Does<a class="headerlink" href="#what-it-does" title="Permanent link">&para;</a></h2>
+<p>Every tool call, DB query, file read, and RAG retrieval your agent makes is 70-95% boilerplate. Headroom compresses it away before it hits the model. The LLM sees less noise, responds faster, and costs less.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Your Agent / App
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    │
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    │  tool outputs, logs, DB reads, RAG results, file reads, API responses
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    ▼
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a> Headroom  ← proxy, Python library, or framework integration
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    │
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    ▼
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a> LLM Provider  (OpenAI, Anthropic, Google, Bedrock, 100+ via LiteLLM)
 </span></code></pre></div>
+<p>Headroom works as a <strong>transparent proxy</strong> (zero code changes), a <strong>Python function</strong> (<code>compress()</code>), or a <strong>framework integration</strong> (LangChain, Agno, Strands, LiteLLM, MCP).</p>
+<hr />
 <h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<h3 id="option-1-proxy-zero-code-changes">Option 1: Proxy (Zero Code Changes)<a class="headerlink" href="#option-1-proxy-zero-code-changes" title="Permanent link">&para;</a></h3>
-<p>Start the proxy:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>headroom<span class="w"> </span>proxy
+<div class="tabbed-set tabbed-alternate" data-tabs="1:4"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><input id="__tabbed_1_4" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Proxy (Zero Code Changes)</label><label for="__tabbed_1_2">Python SDK</label><label for="__tabbed_1_3">Coding Agents</label><label for="__tabbed_1_4">LiteLLM Callback</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[all]&quot;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>headroom<span class="w"> </span>proxy
 </span></code></pre></div>
-<p>Point your tools at it:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nv">ANTHROPIC_BASE_URL</span><span class="o">=</span>http://localhost:8787<span class="w"> </span>claude
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Point any tool at the proxy</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">ANTHROPIC_BASE_URL</span><span class="o">=</span>http://localhost:8787<span class="w"> </span>claude
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nv">OPENAI_BASE_URL</span><span class="o">=</span>http://localhost:8787/v1<span class="w"> </span>your-app
 </span></code></pre></div>
 <p>That's it. Your existing code works unchanged, with 40-90% fewer tokens.</p>
-<h3 id="option-2-python-sdk">Option 2: Python SDK<a class="headerlink" href="#option-2-python-sdk" title="Permanent link">&para;</a></h3>
+</div>
+<div class="tabbed-block">
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">compress</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># Compress messages before sending to LLM</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">result</span> <span class="o">=</span> <span class="n">compress</span><span class="p">(</span><span class="n">messages</span><span class="p">,</span> <span class="n">model</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-5-20250929&quot;</span><span class="p">)</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">response</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-5-20250929&quot;</span><span class="p">,</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">messages</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">messages</span><span class="p">,</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="p">)</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Saved </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">tokens_saved</span><span class="si">}</span><span class="s2"> tokens (</span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">compression_ratio</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">compress</span><span class="p">(</span><span class="n">messages</span><span class="p">,</span> <span class="n">model</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-5-20250929&quot;</span><span class="p">)</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">response</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-5-20250929&quot;</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">messages</span><span class="o">=</span><span class="n">result</span><span class="o">.</span><span class="n">messages</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">)</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Saved </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">tokens_saved</span><span class="si">}</span><span class="s2"> tokens (</span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">compression_ratio</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
 </span></code></pre></div>
+<p>Works with any Python LLM client. <a href="sdk/">Full SDK guide &rarr;</a></p>
+</div>
+<div class="tabbed-block">
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>claude<span class="w">       </span><span class="c1"># Claude Code</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>codex<span class="w">        </span><span class="c1"># OpenAI Codex CLI</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>aider<span class="w">        </span><span class="c1"># Aider</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>cursor<span class="w">       </span><span class="c1"># Cursor</span>
+</span></code></pre></div>
+<p>Starts the proxy, points your tool at it, compresses everything automatically.</p>
+</div>
+<div class="tabbed-block">
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">litellm</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations.litellm_callback</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomCallback</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">litellm</span><span class="o">.</span><span class="n">callbacks</span> <span class="o">=</span> <span class="p">[</span><span class="n">HeadroomCallback</span><span class="p">()]</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="c1"># All 100+ providers now compressed automatically</span>
+</span></code></pre></div>
+</div>
+</div>
+</div>
 <hr />
-<h2 id="why-headroom">Why Headroom?<a class="headerlink" href="#why-headroom" title="Permanent link">&para;</a></h2>
+<h2 id="framework-integrations">Framework Integrations<a class="headerlink" href="#framework-integrations" title="Permanent link">&para;</a></h2>
+<div class="grid-container">
+<div class="grid-item">
+<h3 id="langchain">LangChain<a class="headerlink" href="#langchain" title="Permanent link">&para;</a></h3>
+<p>Wrap any chat model. Supports memory, retrievers, tools, streaming, async.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomChatModel</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">llm</span> <span class="o">=</span> <span class="n">HeadroomChatModel</span><span class="p">(</span><span class="n">ChatOpenAI</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="s2">&quot;gpt-4o&quot;</span><span class="p">))</span>
+</span></code></pre></div>
+<p><a href="langchain/">LangChain Guide &rarr;</a></p>
+</div>
+<div class="grid-item">
+<h3 id="agno">Agno<a class="headerlink" href="#agno" title="Permanent link">&para;</a></h3>
+<p>Full agent framework integration with observability hooks.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations.agno</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomAgnoModel</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">model</span> <span class="o">=</span> <span class="n">HeadroomAgnoModel</span><span class="p">(</span><span class="n">Claude</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-20250514&quot;</span><span class="p">))</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">)</span>
+</span></code></pre></div>
+<p><a href="agno/">Agno Guide &rarr;</a></p>
+</div>
+<div class="grid-item">
+<h3 id="strands">Strands<a class="headerlink" href="#strands" title="Permanent link">&para;</a></h3>
+<p>Model wrapping + tool output hook provider for Strands Agents.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations.strands</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomStrandsModel</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">model</span> <span class="o">=</span> <span class="n">HeadroomStrandsModel</span><span class="p">(</span><span class="n">wrapped_model</span><span class="o">=</span><span class="n">bedrock_model</span><span class="p">)</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">)</span>
+</span></code></pre></div>
+<p><a href="strands/">Strands Guide &rarr;</a></p>
+</div>
+<div class="grid-item">
+<h3 id="mcp-tools">MCP Tools<a class="headerlink" href="#mcp-tools" title="Permanent link">&para;</a></h3>
+<p>Three tools for Claude Code, Cursor, or any MCP client: <code>headroom_compress</code>, <code>headroom_retrieve</code>, <code>headroom_stats</code>.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>headroom<span class="w"> </span>mcp<span class="w"> </span>install<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>claude
+</span></code></pre></div>
+<p><a href="mcp/">MCP Guide &rarr;</a></p>
+</div>
+</div>
+<p><a class="md-button" href="integration-guide/">All integration patterns &rarr;</a></p>
+<hr />
+<h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
+<p>Headroom runs a three-stage pipeline on every request:</p>
+<pre class="mermaid"><code>graph LR
+    A[Your Prompt] --&gt; B[CacheAligner]
+    B --&gt; C[ContentRouter]
+    C --&gt; D[IntelligentContext]
+    D --&gt; E[LLM Provider]
+
+    C --&gt;|JSON| F[SmartCrusher]
+    C --&gt;|Code| G[CodeCompressor]
+    C --&gt;|Text| H[Kompress]
+    C --&gt;|Logs| I[LogCompressor]
+
+    F --&gt; D
+    G --&gt; D
+    H --&gt; D
+    I --&gt; D</code></pre>
+<p><strong>Stage 1: CacheAligner</strong> — Stabilizes message prefixes so the provider's KV cache actually hits. Claude offers a 90% read discount on cached prefixes; CacheAligner makes that work.</p>
+<p><strong>Stage 2: ContentRouter</strong> — Auto-detects content type (JSON, code, logs, search results, diffs, HTML, plain text) and routes each to the optimal compressor:</p>
 <table>
 <thead>
 <tr>
-<th>Problem</th>
-<th>Solution</th>
+<th>Content Type</th>
+<th>Compressor</th>
+<th>How It Works</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Tool outputs bloat context with repetitive JSON</td>
-<td>Statistical compression removes redundancy</td>
+<td>JSON arrays</td>
+<td><strong>SmartCrusher</strong></td>
+<td>Statistical analysis: keeps errors, anomalies, boundaries. No hardcoded rules.</td>
 </tr>
 <tr>
-<td>Dynamic content breaks provider caching</td>
-<td>Cache alignment stabilizes prefixes</td>
+<td>Source code</td>
+<td><strong>CodeCompressor</strong></td>
+<td>AST-aware (tree-sitter). Preserves function signatures, collapses bodies.</td>
 </tr>
 <tr>
-<td>Long conversations exceed context limits</td>
-<td>Intelligent scoring drops low-value messages</td>
+<td>Plain text</td>
+<td><strong>Kompress</strong></td>
+<td>ModernBERT token classification. Removes redundant tokens while preserving meaning.</td>
 </tr>
 <tr>
-<td>Compressed data might be needed later</td>
-<td>CCR stores originals for on-demand retrieval</td>
+<td>Build/test logs</td>
+<td><strong>LogCompressor</strong></td>
+<td>Keeps failures, errors, warnings. Drops passing noise.</td>
+</tr>
+<tr>
+<td>Search results</td>
+<td><strong>SearchCompressor</strong></td>
+<td>Ranks by relevance to user query, keeps top matches.</td>
+</tr>
+<tr>
+<td>Git diffs</td>
+<td><strong>DiffCompressor</strong></td>
+<td>Preserves change hunks, drops unchanged context.</td>
+</tr>
+<tr>
+<td>HTML</td>
+<td><strong>HTMLExtractor</strong></td>
+<td>Strips markup, extracts readable content.</td>
 </tr>
 </tbody>
 </table>
+<p><strong>Stage 3: IntelligentContext</strong> — If the conversation still exceeds the model's context limit, scores each message by importance (recency, references, density) and drops the lowest-value ones.</p>
+<p><strong>Nothing is lost.</strong> Compressed content goes into the CCR store (Compress-Cache-Retrieve). The LLM gets a <code>headroom_retrieve</code> tool and can fetch full originals when it needs more detail.</p>
+<p><a href="ARCHITECTURE/">Full architecture deep dive &rarr;</a></p>
 <hr />
 <h2 id="results">Results<a class="headerlink" href="#results" title="Permanent link">&para;</a></h2>
-<p><strong>100 log entries. One critical error buried at position 67.</strong></p>
+<p><strong>100 production log entries. One critical error buried at position 67.</strong></p>
 <table>
 <thead>
 <tr>
@@ -1975,102 +2604,179 @@
 </tr>
 <tr>
 <td>Correct answers</td>
-<td>4/4</td>
-<td>4/4</td>
+<td><strong>4/4</strong></td>
+<td><strong>4/4</strong></td>
 </tr>
 </tbody>
 </table>
-<p><strong>87.6% fewer tokens. Same answer.</strong></p>
-<p>The FATAL error was automatically preserved—no configuration needed.</p>
+<p><strong>87.6% fewer tokens. Same answer.</strong> The FATAL error was automatically preserved — not by keyword matching, but by statistical analysis of field variance.</p>
+<h3 id="real-workloads">Real Workloads<a class="headerlink" href="#real-workloads" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Before</th>
+<th>After</th>
+<th>Savings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Code search (100 results)</td>
+<td>17,765</td>
+<td>1,408</td>
+<td><strong>92%</strong></td>
+</tr>
+<tr>
+<td>SRE incident debugging</td>
+<td>65,694</td>
+<td>5,118</td>
+<td><strong>92%</strong></td>
+</tr>
+<tr>
+<td>Codebase exploration</td>
+<td>78,502</td>
+<td>41,254</td>
+<td><strong>47%</strong></td>
+</tr>
+<tr>
+<td>GitHub issue triage</td>
+<td>54,174</td>
+<td>14,761</td>
+<td><strong>73%</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="accuracy-benchmarks">Accuracy Benchmarks<a class="headerlink" href="#accuracy-benchmarks" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Category</th>
+<th>N</th>
+<th>Accuracy</th>
+<th>Compression</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GSM8K</td>
+<td>Math</td>
+<td>100</td>
+<td>0.870</td>
+<td>0.000 delta</td>
+</tr>
+<tr>
+<td>TruthfulQA</td>
+<td>Factual</td>
+<td>100</td>
+<td>0.560</td>
+<td>+0.030 delta</td>
+</tr>
+<tr>
+<td>SQuAD v2</td>
+<td>QA</td>
+<td>100</td>
+<td><strong>97%</strong></td>
+<td>19% reduction</td>
+</tr>
+<tr>
+<td>BFCL</td>
+<td>Tool/Function</td>
+<td>100</td>
+<td><strong>97%</strong></td>
+<td>32% reduction</td>
+</tr>
+<tr>
+<td>CCR Needle</td>
+<td>Lossless</td>
+<td>50</td>
+<td><strong>100%</strong></td>
+<td>77% reduction</td>
+</tr>
+</tbody>
+</table>
+<p><a href="benchmarks/">Full benchmark methodology &rarr;</a> | <a href="LIMITATIONS/">Known limitations &rarr;</a></p>
 <hr />
-<h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Your App → Headroom → LLM Provider
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>              ↓
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>         Compression
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>         Caching
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>         Retrieval
-</span></code></pre></div>
-<ol>
-<li><strong>Intercepts context</strong> — Tool outputs, logs, search results</li>
-<li><strong>Compresses intelligently</strong> — Keeps errors, outliers, boundaries</li>
-<li><strong>Stores originals</strong> — Full data available if LLM requests it</li>
-<li><strong>Aligns for caching</strong> — Provider caches actually hit</li>
-</ol>
-<hr />
-<h2 id="integrations">Integrations<a class="headerlink" href="#integrations" title="Permanent link">&para;</a></h2>
-<div class="tabbed-set tabbed-alternate" data-tabs="1:4"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><input id="__tabbed_1_4" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">LangChain</label><label for="__tabbed_1_2">Agno</label><label for="__tabbed_1_3">Strands</label><label for="__tabbed_1_4">AWS Bedrock</label></div>
-<div class="tabbed-content">
-<div class="tabbed-block">
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">langchain_openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChatOpenAI</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomChatModel</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">llm</span> <span class="o">=</span> <span class="n">HeadroomChatModel</span><span class="p">(</span><span class="n">ChatOpenAI</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="s2">&quot;gpt-4o&quot;</span><span class="p">))</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">response</span> <span class="o">=</span> <span class="n">llm</span><span class="o">.</span><span class="n">invoke</span><span class="p">(</span><span class="s2">&quot;Hello!&quot;</span><span class="p">)</span>
-</span></code></pre></div>
+<h2 id="key-features">Key Features<a class="headerlink" href="#key-features" title="Permanent link">&para;</a></h2>
+<div class="grid-container">
+<div class="grid-item">
+<h3 id="lossless-compression-ccr">Lossless Compression (CCR)<a class="headerlink" href="#lossless-compression-ccr" title="Permanent link">&para;</a></h3>
+<p>Compresses aggressively, stores originals, gives the LLM a tool to retrieve full details. Nothing is thrown away.
+<a href="ccr/">Learn more &rarr;</a></p>
 </div>
-<div class="tabbed-block">
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">agno.agent</span><span class="w"> </span><span class="kn">import</span> <span class="n">Agent</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">agno.models.openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpenAIChat</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations.agno</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomAgnoModel</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">model</span> <span class="o">=</span> <span class="n">HeadroomAgnoModel</span><span class="p">(</span><span class="n">OpenAIChat</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="s2">&quot;gpt-4o&quot;</span><span class="p">))</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">)</span>
-</span></code></pre></div>
+<div class="grid-item">
+<h3 id="smart-content-detection">Smart Content Detection<a class="headerlink" href="#smart-content-detection" title="Permanent link">&para;</a></h3>
+<p>Auto-detects JSON, code, logs, text, diffs, HTML. Routes each to the best compressor. Zero configuration needed.
+<a href="compression/">Learn more &rarr;</a></p>
 </div>
-<div class="tabbed-block">
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">strands</span><span class="w"> </span><span class="kn">import</span> <span class="n">Agent</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">strands.models.bedrock</span><span class="w"> </span><span class="kn">import</span> <span class="n">BedrockModel</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom.integrations.strands</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomStrandsModel</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">model</span> <span class="o">=</span> <span class="n">HeadroomStrandsModel</span><span class="p">(</span><span class="n">wrapped_model</span><span class="o">=</span><span class="n">BedrockModel</span><span class="p">(</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="n">model_id</span><span class="o">=</span><span class="s2">&quot;us.anthropic.claude-sonnet-4-20250514-v1:0&quot;</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="p">))</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="n">model</span><span class="p">)</span>
-</span></code></pre></div>
+<div class="grid-item">
+<h3 id="cache-optimization">Cache Optimization<a class="headerlink" href="#cache-optimization" title="Permanent link">&para;</a></h3>
+<p>Stabilizes prefixes so provider KV caches hit. Tracks frozen messages to preserve the 90% read discount.
+<a href="ccr/">Learn more &rarr;</a></p>
 </div>
-<div class="tabbed-block">
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Start proxy with Bedrock backend</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--backend<span class="w"> </span>bedrock<span class="w"> </span>--region<span class="w"> </span>us-east-1
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Point Claude Code at it</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nv">ANTHROPIC_API_KEY</span><span class="o">=</span><span class="s2">&quot;sk-ant-dummy&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="nv">ANTHROPIC_BASE_URL</span><span class="o">=</span>http://localhost:8787<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>claude
-</span></code></pre></div>
+<div class="grid-item">
+<h3 id="image-compression">Image Compression<a class="headerlink" href="#image-compression" title="Permanent link">&para;</a></h3>
+<p>40-90% token reduction via trained ML router. Automatically selects resize/quality tradeoff per image.
+<a href="image-compression/">Learn more &rarr;</a></p>
 </div>
+<div class="grid-item">
+<h3 id="persistent-memory">Persistent Memory<a class="headerlink" href="#persistent-memory" title="Permanent link">&para;</a></h3>
+<p>Hierarchical memory (user/session/agent/turn) with SQLite + HNSW backends. Survives across conversations.
+<a href="memory/">Learn more &rarr;</a></p>
+</div>
+<div class="grid-item">
+<h3 id="failure-learning">Failure Learning<a class="headerlink" href="#failure-learning" title="Permanent link">&para;</a></h3>
+<p>Reads past sessions, finds failed tool calls, correlates with what succeeded, writes learnings to CLAUDE.md.
+<a href="learn/">Learn more &rarr;</a></p>
+</div>
+<div class="grid-item">
+<h3 id="multi-agent-context">Multi-Agent Context<a class="headerlink" href="#multi-agent-context" title="Permanent link">&para;</a></h3>
+<p>Compress what moves between agents. Any framework.
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">big_output</span><span class="p">)</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">)</span>  <span class="c1"># ~80% smaller</span>
+</span></code></pre></div>
+<a href="shared-context/">Learn more &rarr;</a></p>
+</div>
+<div class="grid-item">
+<h3 id="metrics-observability">Metrics &amp; Observability<a class="headerlink" href="#metrics-observability" title="Permanent link">&para;</a></h3>
+<p>Prometheus endpoint, per-request logging, cost tracking, budget limits, pipeline timing breakdowns.
+<a href="metrics/">Learn more &rarr;</a></p>
 </div>
 </div>
 <hr />
-<h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
-<p><strong>Compression</strong></p>
-<ul>
-<li>Statistical JSON array compression (no hardcoded rules)</li>
-<li>ML-based text compression via LLMLingua</li>
-<li>AST-aware code compression</li>
-<li>Image optimization (40-90% reduction)</li>
-</ul>
-<p><strong>Context Management</strong></p>
-<ul>
-<li>Intelligent message scoring and dropping</li>
-<li>Compress-Cache-Retrieve (CCR) for lossless compression</li>
-<li>Provider cache alignment for better hit rates</li>
-</ul>
-<p><strong>Operations</strong></p>
-<ul>
-<li>Prometheus metrics endpoint</li>
-<li>Request logging and cost tracking</li>
-<li>Budget limits and rate limiting</li>
-</ul>
+<h2 id="cloud-providers">Cloud Providers<a class="headerlink" href="#cloud-providers" title="Permanent link">&para;</a></h2>
+<p>Works with any LLM provider out of the box:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>headroom<span class="w"> </span>proxy<span class="w">                                          </span><span class="c1"># Direct Anthropic/OpenAI</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--backend<span class="w"> </span>bedrock<span class="w"> </span>--region<span class="w"> </span>us-east-1<span class="w">     </span><span class="c1"># AWS Bedrock</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--backend<span class="w"> </span>vertex_ai<span class="w"> </span>--region<span class="w"> </span>us-central1<span class="w"> </span><span class="c1"># Google Vertex AI</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--backend<span class="w"> </span>azure<span class="w">                          </span><span class="c1"># Azure OpenAI</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--backend<span class="w"> </span>openrouter<span class="w">                     </span><span class="c1"># OpenRouter (400+ models)</span>
+</span></code></pre></div>
+<p>Or via LiteLLM for 100+ providers (Together, Groq, Fireworks, Ollama, vLLM, etc.).</p>
+<hr />
+<h2 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>pip<span class="w"> </span>install<span class="w"> </span>headroom-ai<span class="w">                </span><span class="c1"># Core library</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[all]&quot;</span><span class="w">         </span><span class="c1"># Everything (recommended)</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[proxy]&quot;</span><span class="w">       </span><span class="c1"># Proxy server + MCP tools</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[ml]&quot;</span><span class="w">          </span><span class="c1"># ML compression (Kompress, requires torch)</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[langchain]&quot;</span><span class="w">   </span><span class="c1"># LangChain integration</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[agno]&quot;</span><span class="w">        </span><span class="c1"># Agno integration</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[evals]&quot;</span><span class="w">       </span><span class="c1"># Evaluation framework</span>
+</span></code></pre></div>
+<p>Requires Python 3.10+.</p>
 <hr />
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="quickstart/">Quickstart Guide</a> — Get running in 5 minutes</li>
-<li><a href="proxy/">Proxy Documentation</a> — Configure the optimization proxy</li>
-<li><a href="ARCHITECTURE/">Architecture</a> — Deep dive into how it works</li>
+<li><strong><a href="quickstart/">Quickstart</a></strong> — Running in 5 minutes</li>
+<li><strong><a href="integration-guide/">Integration Guide</a></strong> — Every way to add Headroom to your stack</li>
+<li><strong><a href="ARCHITECTURE/">Architecture</a></strong> — How the pipeline works under the hood</li>
+<li><strong><a href="benchmarks/">Benchmarks</a></strong> — Accuracy and latency data</li>
+<li><strong><a href="LIMITATIONS/">Limitations</a></strong> — When compression helps and when it doesn't</li>
 </ul>
 <hr />
-<h2 id="license">License<a class="headerlink" href="#license" title="Permanent link">&para;</a></h2>
-<p>Apache 2.0 — Free for commercial use.</p>
+<p>Apache 2.0 — Free for commercial use. <a href="https://github.com/chopratejas/headroom">GitHub</a> | <a href="https://pypi.org/project/headroom-ai/">PyPI</a> | <a href="https://discord.gg/QEyNhaGA">Discord</a></p>
 
 
 
@@ -2108,11 +2814,6 @@
       <div class="md-copyright">
   
   
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
-  
 </div>
       
         
@@ -2140,6 +2841,17 @@
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
     </a>
   
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://discord.gg/QEyNhaGA" target="_blank" rel="noopener" title="discord.gg" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M492.5 69.8c-.2-.3-.4-.6-.8-.7-38.1-17.5-78.4-30-119.7-37.1-.4-.1-.8 0-1.1.1s-.6.4-.8.8c-5.5 9.9-10.5 20.2-14.9 30.6-44.6-6.8-89.9-6.8-134.4 0-4.5-10.5-9.5-20.7-15.1-30.6-.2-.3-.5-.6-.8-.8s-.7-.2-1.1-.2C162.5 39 122.2 51.5 84.1 69c-.3.1-.6.4-.8.7C7.1 183.5-13.8 294.6-3.6 404.2c0 .3.1.5.2.8s.3.4.5.6c44.4 32.9 94 58 146.8 74.2.4.1.8.1 1.1 0s.7-.4.9-.7c11.3-15.4 21.4-31.8 30-48.8.1-.2.2-.5.2-.8s0-.5-.1-.8-.2-.5-.4-.6-.4-.3-.7-.4c-15.8-6.1-31.2-13.4-45.9-21.9-.3-.2-.5-.4-.7-.6s-.3-.6-.3-.9 0-.6.2-.9.3-.5.6-.7c3.1-2.3 6.2-4.7 9.1-7.1.3-.2.6-.4.9-.4s.7 0 1 .1c96.2 43.9 200.4 43.9 295.5 0 .3-.1.7-.2 1-.2s.7.2.9.4c2.9 2.4 6 4.9 9.1 7.2.2.2.4.4.6.7s.2.6.2.9-.1.6-.3.9-.4.5-.6.6c-14.7 8.6-30 15.9-45.9 21.8-.2.1-.5.2-.7.4s-.3.4-.4.7-.1.5-.1.8.1.5.2.8c8.8 17 18.8 33.3 30 48.8.2.3.6.6.9.7s.8.1 1.1 0c52.9-16.2 102.6-41.3 147.1-74.2.2-.2.4-.4.5-.6s.2-.5.2-.8c12.3-126.8-20.5-236.9-86.9-334.5zm-302 267.7c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.4 59.2-52.8 59.2m195.4 0c-29 0-52.8-26.6-52.8-59.2s23.4-59.2 52.8-59.2c29.7 0 53.3 26.8 52.8 59.2 0 32.7-23.2 59.2-52.8 59.2"/></svg>
+    </a>
+  
 </div>
       
     </div>
@@ -2151,11 +2863,13 @@
       <div class="md-dialog__inner md-typeset"></div>
     </div>
     
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
     
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["content.code.copy", "content.tabs.link", "navigation.instant", "navigation.tabs", "navigation.sections", "navigation.top", "search.highlight", "search.suggest", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
       <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
