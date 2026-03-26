@@ -645,7 +645,9 @@ def outer():
         result = compressor.compress(code)
 
         assert result is not None
-        assert result.syntax_valid is True
+        # syntax_valid requires tree-sitter; without it, validation is skipped
+        if is_tree_sitter_available():
+            assert result.syntax_valid is True
 
     def test_syntax_errors_in_input(self, default_config):
         """Syntax errors in input don't crash the compressor."""
