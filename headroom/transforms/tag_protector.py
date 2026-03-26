@@ -1,7 +1,7 @@
 """Protect workflow/custom XML tags from text compression.
 
 LLM workflows use XML-style tags (<system-reminder>, <tool_call>, <thinking>)
-as structural markers.  Text compressors (Kompress, LLMLingua) treat these as
+as structural markers.  Text compressors (Kompress) treat these as
 droppable noise and silently remove them, breaking downstream tools.
 
 This module detects custom tags (anything NOT standard HTML), replaces entire

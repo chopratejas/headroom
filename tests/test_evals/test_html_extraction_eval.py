@@ -262,7 +262,7 @@ class TestHTMLExtractionWithLLM:
 
 @pytest.mark.skipif(not os.environ.get("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
 class TestHTMLvsBaseline:
-    """Tests comparing HTMLExtractor vs LLMLingua baseline."""
+    """Tests comparing HTMLExtractor vs Kompress baseline."""
 
     @pytest.fixture
     def evaluator_with_baseline(self):
@@ -274,9 +274,9 @@ class TestHTMLvsBaseline:
             provider="openai",
         )
 
-    @pytest.mark.skipif(True, reason="LLMLingua requires GPU, skip in CI")
+    @pytest.mark.skipif(True, reason="Kompress requires GPU, skip in CI")
     def test_extraction_beats_baseline(self, evaluator_with_baseline):
-        """Test that HTMLExtractor outperforms LLMLingua on HTML."""
+        """Test that HTMLExtractor outperforms Kompress on HTML."""
         cases = get_sample_eval_cases()[:2]  # Just test 2 for speed
 
         results = evaluator_with_baseline.evaluate(cases)
@@ -286,9 +286,9 @@ class TestHTMLvsBaseline:
             print(f"Avg extraction score: {results.avg_extraction_score}/5")
             print(f"Avg baseline score: {results.avg_baseline_score}/5")
 
-            # HTMLExtractor should beat LLMLingua on HTML content
+            # HTMLExtractor should beat Kompress on HTML content
             assert results.avg_extraction_score >= results.avg_baseline_score, (
-                "HTMLExtractor should perform at least as well as LLMLingua on HTML"
+                "HTMLExtractor should perform at least as well as Kompress on HTML"
             )
 
 

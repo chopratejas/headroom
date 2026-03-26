@@ -1,7 +1,7 @@
 """Kompress: ModernBERT token compressor for structured tool outputs.
 
-Drop-in replacement for LLMLingua-2. Auto-downloads the model from
-HuggingFace (chopratejas/kompress-base) on first use.
+Auto-downloads the model from HuggingFace (chopratejas/kompress-base)
+on first use.
 
 Requires the [ml] extra: pip install headroom-ai[ml]
 
@@ -222,7 +222,6 @@ class KompressCompressor(Transform):
     """Kompress: ModernBERT token compressor for structured tool outputs.
 
     Auto-downloads chopratejas/kompress-base from HuggingFace on first use.
-    Drop-in replacement for LLMLinguaCompressor with identical interface.
     """
 
     name: str = "kompress_compressor"
@@ -242,9 +241,9 @@ class KompressCompressor(Transform):
 
         Args:
             content: Text to compress.
-            context: Optional surrounding context (unused by model, kept for interface compat).
+            context: Optional surrounding context (unused by model).
             content_type: Ignored — model decides importance per content type.
-            question: Ignored — kept for LLMLingua interface compat.
+            question: Ignored — reserved for future QA-aware compression.
             target_ratio: If None (default), model decides how much to keep using
                 score threshold. If set (e.g. 0.3), forces that keep ratio.
                 The proxy never sets this — only user-facing API does.

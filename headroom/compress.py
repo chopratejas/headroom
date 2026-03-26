@@ -203,7 +203,7 @@ def _get_pipeline() -> Any:
         # Default pipeline: CacheAligner → ContentRouter → IntelligentContext
         # CacheAligner: stabilizes prefix for provider KV cache hits
         # ContentRouter: routes to the right compressor per content type
-        #   (SmartCrusher for JSON, CodeCompressor for code, LLMLingua for text)
+        #   (SmartCrusher for JSON, CodeCompressor for code, Kompress for text)
         # IntelligentContext: enforces token limits with score-based dropping
         _pipeline = TransformPipeline()
         logger.debug("Headroom compression pipeline initialized")

@@ -25,21 +25,6 @@ from .search_compressor import (
 from .smart_crusher import SmartCrusher, SmartCrusherConfig
 from .tool_crusher import ToolCrusher
 
-# ML-based compression (optional dependency)
-try:
-    from .llmlingua_compressor import (  # noqa: F401
-        LLMLinguaCompressor,
-        LLMLinguaConfig,
-        LLMLinguaResult,
-        compress_with_llmlingua,
-        is_llmlingua_model_loaded,
-        unload_llmlingua_model,
-    )
-
-    _LLMLINGUA_AVAILABLE = True
-except ImportError:
-    _LLMLINGUA_AVAILABLE = False
-
 # HTML content extraction (optional dependency - requires trafilatura)
 try:
     from .html_extractor import (  # noqa: F401
@@ -122,24 +107,9 @@ __all__ = [
     "MessageScorer",
     "MessageScore",
     "EmbeddingProvider",
-    # ML-based compression (optional)
-    "_LLMLINGUA_AVAILABLE",
     # HTML extraction (optional)
     "_HTML_EXTRACTOR_AVAILABLE",
 ]
-
-# Conditionally add LLMLingua exports
-if _LLMLINGUA_AVAILABLE:
-    __all__.extend(
-        [
-            "LLMLinguaCompressor",
-            "LLMLinguaConfig",
-            "LLMLinguaResult",
-            "compress_with_llmlingua",
-            "is_llmlingua_model_loaded",
-            "unload_llmlingua_model",
-        ]
-    )
 
 # Conditionally add HTML extractor exports
 if _HTML_EXTRACTOR_AVAILABLE:

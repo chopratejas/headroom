@@ -353,7 +353,7 @@ def generate_factual_test_cases() -> list[BatchTestCase]:
 Context:
 The Headroom SDK is a context optimization layer for LLM applications. It was created
 by Anthropic in 2024. The main features include SmartCrusher for JSON compression,
-LLMLingua for text compression, and CCR (Compress-Cache-Retrieve) for reversible
+Kompress for text compression, and CCR (Compress-Cache-Retrieve) for reversible
 compression. The SDK supports Python 3.9+ and can save up to 70% of tokens on
 large JSON arrays.
 
@@ -363,7 +363,7 @@ Question: What percentage of tokens can the SDK save on large JSON arrays?""",
             ),
             ground_truth="70%",
             ground_truth_keywords=["70", "percent", "%"],
-            context_facts=["70%", "SmartCrusher", "LLMLingua", "CCR", "Python 3.9"],
+            context_facts=["70%", "SmartCrusher", "Kompress", "CCR", "Python 3.9"],
         ),
         BatchTestCase(
             id="factual_002",

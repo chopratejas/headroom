@@ -501,7 +501,6 @@ class IntelligentContextManager(Transform):
                 # Configure for aggressive compression in COMPRESS_FIRST context
                 router_config = ContentRouterConfig(
                     enable_code_aware=True,
-                    enable_llmlingua=True,
                     enable_smart_crusher=True,
                     enable_search_compressor=True,
                     enable_log_compressor=True,

@@ -3,7 +3,7 @@
 This module provides intelligent, automatic compression that:
 1. Detects content type using ML (Magika)
 2. Preserves structure (keys, signatures, templates)
-3. Compresses content with LLMLingua
+3. Compresses content with Kompress
 4. Enables retrieval via CCR
 
 Quick Start:

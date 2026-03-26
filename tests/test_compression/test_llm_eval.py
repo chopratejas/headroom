@@ -301,7 +301,7 @@ class TestJSONDiscoverability:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -418,7 +418,7 @@ class TestCodeUnderstanding:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -528,7 +528,7 @@ class TestMultiContentAgent:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -591,7 +591,7 @@ class TestCompressionEfficacy:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)

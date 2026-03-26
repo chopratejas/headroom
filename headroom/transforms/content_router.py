@@ -9,7 +9,7 @@ Supported Compressors:
 - SmartCrusher: JSON arrays
 - SearchCompressor: grep/ripgrep results
 - LogCompressor: Build/test output
-- LLMLinguaCompressor: Plain text (ML-based)
+- KompressCompressor: Plain text (ML-based)
 - Kompress: Plain text (ML-based, requires [ml] extra)
 
 Routing Strategy:
@@ -251,7 +251,6 @@ class CompressionStrategy(Enum):
     SEARCH = "search"
     LOG = "log"
     KOMPRESS = "kompress"
-    LLMLINGUA = "llmlingua"
     TEXT = "text"
     DIFF = "diff"
     HTML = "html"
@@ -360,12 +359,11 @@ class ContentRouterConfig:
 
     Attributes:
         enable_code_aware: Enable AST-based code compression.
-        enable_llmlingua: Enable ML-based text compression.
         enable_smart_crusher: Enable JSON array compression.
         enable_search_compressor: Enable search result compression.
         enable_log_compressor: Enable build/test log compression.
         enable_image_optimizer: Enable image token optimization.
-        prefer_code_aware_for_code: Use CodeAware over LLMLingua for code.
+        prefer_code_aware_for_code: Use CodeAware over Kompress for code.
         mixed_content_threshold: Min distinct types to consider "mixed".
         min_section_tokens: Minimum tokens for a section to compress.
         fallback_strategy: Strategy when no compressor matches.
@@ -376,8 +374,7 @@ class ContentRouterConfig:
 
     # Enable/disable specific compressors
     enable_code_aware: bool = True
-    enable_kompress: bool = True  # Kompress: ModernBERT token compressor (preferred over LLMLingua)
-    enable_llmlingua: bool = True
+    enable_kompress: bool = True  # Kompress: ModernBERT token compressor
     enable_smart_crusher: bool = True
     enable_search_compressor: bool = True
     enable_log_compressor: bool = True
@@ -647,7 +644,6 @@ class ContentRouter(Transform):
         self._diff_compressor: Any = None
         self._html_extractor: Any = None
         self._kompress: Any = None
-        self._llmlingua: Any = None
         self._image_optimizer: Any = None
 
         # TOIN integration for cross-strategy learning
@@ -813,7 +809,7 @@ class ContentRouter(Transform):
             strategy == CompressionStrategy.CODE_AWARE
             and not self.config.prefer_code_aware_for_code
         ):
-            strategy = CompressionStrategy.LLMLINGUA
+            strategy = CompressionStrategy.KOMPRESS
 
         return strategy
 
@@ -960,9 +956,11 @@ class ContentRouter(Transform):
                         result = compressor.compress(content, language=language, context=context)
                         compressed, compressed_tokens = result.compressed, result.compressed_tokens
                 if compressed is None:
-                    # Fallback to LLMLingua
-                    compressed, compressed_tokens = self._try_llmlingua(content, context, question)
-                    strategy = CompressionStrategy.LLMLINGUA  # Update for TOIN
+                    # Fallback to Kompress
+                    compressed, compressed_tokens = self._try_ml_compressor(
+                        content, context, question
+                    )
+                    strategy = CompressionStrategy.KOMPRESS  # Update for TOIN
 
             elif strategy == CompressionStrategy.SMART_CRUSHER:
                 # SmartCrusher handles its own TOIN recording
@@ -1013,12 +1011,9 @@ class ContentRouter(Transform):
             elif strategy == CompressionStrategy.KOMPRESS:
                 compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
 
-            elif strategy == CompressionStrategy.LLMLINGUA:
-                compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
-
             elif strategy == CompressionStrategy.TEXT:
-                # Prefer ML compressor (Kompress > LLMLingua) for text
-                # Passes through unchanged if neither Kompress nor LLMLingua available
+                # Prefer Kompress ML compressor for text
+                # Passes through unchanged if Kompress not available
                 compressed, compressed_tokens = self._try_ml_compressor(content, context, question)
 
         except Exception as e:
@@ -1043,7 +1038,7 @@ class ContentRouter(Transform):
     def _try_ml_compressor(
         self, content: str, context: str, question: str | None = None
     ) -> tuple[str, int]:
-        """ML-based compression: Kompress (primary), LLMLingua (fallback only).
+        """ML-based compression using Kompress.
 
         Kompress (ModernBERT, trained on 330K structured tool outputs)
         auto-downloads from HuggingFace on first use. No heuristic fallback.
@@ -1090,19 +1085,6 @@ class ContentRouter(Transform):
                 except Exception as e:
                     logger.warning("Kompress failed: %s", e)
 
-        # Fallback: LLMLingua (only if Kompress not installed)
-        if compressed is None and self.config.enable_llmlingua:
-            compressor = self._get_llmlingua()
-            if compressor:
-                try:
-                    result = compressor.compress(
-                        text_to_compress, context=context, question=question
-                    )
-                    compressed = result.compressed
-                    compressed_tokens = result.compressed_tokens
-                except Exception as e:
-                    logger.warning("LLMLingua failed: %s", e)
-
         if compressed is None:
             return content, len(content.split())
 
@@ -1112,9 +1094,6 @@ class ContentRouter(Transform):
             compressed_tokens = len(compressed.split())
 
         return compressed, compressed_tokens or len(compressed.split())
-
-    # Backwards compatibility
-    _try_llmlingua = _try_ml_compressor
 
     def _strategy_from_detection_type(self, content_type: ContentType) -> CompressionStrategy:
         """Get strategy from ContentType enum."""
@@ -1140,7 +1119,6 @@ class ContentRouter(Transform):
             CompressionStrategy.HTML: ContentType.HTML,
             CompressionStrategy.TEXT: ContentType.PLAIN_TEXT,
             CompressionStrategy.KOMPRESS: ContentType.PLAIN_TEXT,
-            CompressionStrategy.LLMLINGUA: ContentType.PLAIN_TEXT,
             CompressionStrategy.PASSTHROUGH: ContentType.PLAIN_TEXT,
         }
         return mapping.get(strategy, ContentType.PLAIN_TEXT)
@@ -1233,7 +1211,7 @@ class ContentRouter(Transform):
         """
         status: dict[str, str] = {}
 
-        # 1. ML text compressor: Kompress or LLMLingua fallback
+        # 1. ML text compressor: Kompress
         if self.config.enable_kompress:
             compressor = self._get_kompress()
             if compressor:
@@ -1241,20 +1219,6 @@ class ContentRouter(Transform):
                 status["kompress"] = "enabled"
             else:
                 status["kompress"] = "unavailable"
-        if "kompress" not in status or status["kompress"] != "enabled":
-            if self.config.enable_llmlingua:
-                compressor = self._get_llmlingua()
-                if compressor:
-                    try:
-                        from .llmlingua_compressor import _get_llmlingua_compressor
-
-                        device = compressor._resolve_device()
-                        _get_llmlingua_compressor(compressor.config.model_name, device)
-                        logger.info("LLMLingua model pre-loaded at startup")
-                        status["llmlingua"] = "enabled"
-                    except Exception as e:
-                        logger.warning("Failed to pre-load LLMLingua model: %s", e)
-                        status["llmlingua"] = f"failed: {e}"
 
         # 2. Magika content detector (avoids 100-200ms on first content detection)
         try:
@@ -1325,21 +1289,6 @@ class ContentRouter(Transform):
             except ImportError:
                 logger.debug("Kompress dependencies not available")
         return self._kompress
-
-    def _get_llmlingua(self) -> Any:
-        """Get LLMLinguaCompressor (lazy load). Fallback if Kompress unavailable."""
-        if self._llmlingua is None:
-            try:
-                from .llmlingua_compressor import (
-                    LLMLinguaCompressor,
-                    _check_llmlingua_available,
-                )
-
-                if _check_llmlingua_available():
-                    self._llmlingua = LLMLinguaCompressor()
-            except ImportError:
-                logger.debug("LLMLinguaCompressor not available")
-        return self._llmlingua
 
     def _get_image_optimizer(self) -> Any:
         """Get ImageCompressor (lazy load).
@@ -1558,7 +1507,7 @@ class ContentRouter(Transform):
             "non_string": 0,
             "content_blocks": 0,
         }
-        compressed_details: list[str] = []  # e.g. ["code_aware:0.72", "llmlingua:0.65"]
+        compressed_details: list[str] = []  # e.g. ["code_aware:0.72", "kompress:0.65"]
 
         # Check for analysis intent in the most recent user message
         analysis_intent = False

@@ -1,11 +1,11 @@
 """Structure mask system for compression.
 
 A StructureMask identifies which parts of content are "structural" (should be
-preserved) vs "compressible" (can be compressed by LLMLingua).
+preserved) vs "compressible" (can be compressed by Kompress).
 
 This separates the concerns of:
 1. Structure detection (handlers) - What tokens are navigational?
-2. Content compression (LLMLingua) - What tokens can be removed?
+2. Content compression (Kompress) - What tokens can be removed?
 
 The mask is content-agnostic - it's just a boolean array aligned to tokens.
 """
@@ -21,7 +21,7 @@ class StructureMask:
     """A mask identifying structural vs compressible tokens.
 
     The mask is aligned to a token sequence. True means "preserve this token"
-    (it's structural/navigational), False means "compressible" (LLMLingua can
+    (it's structural/navigational), False means "compressible" (Kompress can
     potentially remove it).
 
     Attributes:
@@ -207,7 +207,7 @@ def apply_mask_to_text(
     Args:
         text: Original text.
         mask: Structure mask aligned to tokens.
-        compress_fn: Function to compress text (e.g., LLMLingua).
+        compress_fn: Function to compress text (e.g., Kompress).
         tokenizer_decode: Optional function to decode tokens to text.
             If not provided, assumes tokens are strings and joins them.
 
@@ -245,7 +245,7 @@ class EntropyScore:
     be preserved because:
     1. They're information-dense (can't be reconstructed)
     2. They're often identifiers (semantically important)
-    3. LLMLingua may mangle them
+    3. Token-level compressors may mangle them
 
     This is a self-signal - no external classifier needed.
     """

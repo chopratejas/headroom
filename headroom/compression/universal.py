@@ -3,7 +3,7 @@
 This is the main entry point for compression. It:
 1. Detects content type using Magika (ML)
 2. Extracts structure using appropriate handler
-3. Compresses non-structural content with LLMLingua
+3. Compresses non-structural content with Kompress
 4. Optionally stores original in CCR for retrieval
 
 Usage:
@@ -51,7 +51,7 @@ class UniversalCompressorConfig:
 
     Attributes:
         use_magika: Use ML-based detection (requires magika package).
-        use_llmlingua: Use LLMLingua for content compression.
+        use_kompress: Use Kompress for content compression.
         use_entropy_preservation: Preserve high-entropy tokens (UUIDs, etc.).
         entropy_threshold: Threshold for entropy-based preservation.
         min_content_length: Minimum content length to compress.
@@ -60,7 +60,7 @@ class UniversalCompressorConfig:
     """
 
     use_magika: bool = True
-    use_llmlingua: bool = True
+    use_kompress: bool = True
     use_entropy_preservation: bool = True
     entropy_threshold: float = 0.85
     min_content_length: int = 100
@@ -139,7 +139,7 @@ class UniversalCompressor:
             config: Compression configuration.
             handlers: Custom handlers for content types.
             compress_fn: Custom compression function. If None, uses
-                LLMLingua when available, else simple truncation.
+                Kompress when available, else simple truncation.
         """
         self.config = config or UniversalCompressorConfig()
 
@@ -165,18 +165,18 @@ class UniversalCompressor:
     def _get_default_compress_fn(self) -> Callable[[str], str]:
         """Get default compression function.
 
-        Returns LLMLingua wrapper if available, else simple truncation.
+        Returns Kompress wrapper if available, else simple truncation.
         """
-        if self.config.use_llmlingua:
+        if self.config.use_kompress:
             try:
-                return self._llmlingua_compress
+                return self._kompress_compress
             except ImportError:
-                logger.info("LLMLingua not available, using simple compression")
+                logger.info("Kompress not available, using simple compression")
 
         return self._simple_compress
 
-    def _llmlingua_compress(self, text: str) -> str:
-        """Compress using LLMLingua.
+    def _kompress_compress(self, text: str) -> str:
+        """Compress using Kompress.
 
         Args:
             text: Text to compress.
@@ -185,16 +185,15 @@ class UniversalCompressor:
             Compressed text.
         """
         try:
-            from headroom.transforms.llmlingua_compressor import compress_with_llmlingua
+            from headroom.transforms.kompress_compressor import KompressCompressor
 
-            return compress_with_llmlingua(
-                text,
-                compression_rate=self.config.compression_ratio_target,
-            )
+            compressor = KompressCompressor()
+            result = compressor.compress(text)
+            return result.compressed
         except ImportError:
             return self._simple_compress(text)
         except Exception as e:
-            logger.warning("LLMLingua compression failed: %s", e)
+            logger.warning("Kompress compression failed: %s", e)
             return self._simple_compress(text)
 
     def _simple_compress(self, text: str) -> str:

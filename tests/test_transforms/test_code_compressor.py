@@ -499,14 +499,14 @@ class TestFallbackCompression:
 
             # Should still return a result (fallback compression)
             assert result is not None
-            # LLMLingua fallback does NOT guarantee syntax validity
-            # If LLMLingua is unavailable, returns original (valid)
-            # If LLMLingua IS available, syntax_valid=False (cannot guarantee)
+            # Kompress fallback does NOT guarantee syntax validity
+            # If Kompress is unavailable, returns original (valid)
+            # If Kompress IS available, syntax_valid=False (cannot guarantee)
 
     def test_fallback_preserves_structure(self, default_config):
         """Fallback compression preserves basic structure when no compressor available.
 
-        When both tree-sitter and LLMLingua are unavailable, the fallback
+        When both tree-sitter and Kompress are unavailable, the fallback
         returns the original code unchanged - preserving all structure.
         """
         with (
@@ -515,7 +515,7 @@ class TestFallbackCompression:
                 return_value=False,
             ),
             patch(
-                "headroom.transforms.llmlingua_compressor._check_llmlingua_available",
+                "headroom.transforms.kompress_compressor.is_kompress_available",
                 return_value=False,
             ),
         ):

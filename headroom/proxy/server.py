@@ -93,7 +93,6 @@ from headroom.telemetry import get_telemetry_collector
 from headroom.telemetry.toin import get_toin
 from headroom.tokenizers import get_tokenizer
 from headroom.transforms import (
-    _LLMLINGUA_AVAILABLE,
     CacheAligner,
     CodeAwareCompressor,
     CodeCompressorConfig,
@@ -126,10 +125,6 @@ def _get_image_compressor():
             _image_compressor = False  # Mark as unavailable
     return _image_compressor if _image_compressor else None
 
-
-# Conditionally import LLMLingua if available
-if _LLMLINGUA_AVAILABLE:
-    from headroom.transforms import LLMLinguaCompressor, LLMLinguaConfig
 
 # Try to import LiteLLM for pricing
 try:
@@ -647,11 +642,6 @@ class ProxyConfig:
     ccr_context_tracking: bool = True  # Track compressed contexts for proactive expansion
     ccr_proactive_expansion: bool = True  # Proactively expand based on query relevance
     ccr_max_proactive_expansions: int = 2  # Max contexts to proactively expand per turn
-
-    # LLMLingua ML-based compression (ON by default if installed)
-    llmlingua_enabled: bool = True  # Enable LLMLingua-2 for ML-based compression
-    llmlingua_device: str = "auto"  # Device: 'auto', 'cuda', 'cpu', 'mps'
-    llmlingua_target_rate: float = 0.3  # Target compression rate (0.3 = keep 30%)
 
     # Code-aware compression (ON by default if installed)
     code_aware_enabled: bool = True  # Enable AST-based code compression
@@ -1641,9 +1631,8 @@ class HeadroomProxy:
 
         if config.smart_routing:
             # Smart routing: ContentRouter handles all content types intelligently
-            # It lazy-loads compressors (including LLMLingua) only when needed
+            # It lazy-loads compressors only when needed
             router_config = ContentRouterConfig(
-                enable_llmlingua=config.llmlingua_enabled,
                 enable_code_aware=config.code_aware_enabled,
                 tool_profiles=config.tool_profiles,
                 read_lifecycle=ReadLifecycleConfig(enabled=config.read_lifecycle),
@@ -1656,7 +1645,6 @@ class HeadroomProxy:
                 ContentRouter(router_config),
                 context_manager,
             ]
-            self._llmlingua_status = "lazy" if config.llmlingua_enabled else "disabled"
             self._code_aware_status = "lazy" if config.code_aware_enabled else "disabled"
         else:
             # Legacy mode: sequential pipeline
@@ -1675,8 +1663,6 @@ class HeadroomProxy:
                 ),
                 context_manager,
             ]
-            # Add LLMLingua if enabled and available
-            self._llmlingua_status = self._setup_llmlingua(config, transforms)
             # Add CodeAware if enabled and available
             self._code_aware_status = self._setup_code_aware(config, transforms)
 
@@ -1893,38 +1879,6 @@ class HeadroomProxy:
             self._compression_caches[session_id] = CompressionCache()
         return self._compression_caches[session_id]
 
-    def _setup_llmlingua(self, config: ProxyConfig, transforms: list) -> str:
-        """Set up LLMLingua compression if enabled.
-
-        Args:
-            config: Proxy configuration
-            transforms: Transform list to append to
-
-        Returns:
-            Status string for logging: 'enabled', 'disabled', 'available', 'unavailable'
-        """
-        if config.llmlingua_enabled:
-            if _LLMLINGUA_AVAILABLE:
-                llmlingua_config = LLMLinguaConfig(
-                    device=config.llmlingua_device,
-                    target_compression_rate=config.llmlingua_target_rate,
-                    enable_ccr=config.ccr_inject_tool,  # Link to CCR
-                )
-                # Insert before RollingWindow (which should be last)
-                # LLMLingua works best on individual tool outputs before windowing
-                transforms.insert(-1, LLMLinguaCompressor(llmlingua_config))
-                return "enabled"
-            else:
-                logger.warning(
-                    "LLMLingua requested but not installed. "
-                    "Install with: pip install headroom-ai[llmlingua]"
-                )
-                return "unavailable"
-        else:
-            if _LLMLINGUA_AVAILABLE:
-                return "available"  # Available but not enabled - hint to user
-            return "disabled"
-
     def _setup_code_aware(self, config: ProxyConfig, transforms: list) -> str:
         """Set up code-aware compression if enabled.
 
@@ -2013,8 +1967,6 @@ class HeadroomProxy:
         # Update internal status from eager loading results
         if eager_status.get("kompress") == "enabled":
             self._kompress_status = "enabled"
-        if eager_status.get("llmlingua") == "enabled":
-            self._llmlingua_status = "enabled"
         if eager_status.get("code_aware") == "enabled":
             self._code_aware_status = "enabled"
 
@@ -2023,18 +1975,6 @@ class HeadroomProxy:
             logger.info("Kompress: ENABLED (ModernBERT token compressor)")
         elif self.config.optimize:
             logger.info("Kompress: not installed (pip install headroom-ai[ml] for ML compression)")
-
-        if self._llmlingua_status == "enabled":
-            logger.info(
-                f"LLMLingua: ENABLED (device={self.config.llmlingua_device}, "
-                f"rate={self.config.llmlingua_target_rate})"
-            )
-        elif self._kompress_status == "enabled":
-            logger.info("LLMLingua: skipped (Kompress is active)")
-        elif self._llmlingua_status == "lazy":
-            logger.info("LLMLingua: LAZY (will load when prose content detected)")
-        elif self._llmlingua_status == "disabled":
-            logger.info("LLMLingua: DISABLED")
 
         if self._code_aware_status == "enabled":
             logger.info("Code-Aware: ENABLED (AST-based compression)")
@@ -7969,21 +7909,6 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     return app
 
 
-def _get_llmlingua_banner_status(config: ProxyConfig) -> str:
-    """Get LLMLingua status line for banner."""
-    if config.llmlingua_enabled:
-        if _LLMLINGUA_AVAILABLE:
-            return (
-                f"ENABLED  (device={config.llmlingua_device}, rate={config.llmlingua_target_rate})"
-            )
-        else:
-            return "NOT INSTALLED (pip install headroom-ai[llmlingua])"
-    else:
-        if _LLMLINGUA_AVAILABLE:
-            return "DISABLED (remove --no-llmlingua to enable)"
-        return "DISABLED"
-
-
 def _get_code_aware_banner_status(config: ProxyConfig) -> str:
     """Get code-aware compression status line for banner."""
     if config.code_aware_enabled:
@@ -8016,7 +7941,6 @@ def run_server(
     config = config or ProxyConfig()
     app = create_app(config)
 
-    llmlingua_status = _get_llmlingua_banner_status(config)
     code_aware_status = _get_code_aware_banner_status(config)
 
     # Format connection pool info
@@ -8055,7 +7979,6 @@ def run_server(
 ║    Rate Limiting:   {"ENABLED " if config.rate_limit_enabled else "DISABLED"}   ({config.rate_limit_requests_per_minute} req/min, {config.rate_limit_tokens_per_minute:,} tok/min)       ║
 ║    Retry:           {"ENABLED " if config.retry_enabled else "DISABLED"}   (max {config.retry_max_attempts} attempts)                       ║
 ║    Cost Tracking:   {"ENABLED " if config.cost_tracking_enabled else "DISABLED"}   (budget: {"$" + str(config.budget_limit_usd) + "/" + config.budget_period if config.budget_limit_usd else "unlimited"})          ║
-║    LLMLingua:       {llmlingua_status:<52}║
 ║    Code-Aware:      {code_aware_status:<52}║
 ║    HTTP/2:          {http2_status:<52}║
 ║    Conn Pool:       {pool_info:<52}║
@@ -8269,30 +8192,6 @@ if __name__ == "__main__":
         help="Disable smart routing (use legacy sequential pipeline)",
     )
 
-    # LLMLingua ML-based compression
-    parser.add_argument(
-        "--llmlingua",
-        action="store_true",
-        help="Enable LLMLingua-2 ML-based compression (requires: pip install headroom-ai[llmlingua])",
-    )
-    parser.add_argument(
-        "--no-llmlingua",
-        action="store_true",
-        help="Disable LLMLingua compression",
-    )
-    parser.add_argument(
-        "--llmlingua-device",
-        choices=["auto", "cuda", "cpu", "mps"],
-        default="auto",
-        help="Device for LLMLingua model (default: auto)",
-    )
-    parser.add_argument(
-        "--llmlingua-rate",
-        type=float,
-        default=0.3,
-        help="LLMLingua target compression rate, 0.0-1.0 (default: 0.3 = keep 30%%)",
-    )
-
     # Code-aware compression
     parser.add_argument(
         "--code-aware",
@@ -8310,7 +8209,6 @@ if __name__ == "__main__":
     # Environment variable defaults (HEADROOM_* prefix)
     # CLI args override env vars, env vars override ProxyConfig defaults
     env_smart_routing = _get_env_bool("HEADROOM_SMART_ROUTING", True)
-    env_llmlingua = _get_env_bool("HEADROOM_LLMLINGUA_ENABLED", True)
     env_code_aware = _get_env_bool("HEADROOM_CODE_AWARE_ENABLED", True)
     env_optimize = _get_env_bool("HEADROOM_OPTIMIZE", True)
     env_cache = _get_env_bool("HEADROOM_CACHE_ENABLED", True)
@@ -8319,11 +8217,6 @@ if __name__ == "__main__":
     # Determine settings: CLI flags override env vars
     # --no-X explicitly disables, --X explicitly enables, neither uses env var
     smart_routing = env_smart_routing if not args.no_smart_routing else False
-    llmlingua_enabled = (
-        env_llmlingua
-        if not (args.llmlingua or args.no_llmlingua)
-        else (args.llmlingua or not args.no_llmlingua)
-    )
     code_aware_enabled = (
         env_code_aware
         if not (args.code_aware or args.no_code_aware)
@@ -8364,9 +8257,6 @@ if __name__ == "__main__":
         else os.environ.get("HEADROOM_LOG_FILE"),
         log_full_messages=args.log_messages or _get_env_bool("HEADROOM_LOG_MESSAGES", False),
         smart_routing=smart_routing,
-        llmlingua_enabled=llmlingua_enabled,
-        llmlingua_device=_get_env_str("HEADROOM_LLMLINGUA_DEVICE", args.llmlingua_device),
-        llmlingua_target_rate=_get_env_float("HEADROOM_LLMLINGUA_RATE", args.llmlingua_rate),
         code_aware_enabled=code_aware_enabled,
         # Connection pool settings
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", args.max_connections),

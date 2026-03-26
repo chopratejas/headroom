@@ -1,8 +1,8 @@
 """Code-aware compressor using AST parsing for syntax-preserving compression.
 
 This module provides AST-based compression for source code that guarantees
-valid syntax output. Unlike token-level compression (LLMLingua), this
-preserves structural elements while compressing function bodies.
+valid syntax output. Unlike token-level compression, this preserves
+structural elements while compressing function bodies.
 
 Key Features:
 - Syntax validity guaranteed (output always parses)
@@ -329,7 +329,7 @@ class CodeCompressorConfig:
         compress_comments: Remove non-docstring comments.
         min_tokens_for_compression: Minimum tokens to trigger compression.
         language_hint: Explicit language (None = auto-detect).
-        fallback_to_llmlingua: Use LLMLingua for unknown languages.
+        fallback_to_kompress: Use Kompress for unknown languages.
         enable_ccr: Store originals for retrieval.
         ccr_ttl: TTL for CCR entries in seconds.
     """
@@ -351,7 +351,7 @@ class CodeCompressorConfig:
 
     # Language handling
     language_hint: str | None = None
-    fallback_to_llmlingua: bool = True
+    fallback_to_kompress: bool = True
 
     # Semantic analysis (symbol importance scoring)
     semantic_analysis: bool = True
@@ -615,7 +615,7 @@ class CodeAwareCompressor(Transform):
     - Syntax validity guaranteed
     - Preserves imports, signatures, types
     - Better compression ratios for code (5-8x vs 3-5x)
-    - Lower latency (~20-50ms vs 50-200ms for LLMLingua)
+    - Lower latency (~20-50ms vs 50-200ms for token-level compressors)
     - Smaller memory footprint (~50MB vs ~1GB)
     - Thread-safe (no mutable instance state during compression)
 
@@ -947,9 +947,9 @@ class CodeAwareCompressor(Transform):
         else:
             detected_lang, confidence = detect_language(code)
 
-        # If language unknown and fallback enabled, try LLMLingua
+        # If language unknown and fallback enabled, try Kompress
         if detected_lang == CodeLanguage.UNKNOWN:
-            if self.config.fallback_to_llmlingua:
+            if self.config.fallback_to_kompress:
                 return self._fallback_compress(code, original_tokens)
             else:
                 return CodeCompressionResult(
@@ -966,7 +966,7 @@ class CodeAwareCompressor(Transform):
         # Check if tree-sitter is available
         if not _check_tree_sitter_available():
             logger.warning("tree-sitter not available. Install with: pip install headroom-ai[code]")
-            if self.config.fallback_to_llmlingua:
+            if self.config.fallback_to_kompress:
                 return self._fallback_compress(code, original_tokens)
             return CodeCompressionResult(
                 compressed=code,
@@ -1062,7 +1062,7 @@ class CodeAwareCompressor(Transform):
 
         except Exception as e:
             logger.warning("AST compression failed: %s, falling back", e)
-            if self.config.fallback_to_llmlingua:
+            if self.config.fallback_to_kompress:
                 return self._fallback_compress(code, original_tokens)
             return CodeCompressionResult(
                 compressed=code,
@@ -1629,13 +1629,13 @@ class CodeAwareCompressor(Transform):
             return False
 
     def _fallback_compress(self, code: str, original_tokens: int) -> CodeCompressionResult:
-        """Fall back to LLMLingua compression."""
+        """Fall back to Kompress compression."""
         try:
-            from .llmlingua_compressor import LLMLinguaCompressor, _check_llmlingua_available
+            from .kompress_compressor import KompressCompressor, is_kompress_available
 
-            if _check_llmlingua_available():
-                compressor = LLMLinguaCompressor()
-                result = compressor.compress(code, content_type="code")
+            if is_kompress_available():
+                compressor = KompressCompressor()
+                result = compressor.compress(code)
                 return CodeCompressionResult(
                     compressed=result.compressed,
                     original=code,
@@ -1644,7 +1644,7 @@ class CodeAwareCompressor(Transform):
                     compression_ratio=result.compression_ratio,
                     language=CodeLanguage.UNKNOWN,
                     language_confidence=0.0,
-                    # LLMLingua does NOT guarantee syntax validity
+                    # Kompress does NOT guarantee syntax validity
                     syntax_valid=False,
                 )
         except ImportError:

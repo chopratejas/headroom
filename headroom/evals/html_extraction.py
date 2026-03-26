@@ -4,7 +4,6 @@ This module evaluates whether HTMLExtractor preserves the information
 that LLMs need to answer questions about web content. We compare:
 1. LLM answers from original HTML
 2. LLM answers from HTMLExtractor output
-3. LLM answers from LLMLingua baseline (current fallback)
 
 Uses LLM-as-judge to score answer quality on a 1-5 scale.
 """
@@ -81,7 +80,7 @@ class HTMLEvalResult:
     # Answers from different methods
     answer_from_original: str
     answer_from_extracted: str
-    answer_from_baseline: str | None = None  # LLMLingua baseline
+    answer_from_baseline: str | None = None  # Baseline comparison
 
     # Judge scores (1-5 scale)
     extracted_score: float = 0.0
@@ -211,7 +210,7 @@ class HTMLExtractionEvaluator:
         Args:
             answer_model: Model for generating answers from content.
             judge_model: Model for judging answer quality.
-            compare_baseline: Whether to also test LLMLingua baseline.
+            compare_baseline: Whether to also test Kompress baseline.
             provider: API provider ("openai", "anthropic", "litellm").
         """
         self.answer_model = answer_model
@@ -221,7 +220,7 @@ class HTMLExtractionEvaluator:
 
         # Lazy-loaded components
         self._extractor: HTMLExtractor | None = None
-        self._llmlingua: Any = None
+        self._kompress: Any = None
         self._judge_fn: Callable[[str, str, str], tuple[float, str]] | None = None
         self._answer_fn: Any = None
 
@@ -235,16 +234,16 @@ class HTMLExtractionEvaluator:
         return self._extractor
 
     @property
-    def llmlingua(self) -> Any:
-        """Lazy-load LLMLingua compressor for baseline."""
-        if self._llmlingua is None and self.compare_baseline:
+    def kompress(self) -> Any:
+        """Lazy-load Kompress compressor for baseline."""
+        if self._kompress is None and self.compare_baseline:
             try:
-                from headroom.transforms.llmlingua_compressor import LLMLinguaCompressor
+                from headroom.transforms.kompress_compressor import KompressCompressor
 
-                self._llmlingua = LLMLinguaCompressor()
+                self._kompress = KompressCompressor()
             except ImportError:
-                logger.warning("LLMLingua not available for baseline comparison")
-        return self._llmlingua
+                logger.warning("Kompress not available for baseline comparison")
+        return self._kompress
 
     @property
     def judge_fn(self) -> Callable[[str, str, str], tuple[float, str]]:
@@ -429,14 +428,14 @@ Answer concisely and factually based only on the content provided."""
             answer_from_extracted,
         )
 
-        # Optionally compare with LLMLingua baseline
+        # Optionally compare with Kompress baseline
         baseline_answer = None
         baseline_score = None
         baseline_reasoning = None
 
-        if self.compare_baseline and self.llmlingua:
+        if self.compare_baseline and self.kompress:
             try:
-                baseline_result = self.llmlingua.compress(case.html)
+                baseline_result = self.kompress.compress(case.html)
                 baseline_content = baseline_result.compressed
                 baseline_answer = self._get_answer(baseline_content, case.question)
                 baseline_score, baseline_reasoning = self.judge_fn(

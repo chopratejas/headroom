@@ -755,10 +755,10 @@ class TestJSONAPIResponseEval:
 
     @pytest.fixture
     def compressor(self):
-        """Create compressor with simple compression (no LLMLingua for tests)."""
+        """Create compressor with simple compression (no Kompress for tests)."""
         config = UniversalCompressorConfig(
             use_magika=False,  # Use fallback for consistent tests
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -885,7 +885,7 @@ class TestCodeFileEval:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -969,7 +969,7 @@ class TestLogOutputEval:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -1031,7 +1031,7 @@ class TestMultiToolAgentScenario:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -1129,7 +1129,7 @@ class TestCompressionQualityMetrics:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
             compression_ratio_target=0.3,  # Target 70% reduction
         )

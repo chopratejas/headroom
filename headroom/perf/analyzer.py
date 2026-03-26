@@ -562,7 +562,7 @@ def _generate_recommendations(report: PerfReport) -> list[str]:
         if len(slow) > len(report.perf_records) * 0.2:
             recs.append(
                 f"{len(slow)} requests took >500ms for optimization — "
-                "consider disabling LLMLingua or reducing transform pipeline"
+                "consider reducing transform pipeline"
             )
 
     if report.router_records:

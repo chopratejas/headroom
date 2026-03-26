@@ -253,34 +253,6 @@ class MLModelRegistry:
             return result
 
     # =========================================================================
-    # LLMLingua (uses existing singleton pattern)
-    # =========================================================================
-
-    @classmethod
-    def get_llmlingua(cls, device: str | None = None, model_name: str | None = None) -> Any:
-        """Get the LLMLingua compressor.
-
-        Note: LLMLingua already has its own singleton in llmlingua_compressor.py.
-        This method delegates to that implementation.
-
-        Args:
-            device: Device to use. Auto-detected if None.
-            model_name: Model name (default: microsoft/llmlingua-2-xlm-roberta-large-meetingbank).
-
-        Returns:
-            PromptCompressor instance.
-        """
-        from headroom.transforms.llmlingua_compressor import _get_llmlingua_compressor
-
-        if device is None:
-            device = cls._detect_device()
-
-        if model_name is None:
-            model_name = ML_MODEL_DEFAULTS.llmlingua
-
-        return _get_llmlingua_compressor(model_name=model_name, device=device)
-
-    # =========================================================================
     # Utility Methods
     # =========================================================================
 

@@ -40,7 +40,7 @@ class TransformPipeline:
     Transform order:
     1. Cache Aligner - normalize prefix for cache hits
     2. Content Router - intelligent content-aware compression (routes to appropriate
-       compressor: LLMLingua for text, SmartCrusher for JSON, CodeCompressor for code, etc.)
+       compressor: Kompress for text, SmartCrusher for JSON, CodeCompressor for code, etc.)
     3. SmartCrusher/ToolCrusher - fallback if ContentRouter disabled
     4. IntelligentContextManager/RollingWindow - enforce token limits
     """

@@ -619,7 +619,7 @@ class HeadroomConfig:
     prefix_freeze: PrefixFreezeConfig = field(default_factory=PrefixFreezeConfig)
 
     # Content Router - intelligent content-type based compression
-    # Routes content to appropriate compressor (LLMLingua for text, SmartCrusher for JSON,
+    # Routes content to appropriate compressor (Kompress for text, SmartCrusher for JSON,
     # CodeCompressor for code, LogCompressor for logs, etc.)
     content_router_enabled: bool = True
 

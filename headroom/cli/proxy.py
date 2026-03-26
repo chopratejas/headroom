@@ -21,20 +21,6 @@ from .main import main
 @click.option("--no-rate-limit", is_flag=True, help="Disable rate limiting")
 @click.option("--log-file", default=None, help="Path to JSONL log file")
 @click.option("--budget", type=float, default=None, help="Daily budget limit in USD")
-# LLMLingua ML-based compression (ON by default if installed)
-@click.option("--no-llmlingua", is_flag=True, help="Disable LLMLingua-2 ML-based compression")
-@click.option(
-    "--llmlingua-device",
-    type=click.Choice(["auto", "cuda", "cpu", "mps"]),
-    default="auto",
-    help="Device for LLMLingua model (default: auto)",
-)
-@click.option(
-    "--llmlingua-rate",
-    type=float,
-    default=0.3,
-    help="LLMLingua compression rate 0.0-1.0 (default: 0.3 = keep 30%)",
-)
 # Code-aware compression (ON by default if installed)
 @click.option("--no-code-aware", is_flag=True, help="Disable AST-based code compression")
 # Read lifecycle (ON by default: compresses stale/superseded Read outputs)
@@ -149,9 +135,6 @@ def proxy(
     no_rate_limit: bool,
     log_file: str | None,
     budget: float | None,
-    no_llmlingua: bool,
-    llmlingua_device: str,
-    llmlingua_rate: float,
     no_code_aware: bool,
     no_read_lifecycle: bool,
     no_intelligent_context: bool,
@@ -225,10 +208,6 @@ def proxy(
         rate_limit_enabled=not no_rate_limit,
         log_file=log_file,
         budget_limit_usd=budget,
-        # LLMLingua: ON by default (use --no-llmlingua to disable)
-        llmlingua_enabled=not no_llmlingua,
-        llmlingua_device=llmlingua_device,
-        llmlingua_target_rate=llmlingua_rate,
         # Code-aware: ON by default (use --no-code-aware to disable)
         code_aware_enabled=not no_code_aware,
         # Read lifecycle: ON by default (use --no-read-lifecycle to disable)

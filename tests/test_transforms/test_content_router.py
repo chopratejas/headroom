@@ -156,7 +156,6 @@ class TestContentRouterConfig:
 
         assert config.enable_code_aware is True
         assert config.enable_kompress is True
-        assert config.enable_llmlingua is True
         assert config.enable_smart_crusher is True
         assert config.enable_search_compressor is True
         assert config.enable_log_compressor is True
@@ -168,13 +167,11 @@ class TestContentRouterConfig:
         config = ContentRouterConfig(
             min_section_tokens=50,
             enable_code_aware=False,
-            enable_llmlingua=False,
             fallback_strategy=CompressionStrategy.TEXT,
         )
 
         assert config.min_section_tokens == 50
         assert config.enable_code_aware is False
-        assert config.enable_llmlingua is False
         assert config.fallback_strategy == CompressionStrategy.TEXT
 
     def test_all_strategies_in_enum(self):
@@ -184,7 +181,6 @@ class TestContentRouterConfig:
             "SMART_CRUSHER",
             "SEARCH",
             "LOG",
-            "LLMLINGUA",
             "TEXT",
             "MIXED",
             "PASSTHROUGH",

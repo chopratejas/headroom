@@ -413,7 +413,7 @@ class TestAlternativeMarkerFormats:
     - TextCompressor: [N lines compressed to M. Retrieve more: hash=xxx]
     - LogCompressor: [N lines compressed to M. Retrieve more: hash=xxx]
     - SearchCompressor: [N matches compressed to M. Retrieve more: hash=xxx]
-    - LLMLingua: [N items compressed to M. Retrieve more: hash=xxx]
+    - Kompress: [N items compressed to M. Retrieve more: hash=xxx]
 
     The CCRToolInjector should detect all these formats.
     """

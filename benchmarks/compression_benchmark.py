@@ -44,13 +44,13 @@ try:
 except ImportError:
     HEADROOM_AVAILABLE = False
 
-# LLMLingua imports (SOTA baseline)
+# Kompress imports (ML baseline)
 try:
-    from headroom.transforms.llmlingua_compressor import LLMLinguaCompressor, LLMLinguaConfig
+    from headroom.transforms.kompress_compressor import KompressCompressor, is_kompress_available
 
-    LLMLINGUA_AVAILABLE = True
+    KOMPRESS_AVAILABLE = is_kompress_available()
 except ImportError:
-    LLMLINGUA_AVAILABLE = False
+    KOMPRESS_AVAILABLE = False
 
 
 @dataclass
@@ -427,27 +427,21 @@ Provide a structured summary that retains all critical details."""
     return summary, cost, latency
 
 
-def llmlingua_compress(data: list[dict]) -> tuple[str, dict]:
+def kompress_compress(data: list[dict]) -> tuple[str, dict]:
     """
-    Use LLMLingua-2 (Microsoft SOTA) for ML-based compression.
+    Use Kompress (ModernBERT) for ML-based compression.
     Returns (compressed_text, metadata).
     """
-    if not LLMLINGUA_AVAILABLE:
-        raise RuntimeError(
-            "LLMLingua not available. Install with: pip install headroom-ai[llmlingua]"
-        )
+    if not KOMPRESS_AVAILABLE:
+        raise RuntimeError("Kompress not available. Install with: pip install headroom-ai[ml]")
 
-    config = LLMLinguaConfig(
-        target_compression_rate=0.3,  # Keep ~30% of tokens
-        min_tokens_for_compression=50,
-    )
-    compressor = LLMLinguaCompressor(config)
+    compressor = KompressCompressor()
 
-    # Convert data to string for LLMLingua (it works on text, not structured data)
+    # Convert data to string for Kompress (it works on text, not structured data)
     data_str = json.dumps(data, indent=2)
 
     start = time.time()
-    result = compressor.compress(data_str, content_type="json")
+    result = compressor.compress(data_str)
     latency = (time.time() - start) * 1000
 
     metadata = {
@@ -590,7 +584,7 @@ class BenchmarkConfig:
     max_truncate_items: int = 20
     max_headroom_items: int = 20
     run_summarization: bool = True  # Can disable to save cost
-    run_llmlingua: bool = True  # Run LLMLingua-2 (SOTA baseline)
+    run_kompress: bool = True  # Run Kompress (ML baseline)
 
 
 def run_scenario_benchmark(
@@ -701,12 +695,12 @@ def run_scenario_benchmark(
         except Exception as e:
             print(f"   Summarization failed: {e}")
 
-    # --- LLMLINGUA-2 (SOTA) ---
-    if config.run_llmlingua:
-        print("\n[3/4] Running LLMLingua-2 (Microsoft SOTA)...")
-        if LLMLINGUA_AVAILABLE:
+    # --- KOMPRESS (ML baseline) ---
+    if config.run_kompress:
+        print("\n[3/4] Running Kompress (ModernBERT ML baseline)...")
+        if KOMPRESS_AVAILABLE:
             try:
-                ll_compressed, ll_metadata = llmlingua_compress(scenario.data)
+                ll_compressed, ll_metadata = kompress_compress(scenario.data)
                 ll_tokens = count_tokens(ll_compressed)
 
                 ll_answers = []
@@ -729,7 +723,7 @@ def run_scenario_benchmark(
 
                 results.append(
                     ApproachResult(
-                        approach="llmlingua-2",
+                        approach="kompress",
                         scenario=scenario.name,
                         tokens_original=original_tokens,
                         tokens_after=ll_tokens,
@@ -747,9 +741,9 @@ def run_scenario_benchmark(
                 print(f"   Accuracy: {ll_accuracy:.1%}")
                 print(f"   Compression latency: {ll_metadata['latency_ms']:.1f}ms")
             except Exception as e:
-                print(f"   LLMLingua-2 failed: {e}")
+                print(f"   Kompress failed: {e}")
         else:
-            print("   LLMLingua-2 not available. Install with: pip install headroom-ai[llmlingua]")
+            print("   Kompress not available. Install with: pip install headroom-ai[ml]")
 
     # --- HEADROOM ---
     print("\n[4/4] Running Headroom...")

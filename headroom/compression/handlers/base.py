@@ -181,7 +181,7 @@ class BaseStructureHandler(ABC):
 
         Subclasses may override for more sophisticated tokenization.
         For mask purposes, character-level is often sufficient and
-        aligns well with LLMLingua's token-level compression.
+        aligns well with token-level compression.
 
         Args:
             content: Content to tokenize.

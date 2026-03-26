@@ -22,7 +22,7 @@ class TestUniversalCompressorConfig:
         config = UniversalCompressorConfig()
 
         assert config.use_magika is True
-        assert config.use_llmlingua is True
+        assert config.use_kompress is True
         assert config.use_entropy_preservation is True
         assert config.entropy_threshold == 0.85
         assert config.min_content_length == 100
@@ -99,7 +99,7 @@ class TestUniversalCompressor:
         """Create compressor with fallback detector (no Magika required)."""
         config = UniversalCompressorConfig(
             use_magika=False,  # Use fallback detector
-            use_llmlingua=False,  # Use simple compression
+            use_kompress=False,  # Use simple compression
             ccr_enabled=False,  # Skip CCR
         )
         return UniversalCompressor(config=config)
@@ -215,7 +215,7 @@ class TestUniversalCompressorBatch:
         """Create compressor with fallback detector."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
@@ -262,7 +262,7 @@ class TestStructurePreservation:
         """Create compressor."""
         config = UniversalCompressorConfig(
             use_magika=False,
-            use_llmlingua=False,
+            use_kompress=False,
             ccr_enabled=False,
         )
         return UniversalCompressor(config=config)
