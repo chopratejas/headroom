@@ -68,8 +68,11 @@ nav:
     - CCR (Compress-Cache-Retrieve): ccr.md
     - Configuration: configuration.md
   - Integrations:
+    - Integration Guide: integration-guide.md
     - LangChain: langchain.md
     - Agno: agno.md
+    - Strands: strands.md
+    - MCP Tools: mcp.md
   - Advanced:
     - LLMLingua: llmlingua.md
     - Text Compression: text-compression.md

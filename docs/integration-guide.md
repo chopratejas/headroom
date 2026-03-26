@@ -235,7 +235,7 @@ See [Agno Guide](agno.md) for hooks, multi-provider, and streaming.
 
 ## LangChain
 
-> **Experimental.** Core compression works. Streaming callbacks and async chains are still being tested.
+Full integration with LangChain — chat models, memory, retrievers, tool wrappers, and streaming.
 
 ```python
 from langchain_openai import ChatOpenAI
@@ -289,4 +289,4 @@ Headroom stores originals in CCR (Compress-Cache-Retrieve). The LLM can call `he
 Yes. Compression happens before the request is sent. Streaming responses are unaffected.
 
 **Q: How much latency does it add?**
-1-5ms for compression. The token savings typically save more time on the LLM side than compression adds.
+15-200ms depending on content size and type. Small JSON arrays take ~15ms, large tool outputs take 100-200ms. The token savings typically save far more time on the LLM side than compression adds — a 50% token reduction on a Sonnet call saves seconds of generation time. See [Latency Benchmarks](LATENCY_BENCHMARKS.md) for real numbers.

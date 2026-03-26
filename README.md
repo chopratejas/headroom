@@ -7,7 +7,7 @@
     Every tool call, DB query, file read, and RAG retrieval your agent makes is 70-95% boilerplate.<br>
     Headroom compresses it away before it hits the model.<br><br>
     Works with <b>any agent</b> — coding agents (Claude Code, Codex, Cursor, Aider), custom agents<br>
-    (LangChain, LangGraph, CrewAI, Agno, OpenAI Agents SDK), or your own Python code.
+    (LangChain, LangGraph, Agno, Strands), or your own Python code.
   </p>
 </p>
 
@@ -83,7 +83,7 @@ response = client.messages.create(model="claude-sonnet-4-5-20250929", messages=r
 print(f"Saved {result.tokens_saved} tokens ({result.compression_ratio:.0%})")
 ```
 
-Works with any Python LLM client — Anthropic, OpenAI, LiteLLM, Bedrock, httpx, anything. Works with any agent framework — LangChain, LangGraph, CrewAI, Agno, OpenAI Agents SDK, or your own code.
+Works with any Python LLM client — Anthropic, OpenAI, LiteLLM, Bedrock, httpx, anything. Works with any agent framework — LangChain, LangGraph, Agno, Strands, or your own code.
 
 ### Any agent — proxy (zero code changes)
 
@@ -140,7 +140,7 @@ Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `h
 | **LiteLLM** | Callback | `litellm.callbacks = [HeadroomCallback()]` |
 | **Any Python proxy** | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
 | **Agno agents** | Wrap model | `HeadroomAgnoModel(your_model)` |
-| **LangChain** | Wrap model | `HeadroomChatModel(your_llm)` *(experimental)* |
+| **LangChain** | Wrap model | `HeadroomChatModel(your_llm)` |
 | **Claude Code** | Wrap | `headroom wrap claude` |
 | **Codex / Aider** | Wrap | `headroom wrap codex` or `headroom wrap aider` |
 
@@ -285,7 +285,7 @@ Context compression is a new space. Here's how the approaches differ:
 
 | | Approach | Scope | Deploy as | Framework integrations | Data stays local? | Reversible |
 |---|---|---|---|---|---|---|
-| **Headroom** | Multi-algorithm compression | All context (tool outputs, DB reads, RAG, files, logs, history) | Proxy, Python library, ASGI middleware, or callback | LangChain, Agno, LiteLLM, Strands, MCP | Yes (OSS) | Yes (CCR) |
+| **Headroom** | Multi-algorithm compression | All context (tool outputs, DB reads, RAG, files, logs, history) | Proxy, Python library, ASGI middleware, or callback | LangChain, LangGraph, Agno, Strands, LiteLLM, MCP | Yes (OSS) | Yes (CCR) |
 | **[RTK](https://github.com/rtk-ai/rtk)** | CLI command rewriter | Shell command outputs | CLI wrapper | None | Yes (OSS) | No |
 | **[Compresr](https://compresr.ai)** | Cloud compression API | Text sent to their API | API call | None | No | No |
 | **[Token Company](https://thetokencompany.ai)** | Cloud compression API | Text sent to their API | API call | None | No | No |
@@ -338,7 +338,7 @@ Context compression is a new space. Here's how the approaches differ:
 | Agno | **Stable** | [Agno Guide](docs/agno.md) |
 | MCP (Claude Code, Cursor, etc.) | **Stable** | [MCP Guide](docs/mcp.md) |
 | Strands | **Stable** | [Strands Guide](docs/strands.md) |
-| LangChain | **Experimental** | [LangChain Guide](docs/langchain.md) |
+| LangChain | **Stable** | [LangChain Guide](docs/langchain.md) |
 
 ---
 

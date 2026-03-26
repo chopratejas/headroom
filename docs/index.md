@@ -33,15 +33,16 @@ That's it. Your existing code works unchanged, with 40-90% fewer tokens.
 ### Option 2: Python SDK
 
 ```python
-from headroom import Headroom
+from headroom import compress
 
-hr = Headroom()
+# Compress messages before sending to LLM
+result = compress(messages, model="claude-sonnet-4-5-20250929")
+response = client.messages.create(
+    model="claude-sonnet-4-5-20250929",
+    messages=result.messages,
+)
 
-# Compress tool output before sending to LLM
-compressed = hr.compress(large_tool_output)
-
-# If LLM needs the full data, retrieve it
-original = hr.retrieve(compressed)
+print(f"Saved {result.tokens_saved} tokens ({result.compression_ratio:.0%})")
 ```
 
 ---
@@ -109,6 +110,19 @@ Your App → Headroom → LLM Provider
     from headroom.integrations.agno import HeadroomAgnoModel
 
     model = HeadroomAgnoModel(OpenAIChat(id="gpt-4o"))
+    agent = Agent(model=model)
+    ```
+
+=== "Strands"
+
+    ```python
+    from strands import Agent
+    from strands.models.bedrock import BedrockModel
+    from headroom.integrations.strands import HeadroomStrandsModel
+
+    model = HeadroomStrandsModel(wrapped_model=BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0"
+    ))
     agent = Agent(model=model)
     ```
 
