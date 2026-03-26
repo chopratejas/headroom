@@ -60,33 +60,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .utils import extract_user_query as _extract_user_query
+
 logger = logging.getLogger(__name__)
-
-
-def _extract_user_query(messages: list[dict[str, Any]]) -> str:
-    """Extract the most recent user question from messages.
-
-    This context is passed through the pipeline so that transforms like
-    SmartCrusher can score items by relevance to the user's actual question,
-    not just by statistical properties (position, anomaly, boundary).
-
-    Without this, RAG retriever output gets compressed incorrectly:
-    SmartCrusher keeps boundary items (first/last) and statistical anomalies,
-    which may be the LEAST relevant chunks.
-    """
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-            # Handle Anthropic list-of-content-blocks format
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = str(block.get("text", "")).strip()
-                        if text:
-                            return text
-    return ""
 
 
 # Lazy-initialized singleton pipeline

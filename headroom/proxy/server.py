@@ -106,6 +106,7 @@ from headroom.transforms import (
     TransformPipeline,
     is_tree_sitter_available,
 )
+from headroom.utils import extract_user_query
 
 # Image compression (lazy-loaded to avoid heavy dependencies at startup)
 _image_compressor = None
@@ -2412,6 +2413,7 @@ class HeadroomProxy:
                                 messages=working_messages,
                                 model=model,
                                 model_limit=context_limit,
+                                context=extract_user_query(working_messages),
                                 frozen_message_count=frozen_message_count,
                                 biases=biases,
                             )
@@ -2438,6 +2440,7 @@ class HeadroomProxy:
                                 messages=messages,
                                 model=model,
                                 model_limit=context_limit,
+                                context=extract_user_query(messages),
                                 frozen_message_count=frozen_message_count,
                                 biases=biases,
                             )
@@ -3251,6 +3254,7 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    context=extract_user_query(messages),
                 )
 
                 optimized_messages = result.messages
@@ -3703,6 +3707,7 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    context=extract_user_query(messages),
                 )
 
                 optimized_messages = result.messages
@@ -5183,6 +5188,7 @@ class HeadroomProxy:
                                 messages=working_messages,
                                 model=model,
                                 model_limit=context_limit,
+                                context=extract_user_query(working_messages),
                                 frozen_message_count=openai_frozen_count,
                                 biases=_hook_biases,
                             )
@@ -5207,6 +5213,7 @@ class HeadroomProxy:
                                 messages=messages,
                                 model=model,
                                 model_limit=context_limit,
+                                context=extract_user_query(messages),
                                 frozen_message_count=openai_frozen_count,
                                 biases=_hook_biases,
                             )
@@ -5950,6 +5957,7 @@ class HeadroomProxy:
                             messages=messages,
                             model=model,
                             model_limit=context_limit,
+                            context=extract_user_query(messages),
                         )
                         compressed_messages = result.messages
                         # Use pipeline's token counts for consistency with pipeline logs
@@ -6435,6 +6443,7 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    context=extract_user_query(messages),
                 )
                 if result.messages != messages:
                     optimized_messages = result.messages
@@ -6728,6 +6737,7 @@ class HeadroomProxy:
                     messages=messages,
                     model=model,
                     model_limit=context_limit,
+                    context=extract_user_query(messages),
                 )
                 if result.messages != messages:
                     optimized_messages = result.messages

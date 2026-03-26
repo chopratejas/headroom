@@ -43,6 +43,27 @@ def fast_hash(data: str | bytes, length: int = 16) -> str:
     return hashlib.md5(data).hexdigest()[:length]
 
 
+def extract_user_query(messages: list[dict[str, Any]]) -> str:
+    """Extract the most recent user question from messages.
+
+    Used to pass context through the compression pipeline so transforms like
+    SmartCrusher can score items by relevance to the user's actual question,
+    not just by statistical properties (position, anomaly, boundary).
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = str(block.get("text", "")).strip()
+                        if text:
+                            return text
+    return ""
+
+
 def compute_messages_hash(messages: list[dict[str, Any]]) -> str:
     """Compute hash of messages list for deduplication."""
     # Serialize deterministically
