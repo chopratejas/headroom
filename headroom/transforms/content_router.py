@@ -416,6 +416,12 @@ class ContentRouterConfig:
     ccr_enabled: bool = True  # Enable CCR marker injection for reversible compression
     ccr_inject_marker: bool = True  # Add retrieval markers to compressed content
 
+    # Tag protection: preserve custom/workflow XML tags from text compression.
+    # When False (default), entire <custom-tag>content</custom-tag> blocks are
+    # protected verbatim.  When True, only the tag markers are protected and
+    # the content between them can be compressed.
+    compress_tagged_content: bool = False
+
     # Tools to exclude from compression (output passed through unmodified)
     # Set to None to use DEFAULT_EXCLUDE_TOOLS, or provide custom set
     exclude_tools: set[str] | None = None
@@ -1042,6 +1048,10 @@ class ContentRouter(Transform):
         Kompress (ModernBERT, trained on 330K structured tool outputs)
         auto-downloads from HuggingFace on first use. No heuristic fallback.
 
+        Custom/workflow XML tags (<system-reminder>, <tool_call>, <thinking>)
+        are protected before compression and restored after.  Standard HTML
+        tags are left alone (HTMLExtractor handles those separately).
+
         Args:
             content: Content to compress.
             context: User context.
@@ -1050,27 +1060,58 @@ class ContentRouter(Transform):
         Returns:
             Tuple of (compressed, token_count).
         """
+        from .tag_protector import protect_tags, restore_tags
+
+        # Protect custom tags before any ML compression
+        cleaned, protected = protect_tags(
+            content,
+            compress_tagged_content=self.config.compress_tagged_content,
+        )
+
+        # If the entire content is custom tags with nothing to compress
+        if protected and not cleaned.strip():
+            return content, len(content.split())
+
+        # Use the cleaned (tag-free) text for compression
+        text_to_compress = cleaned if protected else content
+        compressed: str | None = None
+        compressed_tokens: int | None = None
+
         # Primary: Kompress — downloads from chopratejas/kompress-base on first use
         if self.config.enable_kompress:
             compressor = self._get_kompress()
             if compressor:
                 try:
-                    result = compressor.compress(content, context=context, question=question)
-                    return result.compressed, result.compressed_tokens
+                    result = compressor.compress(
+                        text_to_compress, context=context, question=question
+                    )
+                    compressed = result.compressed
+                    compressed_tokens = result.compressed_tokens
                 except Exception as e:
                     logger.warning("Kompress failed: %s", e)
 
         # Fallback: LLMLingua (only if Kompress not installed)
-        if self.config.enable_llmlingua:
+        if compressed is None and self.config.enable_llmlingua:
             compressor = self._get_llmlingua()
             if compressor:
                 try:
-                    result = compressor.compress(content, context=context, question=question)
-                    return result.compressed, result.compressed_tokens
+                    result = compressor.compress(
+                        text_to_compress, context=context, question=question
+                    )
+                    compressed = result.compressed
+                    compressed_tokens = result.compressed_tokens
                 except Exception as e:
                     logger.warning("LLMLingua failed: %s", e)
 
-        return content, len(content.split())
+        if compressed is None:
+            return content, len(content.split())
+
+        # Restore protected tag blocks into the compressed text
+        if protected:
+            compressed = restore_tags(compressed, protected)
+            compressed_tokens = len(compressed.split())
+
+        return compressed, compressed_tokens or len(compressed.split())
 
     # Backwards compatibility
     _try_llmlingua = _try_ml_compressor
