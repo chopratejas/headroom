@@ -364,7 +364,7 @@ describe("openAIToVercel", () => {
             type: "tool-result",
             toolCallId: "tc_1",
             toolName: "unknown",
-            result: { data: true },
+            output: { type: "json", value: { data: true } },
           },
         ],
       },
@@ -380,7 +380,7 @@ describe("openAIToVercel", () => {
       },
     ];
     const result = openAIToVercel(msgs);
-    expect(result[0].content[0].result).toBe("plain text result");
+    expect(result[0].content[0].output).toEqual({ type: "text", value: "plain text result" });
   });
 });
 

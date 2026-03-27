@@ -1,5 +1,7 @@
 export { compress } from "./compress.js";
 export { HeadroomClient } from "./client.js";
+export { detectFormat, toOpenAI, fromOpenAI } from "./utils/format.js";
+export type { MessageFormat } from "./utils/format.js";
 
 export type {
   TextContentPart,
