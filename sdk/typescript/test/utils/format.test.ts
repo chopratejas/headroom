@@ -327,7 +327,7 @@ describe("openAIToVercel", () => {
       type: "tool-call",
       toolCallId: "tc_1",
       toolName: "search",
-      args: { q: "test" },
+      input: { q: "test" },
     });
   });
 
@@ -347,7 +347,7 @@ describe("openAIToVercel", () => {
     ];
     const result = openAIToVercel(msgs);
     expect(result[0].content).toEqual([
-      { type: "tool-call", toolCallId: "tc_1", toolName: "fn", args: {} },
+      { type: "tool-call", toolCallId: "tc_1", toolName: "fn", input: {} },
     ]);
   });
 
@@ -428,7 +428,7 @@ describe("round-trip conversion", () => {
       type: "tool-call",
       toolCallId: "tc_1",
       toolName: "search",
-      args: { q: "test" },
+      input: { q: "test" },
     });
   });
 });

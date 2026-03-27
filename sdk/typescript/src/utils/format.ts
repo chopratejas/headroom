@@ -253,7 +253,8 @@ export function vercelToOpenAI(messages: any[]): OpenAIMessage[] {
         openaiMsg.tool_calls = toolCallParts.map((p: any): ToolCall => ({
           id: p.toolCallId,
           type: "function",
-          function: { name: p.toolName, arguments: JSON.stringify(p.args) },
+          // AI SDK v6 uses `input`, earlier versions used `args`
+          function: { name: p.toolName, arguments: JSON.stringify(p.input ?? p.args) },
         }));
       }
       result.push(openaiMsg);
@@ -318,13 +319,13 @@ export function openAIToVercel(messages: OpenAIMessage[]): any[] {
       if (msg.content) parts.push({ type: "text", text: msg.content });
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
-          let args: any;
-          try { args = JSON.parse(tc.function.arguments); } catch { args = tc.function.arguments ?? {}; }
+          let input: any;
+          try { input = JSON.parse(tc.function.arguments); } catch { input = tc.function.arguments ?? {}; }
           parts.push({
             type: "tool-call",
             toolCallId: tc.id,
             toolName: tc.function.name,
-            args,
+            input, // AI SDK v6 uses `input`, not `args`
           });
         }
       }
