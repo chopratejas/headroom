@@ -2411,8 +2411,10 @@ class HeadroomProxy:
 
         # Hook: pre_compress — let hooks modify messages before compression
         from headroom.transforms.query_echo import extract_user_query
+
         if self.config.hooks:
             from headroom.hooks import CompressContext
+
             _hook_ctx = CompressContext(
                 model=model,
                 user_query=extract_user_query(messages),
