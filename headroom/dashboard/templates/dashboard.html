@@ -54,6 +54,29 @@
     </header>
 
     <main class="p-6 max-w-7xl mx-auto">
+        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">
+            <div>
+                <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">Dashboard View</div>
+                <div class="inline-flex rounded-lg border border-border bg-surface p-1">
+                    <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
+                            :class="viewMode === 'live' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
+                            @click="viewMode = 'live'">
+                        Current / Live
+                    </button>
+                    <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
+                            :class="viewMode === 'history' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
+                            @click="viewMode = 'history'">
+                        Historical
+                    </button>
+                </div>
+            </div>
+            <div class="text-xs text-gray-500" x-show="viewMode === 'history'">
+                Stored at <span class="font-mono text-gray-400" x-text="historyStats.storage_path || '~/.headroom/proxy_savings.json'"></span>
+            </div>
+        </div>
+
+        <template x-if="viewMode === 'live'">
+            <div>
         <!-- Hero Metrics (reordered: Savings $ -> Tokens Saved % -> Quality Confidence -> Overhead) -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <!-- Savings ($) - Combined: compression + prefix cache -->
@@ -507,6 +530,172 @@
                 </table>
             </div>
         </div>
+            </div>
+        </template>
+
+        <template x-if="viewMode === 'history'">
+            <div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Lifetime Compression Savings</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums text-emerald-400"
+                                  x-text="'$' + formatCurrency(historyStats.lifetime?.compression_savings_usd || 0)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500">
+                            Proxy compression only
+                        </div>
+                    </div>
+
+                    <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Lifetime Tokens Saved</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums text-accent"
+                                  x-text="formatNumber(historyStats.lifetime?.tokens_saved || 0)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500"
+                             x-text="formatNumber((historyStats.history || []).length) + ' recorded checkpoints'"></div>
+                    </div>
+
+                    <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Active Days</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums"
+                                  x-text="formatNumber((historyStats.series?.daily || []).length)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500" x-text="historyWindowLabel"></div>
+                    </div>
+
+                    <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Average Saved / Day</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums"
+                                  x-text="formatNumber(historyAverageTokensPerDay)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500">Based on persisted daily buckets</div>
+                    </div>
+                </div>
+
+                <template x-if="hasHistoricalData">
+                    <div>
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+                            <div class="bg-surface rounded-lg p-4 border border-border lg:col-span-2">
+                                <div class="flex justify-between items-center mb-4">
+                                    <span class="text-sm font-medium text-gray-300">Historical Savings Trend</span>
+                                    <span class="text-xs text-gray-500 font-mono" x-text="historyTrendLabel"></span>
+                                </div>
+                                <template x-if="historicalTrend.length >= 2">
+                                    <div class="h-48">
+                                        <svg class="w-full h-full" viewBox="0 0 200 64" preserveAspectRatio="none">
+                                            <defs>
+                                                <linearGradient id="history-trend-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                                    <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:0.2"/>
+                                                    <stop offset="100%" style="stop-color:#22d3ee;stop-opacity:0"/>
+                                                </linearGradient>
+                                            </defs>
+                                            <path :d="getObjectTrendArea(historicalTrend, 'total_tokens_saved')"
+                                                  fill="url(#history-trend-gradient)"></path>
+                                            <path class="trend-line"
+                                                  :d="getObjectTrendLine(historicalTrend, 'total_tokens_saved')"></path>
+                                        </svg>
+                                    </div>
+                                </template>
+                                <template x-if="historicalTrend.length < 2">
+                                    <div class="h-48 flex items-center justify-center text-sm text-gray-500 italic">
+                                        Historical trend data will appear after more saved checkpoints.
+                                    </div>
+                                </template>
+                            </div>
+
+                            <div class="bg-surface rounded-lg p-4 border border-border">
+                                <div class="text-sm font-medium mb-4 text-gray-300">Historical Summary</div>
+                                <div class="space-y-3">
+                                    <div class="flex justify-between items-center">
+                                        <span class="text-sm text-gray-400">Latest total</span>
+                                        <span class="font-mono text-sm"
+                                              x-text="formatNumber(historyStats.lifetime?.tokens_saved || 0) + ' tokens'"></span>
+                                    </div>
+                                    <div class="flex justify-between items-center">
+                                        <span class="text-sm text-gray-400">Hourly buckets</span>
+                                        <span class="font-mono text-sm"
+                                              x-text="formatNumber((historyStats.series?.hourly || []).length)"></span>
+                                    </div>
+                                    <div class="flex justify-between items-center">
+                                        <span class="text-sm text-gray-400">Daily buckets</span>
+                                        <span class="font-mono text-sm"
+                                              x-text="formatNumber((historyStats.series?.daily || []).length)"></span>
+                                    </div>
+                                    <div class="flex justify-between items-center">
+                                        <span class="text-sm text-gray-400">Retention</span>
+                                        <span class="font-mono text-sm"
+                                              x-text="(historyStats.retention?.max_history_age_days || 0) + 'd / ' + formatNumber(historyStats.retention?.max_history_points || 0)"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <div class="bg-surface rounded-lg p-4 border border-border">
+                                <div class="text-sm font-medium mb-4 text-gray-300">Daily Savings</div>
+                                <template x-if="(historyStats.series?.daily || []).length > 0">
+                                    <div class="space-y-3">
+                                        <template x-for="point in recentDailyHistory" :key="point.timestamp">
+                                            <div class="flex items-center justify-between">
+                                                <div>
+                                                    <div class="text-sm text-gray-300" x-text="formatDate(point.timestamp)"></div>
+                                                    <div class="text-xs text-gray-500"
+                                                         x-text="formatNumber(point.total_tokens_saved) + ' cumulative'"></div>
+                                                </div>
+                                                <div class="text-right">
+                                                    <div class="font-mono text-sm text-accent"
+                                                         x-text="formatNumber(point.tokens_saved) + ' tokens'"></div>
+                                                    <div class="text-xs text-emerald-400"
+                                                         x-text="'$' + formatCurrency(point.compression_savings_usd_delta || 0)"></div>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="(historyStats.series?.daily || []).length === 0">
+                                    <div class="text-sm text-gray-500 italic py-8 text-center">
+                                        Daily rollups will appear after persisted history spans at least one checkpoint.
+                                    </div>
+                                </template>
+                            </div>
+
+                            <div class="bg-surface rounded-lg p-4 border border-border">
+                                <div class="text-sm font-medium mb-4 text-gray-300">Recent Historical Checkpoints</div>
+                                <div class="space-y-3">
+                                    <template x-for="point in recentHistoricalPoints" :key="point.timestamp">
+                                        <div class="flex items-center justify-between">
+                                            <div>
+                                                <div class="text-sm text-gray-300" x-text="formatDateTime(point.timestamp)"></div>
+                                                <div class="text-xs text-gray-500">Cumulative proxy compression savings</div>
+                                            </div>
+                                            <div class="text-right">
+                                                <div class="font-mono text-sm text-accent"
+                                                     x-text="formatNumber(point.total_tokens_saved) + ' tokens'"></div>
+                                                <div class="text-xs text-emerald-400"
+                                                     x-text="'$' + formatCurrency(point.compression_savings_usd || 0)"></div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+
+                <template x-if="!hasHistoricalData">
+                    <div class="bg-surface rounded-lg border border-border p-10 text-center">
+                        <div class="text-lg text-gray-300 mb-2">No persisted savings history yet</div>
+                        <div class="text-sm text-gray-500 max-w-2xl mx-auto">
+                            Historical data is written locally after proxy requests save tokens. Keep using Headroom and this view will fill in automatically across restarts.
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </template>
 
     </main>
 
@@ -526,9 +715,11 @@
         function dashboard() {
             return {
                 stats: {},
+                historyStats: {},
                 healthy: true,
                 version: '0.3.0',
                 lastUpdate: 'never',
+                viewMode: 'live',
                 requestHistory: [],
                 savingsHistory: [],
                 expandedRows: {},
@@ -548,12 +739,14 @@
 
                 async fetchStats() {
                     try {
-                        const [statsRes, healthRes] = await Promise.all([
+                        const [statsRes, historyRes, healthRes] = await Promise.all([
                             fetch('/stats'),
+                            fetch('/stats-history'),
                             fetch('/health')
                         ]);
 
                         this.stats = await statsRes.json();
+                        this.historyStats = await historyRes.json();
                         const health = await healthRes.json();
                         this.healthy = health.status === 'healthy';
                         this.version = health.version || '0.3.0';
@@ -600,11 +793,75 @@
                     return d.toLocaleTimeString();
                 },
 
+                formatDate(ts) {
+                    if (!ts) return '-';
+                    return new Date(ts).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                    });
+                },
+
+                formatDateTime(ts) {
+                    if (!ts) return '-';
+                    return new Date(ts).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                    });
+                },
+
                 truncateModel(model) {
                     if (!model) return '-';
                     return model.replace(/^(anthropic\.|openai\.|bedrock\/)/, '')
                                .replace(/-\d{8}$/, '')
                                .substring(0, 20);
+                },
+
+                // --- Historical View ---
+
+                get hasHistoricalData() {
+                    return (this.historyStats.history || []).length > 0;
+                },
+
+                get historicalTrend() {
+                    const daily = this.historyStats.series?.daily || [];
+                    if (daily.length >= 2) return daily;
+                    const hourly = this.historyStats.series?.hourly || [];
+                    if (hourly.length >= 2) return hourly;
+                    return this.historyStats.history || [];
+                },
+
+                get historyTrendLabel() {
+                    const daily = this.historyStats.series?.daily || [];
+                    if (daily.length >= 2) return 'Daily cumulative savings';
+                    const hourly = this.historyStats.series?.hourly || [];
+                    if (hourly.length >= 2) return 'Hourly cumulative savings';
+                    return 'Checkpoint history';
+                },
+
+                get historyWindowLabel() {
+                    const history = this.historyStats.history || [];
+                    if (history.length === 0) return 'Waiting for saved requests';
+                    const first = history[0]?.timestamp;
+                    const last = history[history.length - 1]?.timestamp;
+                    if (!first || !last) return 'Persisted locally';
+                    return this.formatDate(first) + ' to ' + this.formatDate(last);
+                },
+
+                get historyAverageTokensPerDay() {
+                    const daily = this.historyStats.series?.daily || [];
+                    const lifetime = this.historyStats.lifetime?.tokens_saved || 0;
+                    if (daily.length === 0) return 0;
+                    return Math.round(lifetime / daily.length);
+                },
+
+                get recentDailyHistory() {
+                    return [...(this.historyStats.series?.daily || [])].slice(-7).reverse();
+                },
+
+                get recentHistoricalPoints() {
+                    return [...(this.historyStats.history || [])].slice(-8).reverse();
                 },
 
                 // --- Prefix Cache ---
@@ -759,7 +1016,7 @@
 
                 getTrendLine(history) {
                     if (!history || history.length < 2) return '';
-                    const values = history.map(h => h[1]);
+                    const values = history.map(h => Array.isArray(h) ? h[1] : (h?.total_tokens_saved || 0));
                     const min = Math.min(...values);
                     const max = Math.max(...values);
                     const range = max - min || 1;
@@ -776,6 +1033,29 @@
                 getTrendArea(history) {
                     if (!history || history.length < 2) return '';
                     const line = this.getTrendLine(history);
+                    if (!line) return '';
+                    return line + ` L200,64 L0,64 Z`;
+                },
+
+                getObjectTrendLine(history, valueKey) {
+                    if (!history || history.length < 2) return '';
+                    const values = history.map(point => point?.[valueKey] || 0);
+                    const min = Math.min(...values);
+                    const max = Math.max(...values);
+                    const range = max - min || 1;
+
+                    const points = values.map((value, index) => {
+                        const x = (index / (values.length - 1)) * 200;
+                        const y = 60 - ((value - min) / range) * 56;
+                        return `${x},${y}`;
+                    });
+
+                    return 'M' + points.join(' L');
+                },
+
+                getObjectTrendArea(history, valueKey) {
+                    if (!history || history.length < 2) return '';
+                    const line = this.getObjectTrendLine(history, valueKey);
                     if (!line) return '';
                     return line + ` L200,64 L0,64 Z`;
                 },
