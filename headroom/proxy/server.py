@@ -2410,10 +2410,9 @@ class HeadroomProxy:
         original_tokens = tokenizer.count_messages(messages)
 
         # Hook: pre_compress — let hooks modify messages before compression
+        from headroom.transforms.query_echo import extract_user_query
         if self.config.hooks:
             from headroom.hooks import CompressContext
-            from headroom.transforms.query_echo import extract_user_query
-
             _hook_ctx = CompressContext(
                 model=model,
                 user_query=extract_user_query(messages),
