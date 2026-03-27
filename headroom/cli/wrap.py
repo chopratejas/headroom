@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import signal
@@ -21,6 +22,12 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+
+# Fix Windows cp1252 encoding — box-drawing characters require UTF-8
+if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
+    if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 import click
 
@@ -68,10 +75,15 @@ def _start_proxy(port: int, *, learn: bool = False) -> subprocess.Popen:
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
 
+    # Ensure proxy subprocess uses UTF-8 (Windows defaults to cp1252)
+    proxy_env = os.environ.copy()
+    proxy_env["PYTHONIOENCODING"] = "utf-8"
+
     proc = subprocess.Popen(
         cmd,
         stdout=log_file,
         stderr=log_file,
+        env=proxy_env,
     )
 
     # Wait for proxy to be ready (up to 15 seconds)
