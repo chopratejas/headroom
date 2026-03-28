@@ -2053,6 +2053,26 @@ class HeadroomProxy:
                 tags[tag_name] = value
         return tags
 
+    @staticmethod
+    def _prepare_forwarding_headers(request: Request) -> dict:
+        """Prepare headers for forwarding to upstream APIs.
+
+        Strips hop-by-hop headers and accept-encoding to prevent
+        content-encoding mismatches. When a client (e.g. Codex GUI) sends
+        Accept-Encoding values the proxy's HTTP client doesn't support
+        (like zstd), the upstream may return compressed data that cannot
+        be decoded, causing UnicodeDecodeError crashes.
+
+        By removing accept-encoding, httpx negotiates its own supported
+        encodings with the upstream API.
+        """
+        headers = dict(request.headers.items())
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers.pop("accept-encoding", None)
+        headers.pop("transfer-encoding", None)
+        return headers
+
     def _inject_system_context(
         self,
         messages: list[dict[str, Any]],
@@ -2343,9 +2363,7 @@ class HeadroomProxy:
                     )
 
         # Extract headers and tags
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
         tags = self._extract_tags(headers)
 
         # Rate limiting
@@ -2901,7 +2919,7 @@ class HeadroomProxy:
                 resp_json = None
                 try:
                     resp_json = response.json()
-                except (json.JSONDecodeError, ValueError) as e:
+                except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
                     logger.debug(
                         f"[{request_id}] Failed to parse response JSON for CCR handling: {e}"
                     )
@@ -3275,9 +3293,7 @@ class HeadroomProxy:
             )
 
         # Extract headers
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
 
         # Track compression stats across all batch requests
         total_original_tokens = 0
@@ -3457,8 +3473,7 @@ class HeadroomProxy:
         if request.url.query:
             url = f"{url}?{request.url.query}"
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
+        headers = self._prepare_forwarding_headers(request)
 
         body = await request.body()
 
@@ -3552,8 +3567,7 @@ class HeadroomProxy:
         if request.url.query:
             url = f"{url}?{request.url.query}"
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
+        headers = self._prepare_forwarding_headers(request)
 
         response = await self.http_client.get(url, headers=headers)  # type: ignore[union-attr]
 
@@ -3569,7 +3583,7 @@ class HeadroomProxy:
             )
 
         # Parse results - Anthropic batch results are JSONL format
-        raw_content = response.content.decode("utf-8")
+        raw_content = response.content.decode("utf-8", errors="replace")
         results = []
         for line in raw_content.strip().split("\n"):
             if line.strip():
@@ -3711,9 +3725,7 @@ class HeadroomProxy:
             return await self._google_batch_passthrough(request, model, body)
 
         # Extract headers
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
 
         # Track compression stats
         total_original_tokens = 0
@@ -3925,9 +3937,7 @@ class HeadroomProxy:
         """Pass through Google batch request without modification."""
         start_time = time.time()
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
 
         url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:batchGenerateContent"
 
@@ -3988,8 +3998,7 @@ class HeadroomProxy:
         if request.url.query:
             url = f"{url}?{request.url.query}"
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
+        headers = self._prepare_forwarding_headers(request)
 
         # Handle API key
         api_key = headers.pop("x-goog-api-key", None)
@@ -4103,8 +4112,7 @@ class HeadroomProxy:
         if request.url.query:
             url = f"{url}?{request.url.query}"
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
+        headers = self._prepare_forwarding_headers(request)
 
         # Handle API key
         api_key = headers.pop("x-goog-api-key", None)
@@ -4130,7 +4138,7 @@ class HeadroomProxy:
         # Parse response
         try:
             response_data = response.json()
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             # Not JSON - pass through
             response_headers = dict(response.headers)
             response_headers.pop("content-encoding", None)
@@ -5150,9 +5158,7 @@ class HeadroomProxy:
                         f"{compressor.last_result.compressed_tokens} tokens)"
                     )
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
         tags = self._extract_tags(headers)
 
         # Rate limiting
@@ -5533,7 +5539,13 @@ class HeadroomProxy:
                     # These are charged at 50% of the input price
                     prompt_details = usage.get("prompt_tokens_details", {})
                     cache_read_tokens = prompt_details.get("cached_tokens", 0)
-                except (KeyError, TypeError, AttributeError) as e:
+                except (
+                    KeyError,
+                    TypeError,
+                    AttributeError,
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                ) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI response: {e}"
                     )
@@ -5639,8 +5651,7 @@ class HeadroomProxy:
         if request.url.query:
             url = f"{url}?{request.url.query}"
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
+        headers = self._prepare_forwarding_headers(request)
 
         body = await request.body()
 
@@ -5796,9 +5807,7 @@ class HeadroomProxy:
             # Pass through for other endpoints
             return await self._batch_passthrough(request, body)
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
 
         try:
             # Step 1: Download the input file from OpenAI
@@ -6078,9 +6087,7 @@ class HeadroomProxy:
 
     async def _batch_passthrough(self, request: Request, body: dict) -> Response:
         """Pass through batch request to OpenAI without compression."""
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
 
         url = f"{self.OPENAI_API_URL}/v1/batches"
         response = await self.http_client.post(url, json=body, headers=headers)  # type: ignore[union-attr]
@@ -6263,9 +6270,7 @@ class HeadroomProxy:
             # Input is already an array of message objects
             messages.extend(input_data)
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
         tags = self._extract_tags(headers)
 
         # Rate limiting
@@ -6319,7 +6324,13 @@ class HeadroomProxy:
                     usage = resp_json.get("usage", {})
                     total_input_tokens = usage.get("input_tokens", original_tokens)
                     output_tokens = usage.get("output_tokens", 0)
-                except (KeyError, TypeError, AttributeError) as e:
+                except (
+                    KeyError,
+                    TypeError,
+                    AttributeError,
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                ) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI passthrough response: {e}"
                     )
@@ -6408,9 +6419,7 @@ class HeadroomProxy:
 
         contents = body.get("contents", [])
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
         tags = self._extract_tags(headers)
 
         # Rate limiting (use Gemini API key)
@@ -6579,7 +6588,13 @@ class HeadroomProxy:
                     # Gemini returns cachedContentTokenCount for context-cached tokens
                     # These are charged at 10-25% of the input price depending on model
                     cache_read_tokens = usage.get("cachedContentTokenCount", 0)
-                except (KeyError, TypeError, AttributeError) as e:
+                except (
+                    KeyError,
+                    TypeError,
+                    AttributeError,
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                ) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from Gemini response: {e}"
                     )
@@ -6672,9 +6687,7 @@ class HeadroomProxy:
 
         contents = body.get("contents", [])
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
         tags = self._extract_tags(headers)
 
         # Token counting
@@ -6741,9 +6754,7 @@ class HeadroomProxy:
 
         contents = body.get("contents", [])
 
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
+        headers = self._prepare_forwarding_headers(request)
 
         # Convert Gemini format to messages for optimization
         system_instruction = body.get("systemInstruction")
@@ -6830,7 +6841,7 @@ class HeadroomProxy:
             try:
                 resp_json = response.json()
                 compressed_tokens = resp_json.get("totalTokens", 0)
-            except (json.JSONDecodeError, ValueError) as e:
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
                 logger.debug(f"[{request_id}] Failed to parse Gemini token count response: {e}")
 
             # Track stats
