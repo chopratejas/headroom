@@ -252,8 +252,7 @@ class TelemetryBeacon:
                     json=payload,
                     headers={
                         "apikey": _SUPABASE_KEY,
-                        # sb_publishable_ keys are not JWTs — don't send as Bearer token
-                        # (Supabase migrated from JWT anon keys to publishable keys in 2025)
+                        "Authorization": f"Bearer {_SUPABASE_KEY}",
                         "Content-Type": "application/json",
                         # Upsert: on conflict with session_id, merge (overwrite) the row
                         "Prefer": "resolution=merge-duplicates,return=minimal",
