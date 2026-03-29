@@ -56,6 +56,8 @@ export interface CompressOptions {
   fallback?: boolean;
   retries?: number;
   client?: HeadroomClientInterface;
+  /** Token budget — compress to fit within this limit. Used for compaction. */
+  tokenBudget?: number;
 }
 
 export interface CompressResult {
@@ -83,7 +85,7 @@ export interface HeadroomClientOptions {
 export interface HeadroomClientInterface {
   compress(
     messages: OpenAIMessage[],
-    options?: { model?: string },
+    options?: { model?: string; tokenBudget?: number },
   ): Promise<CompressResult>;
 }
 

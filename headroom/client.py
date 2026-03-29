@@ -734,9 +734,12 @@ class HeadroomClient:
 
         tokens_saved = tokens_before - result.tokens_after
 
-        # Estimate cost savings using provider
-        cost_before = estimate_cost(tokens_before, 500, model, provider=self._provider)
-        cost_after = estimate_cost(result.tokens_after, 500, model, provider=self._provider)
+        # Estimate cost savings using provider (use output_buffer tokens)
+        # Note: output_buffer reserves tokens for expected model output
+        cost_before = estimate_cost(tokens_before, output_buffer, model, provider=self._provider)
+        cost_after = estimate_cost(
+            result.tokens_after, output_buffer, model, provider=self._provider
+        )
 
         if cost_before is not None and cost_after is not None:
             savings = format_cost(cost_before - cost_after)

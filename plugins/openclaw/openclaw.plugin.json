@@ -1,0 +1,41 @@
+{
+  "id": "headroom",
+  "uiHints": {
+    "proxyUrl": {
+      "label": "Proxy URL",
+      "help": "URL of the Headroom proxy (auto-detected or auto-started if not set)"
+    },
+    "pythonPath": {
+      "label": "Python Path",
+      "help": "Path to Python binary (auto-detected if not set)"
+    },
+    "autoStart": {
+      "label": "Auto-Start Proxy",
+      "help": "Automatically start the Headroom proxy if not already running"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "proxyUrl": {
+        "type": "string"
+      },
+      "pythonPath": {
+        "type": "string"
+      },
+      "autoStart": {
+        "type": "boolean",
+        "default": true
+      },
+      "proxyPort": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535
+      }
+    }
+  }
+}
