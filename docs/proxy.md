@@ -104,6 +104,28 @@ Response:
 curl http://localhost:8787/stats
 ```
 
+`/stats` remains the live/session-oriented endpoint and now also includes a
+`persistent_savings` block with durable proxy compression lifetime totals plus a
+small recent preview. The existing `savings_history` field is still present and
+remains session-scoped for backward compatibility.
+
+### Historical Savings
+
+```bash
+curl http://localhost:8787/stats-history
+```
+
+`/stats-history` exposes durable proxy compression history for dashboards and
+other Headroom frontends. It returns:
+
+- lifetime proxy compression totals
+- bounded persisted checkpoint history
+- derived hourly and daily rollups for charts
+- UTC timestamps throughout
+
+By default the proxy stores this history at `~/.headroom/proxy_savings.json`.
+Set `HEADROOM_SAVINGS_PATH` to override the location.
+
 ### Prometheus Metrics
 
 ```bash
