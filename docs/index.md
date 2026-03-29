@@ -208,6 +208,20 @@ npm install headroom-ai
 
 </div>
 
+<div class="grid-item" markdown>
+
+### OpenClaw
+
+ContextEngine plugin for OpenClaw agents. Auto-compresses context in `assemble()`.
+
+```bash
+openclaw plugins install headroom-openclaw
+```
+
+[OpenClaw Plugin &rarr;](https://github.com/chopratejas/headroom/tree/main/plugins/openclaw)
+
+</div>
+
 </div>
 
 [All integration patterns &rarr;](integration-guide.md){ .md-button }
