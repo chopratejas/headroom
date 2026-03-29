@@ -163,9 +163,11 @@ export function openAIToAgent(messages: OpenAIMessage[]): any[] {
           });
         }
       }
+      // OpenClaw's Pi agent expects content to always be an array for assistant messages
+      // (it calls .flatMap() on it). Never flatten to a string.
       result.push({
         role: "assistant",
-        content: blocks.length === 1 && blocks[0].type === "text" ? blocks[0].text : blocks,
+        content: blocks,
         timestamp: Date.now(),
       });
       continue;

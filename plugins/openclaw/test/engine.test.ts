@@ -62,6 +62,23 @@ describe("AgentMessage conversion", () => {
     expect(back[0].content).toBe("hello");
   });
 
+  it("round-trips assistant text-only (content always array)", () => {
+    const original = [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello there!" }],
+        timestamp: Date.now(),
+      },
+    ];
+    const openai = agentToOpenAI(original);
+    const back = openAIToAgent(openai);
+    expect(back[0].role).toBe("assistant");
+    // OpenClaw requires content to ALWAYS be an array for assistant messages
+    const content = back[0].content;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content[0]).toEqual({ type: "text", text: "Hello there!" });
+  });
+
   it("round-trips assistant with tool calls", () => {
     const original = [
       {

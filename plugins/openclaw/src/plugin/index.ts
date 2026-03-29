@@ -4,18 +4,11 @@
  * Usage:
  *   openclaw plugins install @headroom-ai/openclaw
  *
- * Configuration (in ~/.openclaw/config.json):
+ * Configuration (in ~/.openclaw/config.json or ~/.clawdbot/clawdbot.json):
  *   {
  *     "plugins": {
  *       "slots": { "contextEngine": "headroom" },
- *       "entries": {
- *         "headroom": {
- *           "config": {
- *             "proxyUrl": "http://localhost:8787",  // optional, auto-detected
- *             "autoStart": true                      // start proxy if not running
- *           }
- *         }
- *       }
+ *       "entries": { "headroom": { "enabled": true } }
  *     }
  *   }
  */
@@ -39,7 +32,7 @@ export default function headroomPlugin(api: any) {
   // Register as context engine
   api.registerContextEngine("headroom", () => engine);
 
-  // Register CCR retrieval tool (available once proxy is running)
+  // Register CCR retrieval tool (active once proxy is running)
   api.registerTool((ctx: any) => {
     const proxyUrl = engine.getProxyUrl();
     if (!proxyUrl) return null;
