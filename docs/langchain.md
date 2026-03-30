@@ -340,6 +340,59 @@ print(f"Tokens saved: {llm.get_metrics()['tokens_saved']}")
 
 ---
 
+### Example 1b: LangGraph Custom Graph with compress_tool_messages Node
+
+If you're building a custom LangGraph `StateGraph` (instead of using `create_react_agent`),
+you can insert a compression node between tools and the agent. This compresses all
+`ToolMessage` content in the graph state before the LLM sees it.
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+from langgraph.graph import StateGraph, MessagesState, START, END
+from headroom.integrations.langchain import create_compress_tool_messages_node
+
+# Define your agent and tools nodes
+def agent_node(state: MessagesState):
+    llm = ChatOpenAI(model="gpt-4o")
+    response = llm.invoke(state["messages"])
+    return {"messages": [response]}
+
+def tools_node(state: MessagesState):
+    # Your tool execution logic here
+    ...
+
+# Build the graph with a compression step
+graph = StateGraph(MessagesState)
+graph.add_node("agent", agent_node)
+graph.add_node("tools", tools_node)
+graph.add_node("compress", create_compress_tool_messages_node(
+    min_tokens_to_compress=100,  # Only compress outputs > ~100 tokens
+))
+
+# Wire: tools -> compress -> agent (instead of tools -> agent directly)
+graph.add_edge(START, "agent")
+graph.add_edge("tools", "compress")
+graph.add_edge("compress", "agent")
+# ... add conditional edges from agent to tools/END as needed
+
+app = graph.compile()
+result = app.invoke({"messages": [HumanMessage(content="Find sales data")]})
+```
+
+You can also use `compress_tool_messages` directly as a standalone function:
+
+```python
+from headroom.integrations.langchain import compress_tool_messages
+
+# Compress ToolMessages in any list of LangChain messages
+result = compress_tool_messages(messages, min_tokens_to_compress=100)
+compressed_messages = result.messages
+print(f"Saved {result.total_tokens_saved} tokens across {result.messages_compressed} messages")
+```
+
+---
+
 ### Example 2: RAG Pipeline with Document Filtering
 
 ```python

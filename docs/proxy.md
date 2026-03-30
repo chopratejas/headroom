@@ -21,6 +21,8 @@ headroom proxy \
   --budget 100.0
 ```
 
+Telemetry is enabled by default. Opt out with `HEADROOM_TELEMETRY=off` or `headroom proxy --no-telemetry`. Downstream apps can set `HEADROOM_SDK=headroom-app` to override the anonymous telemetry `sdk` label; the default remains `proxy`.
+
 ## Command Line Options
 
 ### Core Options

@@ -29,7 +29,7 @@ export async function compress(
   messages: any[],
   options: CompressOptions = {},
 ): Promise<CompressResult> {
-  const { client: providedClient, model, ...clientOptions } = options;
+  const { client: providedClient, model, tokenBudget, ...clientOptions } = options;
 
   // Detect input format
   const inputFormat = detectFormat(messages);
@@ -39,7 +39,7 @@ export async function compress(
 
   // Compress via proxy
   const client = providedClient ?? new HeadroomClient(clientOptions);
-  const result = await client.compress(openaiMessages, { model });
+  const result = await client.compress(openaiMessages, { model, tokenBudget });
 
   // Convert compressed messages back to original format
   const outputMessages = fromOpenAI(result.messages, inputFormat);

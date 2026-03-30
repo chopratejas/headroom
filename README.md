@@ -7,7 +7,7 @@
     Every tool call, DB query, file read, and RAG retrieval your agent makes is 70-95% boilerplate.<br>
     Headroom compresses it away before it hits the model.<br><br>
     Works with <b>any agent</b> — coding agents (Claude Code, Codex, Cursor, Aider), custom agents<br>
-    (LangChain, LangGraph, Agno, Strands), or your own Python and TypeScript code.
+    (LangChain, LangGraph, Agno, Strands, OpenClaw), or your own Python and TypeScript code.
   </p>
 </p>
 
@@ -164,6 +164,7 @@ Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `h
 | **Any Python proxy** | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
 | **Agno agents** | Wrap model | `HeadroomAgnoModel(your_model)` |
 | **LangChain** | Wrap model | `HeadroomChatModel(your_llm)` |
+| **OpenClaw** | ContextEngine plugin | `openclaw plugins install headroom-openclaw` |
 | **Claude Code** | Wrap | `headroom wrap claude` |
 | **Codex / Aider** | Wrap | `headroom wrap codex` or `headroom wrap aider` |
 

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Adds `/stats-history` with lifetime totals plus hourly/daily rollups for frontends
   - Extends `/stats` with a `persistent_savings` block while keeping `savings_history` backward compatible
   - Adds a historical mode to `/dashboard` backed by `/stats-history`
+- **Proxy telemetry SDK override** via `HEADROOM_SDK`
+  - Downstream apps can override the anonymous telemetry `sdk` field without patching installed files
+  - Blank values fall back to the default `proxy` label
 - **`headroom learn`** — Offline failure learning for coding agents
   - Analyzes past conversation history (Claude Code, extensible to Cursor/Codex)
   - **Success correlation**: for each failure, finds what succeeded after and extracts the specific correction

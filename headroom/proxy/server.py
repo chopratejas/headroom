@@ -1211,7 +1211,7 @@ class CostTracker:
         # premium, uncached at list). Falls back to list price when cache
         # data is unavailable.
         cost_with_headroom = 0.0
-        cost_without_headroom = 0.0
+        total_billed_input_tokens = 0
         total_input_tokens = 0
         for model in self._tokens_saved_by_model:
             saved = self._tokens_saved_by_model[model]
@@ -1227,12 +1227,38 @@ class CostTracker:
                 if cr + cw + uncached > 0:
                     # Use API's real cache breakdown with LiteLLM pricing
                     model_cost = cr * cr_price + cw * cw_price + uncached * uncached_price
+                    billed_tokens = cr + cw + uncached
                 else:
                     # No cache data from API — fall back to list price
                     model_cost = sent * uncached_price
+                    billed_tokens = sent
                 cost_with_headroom += model_cost
-                # Counterfactual: saved tokens would have been new content at list price
-                cost_without_headroom += model_cost + saved * uncached_price
+                total_billed_input_tokens += billed_tokens
+
+        # Compression counterfactual: value removed tokens at the effective average
+        # $/input token observed in this tracker (actual spend / billed input tokens),
+        # not at uncached list price — aligns savings $ with real billing mix (cache
+        # reads, writes, uncached). Fallback to list-price-per-removed-token when
+        # there is no billable traffic yet.
+        if total_billed_input_tokens > 0:
+            avg_price_per_input_token = cost_with_headroom / total_billed_input_tokens
+            cost_without_headroom = cost_with_headroom + total_saved * avg_price_per_input_token
+        else:
+            cost_without_headroom = 0.0
+            for model in self._tokens_saved_by_model:
+                saved = self._tokens_saved_by_model[model]
+                sent = self._tokens_sent_by_model.get(model, 0)
+                cr = self._api_cache_read_by_model.get(model, 0)
+                cw = self._api_cache_write_by_model.get(model, 0)
+                uncached_tk = self._api_uncached_by_model.get(model, 0)
+                prices = self._get_cache_prices(model)
+                if prices:
+                    cr_price, cw_price, uncached_price = prices
+                    if cr + cw + uncached_tk > 0:
+                        model_cost = cr * cr_price + cw * cw_price + uncached_tk * uncached_price
+                    else:
+                        model_cost = sent * uncached_price
+                    cost_without_headroom += model_cost + saved * uncached_price
 
         return {
             "total_tokens_saved": total_saved,
@@ -2238,7 +2264,14 @@ class HeadroomProxy:
 
         try:
             # Use OpenAI pipeline (messages are in OpenAI format from TS SDK)
-            context_limit = self.openai_provider.get_context_limit(model)
+            # Allow optional token_budget to override model's context limit
+            # (used by OpenClaw compact() and other callers that need tighter budgets)
+            token_budget = body.get("token_budget")
+            context_limit = (
+                token_budget
+                if token_budget and isinstance(token_budget, int)
+                else self.openai_provider.get_context_limit(model)
+            )
             result = self.openai_pipeline.apply(
                 messages=messages,
                 model=model,
@@ -2419,6 +2452,8 @@ class HeadroomProxy:
         original_tokens = tokenizer.count_messages(messages)
 
         # Hook: pre_compress — let hooks modify messages before compression
+        from headroom.transforms.query_echo import extract_user_query
+
         if self.config.hooks:
             from headroom.hooks import CompressContext
 
@@ -6974,7 +7009,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     _beacon = TelemetryBeacon(
         port=config.port if hasattr(config, "port") else 8787,
-        sdk="proxy",
+        sdk=os.environ.get("HEADROOM_SDK", "proxy").strip() or "proxy",
         backend=config.backend if hasattr(config, "backend") else "anthropic",
     )
 
@@ -7103,6 +7138,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         summary = _build_session_summary(
             proxy, m, prefix_cache_stats, cli_tokens_avoided, total_tokens_before
         )
+        # DEBUG: log the summary payload for external upsert consumers
+        try:
+            logger.debug("/stats summary data: %r", summary)
+        except Exception:
+            logger.warning("Failed to log /stats summary payload")
 
         # Compression cache stats (token_headroom mode)
         compression_cache_stats: dict = {}

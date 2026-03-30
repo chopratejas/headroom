@@ -265,6 +265,26 @@ See the [TypeScript SDK Guide](typescript-sdk.md) for full documentation includi
 
 ---
 
+## OpenClaw
+
+Context compression plugin for [OpenClaw](https://github.com/openclaw/openclaw) agents.
+
+```bash
+pip install "headroom-ai[proxy]"
+openclaw plugins install headroom-openclaw
+```
+
+Configure as context engine:
+```json
+{ "plugins": { "slots": { "contextEngine": "headroom" } } }
+```
+
+The plugin auto-detects a running Headroom proxy or starts one. Compression happens in `assemble()` — zero changes to the agent's behavior.
+
+See the [OpenClaw plugin documentation](https://github.com/chopratejas/headroom/tree/main/plugins/openclaw) for full setup.
+
+---
+
 ## Compression Hooks (Advanced)
 
 Customize compression behavior without modifying Headroom's code:

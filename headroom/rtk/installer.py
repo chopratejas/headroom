@@ -125,6 +125,8 @@ def download_rtk(version: str | None = None) -> Path:
             [str(RTK_BIN_PATH), "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if result.returncode != 0:
@@ -153,6 +155,8 @@ def register_claude_hooks(rtk_path: Path | None = None) -> bool:
             [str(rtk_path), "init", "--global", "--auto-patch"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         if result.returncode == 0:

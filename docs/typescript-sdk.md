@@ -198,6 +198,10 @@ By default, `compress()` never blocks your app. If the proxy is unreachable:
 
 The `headroom-ai` package has no runtime dependencies. Framework SDKs (Vercel AI, OpenAI, Anthropic) are optional peer dependencies — only install what you use.
 
+## OpenClaw Plugin
+
+The TypeScript SDK powers the [`headroom-openclaw`](https://www.npmjs.com/package/headroom-openclaw) plugin for [OpenClaw](https://github.com/openclaw/openclaw) agents. The plugin uses `HeadroomClient` internally to compress context during the `assemble()` lifecycle hook. Install it with `openclaw plugins install headroom-openclaw`. See the [plugin source](https://github.com/chopratejas/headroom/tree/main/plugins/openclaw) for details.
+
 ## Comparison with Python SDK
 
 | Feature | Python SDK | TypeScript SDK |
