@@ -32,7 +32,7 @@ _SUPABASE_KEY = ".".join(
         "h_C6dLQKa8BVc3upgEvulR4E0K4eiEViyddRMIylKjU",
     ]
 )
-_TABLE = "proxy_telemetry"
+_TABLE = "proxy_telemetry_v2"
 _ENDPOINT = f"{_SUPABASE_URL}/rest/v1/{_TABLE}"
 
 # Report every 5 minutes
