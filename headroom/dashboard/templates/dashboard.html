@@ -33,12 +33,24 @@
 </head>
 <body class="text-gray-200 min-h-screen" x-data="dashboard()" x-init="init()">
     <!-- Header -->
-    <header class="border-b border-border px-6 py-4 flex items-center justify-between">
+    <header class="border-b border-border px-6 py-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div class="flex items-center gap-4">
             <h1 class="text-xl font-semibold tracking-tight">HEADROOM</h1>
             <span class="text-xs text-gray-500 font-mono" x-text="'v' + version"></span>
         </div>
-        <div class="flex items-center gap-6">
+        <div class="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
+            <div class="inline-flex rounded-lg border border-border bg-surface p-1">
+                <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
+                        :class="viewMode === 'session' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
+                        @click="viewMode = 'session'">
+                    Session
+                </button>
+                <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
+                        :class="viewMode === 'history' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
+                        @click="viewMode = 'history'">
+                    Historical
+                </button>
+            </div>
             <div class="flex items-center gap-2">
                 <span class="text-xs text-gray-500">Status</span>
                 <span class="flex items-center gap-1.5">
@@ -50,32 +62,14 @@
             <div class="text-xs text-gray-500">
                 Updated <span x-text="lastUpdate"></span>
             </div>
-        </div>
-    </header>
-
-    <main class="p-6 max-w-7xl mx-auto">
-        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">
-            <div>
-                <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">Dashboard View</div>
-                <div class="inline-flex rounded-lg border border-border bg-surface p-1">
-                    <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
-                            :class="viewMode === 'live' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
-                            @click="viewMode = 'live'">
-                        Current / Live
-                    </button>
-                    <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
-                            :class="viewMode === 'history' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
-                            @click="viewMode = 'history'">
-                        Historical
-                    </button>
-                </div>
-            </div>
             <div class="text-xs text-gray-500" x-show="viewMode === 'history'">
                 Stored at <span class="font-mono text-gray-400" x-text="historyStats.storage_path || '~/.headroom/proxy_savings.json'"></span>
             </div>
         </div>
+    </header>
 
-        <template x-if="viewMode === 'live'">
+    <main class="p-6 max-w-7xl mx-auto">
+        <template x-if="viewMode === 'session'">
             <div>
         <!-- Hero Metrics (reordered: Savings $ -> Tokens Saved % -> Quality Confidence -> Overhead) -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -719,7 +713,7 @@
                 healthy: true,
                 version: '0.3.0',
                 lastUpdate: 'never',
-                viewMode: 'live',
+                viewMode: 'session',
                 requestHistory: [],
                 savingsHistory: [],
                 expandedRows: {},

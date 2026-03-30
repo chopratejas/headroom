@@ -166,6 +166,6 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         response = client.get("/dashboard")
         assert response.status_code == 200
         html = response.text
-        assert "Current / Live" in html
+        assert "Session" in html
         assert "Historical" in html
         assert "fetch('/stats-history')" in html
