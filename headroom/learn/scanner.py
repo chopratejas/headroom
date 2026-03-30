@@ -154,9 +154,15 @@ class ClaudeCodeScanner(ConversationScanner):
             # Decode project path from escaped directory name. Fall back to a
             # simple slash replacement for display if we can't recover the real
             # on-disk path from the filesystem.
-            project_path = _decode_project_path(entry.name) or Path(
-                "/" + entry.name[1:].replace("-", "/")
-            )
+            project_path = _decode_project_path(entry.name)
+            if project_path is None:
+                # Fallback: detect Windows drive letter pattern (e.g., -C-MQ2-macros)
+                fallback_parts = entry.name[1:].split("-")
+                if len(fallback_parts[0]) == 1 and fallback_parts[0].isalpha():
+                    drive = fallback_parts[0].upper()
+                    project_path = Path(f"{drive}:\\" + "\\".join(fallback_parts[1:]))
+                else:
+                    project_path = Path("/" + entry.name[1:].replace("-", "/"))
 
             # Derive human-readable name
             name = project_path.name if project_path != Path("/") else entry.name
@@ -398,19 +404,41 @@ def _decode_project_path(escaped_name: str) -> Path | None:
     if not escaped_name.startswith("-"):
         return None
 
-    # Simple approach: replace all - with / and check if path exists
+    parts = escaped_name[1:].split("-")
+    if len(parts) < 2:
+        return None
+
+    # Windows drive letter detection: -C-Users-foo or -D-MQ2-macros
+    # First part is a single letter → treat as drive letter (C:\...)
+    if len(parts[0]) == 1 and parts[0].isalpha():
+        drive = parts[0].upper()
+        win_path = Path(f"{drive}:\\" + "\\".join(parts[1:]))
+        if win_path.exists():
+            return win_path
+        # Try greedy decode for Windows paths with hyphens in dir names
+        win_base = Path(f"{drive}:\\{parts[1]}") if len(parts) > 1 else win_path
+        if win_base.exists() and len(parts) > 2:
+            result = _greedy_path_decode(win_base, parts[2:])
+            if result:
+                return result
+
+    # Unix: simple approach — replace all - with / and check if path exists
     simple = Path("/" + escaped_name[1:].replace("-", "/"))
     if simple.exists():
         return simple
 
-    # Try common patterns: /Users/username/...
-    parts = escaped_name[1:].split("-")
+    # Try common Unix patterns: /Users/username/...
     if len(parts) < 3:
         return None
 
     # Build path greedily: try joining with / and check existence
-    # Start with /Users/username (first 2 components are almost always correct)
     if parts[0] == "Users" and len(parts) > 2:
+        base = Path(f"/{parts[0]}/{parts[1]}")
+        remaining = parts[2:]
+        return _greedy_path_decode(base, remaining)
+
+    # Try /home/username/... (Linux)
+    if parts[0] == "home" and len(parts) > 2:
         base = Path(f"/{parts[0]}/{parts[1]}")
         remaining = parts[2:]
         return _greedy_path_decode(base, remaining)
