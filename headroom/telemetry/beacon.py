@@ -208,8 +208,8 @@ class TelemetryBeacon:
         try:
             tokens = stats.get("tokens", {})
             total_req = stats.get("requests", {}).get("total", 1)
-            tokens_before = tokens.get("original", 0)
-            tokens_after = tokens.get("optimized", 0)
+            tokens_before = tokens.get("total_before_compression", 0)
+            tokens_after = tokens_before - tokens.get("saved", 0)
             payload.update(
                 {
                     "avg_tokens_before": round(tokens_before / max(total_req, 1)),
@@ -226,7 +226,7 @@ class TelemetryBeacon:
                 payload["compression_cache"] = {
                     "hit_rate": cc.get("hit_rate", 0),
                     "entries": cc.get("entries", 0),
-                    "avg_lookup_ns": cc.get("avg_lookup_ns", 0),
+                    "tokens_saved": cc.get("total_tokens_saved", 0),
                 }
         except Exception:
             logger.debug("Beacon: failed to extract cache stats", exc_info=True)

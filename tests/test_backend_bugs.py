@@ -1,9 +1,11 @@
 """Tests for backend bug fixes in LiteLLM and any-llm integrations.
 
 Tests tool forwarding, tool argument parsing, streaming param forwarding,
-and Vertex AI model mapping.
+message conversion (tool_use/tool_result), streaming tool_calls, and
+Vertex AI model mapping.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -194,6 +196,336 @@ class TestLiteLLMToolsForwarding:
             assert tool_block["type"] == "tool_use"
             assert tool_block["input"] == {"location": "Paris"}
             assert isinstance(tool_block["input"], dict)
+
+
+# =============================================================================
+# Message Conversion: tool_use / tool_result (GitHub Issue — Bug 2)
+# =============================================================================
+
+
+class TestConvertMessagesToolBlocks:
+    """Test that _convert_messages_for_litellm converts Anthropic tool blocks to OpenAI format."""
+
+    def _make_backend(self):
+        with patch("headroom.backends.litellm._fetch_bedrock_inference_profiles", return_value={}):
+            return LiteLLMBackend(provider="openrouter")
+
+    def test_tool_result_converted_to_tool_role(self):
+        """Anthropic tool_result blocks must become role=tool messages."""
+        backend = self._make_backend()
+        messages = [
+            {"role": "user", "content": "Weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "get_weather",
+                        "input": {"city": "Paris"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_01", "content": "Sunny, 22C"},
+                ],
+            },
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+
+        # assistant message should have tool_calls
+        assistant = converted[1]
+        assert assistant["role"] == "assistant"
+        assert "tool_calls" in assistant
+        assert assistant["tool_calls"][0]["id"] == "toolu_01"
+        assert assistant["tool_calls"][0]["type"] == "function"
+        assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert json.loads(assistant["tool_calls"][0]["function"]["arguments"]) == {"city": "Paris"}
+
+        # tool_result should become role=tool
+        tool_msg = converted[2]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "toolu_01"
+        assert tool_msg["content"] == "Sunny, 22C"
+
+    def test_tool_result_with_list_content(self):
+        """tool_result with list content should be flattened to string."""
+        backend = self._make_backend()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_02",
+                        "content": [
+                            {"type": "text", "text": "Line 1"},
+                            {"type": "text", "text": "Line 2"},
+                        ],
+                    },
+                ],
+            },
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+        assert converted[0]["role"] == "tool"
+        assert converted[0]["content"] == "Line 1\nLine 2"
+
+    def test_assistant_tool_use_with_text(self):
+        """Assistant message with both text and tool_use blocks."""
+        backend = self._make_backend()
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me check the weather."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_03",
+                        "name": "get_weather",
+                        "input": {"city": "Tokyo"},
+                    },
+                ],
+            },
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+        assert len(converted) == 1
+        assert converted[0]["role"] == "assistant"
+        assert converted[0]["content"] == "Let me check the weather."
+        assert converted[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    def test_simple_text_messages_unchanged(self):
+        """Plain string messages pass through."""
+        backend = self._make_backend()
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"},
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+        assert converted == messages
+
+    def test_multiple_tool_results(self):
+        """Multiple tool_result blocks in one user message → multiple role=tool messages."""
+        backend = self._make_backend()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_a", "content": "Result A"},
+                    {"type": "tool_result", "tool_use_id": "toolu_b", "content": "Result B"},
+                ],
+            },
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+        assert len(converted) == 2
+        assert converted[0]["role"] == "tool"
+        assert converted[0]["tool_call_id"] == "toolu_a"
+        assert converted[1]["role"] == "tool"
+        assert converted[1]["tool_call_id"] == "toolu_b"
+
+
+# =============================================================================
+# Streaming tool_calls (GitHub Issue — Bug 1)
+# =============================================================================
+
+
+class TestStreamMessageToolCalls:
+    """Test that stream_message emits tool_use blocks and correct stop_reason."""
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_tool_use_blocks(self):
+        """Tool calls in streaming should produce content_block_start with type=tool_use."""
+
+        async def mock_stream():
+            # First chunk: tool call start (id + name)
+            tc = MagicMock()
+            tc.index = 0
+            tc.id = "toolu_stream_01"
+            tc.function = MagicMock()
+            tc.function.name = "get_weather"
+            tc.function.arguments = ""
+
+            chunk1 = MagicMock()
+            chunk1.choices = [
+                MagicMock(delta=MagicMock(content=None, tool_calls=[tc]), finish_reason=None)
+            ]
+            yield chunk1
+
+            # Second chunk: arguments delta
+            tc2 = MagicMock()
+            tc2.index = 0
+            tc2.id = None
+            tc2.function = MagicMock()
+            tc2.function.name = None
+            tc2.function.arguments = '{"city":"Paris"}'
+
+            chunk2 = MagicMock()
+            chunk2.choices = [
+                MagicMock(delta=MagicMock(content=None, tool_calls=[tc2]), finish_reason=None)
+            ]
+            yield chunk2
+
+            # Final chunk: finish_reason=tool_calls
+            chunk3 = MagicMock()
+            chunk3.choices = [
+                MagicMock(
+                    delta=MagicMock(content=None, tool_calls=None), finish_reason="tool_calls"
+                )
+            ]
+            yield chunk3
+
+        with (
+            patch("headroom.backends.litellm.acompletion", new_callable=AsyncMock) as mock_acomp,
+            patch("headroom.backends.litellm._fetch_bedrock_inference_profiles", return_value={}),
+        ):
+            mock_acomp.return_value = mock_stream()
+            backend = LiteLLMBackend(provider="openrouter")
+
+            events = []
+            async for event in backend.stream_message(
+                {
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "weather?"}],
+                    "tools": [
+                        {
+                            "name": "get_weather",
+                            "description": "Get weather",
+                            "input_schema": {"type": "object"},
+                        }
+                    ],
+                },
+                {},
+            ):
+                events.append(event)
+
+        # Find content_block_start events
+        block_starts = [e for e in events if e.event_type == "content_block_start"]
+        assert len(block_starts) == 1
+        assert block_starts[0].data["content_block"]["type"] == "tool_use"
+        assert block_starts[0].data["content_block"]["id"] == "toolu_stream_01"
+        assert block_starts[0].data["content_block"]["name"] == "get_weather"
+
+        # Find input_json_delta events
+        json_deltas = [
+            e
+            for e in events
+            if e.event_type == "content_block_delta"
+            and e.data.get("delta", {}).get("type") == "input_json_delta"
+        ]
+        assert len(json_deltas) == 1
+        assert json_deltas[0].data["delta"]["partial_json"] == '{"city":"Paris"}'
+
+        # Check stop_reason is "tool_use"
+        msg_delta = [e for e in events if e.event_type == "message_delta"]
+        assert len(msg_delta) == 1
+        assert msg_delta[0].data["delta"]["stop_reason"] == "tool_use"
+
+    @pytest.mark.asyncio
+    async def test_stream_text_still_works(self):
+        """Pure text streaming should still work correctly."""
+
+        async def mock_stream():
+            chunk = MagicMock()
+            chunk.choices = [
+                MagicMock(delta=MagicMock(content="Hello!", tool_calls=None), finish_reason=None)
+            ]
+            yield chunk
+
+            chunk2 = MagicMock()
+            chunk2.choices = [
+                MagicMock(delta=MagicMock(content=None, tool_calls=None), finish_reason="stop")
+            ]
+            yield chunk2
+
+        with (
+            patch("headroom.backends.litellm.acompletion", new_callable=AsyncMock) as mock_acomp,
+            patch("headroom.backends.litellm._fetch_bedrock_inference_profiles", return_value={}),
+        ):
+            mock_acomp.return_value = mock_stream()
+            backend = LiteLLMBackend(provider="openrouter")
+
+            events = []
+            async for event in backend.stream_message(
+                {"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                {},
+            ):
+                events.append(event)
+
+        block_starts = [e for e in events if e.event_type == "content_block_start"]
+        assert len(block_starts) == 1
+        assert block_starts[0].data["content_block"]["type"] == "text"
+
+        text_deltas = [e for e in events if e.event_type == "content_block_delta"]
+        assert len(text_deltas) == 1
+        assert text_deltas[0].data["delta"]["text"] == "Hello!"
+
+        msg_delta = [e for e in events if e.event_type == "message_delta"]
+        assert msg_delta[0].data["delta"]["stop_reason"] == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_stream_text_then_tool(self):
+        """Text followed by tool call should produce two blocks."""
+
+        async def mock_stream():
+            # Text chunk
+            chunk1 = MagicMock()
+            chunk1.choices = [
+                MagicMock(
+                    delta=MagicMock(content="I'll check. ", tool_calls=None), finish_reason=None
+                )
+            ]
+            yield chunk1
+
+            # Tool call chunk
+            tc = MagicMock()
+            tc.index = 0
+            tc.id = "toolu_mixed"
+            tc.function = MagicMock()
+            tc.function.name = "search"
+            tc.function.arguments = '{"q":"test"}'
+
+            chunk2 = MagicMock()
+            chunk2.choices = [
+                MagicMock(delta=MagicMock(content=None, tool_calls=[tc]), finish_reason=None)
+            ]
+            yield chunk2
+
+            # Finish
+            chunk3 = MagicMock()
+            chunk3.choices = [
+                MagicMock(
+                    delta=MagicMock(content=None, tool_calls=None), finish_reason="tool_calls"
+                )
+            ]
+            yield chunk3
+
+        with (
+            patch("headroom.backends.litellm.acompletion", new_callable=AsyncMock) as mock_acomp,
+            patch("headroom.backends.litellm._fetch_bedrock_inference_profiles", return_value={}),
+        ):
+            mock_acomp.return_value = mock_stream()
+            backend = LiteLLMBackend(provider="openrouter")
+
+            events = []
+            async for event in backend.stream_message(
+                {"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+                {},
+            ):
+                events.append(event)
+
+        block_starts = [e for e in events if e.event_type == "content_block_start"]
+        assert len(block_starts) == 2
+        assert block_starts[0].data["content_block"]["type"] == "text"
+        assert block_starts[1].data["content_block"]["type"] == "tool_use"
+
+        # Two content_block_stop events (one per block)
+        block_stops = [e for e in events if e.event_type == "content_block_stop"]
+        assert len(block_stops) == 2
+
+        # stop_reason should be tool_use
+        msg_delta = [e for e in events if e.event_type == "message_delta"]
+        assert msg_delta[0].data["delta"]["stop_reason"] == "tool_use"
 
 
 # =============================================================================

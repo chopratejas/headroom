@@ -538,6 +538,73 @@ MAX_SSE_BUFFER_SIZE = 10 * 1024 * 1024
 # Maximum message array length (prevents DoS from deeply nested payloads)
 MAX_MESSAGE_ARRAY_LENGTH = 10000
 
+
+async def _read_request_json(request: Request) -> dict[str, Any]:
+    """Read and parse JSON from a request, handling compressed bodies.
+
+    Clients like OpenAI Codex may send zstd, gzip, or deflate-compressed
+    request bodies.  Starlette's ``request.json()`` does not decompress
+    automatically, causing a UnicodeDecodeError on compressed bytes.
+
+    This helper inspects ``Content-Encoding``, decompresses if needed,
+    then JSON-decodes the result.  It raises ``ValueError`` on any
+    decompression or parse failure so callers can return a clean 400.
+    """
+    encoding = (request.headers.get("content-encoding") or "").lower().strip()
+    raw = await request.body()
+
+    if encoding in ("zstd", "zstandard"):
+        try:
+            import zstandard
+
+            dctx = zstandard.ZstdDecompressor()
+            raw = dctx.decompress(raw)
+        except ImportError:
+            # Auto-detect: if bytes start with zstd magic (0x28 0xb5 0x2f 0xfd), fail clearly
+            raise ValueError(
+                "Request body is zstd-compressed but the 'zstandard' package is not installed. "
+                "Install it with: pip install zstandard"
+            ) from None
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress zstd request body: {exc}") from exc
+    elif encoding == "gzip":
+        import gzip as _gzip
+
+        try:
+            raw = _gzip.decompress(raw)
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress gzip request body: {exc}") from exc
+    elif encoding == "deflate":
+        import zlib
+
+        try:
+            raw = zlib.decompress(raw)
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress deflate request body: {exc}") from exc
+    elif encoding == "br":
+        try:
+            import brotli
+
+            raw = brotli.decompress(raw)
+        except ImportError:
+            raise ValueError(
+                "Request body is brotli-compressed but the 'brotli' package is not installed."
+            ) from None
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress brotli request body: {exc}") from exc
+    elif encoding and encoding != "identity":
+        raise ValueError(f"Unsupported Content-Encoding: {encoding}")
+
+    # Decode and parse JSON
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Request body is not valid UTF-8 (possibly compressed?): {exc}") from exc
+
+    result: dict[str, Any] = json.loads(text)
+    return result
+
+
 # Maximum compression cache sessions (prevents unbounded memory growth)
 MAX_COMPRESSION_CACHE_SESSIONS = 500
 
@@ -2195,7 +2262,13 @@ class HeadroomProxy:
         """
         # Check bypass header
         if request.headers.get("x-headroom-bypass", "").lower() == "true":
-            body = await request.json()
+            try:
+                body = await _read_request_json(request)
+            except (json.JSONDecodeError, ValueError) as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid request body: {e!s}"},
+                )
             messages = body.get("messages", [])
             return JSONResponse(
                 {
@@ -2210,7 +2283,7 @@ class HeadroomProxy:
             )
 
         try:
-            body = await request.json()
+            body = await _read_request_json(request)
         except Exception:
             return JSONResponse(
                 status_code=400,
@@ -2327,15 +2400,15 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "type": "error",
                     "error": {
                         "type": "invalid_request_error",
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                     },
                 },
             )
@@ -3288,15 +3361,15 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "type": "error",
                     "error": {
                         "type": "invalid_request_error",
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                     },
                 },
             )
@@ -3726,14 +3799,14 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
                         "code": 400,
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "status": "INVALID_ARGUMENT",
                     }
                 },
@@ -5138,13 +5211,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "type": "invalid_request_error",
                         "code": "invalid_json",
                     }
@@ -5735,7 +5808,7 @@ class HeadroomProxy:
         request_id = await self._next_request_id()
 
         try:
-            body = await request.json()
+            body = await _read_request_json(request)
         except Exception as e:
             logger.error(f"[{request_id}] Failed to parse Databricks request body: {e}")
             return JSONResponse(
@@ -5789,13 +5862,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "type": "invalid_request_error",
                         "code": "invalid_json",
                     }
@@ -6272,13 +6345,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "type": "invalid_request_error",
                         "code": "invalid_json",
                     }
@@ -6434,13 +6507,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "code": 400,
                     }
                 },
@@ -6698,13 +6771,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "code": 400,
                     }
                 },
@@ -6767,13 +6840,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "code": 400,
                     }
                 },

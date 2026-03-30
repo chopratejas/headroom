@@ -474,8 +474,12 @@ class LiteLLMBackend(Backend):
     def _convert_messages_for_litellm(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert Anthropic message format to LiteLLM/OpenAI format.
 
-        LiteLLM expects OpenAI-style messages but handles most Anthropic
-        content blocks automatically.
+        Anthropic and OpenAI have different representations for tool calls:
+        - Anthropic: assistant content blocks with type=tool_use, user content blocks with type=tool_result
+        - OpenAI: assistant message with tool_calls field, separate role=tool messages
+
+        This method converts Anthropic-style messages to OpenAI-style so LiteLLM
+        can send them to any provider.
         """
         converted = []
         for msg in messages:
@@ -489,24 +493,68 @@ class LiteLLMBackend(Backend):
 
             # Handle content blocks (Anthropic style)
             if isinstance(content, list):
-                # Check if it's simple text blocks only
+                # Separate blocks by type
                 text_parts = []
-                has_complex_content = False
+                tool_use_blocks = []
+                tool_result_blocks = []
 
                 for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif block.get("type") in ("tool_use", "tool_result", "image"):
-                            has_complex_content = True
-                            break
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type", "")
+                    if block_type == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif block_type == "tool_use":
+                        tool_use_blocks.append(block)
+                    elif block_type == "tool_result":
+                        tool_result_blocks.append(block)
 
-                if not has_complex_content and text_parts:
-                    # Simple text - join into single string
+                # tool_result blocks → OpenAI "tool" role messages
+                if tool_result_blocks:
+                    # Include any text from the user message first
+                    if text_parts:
+                        converted.append({"role": "user", "content": "\n".join(text_parts)})
+                    for tr in tool_result_blocks:
+                        tr_content = tr.get("content", "")
+                        if isinstance(tr_content, list):
+                            tr_content = "\n".join(
+                                b.get("text", "") for b in tr_content if b.get("type") == "text"
+                            )
+                        converted.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tr["tool_use_id"],
+                                "content": str(tr_content),
+                            }
+                        )
+                    continue
+
+                # tool_use blocks → OpenAI assistant message with tool_calls
+                if tool_use_blocks:
+                    assistant_msg: dict[str, Any] = {"role": "assistant"}
+                    if text_parts:
+                        assistant_msg["content"] = "\n".join(text_parts)
+                    else:
+                        assistant_msg["content"] = None
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": tu["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tu["name"],
+                                "arguments": json.dumps(tu.get("input", {})),
+                            },
+                        }
+                        for tu in tool_use_blocks
+                    ]
+                    converted.append(assistant_msg)
+                    continue
+
+                # Simple text only
+                if text_parts:
                     converted.append({"role": role, "content": "\n".join(text_parts)})
                 else:
-                    # Complex content - pass through (LiteLLM handles it)
-                    converted.append({"role": role, "content": content})
+                    converted.append({"role": role, "content": ""})
 
         return converted
 
@@ -662,7 +710,12 @@ class LiteLLMBackend(Backend):
         body: dict[str, Any],
         headers: dict[str, str],
     ) -> AsyncIterator[StreamEvent]:
-        """Stream message via LiteLLM."""
+        """Stream message via LiteLLM.
+
+        Translates OpenAI streaming chunks into Anthropic SSE events.
+        Handles both text content and tool_calls dynamically — block types
+        are emitted based on what LiteLLM actually returns, not hardcoded.
+        """
         original_model = body.get("model", "claude-3-5-sonnet-20241022")
         litellm_model = self.map_model_id(original_model)
 
@@ -691,6 +744,11 @@ class LiteLLMBackend(Backend):
                 system = body["system"]
                 if isinstance(system, str):
                     kwargs["messages"].insert(0, {"role": "system", "content": system})
+                elif isinstance(system, list):
+                    system_text = " ".join(
+                        s.get("text", "") if isinstance(s, dict) else str(s) for s in system
+                    )
+                    kwargs["messages"].insert(0, {"role": "system", "content": system_text})
 
             if self.provider == "bedrock" and self.region:
                 kwargs["aws_region_name"] = self.region
@@ -715,46 +773,126 @@ class LiteLLMBackend(Backend):
                 },
             )
 
-            # Emit content_block_start
-            yield StreamEvent(
-                event_type="content_block_start",
-                data={
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            )
-
-            # Stream content
+            # Stream content — blocks emitted dynamically based on response
             response = await acompletion(**kwargs)
             output_tokens = 0
+            current_block_index = -1
+            active_block_type: str | None = None  # "text" or "tool_use"
+            tool_block_map: dict[int, int] = {}  # litellm tc.index → SSE block index
+            stop_reason = "end_turn"
 
             async for chunk in response:
-                if hasattr(chunk, "choices") and chunk.choices:
-                    delta = chunk.choices[0].delta
-                    if hasattr(delta, "content") and delta.content:
+                if not hasattr(chunk, "choices") or not chunk.choices:
+                    continue
+
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                # Check finish_reason to set stop_reason
+                if choice.finish_reason == "tool_calls":
+                    stop_reason = "tool_use"
+                elif choice.finish_reason == "stop":
+                    stop_reason = "end_turn"
+                elif choice.finish_reason == "length":
+                    stop_reason = "max_tokens"
+
+                # Handle tool_calls in the delta
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index if tc.index is not None else 0
+                        if idx not in tool_block_map:
+                            # Close previous block if open
+                            if active_block_type is not None:
+                                yield StreamEvent(
+                                    event_type="content_block_stop",
+                                    data={
+                                        "type": "content_block_stop",
+                                        "index": current_block_index,
+                                    },
+                                )
+                            # Open a new tool_use block
+                            current_block_index += 1
+                            tool_block_map[idx] = current_block_index
+                            active_block_type = "tool_use"
+                            tool_id = tc.id or f"toolu_{uuid.uuid4().hex[:24]}"
+                            tool_name = tc.function.name if tc.function and tc.function.name else ""
+                            yield StreamEvent(
+                                event_type="content_block_start",
+                                data={
+                                    "type": "content_block_start",
+                                    "index": current_block_index,
+                                    "content_block": {
+                                        "type": "tool_use",
+                                        "id": tool_id,
+                                        "name": tool_name,
+                                        "input": {},
+                                    },
+                                },
+                            )
+
+                        # Emit argument deltas
+                        if tc.function and tc.function.arguments:
+                            block_idx = tool_block_map[idx]
+                            yield StreamEvent(
+                                event_type="content_block_delta",
+                                data={
+                                    "type": "content_block_delta",
+                                    "index": block_idx,
+                                    "delta": {
+                                        "type": "input_json_delta",
+                                        "partial_json": tc.function.arguments,
+                                    },
+                                },
+                            )
+                            output_tokens += 1
+
+                # Handle text content in the delta
+                elif hasattr(delta, "content") and delta.content:
+                    if active_block_type != "text":
+                        # Close previous block if open
+                        if active_block_type is not None:
+                            yield StreamEvent(
+                                event_type="content_block_stop",
+                                data={
+                                    "type": "content_block_stop",
+                                    "index": current_block_index,
+                                },
+                            )
+                        # Open a new text block
+                        current_block_index += 1
+                        active_block_type = "text"
                         yield StreamEvent(
-                            event_type="content_block_delta",
+                            event_type="content_block_start",
                             data={
-                                "type": "content_block_delta",
-                                "index": 0,
-                                "delta": {"type": "text_delta", "text": delta.content},
+                                "type": "content_block_start",
+                                "index": current_block_index,
+                                "content_block": {"type": "text", "text": ""},
                             },
                         )
-                        output_tokens += 1  # Rough estimate
 
-            # Emit content_block_stop
-            yield StreamEvent(
-                event_type="content_block_stop",
-                data={"type": "content_block_stop", "index": 0},
-            )
+                    yield StreamEvent(
+                        event_type="content_block_delta",
+                        data={
+                            "type": "content_block_delta",
+                            "index": current_block_index,
+                            "delta": {"type": "text_delta", "text": delta.content},
+                        },
+                    )
+                    output_tokens += 1
 
-            # Emit message_delta with stop reason
+            # Close the last open block
+            if active_block_type is not None:
+                yield StreamEvent(
+                    event_type="content_block_stop",
+                    data={"type": "content_block_stop", "index": current_block_index},
+                )
+
+            # Emit message_delta with correct stop reason
             yield StreamEvent(
                 event_type="message_delta",
                 data={
                     "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": None},
                     "usage": {"output_tokens": output_tokens},
                 },
             )
