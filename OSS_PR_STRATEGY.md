@@ -15,7 +15,7 @@ Contribute to popular LangChain ecosystem repos to demonstrate Headroom's value 
 - **What**: Core LangGraph framework
 - **PR**: Add `compress_tool_messages` pre-model hook example
 - **Issues it addresses**: #3717 (ToolMessage overflow), #11405 (agent token limit), #2140 (127K tokens from plugin)
-- **Status**: TODO
+- **Status**: DONE — `compress_tool_messages()` and `create_compress_tool_messages_node()` in `headroom/integrations/langchain/langgraph.py`
 
 ### Priority 3: `langchain-ai/deepagents` (~17K stars)
 - **What**: LangChain's coding agent (like Claude Code but OSS)

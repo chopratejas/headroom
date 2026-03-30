@@ -7,6 +7,8 @@ This package provides seamless integration with LangChain, including:
 - HeadroomToolWrapper: Tool output compression for agents
 - StreamingMetricsTracker: Token counting during streaming
 - HeadroomLangSmithCallbackHandler: LangSmith trace enrichment
+- compress_tool_messages: LangGraph pre-model hook for ToolMessage compression
+- create_compress_tool_messages_node: LangGraph node factory
 
 Example:
     from langchain_openai import ChatOpenAI
@@ -21,7 +23,6 @@ Example:
 Install: pip install headroom[langchain]
 """
 
-# Core chat model wrapper
 # Agent tool wrapping
 from .agents import (
     HeadroomToolWrapper,
@@ -31,6 +32,8 @@ from .agents import (
     reset_tool_metrics,
     wrap_tools_with_headroom,
 )
+
+# Core chat model wrapper
 from .chat_model import (
     HeadroomCallbackHandler,
     HeadroomChatModel,
@@ -38,6 +41,15 @@ from .chat_model import (
     OptimizationMetrics,
     langchain_available,
     optimize_messages,
+)
+
+# LangGraph integration
+from .langgraph import (
+    CompressToolMessagesConfig,
+    CompressToolMessagesResult,
+    ToolMessageCompressionMetrics,
+    compress_tool_messages,
+    create_compress_tool_messages_node,
 )
 
 # LangSmith integration
@@ -93,6 +105,12 @@ __all__ = [
     "wrap_tools_with_headroom",
     "get_tool_metrics",
     "reset_tool_metrics",
+    # LangGraph
+    "compress_tool_messages",
+    "create_compress_tool_messages_node",
+    "CompressToolMessagesConfig",
+    "CompressToolMessagesResult",
+    "ToolMessageCompressionMetrics",
     # LangSmith
     "HeadroomLangSmithCallbackHandler",
     "is_langsmith_available",
