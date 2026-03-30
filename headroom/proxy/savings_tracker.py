@@ -12,7 +12,7 @@ import logging
 import os
 import tempfile
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,11 +42,11 @@ def get_default_savings_storage_path() -> str:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _to_utc_iso(dt: datetime) -> str:
-    return dt.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -60,8 +60,8 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return None
 
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -187,7 +187,7 @@ class SavingsTracker:
         timestamp_dt = (
             _parse_timestamp(timestamp)
             if isinstance(timestamp, str)
-            else timestamp.astimezone(UTC)
+            else timestamp.astimezone(timezone.utc)
             if isinstance(timestamp, datetime)
             else _utc_now()
         )
