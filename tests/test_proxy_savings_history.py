@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("fastapi")
 
+import headroom.proxy.savings_tracker as savings_tracker_module
 from fastapi.testclient import TestClient
 
-from headroom.proxy.savings_tracker import SavingsTracker
+from headroom.proxy.savings_tracker import HEADROOM_SAVINGS_PATH_ENV_VAR, SavingsTracker
 from headroom.proxy.server import ProxyConfig, create_app
 
 
@@ -27,6 +30,193 @@ def _record_request(client: TestClient, *, model: str, tokens_saved: int) -> Non
             latency_ms=15.0,
         )
     )
+
+
+def test_savings_tracker_helpers_normalize_inputs_and_paths(tmp_path, monkeypatch):
+    override_path = tmp_path / "custom-savings.json"
+    monkeypatch.setenv(HEADROOM_SAVINGS_PATH_ENV_VAR, str(override_path))
+    assert savings_tracker_module.get_default_savings_storage_path() == str(override_path)
+
+    monkeypatch.delenv(HEADROOM_SAVINGS_PATH_ENV_VAR, raising=False)
+    default_path = savings_tracker_module.get_default_savings_storage_path()
+    assert default_path.endswith(".headroom/proxy_savings.json")
+
+    assert savings_tracker_module._parse_timestamp("") is None
+    assert savings_tracker_module._parse_timestamp("not-a-timestamp") is None
+    assert savings_tracker_module._parse_timestamp("2026-03-27T09:00:00") == datetime(
+        2026, 3, 27, 9, 0, tzinfo=timezone.utc
+    )
+
+    assert savings_tracker_module._coerce_int("7") == 7
+    assert savings_tracker_module._coerce_int(-5) == 0
+    assert savings_tracker_module._coerce_float("0.25") == pytest.approx(0.25)
+    assert savings_tracker_module._coerce_float(-0.25) == 0.0
+
+    assert savings_tracker_module._normalize_history_entry(
+        ["2026-03-27T09:00:00Z", "12", "0.5"]
+    ) == {
+        "timestamp": "2026-03-27T09:00:00Z",
+        "total_tokens_saved": 12,
+        "compression_savings_usd": 0.5,
+    }
+    assert savings_tracker_module._normalize_history_entry({"timestamp": "bad"}) is None
+    assert savings_tracker_module._normalize_history_entry(object()) is None
+
+
+def test_savings_tracker_sanitizes_legacy_state_and_applies_retention(tmp_path):
+    path = tmp_path / "proxy_savings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 0,
+                "lifetime": {
+                    "tokens_saved": 1,
+                    "compression_savings_usd": 0.001,
+                },
+                "history": [
+                    ["2026-03-24T08:00:00Z", 10, 0.01],
+                    {
+                        "timestamp": "2026-03-26T12:00:00Z",
+                        "total_tokens_saved": 20,
+                        "compression_savings_usd": 0.02,
+                    },
+                    {
+                        "timestamp": "2026-03-27T09:00:00Z",
+                        "total_tokens_saved": 30,
+                        "compression_savings_usd": 0.03,
+                    },
+                    {"timestamp": "bad", "total_tokens_saved": 999},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracker = SavingsTracker(path=str(path), max_history_points=1, max_history_age_days=2)
+    snapshot = tracker.snapshot()
+
+    assert snapshot["schema_version"] == 1
+    assert snapshot["lifetime"] == {
+        "tokens_saved": 30,
+        "compression_savings_usd": pytest.approx(0.03),
+    }
+    assert snapshot["history"] == [
+        {
+            "timestamp": "2026-03-27T09:00:00Z",
+            "total_tokens_saved": 30,
+            "compression_savings_usd": 0.03,
+        }
+    ]
+    assert snapshot["retention"] == {
+        "max_history_points": 1,
+        "max_history_age_days": 2,
+    }
+
+
+def test_non_dict_savings_state_resets_to_default(tmp_path):
+    path = tmp_path / "proxy_savings.json"
+    path.write_text("[]", encoding="utf-8")
+
+    tracker = SavingsTracker(path=str(path))
+    snapshot = tracker.snapshot()
+
+    assert snapshot["lifetime"] == {
+        "tokens_saved": 0,
+        "compression_savings_usd": 0.0,
+    }
+    assert snapshot["history"] == []
+
+
+def test_record_compression_savings_skips_empty_updates_and_normalizes_timestamps(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "proxy_savings.json"
+    tracker = SavingsTracker(path=str(path))
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_compression_savings_usd",
+        lambda model, tokens_saved: tokens_saved / 1000.0,
+    )
+
+    assert tracker.record_compression_savings(model="gpt-4o", tokens_saved=0) is False
+    assert not path.exists()
+
+    local_time = datetime(2026, 3, 27, 10, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert tracker.record_compression_savings(
+        model="gpt-4o",
+        tokens_saved=10,
+        timestamp=local_time,
+    )
+
+    fallback_time = datetime(2026, 3, 27, 12, 34, tzinfo=timezone.utc)
+    monkeypatch.setattr(savings_tracker_module, "_utc_now", lambda: fallback_time)
+    assert tracker.record_compression_savings(
+        model="gpt-4o",
+        tokens_saved=5,
+        timestamp="not-a-timestamp",
+    )
+
+    snapshot = tracker.snapshot()
+    assert snapshot["history"] == [
+        {
+            "timestamp": "2026-03-27T08:00:00Z",
+            "total_tokens_saved": 10,
+            "compression_savings_usd": 0.01,
+        },
+        {
+            "timestamp": "2026-03-27T12:34:00Z",
+            "total_tokens_saved": 15,
+            "compression_savings_usd": 0.015,
+        },
+    ]
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["lifetime"]["tokens_saved"] == 15
+    assert persisted["history"][-1]["timestamp"] == "2026-03-27T12:34:00Z"
+
+
+def test_litellm_resolution_and_savings_estimation_fallbacks(monkeypatch):
+    def fake_cost_per_token(*, model, prompt_tokens, completion_tokens):
+        if model in {"gpt-4o", "anthropic/claude-sonnet-4-6"}:
+            return {
+                "model": model,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }
+        raise RuntimeError("unknown model")
+
+    fake_litellm = SimpleNamespace(
+        cost_per_token=fake_cost_per_token,
+        model_cost={
+            "anthropic/claude-sonnet-4-6": {"input_cost_per_token": 0.002},
+            "gpt-4o": {"input_cost_per_token": 0.001},
+        },
+    )
+    monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", True)
+    monkeypatch.setattr(savings_tracker_module, "litellm", fake_litellm)
+
+    assert savings_tracker_module._resolve_litellm_model("gpt-4o") == "gpt-4o"
+    assert (
+        savings_tracker_module._resolve_litellm_model("claude-sonnet-4-6")
+        == "anthropic/claude-sonnet-4-6"
+    )
+    assert savings_tracker_module._estimate_compression_savings_usd(
+        "claude-sonnet-4-6", 100
+    ) == pytest.approx(0.2)
+
+    fake_litellm.model_cost = {}
+    assert savings_tracker_module._estimate_compression_savings_usd("gpt-4o", 100) == 0.0
+
+    monkeypatch.setattr(
+        fake_litellm,
+        "cost_per_token",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert savings_tracker_module._resolve_litellm_model("mystery-model") == "mystery-model"
+    assert savings_tracker_module._estimate_compression_savings_usd("mystery-model", 100) == 0.0
+
+    monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", False)
+    assert savings_tracker_module._estimate_compression_savings_usd("gpt-4o", 100) == 0.0
 
 
 def test_savings_tracker_rollups_are_chart_friendly(tmp_path, monkeypatch):
