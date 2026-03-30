@@ -404,7 +404,9 @@ def _merge_cost_stats(
 
     return {
         **cost_stats,
-        "savings_usd": round(compression_savings + cache_net + cli_savings_usd, 4),
+        # savings_usd = Headroom's direct savings only (compression + CLI filtering)
+        # Cache savings are provider-native and reported separately — NOT added here.
+        "savings_usd": round(compression_savings + cli_savings_usd, 4),
         "compression_savings_usd": round(compression_savings, 4),
         "cache_savings_usd": round(cache_net, 4),
         "cli_filtering_savings_usd": round(cli_savings_usd, 4),
@@ -474,12 +476,17 @@ def _build_session_summary(
         best_detail = f"{best['original']:,} → {best['optimized']:,} tokens"
 
     # Cost summary
+    # cost_with_headroom = what you actually paid (includes cache discounts)
+    # cost_without_headroom = counterfactual (with extra tokens at avg effective rate)
+    # compression_savings = cost_without - cost_with (pure Headroom value)
+    # cache_savings = provider caching discount (reported separately, NOT additive)
     cost_stats = proxy.cost_tracker.stats() if proxy.cost_tracker else {}
+    cost_with = cost_stats.get("cost_with_headroom_usd", 0.0)
     cost_without = cost_stats.get("cost_without_headroom_usd", 0.0)
     cache_net = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
-    compression_savings = cost_stats.get("savings_usd", 0.0) if cost_stats else 0.0
-    total_saved_usd = round(compression_savings + cache_net, 2)
-    cost_with = round(cost_without - total_saved_usd, 2) if cost_without else 0.0
+    compression_savings = round(cost_without - cost_with, 4) if cost_without > cost_with else 0.0
+    # Total saved = compression savings only (cache is provider-native, not Headroom's)
+    total_saved_usd = round(compression_savings, 2)
     savings_pct_cost = round(total_saved_usd / cost_without * 100, 1) if cost_without > 0 else 0.0
 
     # Primary models used
@@ -502,7 +509,7 @@ def _build_session_summary(
         "uncompressed_requests": {k: v for k, v in uncompressed_reasons.items() if v > 0},
         "cost": {
             "without_headroom_usd": round(cost_without, 2),
-            "with_headroom_usd": cost_with,
+            "with_headroom_usd": round(cost_with, 2),
             "total_saved_usd": total_saved_usd,
             "savings_pct": savings_pct_cost,
             "breakdown": {
