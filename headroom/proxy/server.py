@@ -7000,7 +7000,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     _beacon = TelemetryBeacon(
         port=config.port if hasattr(config, "port") else 8787,
-        sdk="proxy",
+        sdk=os.environ.get("HEADROOM_SDK", "proxy").strip() or "proxy",
         backend=config.backend if hasattr(config, "backend") else "anthropic",
     )
 
