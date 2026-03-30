@@ -558,9 +558,13 @@ async def _read_request_json(request: Request) -> dict[str, Any]:
             import zstandard
 
             dctx = zstandard.ZstdDecompressor()
-            raw = dctx.decompress(raw)
+            # Use stream_reader for streaming zstd frames (no content size in header).
+            # Plain decompress() fails when the frame header omits the size, which
+            # is common with clients like OpenAI Codex.
+            reader = dctx.stream_reader(raw)
+            raw = reader.read()
+            reader.close()
         except ImportError:
-            # Auto-detect: if bytes start with zstd magic (0x28 0xb5 0x2f 0xfd), fail clearly
             raise ValueError(
                 "Request body is zstd-compressed but the 'zstandard' package is not installed. "
                 "Install it with: pip install zstandard"

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "headroom-ai"
-version = "0.5.13"
+version = "0.5.14"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
 license = "Apache-2.0"
@@ -61,6 +61,7 @@ proxy = [
     "openai>=2.14.0",             # OpenAI API format support
     "mcp>=1.0.0",                 # MCP server (headroom_compress, retrieve, stats)
     "magika>=0.6.0",              # ML content detection for ContentRouter
+    "zstandard>=0.20.0",          # Decompress zstd request bodies (Codex, etc.)
 ]
 # AST-based code compression (tree-sitter)
 code = [
