@@ -511,9 +511,11 @@ class LiteLLMBackend(Backend):
 
                 # tool_result blocks → OpenAI "tool" role messages
                 if tool_result_blocks:
-                    # Include any text from the user message first
-                    if text_parts:
-                        converted.append({"role": "user", "content": "\n".join(text_parts)})
+                    # Do NOT insert a separate user text message here — Bedrock
+                    # requires tool role messages to appear immediately after the
+                    # assistant tool_calls message with no intervening messages.
+                    # Any text alongside tool_result is discarded (Claude Code
+                    # doesn't send text with tool_result blocks in practice).
                     for tr in tool_result_blocks:
                         tr_content = tr.get("content", "")
                         if isinstance(tr_content, list):

@@ -324,6 +324,78 @@ class TestConvertMessagesToolBlocks:
         assert converted[1]["role"] == "tool"
         assert converted[1]["tool_call_id"] == "toolu_b"
 
+    def test_tool_result_immediately_follows_tool_calls(self):
+        """Bedrock requires role=tool immediately after assistant tool_calls — no intervening messages.
+
+        Regression test for GitHub issue #70: a stray user text message was inserted
+        between the assistant tool_calls and the tool results, causing Bedrock to reject
+        the request with 'tool_use ids were found without tool_result blocks immediately after'.
+        """
+        backend = self._make_backend()
+        messages = [
+            {"role": "user", "content": "What's the weather in Paris and Tokyo?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "get_weather",
+                        "input": {"city": "Paris"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_02",
+                        "name": "get_weather",
+                        "input": {"city": "Tokyo"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_01", "content": "Sunny, 22C"},
+                    {"type": "tool_result", "tool_use_id": "toolu_02", "content": "Rainy, 18C"},
+                ],
+            },
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+
+        # Find the assistant message with tool_calls
+        assistant_idx = next(i for i, m in enumerate(converted) if m.get("tool_calls"))
+
+        # Every message after the assistant tool_calls must be role=tool
+        # with no intervening user/assistant messages
+        for i in range(assistant_idx + 1, len(converted)):
+            assert converted[i]["role"] == "tool", (
+                f"Message at index {i} has role={converted[i]['role']!r}, "
+                f"expected 'tool' — Bedrock requires tool results immediately "
+                f"after assistant tool_calls with no intervening messages"
+            )
+
+    def test_tool_result_with_text_does_not_insert_user_message(self):
+        """Text alongside tool_result should NOT produce a separate user message.
+
+        Bedrock rejects any message between assistant tool_calls and tool results.
+        """
+        backend = self._make_backend()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Here are the results:"},
+                    {"type": "tool_result", "tool_use_id": "toolu_01", "content": "42"},
+                ],
+            },
+        ]
+        converted = backend._convert_messages_for_litellm(messages)
+
+        # Should only have the tool message, no user text message
+        assert len(converted) == 1
+        assert converted[0]["role"] == "tool"
+        assert converted[0]["tool_call_id"] == "toolu_01"
+        assert converted[0]["content"] == "42"
+
 
 # =============================================================================
 # Streaming tool_calls (GitHub Issue — Bug 1)
