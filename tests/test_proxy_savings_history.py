@@ -381,9 +381,10 @@ def test_stats_history_csv_export_is_frontend_friendly(tmp_path, monkeypatch):
         response = client.get("/stats-history?format=csv&series=daily")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/csv")
-        assert "attachment; filename=\"headroom-stats-history-daily.csv\"" == response.headers[
-            "content-disposition"
-        ]
+        assert (
+            'attachment; filename="headroom-stats-history-daily.csv"'
+            == response.headers["content-disposition"]
+        )
         lines = response.text.strip().splitlines()
         assert lines[0] == (
             "timestamp,tokens_saved,compression_savings_usd_delta,total_tokens_saved,"
