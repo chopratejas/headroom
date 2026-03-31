@@ -33,7 +33,7 @@
   <a href="https://chopratejas.github.io/headroom/">
     <img src="https://img.shields.io/badge/docs-GitHub%20Pages-blue.svg" alt="Documentation">
   </a>
-  <a href="https://discord.gg/QEyNhaGA">
+  <a href="https://discord.gg/yRmaUNpsPJ">
     <img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white" alt="Discord">
   </a>
 </p>
@@ -417,7 +417,7 @@ Python 3.10+
 
 ## Community
 
-Questions, feedback, or just want to follow along? **[Join us on Discord](https://discord.gg/QEyNhaGA)**
+Questions, feedback, or just want to follow along? **[Join us on Discord](https://discord.gg/yRmaUNpsPJ)**
 
 ---
 
