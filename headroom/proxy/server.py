@@ -2354,6 +2354,7 @@ class HeadroomProxy:
                         else 1.0
                     ),
                     "transforms_applied": result.transforms_applied,
+                    "transforms_summary": result.transforms_summary,
                     "ccr_hashes": result.markers_inserted,
                 }
             )

@@ -728,6 +728,13 @@ class TransformResult:
     timing: dict[str, float] = field(default_factory=dict)  # transform_name → ms
     waste_signals: WasteSignals | None = None  # Detected waste in original messages
 
+    @property
+    def transforms_summary(self) -> dict[str, int]:
+        """Counted summary of transforms_applied (e.g. {'router:tool_result:text': 4})."""
+        from collections import Counter
+
+        return dict(Counter(self.transforms_applied))
+
 
 @dataclass
 class TransformDiff:
