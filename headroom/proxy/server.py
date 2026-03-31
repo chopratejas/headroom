@@ -7309,7 +7309,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     proxy = HeadroomProxy(config)
 
-    # Telemetry beacon (anonymous aggregate stats)
+    # Telemetry beacon (anonymous aggregate stats).
+    # With uvicorn workers > 1, each worker runs the lifespan independently.
+    # We must ensure only ONE beacon runs across all workers — otherwise each
+    # worker creates its own beacon, spamming the telemetry table with N rows
+    # per cycle instead of 1 (all reading the same /stats from the same port).
+    #
+    # Strategy: use a file lock to ensure only the first worker starts the
+    # beacon. Other workers see the lock and skip.
     from headroom.telemetry.beacon import TelemetryBeacon
 
     _beacon = TelemetryBeacon(
@@ -7317,6 +7324,51 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         sdk=os.environ.get("HEADROOM_SDK", "proxy").strip() or "proxy",
         backend=config.backend if hasattr(config, "backend") else "anthropic",
     )
+    _beacon_lock_path = Path.home() / ".headroom" / f".beacon_lock_{config.port}"
+    _beacon_lock_fd: list = [None]  # mutable holder for the lock file descriptor
+    _beacon_is_owner: list = [False]
+
+    def _try_acquire_beacon_lock() -> bool:
+        """Try to acquire the beacon file lock (non-blocking).
+
+        Returns True if this process is the beacon owner.
+        """
+        try:
+            _beacon_lock_path.parent.mkdir(parents=True, exist_ok=True)
+            import fcntl
+
+            fd = open(_beacon_lock_path, "w")  # noqa: SIM115
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fd.write(str(os.getpid()))
+            fd.flush()
+            _beacon_lock_fd[0] = fd
+            return True
+        except (OSError, ImportError):
+            # Lock held by another worker, or fcntl not available (Windows)
+            # On Windows, skip locking — workers are rare on Windows anyway
+            try:
+                import fcntl  # noqa: F811
+
+                return False  # Lock held by another worker
+            except ImportError:
+                return True  # Windows: no fcntl, just allow it
+
+    def _release_beacon_lock() -> None:
+        """Release the beacon file lock."""
+        fd = _beacon_lock_fd[0]
+        if fd:
+            try:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                fd.close()
+            except Exception:
+                pass
+            _beacon_lock_fd[0] = None
+        try:
+            _beacon_lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
@@ -7327,12 +7379,20 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             await proxy.usage_reporter.start(proxy)
         if proxy.traffic_learner:
             await proxy.traffic_learner.start()
-        await _beacon.start()
+
+        # Only start beacon if we acquire the lock (first worker wins)
+        _beacon_is_owner[0] = _try_acquire_beacon_lock()
+        if _beacon_is_owner[0]:
+            await _beacon.start()
+        else:
+            logger.debug("Beacon: skipping (another worker owns the lock)")
 
         yield
 
         # Shutdown
-        await _beacon.stop()
+        if _beacon_is_owner[0]:
+            await _beacon.stop()
+            _release_beacon_lock()
         if proxy.usage_reporter:
             await proxy.usage_reporter.stop()
         if proxy.traffic_learner:

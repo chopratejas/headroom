@@ -33,7 +33,7 @@ _SUPABASE_KEY = ".".join(
     ]
 )
 _TABLE = "proxy_telemetry_v2"
-_ENDPOINT = f"{_SUPABASE_URL}/rest/v1/{_TABLE}"
+_ENDPOINT = f"{_SUPABASE_URL}/rest/v1/{_TABLE}?on_conflict=session_id"
 
 # Report every 5 minutes
 _INTERVAL_SECONDS = 300
@@ -74,8 +74,11 @@ class TelemetryBeacon:
         if self._task:
             self._task.cancel()
             self._task = None
-        # Final report
-        if is_telemetry_enabled():
+        # Final report — but only if the proxy ran for more than 2 minutes.
+        # Short-lived restarts (e.g. crash loops, orchestration churn) would
+        # otherwise spam the telemetry table with duplicate cumulative stats.
+        uptime_seconds = time.time() - self._start_time
+        if is_telemetry_enabled() and uptime_seconds > 120:
             await self._report()
 
     async def _loop(self) -> None:
@@ -250,7 +253,7 @@ class TelemetryBeacon:
         except Exception:
             logger.debug("Beacon: failed to extract waste signals", exc_info=True)
 
-        # ---- Send to Supabase (fire-and-forget) ----
+        # ---- Send to Supabase (fire-and-forget, upsert on session_id) ----
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(
@@ -260,7 +263,7 @@ class TelemetryBeacon:
                         "apikey": _SUPABASE_KEY,
                         "Authorization": f"Bearer {_SUPABASE_KEY}",
                         "Content-Type": "application/json",
-                        "Prefer": "return=minimal",
+                        "Prefer": "resolution=merge-duplicates,return=minimal",
                     },
                 )
         except Exception:
