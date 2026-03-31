@@ -6365,20 +6365,32 @@ class HeadroomProxy:
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
 
-        # Convert Responses API input to messages format for optimization
-        # The Responses API accepts either a string or array of messages
+        # Convert Responses API input to messages format for optimization.
+        # The Responses API uses a different item model (function_call,
+        # function_call_output, reasoning as top-level items) — we convert to
+        # Chat Completions messages for the pipeline, then convert back.
+        from headroom.proxy.responses_converter import (
+            messages_to_responses_items,
+            responses_items_to_messages,
+        )
+
         input_data = body.get("input", "")
         instructions = body.get("instructions")
+        previous_response_id = body.get("previous_response_id")
 
-        messages = []
+        messages: list[dict[str, Any]] = []
+        original_items: list[dict[str, Any]] | None = None
+        preserved_indices: list[int] = []
+
         if instructions:
             messages.append({"role": "system", "content": instructions})
 
         if isinstance(input_data, str):
             messages.append({"role": "user", "content": input_data})
         elif isinstance(input_data, list):
-            # Input is already an array of message objects
-            messages.extend(input_data)
+            original_items = input_data
+            converted, preserved_indices = responses_items_to_messages(input_data)
+            messages.extend(converted)
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
@@ -6400,11 +6412,59 @@ class HeadroomProxy:
         tokenizer = get_tokenizer(model)
         original_tokens = tokenizer.count_messages(messages)
 
-        # Note: We pass through to OpenAI without optimization for now
-        # The Responses API has different semantics that may not work well with compression
+        # Optimize: convert items → compress → convert back
         tokens_saved = 0
         transforms_applied: list[str] = []
+        optimized_messages = messages
+        optimized_tokens = original_tokens
+
+        _bypass = (
+            request.headers.get("x-headroom-bypass", "").lower() == "true"
+            or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
+        )
+        _should_compress = (
+            self.config.optimize
+            and original_items is not None
+            and not previous_response_id
+            and not _bypass
+            and len(messages) > 1
+        )
+        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+
+        if _should_compress and _license_ok:
+            try:
+                context_limit = self.openai_provider.get_context_limit(model)
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: self.openai_pipeline.apply(
+                            messages=messages,
+                            model=model,
+                            model_limit=context_limit,
+                            context=extract_user_query(messages),
+                        )
+                    ),
+                    timeout=COMPRESSION_TIMEOUT_SECONDS,
+                )
+                if result.messages != messages:
+                    optimized_messages = result.messages
+                    transforms_applied = result.transforms_applied
+                    original_tokens = result.tokens_before
+                    optimized_tokens = result.tokens_after
+            except Exception as e:
+                logger.warning(f"[{request_id}] Responses API optimization failed: {e}")
+
+        tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
+
+        # Convert compressed messages back to Responses API items
+        if optimized_messages is not messages and original_items is not None:
+            opt_msgs = optimized_messages
+            # Strip system message (instructions) — it's separate in Responses API
+            if instructions and opt_msgs and opt_msgs[0].get("role") == "system":
+                body["instructions"] = opt_msgs[0]["content"]
+                opt_msgs = opt_msgs[1:]
+
+            body["input"] = messages_to_responses_items(opt_msgs, original_items, preserved_indices)
 
         url = f"{self.OPENAI_API_URL}/v1/responses"
 
