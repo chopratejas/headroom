@@ -1,0 +1,199 @@
+"""Data models for the Headroom proxy.
+
+Contains configuration and data classes used across the proxy modules.
+Extracted from server.py to keep the codebase maintainable.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Literal
+
+# =============================================================================
+# Data Models
+# =============================================================================
+
+
+@dataclass
+class RequestLog:
+    """Complete log of a single request."""
+
+    request_id: str
+    timestamp: str
+    provider: str
+    model: str
+
+    # Tokens
+    input_tokens_original: int
+    input_tokens_optimized: int
+    output_tokens: int | None
+    tokens_saved: int
+    savings_percent: float
+
+    # Performance
+    optimization_latency_ms: float
+    total_latency_ms: float | None
+
+    # Metadata
+    tags: dict[str, str]
+    cache_hit: bool
+    transforms_applied: list[str]
+
+    # Waste signals detected in original messages
+    waste_signals: dict[str, int] | None = None
+
+    # Request/Response (optional, for debugging)
+    request_messages: list[dict] | None = None
+    response_content: str | None = None
+    error: str | None = None
+
+
+@dataclass
+class CacheEntry:
+    """Cached response entry."""
+
+    response_body: bytes
+    response_headers: dict[str, str]
+    created_at: datetime
+    ttl_seconds: int
+    hit_count: int = 0
+    tokens_saved_per_hit: int = 0
+
+
+@dataclass
+class RateLimitState:
+    """Token bucket rate limiter state."""
+
+    tokens: float
+    last_update: float
+
+
+@dataclass
+class ProxyConfig:
+    """Proxy configuration."""
+
+    # Server
+    host: str = "127.0.0.1"
+    port: int = 8787
+    anthropic_api_url: str | None = None  # Custom Anthropic API URL override
+    openai_api_url: str | None = None  # Custom OpenAI API URL override
+    gemini_api_url: str | None = None  # Custom Gemini API URL override
+
+    # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
+    backend: str = "anthropic"
+    bedrock_region: str = "us-west-2"
+    bedrock_profile: str | None = None
+    anyllm_provider: str = "openai"
+
+    # Optimization mode
+    mode: str = "token_headroom"
+
+    # Optimization
+    optimize: bool = True
+    image_optimize: bool = True
+    min_tokens_to_crush: int = 500
+    max_items_after_crush: int = 50
+    keep_last_turns: int = 4
+
+    # CCR Tool Injection
+    ccr_inject_tool: bool = True
+    ccr_inject_system_instructions: bool = False
+
+    # CCR Response Handling
+    ccr_handle_responses: bool = True
+    ccr_max_retrieval_rounds: int = 3
+
+    # CCR Context Tracking
+    ccr_context_tracking: bool = True
+    ccr_proactive_expansion: bool = True
+    ccr_max_proactive_expansions: int = 2
+
+    # Code-aware compression
+    code_aware_enabled: bool = True
+
+    # Per-tool compression profiles
+    tool_profiles: dict[str, Any] | None = None
+
+    # Read lifecycle management
+    read_lifecycle: bool = True
+
+    # Smart content routing
+    smart_routing: bool = True
+
+    # Intelligent context management
+    intelligent_context: bool = True
+    intelligent_context_scoring: bool = True
+    intelligent_context_compress_first: bool = True
+
+    # Caching
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 3600
+    cache_max_entries: int = 1000
+
+    # Rate limiting
+    rate_limit_enabled: bool = True
+    rate_limit_requests_per_minute: int = 60
+    rate_limit_tokens_per_minute: int = 100000
+
+    # Retry
+    retry_enabled: bool = True
+    retry_max_attempts: int = 3
+    retry_base_delay_ms: int = 1000
+    retry_max_delay_ms: int = 30000
+
+    # Prefix freeze
+    prefix_freeze_enabled: bool = True
+    prefix_freeze_session_ttl: int = 600
+
+    # Cost tracking
+    cost_tracking_enabled: bool = True
+    budget_limit_usd: float | None = None
+    budget_period: Literal["hourly", "daily", "monthly"] = "daily"
+
+    # Logging
+    log_requests: bool = True
+    log_file: str | None = None
+    log_full_messages: bool = False
+
+    # Fallback
+    fallback_enabled: bool = False
+    fallback_provider: str | None = None
+
+    # Timeouts
+    request_timeout_seconds: int = 300
+    connect_timeout_seconds: int = 10
+
+    # Connection pool
+    max_connections: int = 500
+    max_keepalive_connections: int = 100
+    http2: bool = True
+
+    # Memory System
+    memory_enabled: bool = False
+    memory_backend: Literal["local", "qdrant-neo4j"] = "local"
+    memory_db_path: str = "headroom_memory.db"
+    memory_inject_tools: bool = True
+    traffic_learning_enabled: bool = False
+    memory_use_native_tool: bool = False
+    memory_inject_context: bool = True
+    memory_top_k: int = 10
+    memory_min_similarity: float = 0.3
+    memory_qdrant_host: str = "localhost"
+    memory_qdrant_port: int = 6333
+    memory_neo4j_uri: str = "neo4j://localhost:7687"
+    memory_neo4j_user: str = "neo4j"
+    memory_neo4j_password: str = "password"
+    memory_bridge_enabled: bool = False
+    memory_bridge_md_paths: list[str] = field(default_factory=list)
+    memory_bridge_md_format: str = "auto"
+    memory_bridge_auto_import: bool = False
+    memory_bridge_export_path: str = ""
+
+    # License / Usage Reporting
+    license_key: str | None = None
+    license_cloud_url: str = "https://app.headroomlabs.ai"
+    license_report_interval: int = 300
+
+    # Compression Hooks
+    hooks: Any = None
