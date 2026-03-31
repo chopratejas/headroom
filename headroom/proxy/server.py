@@ -6565,21 +6565,38 @@ class HeadroomProxy:
         await websocket.accept()
         request_id = await self._next_request_id()
 
-        # Extract auth from the WebSocket upgrade request headers
+        # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)
-        auth = ws_headers.get("authorization", "")
-        openai_beta = ws_headers.get("openai-beta", "")
 
         # Build upstream WebSocket URL (http→ws, https→wss)
         base = self.OPENAI_API_URL
         ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
         upstream_url = f"{ws_base}/v1/responses"
 
+        # Forward all relevant headers (auth, org, project, beta, etc.)
+        # Skip hop-by-hop headers that shouldn't be forwarded
+        _skip_headers = frozenset(
+            {
+                "host",
+                "connection",
+                "upgrade",
+                "sec-websocket-key",
+                "sec-websocket-version",
+                "sec-websocket-extensions",
+                "sec-websocket-accept",
+                "sec-websocket-protocol",
+                "content-length",
+                "transfer-encoding",
+            }
+        )
         upstream_headers: dict[str, str] = {}
-        if auth:
-            upstream_headers["Authorization"] = auth
-        if openai_beta:
-            upstream_headers["openai-beta"] = openai_beta
+        for k, v in ws_headers.items():
+            if k.lower() not in _skip_headers:
+                upstream_headers[k] = v
+
+        # Ensure the required beta header is present — OpenAI returns 500 without it
+        if "openai-beta" not in {k.lower() for k in upstream_headers}:
+            upstream_headers["OpenAI-Beta"] = "responses-api=v1"
 
         try:
             # Receive the first message from client (the response.create request)
