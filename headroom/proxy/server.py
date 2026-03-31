@@ -48,7 +48,7 @@ import httpx
 
 try:
     import uvicorn
-    from fastapi import FastAPI, HTTPException, Request, Response
+    from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -405,7 +405,9 @@ def _merge_cost_stats(
 
     return {
         **cost_stats,
-        "savings_usd": round(compression_savings + cache_net + cli_savings_usd, 4),
+        # savings_usd = Headroom's direct savings only (compression + CLI filtering)
+        # Cache savings are provider-native and reported separately — NOT added here.
+        "savings_usd": round(compression_savings + cli_savings_usd, 4),
         "compression_savings_usd": round(compression_savings, 4),
         "cache_savings_usd": round(cache_net, 4),
         "cli_filtering_savings_usd": round(cli_savings_usd, 4),
@@ -475,12 +477,17 @@ def _build_session_summary(
         best_detail = f"{best['original']:,} → {best['optimized']:,} tokens"
 
     # Cost summary
+    # cost_with_headroom = what you actually paid (includes cache discounts)
+    # cost_without_headroom = counterfactual (with extra tokens at avg effective rate)
+    # compression_savings = cost_without - cost_with (pure Headroom value)
+    # cache_savings = provider caching discount (reported separately, NOT additive)
     cost_stats = proxy.cost_tracker.stats() if proxy.cost_tracker else {}
+    cost_with = cost_stats.get("cost_with_headroom_usd", 0.0)
     cost_without = cost_stats.get("cost_without_headroom_usd", 0.0)
     cache_net = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
-    compression_savings = cost_stats.get("savings_usd", 0.0) if cost_stats else 0.0
-    total_saved_usd = round(compression_savings + cache_net, 2)
-    cost_with = round(cost_without - total_saved_usd, 2) if cost_without else 0.0
+    compression_savings = round(cost_without - cost_with, 4) if cost_without > cost_with else 0.0
+    # Total saved = compression savings only (cache is provider-native, not Headroom's)
+    total_saved_usd = round(compression_savings, 2)
     savings_pct_cost = round(total_saved_usd / cost_without * 100, 1) if cost_without > 0 else 0.0
 
     # Primary models used
@@ -503,7 +510,7 @@ def _build_session_summary(
         "uncompressed_requests": {k: v for k, v in uncompressed_reasons.items() if v > 0},
         "cost": {
             "without_headroom_usd": round(cost_without, 2),
-            "with_headroom_usd": cost_with,
+            "with_headroom_usd": round(cost_with, 2),
             "total_saved_usd": total_saved_usd,
             "savings_pct": savings_pct_cost,
             "breakdown": {
@@ -531,6 +538,77 @@ MAX_SSE_BUFFER_SIZE = 10 * 1024 * 1024
 
 # Maximum message array length (prevents DoS from deeply nested payloads)
 MAX_MESSAGE_ARRAY_LENGTH = 10000
+
+
+async def _read_request_json(request: Request) -> dict[str, Any]:
+    """Read and parse JSON from a request, handling compressed bodies.
+
+    Clients like OpenAI Codex may send zstd, gzip, or deflate-compressed
+    request bodies.  Starlette's ``request.json()`` does not decompress
+    automatically, causing a UnicodeDecodeError on compressed bytes.
+
+    This helper inspects ``Content-Encoding``, decompresses if needed,
+    then JSON-decodes the result.  It raises ``ValueError`` on any
+    decompression or parse failure so callers can return a clean 400.
+    """
+    encoding = (request.headers.get("content-encoding") or "").lower().strip()
+    raw = await request.body()
+
+    if encoding in ("zstd", "zstandard"):
+        try:
+            import zstandard
+
+            dctx = zstandard.ZstdDecompressor()
+            # Use stream_reader for streaming zstd frames (no content size in header).
+            # Plain decompress() fails when the frame header omits the size, which
+            # is common with clients like OpenAI Codex.
+            reader = dctx.stream_reader(raw)
+            raw = reader.read()
+            reader.close()
+        except ImportError:
+            raise ValueError(
+                "Request body is zstd-compressed but the 'zstandard' package is not installed. "
+                "Install it with: pip install zstandard"
+            ) from None
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress zstd request body: {exc}") from exc
+    elif encoding == "gzip":
+        import gzip as _gzip
+
+        try:
+            raw = _gzip.decompress(raw)
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress gzip request body: {exc}") from exc
+    elif encoding == "deflate":
+        import zlib
+
+        try:
+            raw = zlib.decompress(raw)
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress deflate request body: {exc}") from exc
+    elif encoding == "br":
+        try:
+            import brotli
+
+            raw = brotli.decompress(raw)
+        except ImportError:
+            raise ValueError(
+                "Request body is brotli-compressed but the 'brotli' package is not installed."
+            ) from None
+        except Exception as exc:
+            raise ValueError(f"Failed to decompress brotli request body: {exc}") from exc
+    elif encoding and encoding != "identity":
+        raise ValueError(f"Unsupported Content-Encoding: {encoding}")
+
+    # Decode and parse JSON
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Request body is not valid UTF-8 (possibly compressed?): {exc}") from exc
+
+    result: dict[str, Any] = json.loads(text)
+    return result
+
 
 # Maximum compression cache sessions (prevents unbounded memory growth)
 MAX_COMPRESSION_CACHE_SESSIONS = 500
@@ -2197,7 +2275,13 @@ class HeadroomProxy:
         """
         # Check bypass header
         if request.headers.get("x-headroom-bypass", "").lower() == "true":
-            body = await request.json()
+            try:
+                body = await _read_request_json(request)
+            except (json.JSONDecodeError, ValueError) as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid request body: {e!s}"},
+                )
             messages = body.get("messages", [])
             return JSONResponse(
                 {
@@ -2212,7 +2296,7 @@ class HeadroomProxy:
             )
 
         try:
-            body = await request.json()
+            body = await _read_request_json(request)
         except Exception:
             return JSONResponse(
                 status_code=400,
@@ -2329,15 +2413,15 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "type": "error",
                     "error": {
                         "type": "invalid_request_error",
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                     },
                 },
             )
@@ -3290,15 +3374,15 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "type": "error",
                     "error": {
                         "type": "invalid_request_error",
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                     },
                 },
             )
@@ -3728,14 +3812,14 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
                         "code": 400,
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "status": "INVALID_ARGUMENT",
                     }
                 },
@@ -5140,13 +5224,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "type": "invalid_request_error",
                         "code": "invalid_json",
                     }
@@ -5737,7 +5821,7 @@ class HeadroomProxy:
         request_id = await self._next_request_id()
 
         try:
-            body = await request.json()
+            body = await _read_request_json(request)
         except Exception as e:
             logger.error(f"[{request_id}] Failed to parse Databricks request body: {e}")
             return JSONResponse(
@@ -5791,13 +5875,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "type": "invalid_request_error",
                         "code": "invalid_json",
                     }
@@ -6274,13 +6358,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "type": "invalid_request_error",
                         "code": "invalid_json",
                     }
@@ -6290,20 +6374,32 @@ class HeadroomProxy:
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
 
-        # Convert Responses API input to messages format for optimization
-        # The Responses API accepts either a string or array of messages
+        # Convert Responses API input to messages format for optimization.
+        # The Responses API uses a different item model (function_call,
+        # function_call_output, reasoning as top-level items) — we convert to
+        # Chat Completions messages for the pipeline, then convert back.
+        from headroom.proxy.responses_converter import (
+            messages_to_responses_items,
+            responses_items_to_messages,
+        )
+
         input_data = body.get("input", "")
         instructions = body.get("instructions")
+        previous_response_id = body.get("previous_response_id")
 
-        messages = []
+        messages: list[dict[str, Any]] = []
+        original_items: list[dict[str, Any]] | None = None
+        preserved_indices: list[int] = []
+
         if instructions:
             messages.append({"role": "system", "content": instructions})
 
         if isinstance(input_data, str):
             messages.append({"role": "user", "content": input_data})
         elif isinstance(input_data, list):
-            # Input is already an array of message objects
-            messages.extend(input_data)
+            original_items = input_data
+            converted, preserved_indices = responses_items_to_messages(input_data)
+            messages.extend(converted)
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
@@ -6325,11 +6421,59 @@ class HeadroomProxy:
         tokenizer = get_tokenizer(model)
         original_tokens = tokenizer.count_messages(messages)
 
-        # Note: We pass through to OpenAI without optimization for now
-        # The Responses API has different semantics that may not work well with compression
+        # Optimize: convert items → compress → convert back
         tokens_saved = 0
         transforms_applied: list[str] = []
+        optimized_messages = messages
+        optimized_tokens = original_tokens
+
+        _bypass = (
+            request.headers.get("x-headroom-bypass", "").lower() == "true"
+            or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
+        )
+        _should_compress = (
+            self.config.optimize
+            and original_items is not None
+            and not previous_response_id
+            and not _bypass
+            and len(messages) > 1
+        )
+        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+
+        if _should_compress and _license_ok:
+            try:
+                context_limit = self.openai_provider.get_context_limit(model)
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: self.openai_pipeline.apply(
+                            messages=messages,
+                            model=model,
+                            model_limit=context_limit,
+                            context=extract_user_query(messages),
+                        )
+                    ),
+                    timeout=COMPRESSION_TIMEOUT_SECONDS,
+                )
+                if result.messages != messages:
+                    optimized_messages = result.messages
+                    transforms_applied = result.transforms_applied
+                    original_tokens = result.tokens_before
+                    optimized_tokens = result.tokens_after
+            except Exception as e:
+                logger.warning(f"[{request_id}] Responses API optimization failed: {e}")
+
+        tokens_saved = max(0, original_tokens - optimized_tokens)
         optimization_latency = (time.time() - start_time) * 1000
+
+        # Convert compressed messages back to Responses API items
+        if optimized_messages is not messages and original_items is not None:
+            opt_msgs = optimized_messages
+            # Strip system message (instructions) — it's separate in Responses API
+            if instructions and opt_msgs and opt_msgs[0].get("role") == "system":
+                body["instructions"] = opt_msgs[0]["content"]
+                opt_msgs = opt_msgs[1:]
+
+            body["input"] = messages_to_responses_items(opt_msgs, original_items, preserved_indices)
 
         url = f"{self.OPENAI_API_URL}/v1/responses"
 
@@ -6405,6 +6549,179 @@ class HeadroomProxy:
                 },
             )
 
+    async def handle_openai_responses_ws(self, websocket: WebSocket) -> None:
+        """WebSocket proxy for /v1/responses (Codex gpt-5.4+).
+
+        Newer Codex versions use WebSocket instead of HTTP POST for the
+        Responses API.  This handler:
+        1. Accepts the client WebSocket
+        2. Receives the first message (``response.create`` request)
+        3. Compresses the ``input`` array using the existing pipeline
+        4. Opens an upstream WebSocket to OpenAI
+        5. Sends the compressed request upstream
+        6. Relays all subsequent messages bidirectionally
+        """
+        try:
+            import websockets
+        except ImportError:
+            await websocket.accept()
+            await websocket.close(
+                code=1011,
+                reason="websockets package not installed. pip install websockets",
+            )
+            return
+
+        await websocket.accept()
+        request_id = await self._next_request_id()
+
+        # Extract auth from the WebSocket upgrade request headers
+        ws_headers = dict(websocket.headers)
+        auth = ws_headers.get("authorization", "")
+        openai_beta = ws_headers.get("openai-beta", "")
+
+        # Build upstream WebSocket URL (http→ws, https→wss)
+        base = self.OPENAI_API_URL
+        ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+        upstream_url = f"{ws_base}/v1/responses"
+
+        upstream_headers: dict[str, str] = {}
+        if auth:
+            upstream_headers["Authorization"] = auth
+        if openai_beta:
+            upstream_headers["openai-beta"] = openai_beta
+
+        try:
+            # Receive the first message from client (the response.create request)
+            first_msg_raw = await websocket.receive_text()
+
+            # --- Optional: compress the input in the first message ---
+            try:
+                body = json.loads(first_msg_raw)
+                input_data = body.get("input")
+                tokens_saved = 0
+
+                should_compress = (
+                    self.config.optimize
+                    and isinstance(input_data, list)
+                    and len(input_data) > 1
+                    and not body.get("previous_response_id")
+                )
+                if should_compress:
+                    try:
+                        from headroom.proxy.responses_converter import (
+                            messages_to_responses_items,
+                            responses_items_to_messages,
+                        )
+
+                        model = body.get("model", "gpt-4o")
+                        converted, preserved = responses_items_to_messages(input_data)
+
+                        messages: list[dict[str, Any]] = []
+                        instructions = body.get("instructions")
+                        if instructions:
+                            messages.append({"role": "system", "content": instructions})
+                        messages.extend(converted)
+
+                        tokenizer = get_tokenizer(model)
+                        original_tokens = tokenizer.count_messages(messages)
+
+                        context_limit = self.openai_provider.get_context_limit(model)
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                lambda: self.openai_pipeline.apply(
+                                    messages=messages,
+                                    model=model,
+                                    model_limit=context_limit,
+                                    context=extract_user_query(messages),
+                                )
+                            ),
+                            timeout=COMPRESSION_TIMEOUT_SECONDS,
+                        )
+
+                        if result.messages != messages:
+                            opt = result.messages
+                            if instructions and opt and opt[0].get("role") == "system":
+                                body["instructions"] = opt[0]["content"]
+                                opt = opt[1:]
+                            body["input"] = messages_to_responses_items(opt, input_data, preserved)
+                            tokens_saved = max(0, original_tokens - result.tokens_after)
+                            first_msg_raw = json.dumps(body)
+                            logger.info(
+                                f"[{request_id}] WS /v1/responses compressed: "
+                                f"saved {tokens_saved} tokens"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[{request_id}] WS compression failed: {e}")
+
+            except json.JSONDecodeError:
+                # Not JSON — pass through as-is
+                tokens_saved = 0
+
+            # --- Connect to upstream OpenAI WebSocket ---
+            logger.debug(f"[{request_id}] WS connecting to {upstream_url}")
+            import ssl
+
+            ssl_ctx = ssl.create_default_context()
+            # Use certifi certs if available (common on macOS)
+            try:
+                import certifi
+
+                ssl_ctx.load_verify_locations(certifi.where())
+            except ImportError:
+                pass
+
+            async with websockets.connect(
+                upstream_url,
+                additional_headers=upstream_headers,
+                ssl=ssl_ctx if upstream_url.startswith("wss://") else None,
+            ) as upstream:
+                # Send (potentially compressed) first message
+                await upstream.send(first_msg_raw)
+
+                # Bidirectional relay
+                async def _client_to_upstream() -> None:
+                    try:
+                        while True:
+                            msg = await websocket.receive_text()
+                            await upstream.send(msg)
+                    except Exception:
+                        with contextlib.suppress(Exception):
+                            await upstream.close()
+
+                async def _upstream_to_client() -> None:
+                    try:
+                        async for msg in upstream:
+                            await websocket.send_text(msg if isinstance(msg, str) else msg.decode())
+                    except Exception:
+                        pass
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await websocket.close()
+
+                await asyncio.gather(
+                    _client_to_upstream(),
+                    _upstream_to_client(),
+                    return_exceptions=True,
+                )
+
+            # Record metrics
+            if tokens_saved > 0:
+                model_name = body.get("model", "unknown") if isinstance(body, dict) else "unknown"
+                await self.metrics.record_request(
+                    provider="openai",
+                    model=model_name,
+                    input_tokens=0,
+                    output_tokens=0,
+                    tokens_saved=tokens_saved,
+                    latency_ms=0,
+                )
+
+        except Exception as e:
+            if "WebSocketDisconnect" not in type(e).__name__:
+                logger.error(f"[{request_id}] WS proxy error: {e}")
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason=str(e)[:120])
+
     async def handle_gemini_generate_content(
         self,
         request: Request,
@@ -6436,13 +6753,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "code": 400,
                     }
                 },
@@ -6700,13 +7017,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "code": 400,
                     }
                 },
@@ -6769,13 +7086,13 @@ class HeadroomProxy:
 
         # Parse request
         try:
-            body = await request.json()
-        except json.JSONDecodeError as e:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
-                        "message": f"Invalid JSON in request body: {e!s}",
+                        "message": f"Invalid request body: {e!s}",
                         "code": 400,
                     }
                 },
@@ -7860,6 +8177,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def openai_responses(request: Request):
         """OpenAI Responses API (new API introduced March 2025)."""
         return await proxy.handle_openai_responses(request)
+
+    @app.websocket("/v1/responses")
+    async def openai_responses_ws(websocket: WebSocket):
+        """OpenAI Responses API via WebSocket (Codex gpt-5.4+)."""
+        await proxy.handle_openai_responses_ws(websocket)
 
     # OpenAI Batch API endpoints (with compression!)
     @app.post("/v1/batches")

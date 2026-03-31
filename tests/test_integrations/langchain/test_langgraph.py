@@ -9,13 +9,12 @@ Tests cover:
 """
 
 import json
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Check if LangChain is available
 try:
-    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
     LANGCHAIN_AVAILABLE = True
 except ImportError:
@@ -27,7 +26,9 @@ pytestmark = pytest.mark.skipif(not LANGCHAIN_AVAILABLE, reason="LangChain not i
 
 def _make_large_tool_output(num_items: int = 200) -> str:
     """Generate a large JSON array string that will trigger compression."""
-    items = [{"id": i, "name": f"item_{i}", "value": i * 1.5, "status": "ok"} for i in range(num_items)]
+    items = [
+        {"id": i, "name": f"item_{i}", "value": i * 1.5, "status": "ok"} for i in range(num_items)
+    ]
     return json.dumps(items)
 
 
@@ -106,10 +107,12 @@ class TestCompressToolMessages:
         from headroom.integrations.langchain.langgraph import compress_tool_messages
 
         # Large content but contains error indicator
-        error_output = json.dumps({
-            "error": "Database connection failed",
-            "details": "x" * 2000,
-        })
+        error_output = json.dumps(
+            {
+                "error": "Database connection failed",
+                "details": "x" * 2000,
+            }
+        )
         messages = _make_messages_with_tool_output(error_output)
 
         result = compress_tool_messages(messages)
@@ -122,10 +125,12 @@ class TestCompressToolMessages:
         """Error content should be compressed when preserve_errors=False."""
         from headroom.integrations.langchain.langgraph import compress_tool_messages
 
-        error_output = json.dumps({
-            "error": "fail",
-            "data": [{"id": i} for i in range(200)],
-        })
+        error_output = json.dumps(
+            {
+                "error": "fail",
+                "data": [{"id": i} for i in range(200)],
+            }
+        )
         messages = _make_messages_with_tool_output(error_output)
 
         result = compress_tool_messages(messages, preserve_errors=False)

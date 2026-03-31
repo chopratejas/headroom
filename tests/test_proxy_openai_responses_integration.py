@@ -219,6 +219,85 @@ class TestOpenAIResponsesCompression:
         # At least some tokens should have been saved
         assert stats["tokens"]["saved"] >= 0  # May or may not compress depending on size
 
+    def test_compression_on_function_call_output(self, openai_responses_client, api_key):
+        """Large function_call_output gets compressed (Codex pattern)."""
+        # Create large tool output (simulating Codex file read or shell output)
+        large_output = json.dumps(
+            [{"id": i, "name": f"record_{i}", "value": f"data_{i}" * 10} for i in range(200)]
+        )
+
+        response = openai_responses_client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "gpt-4o-mini",
+                "input": [
+                    {"role": "user", "content": "How many records are in the database?"},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_test_1",
+                        "name": "query_database",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_test_1",
+                        "output": large_output,
+                    },
+                ],
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Model should be able to answer
+        assert "output" in data
+        assert len(data["output"]) > 0
+
+        # Compression should have saved tokens
+        stats = openai_responses_client.get("/stats").json()
+        assert stats["tokens"]["saved"] > 0
+
+    def test_no_compression_with_string_input(self, openai_responses_client, api_key):
+        """String input (single message) should not crash or compress."""
+        response = openai_responses_client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": "gpt-4o-mini", "input": "What is 1+1?"},
+        )
+        assert response.status_code == 200
+
+    def test_bypass_header_skips_compression(self, openai_responses_client, api_key):
+        """x-headroom-bypass header skips compression."""
+        items = [
+            {"id": i, "name": f"Item {i}", "desc": f"Description for item {i}"} for i in range(100)
+        ]
+        tool_output = json.dumps(items)
+
+        # Reset stats first
+        openai_responses_client.post("/stats/reset")
+
+        response = openai_responses_client.post(
+            "/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "x-headroom-bypass": "true",
+            },
+            json={
+                "model": "gpt-4o-mini",
+                "input": [
+                    {"role": "user", "content": "Get items"},
+                    {"role": "assistant", "content": f"Results:\n{tool_output}"},
+                    {"role": "user", "content": "How many?"},
+                ],
+            },
+        )
+        assert response.status_code == 200
+
+        stats = openai_responses_client.get("/stats").json()
+        # With bypass, no tokens should be saved
+        assert stats["tokens"]["saved"] == 0
+
 
 class TestOpenAIResponsesStats:
     """Test that proxy stats track /v1/responses requests correctly."""

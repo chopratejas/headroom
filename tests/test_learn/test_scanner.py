@@ -235,3 +235,26 @@ class TestDecodeProjectPath:
             assert result == project
         else:
             assert result is None or result == project
+
+    def test_windows_drive_letter_pattern(self) -> None:
+        """Encoded name -C-MQ2-macros should detect Windows drive letter."""
+        import sys
+
+        result = _decode_project_path("-C-MQ2-macros")
+        if sys.platform == "win32":
+            # On Windows: tries C:\\MQ2\\macros, may or may not exist
+            assert result is None or str(result).startswith("C:")
+        else:
+            # On Unix: drive detection runs but path doesn't exist → falls through
+            # Then Unix paths tried → also don't exist → returns None
+            assert result is None
+
+    def test_windows_users_path(self) -> None:
+        """Encoded name -C-Users-foo-project detects drive letter."""
+        import sys
+
+        result = _decode_project_path("-C-Users-foo-project")
+        if sys.platform == "win32":
+            assert result is None or "Users" in str(result)
+        else:
+            assert result is None
