@@ -95,6 +95,11 @@ from .main import main
     help="Provider for any-llm backend: openai, mistral, groq, ollama, etc. (default: openai)",
 )
 @click.option(
+    "--anthropic-api-url",
+    default=None,
+    help="Custom Anthropic API URL for passthrough endpoints (env: ANTHROPIC_TARGET_API_URL)",
+)
+@click.option(
     "--openai-api-url",
     default=None,
     help="Custom OpenAI API URL for passthrough endpoints (env: OPENAI_TARGET_API_URL)",
@@ -149,6 +154,7 @@ def proxy(
     no_learn: bool,
     backend: str,
     anyllm_provider: str,
+    anthropic_api_url: str | None,
     openai_api_url: str | None,
     gemini_api_url: str | None,
     region: str,
@@ -181,6 +187,7 @@ def proxy(
         raise SystemExit(1) from None
 
     # Resolve API URL overrides: CLI flag > env var > None
+    effective_anthropic_api_url = anthropic_api_url or os.environ.get("ANTHROPIC_TARGET_API_URL")
     effective_openai_api_url = openai_api_url or os.environ.get("OPENAI_TARGET_API_URL")
     effective_gemini_api_url = gemini_api_url or os.environ.get("GEMINI_TARGET_API_URL")
 
@@ -200,6 +207,7 @@ def proxy(
     config = ProxyConfig(
         host=host,
         port=port,
+        anthropic_api_url=effective_anthropic_api_url,
         openai_api_url=effective_openai_api_url,
         gemini_api_url=effective_gemini_api_url,
         mode=effective_mode,

@@ -670,6 +670,7 @@ class ProxyConfig:
     # Server
     host: str = "127.0.0.1"
     port: int = 8787
+    anthropic_api_url: str | None = None  # Custom Anthropic API URL override
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
 
@@ -1666,6 +1667,14 @@ class HeadroomProxy:
 
     def __init__(self, config: ProxyConfig):
         self.config = config
+
+        # Override ANTHROPIC_API_URL with config if set
+        # Strip trailing /v1 or /v1/ to avoid double-path (e.g., .../v1/v1/models)
+        if config.anthropic_api_url:
+            url = config.anthropic_api_url.rstrip("/")
+            if url.endswith("/v1"):
+                url = url[:-3]
+            HeadroomProxy.ANTHROPIC_API_URL = url
 
         # Override OPENAI_API_URL with config if set
         # Strip trailing /v1 or /v1/ to avoid double-path (e.g., .../v1/v1/models)
