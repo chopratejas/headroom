@@ -378,13 +378,16 @@ def _merge_cost_stats(
     cache_stats: dict,
     cli_tokens_avoided: int = 0,
 ) -> dict | None:
-    """Add prefix cache and CLI filtering savings to overall cost stats.
+    """Merge compression, cache, and CLI savings into cost stats.
 
-    Three savings layers, each on a different scope:
-    - compression_savings_usd: tokens removed by proxy (SmartCrusher, etc.)
-    - cache_savings_usd: prefix cache discount from provider
-    - cli_filtering_savings_usd: tokens avoided by rtk before reaching context
-    - savings_usd: sum of all (hero metric)
+    Each savings layer is reported separately with its own scope:
+    - savings_usd: compression savings at model list price (monotonic)
+    - cache_savings_usd: prefix cache discount from provider (separate)
+    - cli_tokens_avoided: tokens filtered by rtk (token count only, no $ estimate)
+
+    The hero metric (savings_usd) is ONLY compression savings priced at
+    the model's published input rate. Cache and CLI are shown separately.
+    This avoids the non-monotonic moving-average repricing bug (#83).
     """
     if cost_stats is None:
         return None
@@ -392,25 +395,11 @@ def _merge_cost_stats(
     cache_net = cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
     compression_savings = cost_stats.get("savings_usd", 0.0)
 
-    # Estimate CLI filtering savings: tokens_avoided * avg input price
-    # Use the average input price from the cost tracker if available
-    cli_savings_usd = 0.0
-    if cli_tokens_avoided > 0 and LITELLM_AVAILABLE:
-        # Use a conservative estimate: average across models seen
-        total_input_cost = cost_stats.get("total_input_cost_usd", 0.0)
-        total_input_tokens = cost_stats.get("total_input_tokens", 0)
-        if total_input_tokens > 0:
-            avg_price_per_token = total_input_cost / total_input_tokens
-            cli_savings_usd = cli_tokens_avoided * avg_price_per_token
-
     return {
         **cost_stats,
-        # savings_usd = Headroom's direct savings only (compression + CLI filtering)
-        # Cache savings are provider-native and reported separately — NOT added here.
-        "savings_usd": round(compression_savings + cli_savings_usd, 4),
+        "savings_usd": round(compression_savings, 4),
         "compression_savings_usd": round(compression_savings, 4),
         "cache_savings_usd": round(cache_net, 4),
-        "cli_filtering_savings_usd": round(cli_savings_usd, 4),
         "cli_tokens_avoided": cli_tokens_avoided,
     }
 
@@ -476,18 +465,13 @@ def _build_session_summary(
         best_compression = best["savings_pct"]
         best_detail = f"{best['original']:,} → {best['optimized']:,} tokens"
 
-    # Cost summary
-    # cost_with_headroom = what you actually paid (includes cache discounts)
-    # cost_without_headroom = counterfactual (with extra tokens at avg effective rate)
-    # compression_savings = cost_without - cost_with (pure Headroom value)
-    # cache_savings = provider caching discount (reported separately, NOT additive)
+    # Cost summary — savings_usd is compression savings at model list price (monotonic)
     cost_stats = proxy.cost_tracker.stats() if proxy.cost_tracker else {}
     cost_with = cost_stats.get("cost_with_headroom_usd", 0.0)
-    cost_without = cost_stats.get("cost_without_headroom_usd", 0.0)
+    compression_savings = cost_stats.get("savings_usd", 0.0)
     cache_net = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
-    compression_savings = round(cost_without - cost_with, 4) if cost_without > cost_with else 0.0
-    # Total saved = compression savings only (cache is provider-native, not Headroom's)
     total_saved_usd = round(compression_savings, 2)
+    cost_without = cost_with + compression_savings
     savings_pct_cost = round(total_saved_usd / cost_without * 100, 1) if cost_without > 0 else 0.0
 
     # Primary models used
@@ -1313,30 +1297,18 @@ class CostTracker:
                 cost_with_headroom += model_cost
                 total_billed_input_tokens += billed_tokens
 
-        # Compression counterfactual: value removed tokens at the effective average
-        # $/input token observed in this tracker (actual spend / billed input tokens),
-        # not at uncached list price — aligns savings $ with real billing mix (cache
-        # reads, writes, uncached). Fallback to list-price-per-removed-token when
-        # there is no billable traffic yet.
-        if total_billed_input_tokens > 0:
-            avg_price_per_input_token = cost_with_headroom / total_billed_input_tokens
-            cost_without_headroom = cost_with_headroom + total_saved * avg_price_per_input_token
-        else:
-            cost_without_headroom = 0.0
-            for model in self._tokens_saved_by_model:
-                saved = self._tokens_saved_by_model[model]
-                sent = self._tokens_sent_by_model.get(model, 0)
-                cr = self._api_cache_read_by_model.get(model, 0)
-                cw = self._api_cache_write_by_model.get(model, 0)
-                uncached_tk = self._api_uncached_by_model.get(model, 0)
-                prices = self._get_cache_prices(model)
-                if prices:
-                    cr_price, cw_price, uncached_price = prices
-                    if cr + cw + uncached_tk > 0:
-                        model_cost = cr * cr_price + cw * cw_price + uncached_tk * uncached_price
-                    else:
-                        model_cost = sent * uncached_price
-                    cost_without_headroom += model_cost + saved * uncached_price
+        # Compression savings: price saved tokens at the model's list input price.
+        # This is simple, monotonic, and transparent — each saved token is valued
+        # at the published $/token rate for its model. Not affected by cache mix.
+        savings_usd = 0.0
+        for model in self._tokens_saved_by_model:
+            saved = self._tokens_saved_by_model[model]
+            if saved <= 0:
+                continue
+            prices = self._get_cache_prices(model)
+            if prices:
+                _cr_price, _cw_price, uncached_price = prices
+                savings_usd += saved * uncached_price
 
         return {
             "total_tokens_saved": total_saved,
@@ -1344,8 +1316,7 @@ class CostTracker:
             "total_input_cost_usd": round(cost_with_headroom, 4),
             "per_model": per_model,
             "cost_with_headroom_usd": round(cost_with_headroom, 4),
-            "cost_without_headroom_usd": round(cost_without_headroom, 4),
-            "savings_usd": round(cost_without_headroom - cost_with_headroom, 4),
+            "savings_usd": round(savings_usd, 4),
         }
 
 
