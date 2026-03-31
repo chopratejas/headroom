@@ -12,6 +12,19 @@ curl http://localhost:8787/stats
 
 ```json
 {
+  "persistent_savings": {
+    "lifetime": {
+      "tokens_saved": 12500,
+      "compression_savings_usd": 0.04
+    },
+    "recent_history": [
+      {
+        "timestamp": "2026-03-27T09:00:00Z",
+        "total_tokens_saved": 12500,
+        "compression_savings_usd": 0.04
+      }
+    ]
+  },
   "requests": {
     "total": 42,
     "cached": 5,
@@ -34,6 +47,61 @@ curl http://localhost:8787/stats
   }
 }
 ```
+
+`/stats` keeps the existing live/session fields, including `savings_history`,
+for backward compatibility. The new `persistent_savings` block is durable local
+proxy compression history stored by default at `~/.headroom/proxy_savings.json`.
+Use `HEADROOM_SAVINGS_PATH` to override the file location.
+
+### Historical Savings Endpoint
+
+```bash
+curl http://localhost:8787/stats-history
+```
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-27T09:10:00Z",
+  "lifetime": {
+    "tokens_saved": 12500,
+    "compression_savings_usd": 0.04
+  },
+  "history": [
+    {
+      "timestamp": "2026-03-27T09:00:00Z",
+      "total_tokens_saved": 12000,
+      "compression_savings_usd": 0.038
+    }
+  ],
+  "series": {
+    "hourly": [],
+    "daily": [],
+    "weekly": [],
+    "monthly": []
+  },
+  "exports": {
+    "default_format": "json",
+    "available_formats": ["json", "csv"],
+    "available_series": ["history", "hourly", "daily", "weekly", "monthly"]
+  }
+}
+```
+
+`/stats-history` is the stable frontend-facing API for durable proxy
+compression history. It survives proxy restarts, tolerates missing or malformed
+state files, and powers the historical view in `/dashboard`. It now includes
+hourly, daily, weekly, and monthly chart-ready rollups.
+
+For export-friendly downloads:
+
+```bash
+curl "http://localhost:8787/stats-history?format=csv&series=daily"
+curl "http://localhost:8787/stats-history?format=csv&series=monthly"
+```
+
+CSV exports are available for `history`, `hourly`, `daily`, `weekly`, and
+`monthly`. Plain JSON remains the default response format.
 
 ### Prometheus Metrics
 

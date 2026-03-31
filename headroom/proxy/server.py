@@ -89,6 +89,7 @@ from headroom.config import (
 from headroom.dashboard import get_dashboard_html
 from headroom.providers import AnthropicProvider, OpenAIProvider
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
+from headroom.proxy.savings_tracker import SavingsTracker
 from headroom.telemetry import get_telemetry_collector
 from headroom.telemetry.toin import get_toin
 from headroom.tokenizers import get_tokenizer
@@ -1356,7 +1357,7 @@ class CostTracker:
 class PrometheusMetrics:
     """Prometheus-compatible metrics."""
 
-    def __init__(self):
+    def __init__(self, savings_tracker: SavingsTracker | None = None):
         self.requests_total = 0
         self.requests_by_provider: dict[str, int] = defaultdict(int)
         self.requests_by_model: dict[str, int] = defaultdict(int)
@@ -1419,6 +1420,7 @@ class PrometheusMetrics:
 
         # Cumulative savings history (timestamp → cumulative tokens saved)
         self.savings_history: list[tuple[str, int]] = []
+        self.savings_tracker = savings_tracker or SavingsTracker()
 
         self._lock = asyncio.Lock()
 
@@ -1509,6 +1511,12 @@ class PrometheusMetrics:
             # Keep last 500 data points
             if len(self.savings_history) > 500:
                 self.savings_history = self.savings_history[-500:]
+
+            if tokens_saved > 0:
+                self.savings_tracker.record_compression_savings(
+                    model=model,
+                    tokens_saved=tokens_saved,
+                )
 
     async def record_rate_limited(self):
         async with self._lock:
@@ -2110,6 +2118,7 @@ class HeadroomProxy:
             logger.info(f"CCR (Compress-Cache-Retrieve): ENABLED ({', '.join(ccr_features)})")
         else:
             logger.info("CCR: DISABLED")
+        logger.info(f"Savings history: {self.metrics.savings_tracker.storage_path}")
 
     async def shutdown(self):
         """Cleanup async resources."""
@@ -7365,6 +7374,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+    app.state.proxy = proxy
 
     # CORS
     app.add_middleware(
@@ -7497,6 +7507,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         compression_tokens = m.tokens_saved_total
         cache_net_usd = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
         total_tokens_all_layers = compression_tokens + cli_tokens_avoided
+        persistent_savings = m.savings_tracker.stats_preview()
 
         return {
             "summary": summary,
@@ -7572,6 +7583,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             else {},
             "waste_signals": dict(m.waste_signals_total) if m.waste_signals_total else {},
             "savings_history": m.savings_history[-100:],  # Last 100 data points
+            "persistent_savings": persistent_savings,
             "prefix_cache": prefix_cache_stats,
             "cost": _merge_cost_stats(
                 proxy.cost_tracker.stats() if proxy.cost_tracker else None,
@@ -7612,6 +7624,22 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "rate_limiter": await proxy.rate_limiter.stats() if proxy.rate_limiter else None,
             "recent_requests": proxy.logger.get_recent(10) if proxy.logger else [],
         }
+
+    @app.get("/stats-history")
+    async def stats_history(
+        format: Literal["json", "csv"] = "json",
+        series: Literal["history", "hourly", "daily", "weekly", "monthly"] = "history",
+    ):
+        """Get durable proxy compression savings history for frontends."""
+        if format == "csv":
+            filename = f"headroom-stats-history-{series}.csv"
+            return Response(
+                content=proxy.metrics.savings_tracker.export_csv(series=series),
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+
+        return proxy.metrics.savings_tracker.history_response()
 
     @app.get("/metrics")
     async def metrics():
