@@ -63,6 +63,8 @@ proxy = [
     "magika>=0.6.0",              # ML content detection for ContentRouter
     "zstandard>=0.20.0",          # Decompress zstd request bodies (Codex, etc.)
     "websockets>=13.0",           # WebSocket proxy for /v1/responses (Codex gpt-5.4+)
+    "onnxruntime>=1.16.0",        # Kompress ONNX INT8 text compression (no torch needed)
+    "transformers>=4.30.0",       # Tokenizer only (for Kompress)
 ]
 # AST-based code compression (tree-sitter)
 code = [

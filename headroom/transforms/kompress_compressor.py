@@ -34,10 +34,20 @@ _kompress_tokenizer = None
 _kompress_lock = threading.Lock()
 
 
-def is_kompress_available() -> bool:
-    """Check if Kompress dependencies are available (requires [ml] extra)."""
+def _is_onnx_available() -> bool:
+    """Check if ONNX Runtime is available (lightweight, no torch needed)."""
     try:
-        import huggingface_hub  # noqa: F401
+        import onnxruntime  # noqa: F401
+        import transformers  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _is_pytorch_available() -> bool:
+    """Check if full PyTorch stack is available (requires [ml] extra)."""
+    try:
         import safetensors  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
@@ -45,6 +55,11 @@ def is_kompress_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def is_kompress_available() -> bool:
+    """Check if Kompress can run — ONNX (lightweight) or PyTorch (full)."""
+    return _is_onnx_available() or _is_pytorch_available()
 
 
 # ── Model Architecture (must match training) ──────────────────────────
@@ -117,13 +132,43 @@ def _get_model_class() -> type:
 
 # ── Model Loading ─────────────────────────────────────────────────────
 
+# Backend tag: "onnx" or "pytorch"
+_kompress_backend: str | None = None
 
-def _load_kompress(device: str = "auto") -> tuple[Any, Any]:
-    """Download from HuggingFace and load the Kompress model."""
-    import torch
+
+class _OnnxModel:
+    """Thin wrapper so ONNX session has the same interface as PyTorch model."""
+
+    def __init__(self, session: Any):
+        self._session = session
+
+    def get_scores(self, input_ids: Any, attention_mask: Any) -> Any:
+        """Return [batch, seq] scores via ONNX Runtime."""
+        import numpy as np
+
+        scores = self._session.run(
+            ["final_scores"],
+            {
+                "input_ids": np.asarray(input_ids, dtype=np.int64),
+                "attention_mask": np.asarray(attention_mask, dtype=np.int64),
+            },
+        )
+        return scores[0]  # [batch, seq] numpy array
+
+    def get_keep_mask(self, input_ids: Any, attention_mask: Any) -> Any:
+        """Return [batch, seq] boolean mask (score > 0.5)."""
+        import numpy as np
+
+        scores = self.get_scores(input_ids, attention_mask)
+        return (np.array(scores) > 0.5).tolist()
+
+
+def _load_kompress_onnx() -> tuple[Any, Any]:
+    """Download ONNX INT8 model from HuggingFace and load with onnxruntime."""
+    import onnxruntime as ort
     from transformers import AutoTokenizer
 
-    global _kompress_model, _kompress_tokenizer
+    global _kompress_model, _kompress_tokenizer, _kompress_backend
 
     with _kompress_lock:
         if _kompress_model is not None:
@@ -131,22 +176,44 @@ def _load_kompress(device: str = "auto") -> tuple[Any, Any]:
 
         from huggingface_hub import hf_hub_download
 
-        logger.info("Downloading Kompress model from %s ...", HF_MODEL_ID)
+        logger.info("Downloading Kompress ONNX model from %s ...", HF_MODEL_ID)
+        onnx_path = hf_hub_download(HF_MODEL_ID, "onnx/kompress-int8.onnx")
 
-        # Download model weights
+        session = ort.InferenceSession(onnx_path)
+        model = _OnnxModel(session)
+        tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+
+        _kompress_model = model
+        _kompress_tokenizer = tokenizer
+        _kompress_backend = "onnx"
+        logger.info("Kompress ONNX INT8 loaded (no torch dependency)")
+        return model, tokenizer
+
+
+def _load_kompress_pytorch(device: str = "auto") -> tuple[Any, Any]:
+    """Download PyTorch model from HuggingFace and load with torch."""
+    import torch
+    from transformers import AutoTokenizer
+
+    global _kompress_model, _kompress_tokenizer, _kompress_backend
+
+    with _kompress_lock:
+        if _kompress_model is not None:
+            return _kompress_model, _kompress_tokenizer
+
+        from huggingface_hub import hf_hub_download
+
+        logger.info("Downloading Kompress PyTorch model from %s ...", HF_MODEL_ID)
         weights_path = hf_hub_download(HF_MODEL_ID, "model.safetensors")
 
-        # Load architecture
         HeadroomCompressorModel = _get_model_class()
         model = HeadroomCompressorModel()
 
-        # Load trained weights
         from safetensors.torch import load_file
 
         state_dict = load_file(weights_path)
         model.load_state_dict(state_dict, strict=False)
 
-        # Resolve device
         if device == "auto":
             if torch.cuda.is_available():
                 device = "cuda"
@@ -157,13 +224,35 @@ def _load_kompress(device: str = "auto") -> tuple[Any, Any]:
 
         model.to(device)
         model.eval()
-        logger.info("Kompress model loaded on %s (%s)", device, HF_MODEL_ID)
 
         tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
 
         _kompress_model = model
         _kompress_tokenizer = tokenizer
+        _kompress_backend = "pytorch"
+        logger.info("Kompress PyTorch loaded on %s (%s)", device, HF_MODEL_ID)
         return model, tokenizer
+
+
+def _load_kompress(device: str = "auto") -> tuple[Any, Any]:
+    """Load Kompress model: try ONNX first (lightweight), fall back to PyTorch."""
+    global _kompress_model
+    if _kompress_model is not None:
+        return _kompress_model, _kompress_tokenizer
+
+    # Prefer ONNX (50MB onnxruntime vs 800MB torch)
+    if _is_onnx_available():
+        try:
+            return _load_kompress_onnx()
+        except Exception as e:
+            logger.warning("ONNX load failed, trying PyTorch: %s", e)
+
+    if _is_pytorch_available():
+        return _load_kompress_pytorch(device)
+
+    raise ImportError(
+        "Kompress requires onnxruntime or torch. Install with: pip install headroom-ai[proxy]"
+    )
 
 
 def unload_kompress_model() -> bool:
@@ -259,7 +348,7 @@ class KompressCompressor(Transform):
 
         try:
             model, tokenizer = _load_kompress(self.config.device)
-            device = next(model.parameters()).device
+            is_onnx = _kompress_backend == "onnx"
 
             # Chunk at 512 tokens ≈ 350 words (matches training max_length)
             max_chunk_words = 350
@@ -268,26 +357,37 @@ class KompressCompressor(Transform):
             for chunk_start in range(0, n_words, max_chunk_words):
                 chunk_words = words[chunk_start : chunk_start + max_chunk_words]
 
+                # ONNX uses numpy tensors, PyTorch uses torch tensors
+                return_tensors = "np" if is_onnx else "pt"
                 encoding = tokenizer(
                     chunk_words,
                     is_split_into_words=True,
                     truncation=True,
                     max_length=512,
                     padding=True,
-                    return_tensors="pt",
+                    return_tensors=return_tensors,
                 )
 
-                input_ids = encoding["input_ids"].to(device)
-                attention_mask = encoding["attention_mask"].to(device)
+                input_ids = encoding["input_ids"]
+                attention_mask = encoding["attention_mask"]
                 word_ids = encoding.word_ids(batch_index=0)
 
+                if not is_onnx:
+                    device = next(model.parameters()).device
+                    input_ids = input_ids.to(device)
+                    attention_mask = attention_mask.to(device)
+
                 if target_ratio is not None:
-                    scores = model.get_scores(input_ids, attention_mask)[0].cpu()
+                    scores = model.get_scores(input_ids, attention_mask)
+                    if is_onnx:
+                        score_list = scores[0]  # numpy: [seq_len]
+                    else:
+                        score_list = scores[0].cpu()
                     word_scores: dict[int, float] = {}
                     for idx, wid in enumerate(word_ids):
                         if wid is None:
                             continue
-                        s = scores[idx].item()
+                        s = float(score_list[idx])
                         if wid not in word_scores or s > word_scores[wid]:
                             word_scores[wid] = s
                     if word_scores:
@@ -298,11 +398,15 @@ class KompressCompressor(Transform):
                         for wid in sorted_wids[:num_keep]:
                             kept_ids.add(wid + chunk_start)
                 else:
-                    keep_mask = model.get_keep_mask(input_ids, attention_mask)[0].cpu()
+                    keep_mask = model.get_keep_mask(input_ids, attention_mask)
+                    if is_onnx:
+                        mask_list = keep_mask[0]  # list of bools
+                    else:
+                        mask_list = keep_mask[0].cpu()
                     for idx, wid in enumerate(word_ids):
                         if wid is None:
                             continue
-                        if keep_mask[idx].item():
+                        if bool(mask_list[idx]):
                             kept_ids.add(wid + chunk_start)
 
             if not kept_ids:

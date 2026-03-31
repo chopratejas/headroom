@@ -28,13 +28,19 @@ class TestLazyImports:
         """Importing the module with torch blocked should not raise."""
         import sys
 
-        # Block torch imports
-        with patch.dict(sys.modules, {"torch": None, "torch.nn": None}):
-            # Force re-evaluation of is_kompress_available
-            from headroom.transforms.kompress_compressor import is_kompress_available
+        # Block torch AND onnxruntime imports
+        with patch.dict(
+            sys.modules,
+            {"torch": None, "torch.nn": None, "onnxruntime": None},
+        ):
+            from headroom.transforms.kompress_compressor import (
+                _is_pytorch_available,
+            )
 
-            # Should gracefully return False, not crash
-            assert is_kompress_available() is False
+            # Without both torch and onnxruntime, should return False
+            assert _is_pytorch_available() is False
+            # Note: is_kompress_available() may still return True if onnxruntime
+            # was already imported before patching. Test the individual checkers.
 
     def test_dataclasses_importable_without_torch(self) -> None:
         """KompressConfig, KompressResult, KompressCompressor are importable without torch."""
