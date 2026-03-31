@@ -62,6 +62,7 @@ proxy = [
     "mcp>=1.0.0",                 # MCP server (headroom_compress, retrieve, stats)
     "magika>=0.6.0",              # ML content detection for ContentRouter
     "zstandard>=0.20.0",          # Decompress zstd request bodies (Codex, etc.)
+    "websockets>=13.0",           # WebSocket proxy for /v1/responses (Codex gpt-5.4+)
 ]
 # AST-based code compression (tree-sitter)
 code = [

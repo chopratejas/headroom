@@ -48,7 +48,7 @@ import httpx
 
 try:
     import uvicorn
-    from fastapi import FastAPI, HTTPException, Request, Response
+    from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
@@ -6540,6 +6540,179 @@ class HeadroomProxy:
                 },
             )
 
+    async def handle_openai_responses_ws(self, websocket: WebSocket) -> None:
+        """WebSocket proxy for /v1/responses (Codex gpt-5.4+).
+
+        Newer Codex versions use WebSocket instead of HTTP POST for the
+        Responses API.  This handler:
+        1. Accepts the client WebSocket
+        2. Receives the first message (``response.create`` request)
+        3. Compresses the ``input`` array using the existing pipeline
+        4. Opens an upstream WebSocket to OpenAI
+        5. Sends the compressed request upstream
+        6. Relays all subsequent messages bidirectionally
+        """
+        try:
+            import websockets
+        except ImportError:
+            await websocket.accept()
+            await websocket.close(
+                code=1011,
+                reason="websockets package not installed. pip install websockets",
+            )
+            return
+
+        await websocket.accept()
+        request_id = await self._next_request_id()
+
+        # Extract auth from the WebSocket upgrade request headers
+        ws_headers = dict(websocket.headers)
+        auth = ws_headers.get("authorization", "")
+        openai_beta = ws_headers.get("openai-beta", "")
+
+        # Build upstream WebSocket URL (http→ws, https→wss)
+        base = self.OPENAI_API_URL
+        ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+        upstream_url = f"{ws_base}/v1/responses"
+
+        upstream_headers: dict[str, str] = {}
+        if auth:
+            upstream_headers["Authorization"] = auth
+        if openai_beta:
+            upstream_headers["openai-beta"] = openai_beta
+
+        try:
+            # Receive the first message from client (the response.create request)
+            first_msg_raw = await websocket.receive_text()
+
+            # --- Optional: compress the input in the first message ---
+            try:
+                body = json.loads(first_msg_raw)
+                input_data = body.get("input")
+                tokens_saved = 0
+
+                should_compress = (
+                    self.config.optimize
+                    and isinstance(input_data, list)
+                    and len(input_data) > 1
+                    and not body.get("previous_response_id")
+                )
+                if should_compress:
+                    try:
+                        from headroom.proxy.responses_converter import (
+                            messages_to_responses_items,
+                            responses_items_to_messages,
+                        )
+
+                        model = body.get("model", "gpt-4o")
+                        converted, preserved = responses_items_to_messages(input_data)
+
+                        messages: list[dict[str, Any]] = []
+                        instructions = body.get("instructions")
+                        if instructions:
+                            messages.append({"role": "system", "content": instructions})
+                        messages.extend(converted)
+
+                        tokenizer = get_tokenizer(model)
+                        original_tokens = tokenizer.count_messages(messages)
+
+                        context_limit = self.openai_provider.get_context_limit(model)
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                lambda: self.openai_pipeline.apply(
+                                    messages=messages,
+                                    model=model,
+                                    model_limit=context_limit,
+                                    context=extract_user_query(messages),
+                                )
+                            ),
+                            timeout=COMPRESSION_TIMEOUT_SECONDS,
+                        )
+
+                        if result.messages != messages:
+                            opt = result.messages
+                            if instructions and opt and opt[0].get("role") == "system":
+                                body["instructions"] = opt[0]["content"]
+                                opt = opt[1:]
+                            body["input"] = messages_to_responses_items(opt, input_data, preserved)
+                            tokens_saved = max(0, original_tokens - result.tokens_after)
+                            first_msg_raw = json.dumps(body)
+                            logger.info(
+                                f"[{request_id}] WS /v1/responses compressed: "
+                                f"saved {tokens_saved} tokens"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[{request_id}] WS compression failed: {e}")
+
+            except json.JSONDecodeError:
+                # Not JSON — pass through as-is
+                tokens_saved = 0
+
+            # --- Connect to upstream OpenAI WebSocket ---
+            logger.debug(f"[{request_id}] WS connecting to {upstream_url}")
+            import ssl
+
+            ssl_ctx = ssl.create_default_context()
+            # Use certifi certs if available (common on macOS)
+            try:
+                import certifi
+
+                ssl_ctx.load_verify_locations(certifi.where())
+            except ImportError:
+                pass
+
+            async with websockets.connect(
+                upstream_url,
+                additional_headers=upstream_headers,
+                ssl=ssl_ctx if upstream_url.startswith("wss://") else None,
+            ) as upstream:
+                # Send (potentially compressed) first message
+                await upstream.send(first_msg_raw)
+
+                # Bidirectional relay
+                async def _client_to_upstream() -> None:
+                    try:
+                        while True:
+                            msg = await websocket.receive_text()
+                            await upstream.send(msg)
+                    except Exception:
+                        with contextlib.suppress(Exception):
+                            await upstream.close()
+
+                async def _upstream_to_client() -> None:
+                    try:
+                        async for msg in upstream:
+                            await websocket.send_text(msg if isinstance(msg, str) else msg.decode())
+                    except Exception:
+                        pass
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await websocket.close()
+
+                await asyncio.gather(
+                    _client_to_upstream(),
+                    _upstream_to_client(),
+                    return_exceptions=True,
+                )
+
+            # Record metrics
+            if tokens_saved > 0:
+                model_name = body.get("model", "unknown") if isinstance(body, dict) else "unknown"
+                await self.metrics.record_request(
+                    provider="openai",
+                    model=model_name,
+                    input_tokens=0,
+                    output_tokens=0,
+                    tokens_saved=tokens_saved,
+                    latency_ms=0,
+                )
+
+        except Exception as e:
+            if "WebSocketDisconnect" not in type(e).__name__:
+                logger.error(f"[{request_id}] WS proxy error: {e}")
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason=str(e)[:120])
+
     async def handle_gemini_generate_content(
         self,
         request: Request,
@@ -7976,6 +8149,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def openai_responses(request: Request):
         """OpenAI Responses API (new API introduced March 2025)."""
         return await proxy.handle_openai_responses(request)
+
+    @app.websocket("/v1/responses")
+    async def openai_responses_ws(websocket: WebSocket):
+        """OpenAI Responses API via WebSocket (Codex gpt-5.4+)."""
+        await proxy.handle_openai_responses_ws(websocket)
 
     # OpenAI Batch API endpoints (with compression!)
     @app.post("/v1/batches")
