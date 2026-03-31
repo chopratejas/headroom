@@ -11,9 +11,9 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-import headroom.proxy.savings_tracker as savings_tracker_module
 from fastapi.testclient import TestClient
 
+import headroom.proxy.savings_tracker as savings_tracker_module
 from headroom.proxy.savings_tracker import HEADROOM_SAVINGS_PATH_ENV_VAR, SavingsTracker
 from headroom.proxy.server import ProxyConfig, create_app
 
