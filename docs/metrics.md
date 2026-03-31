@@ -76,14 +76,32 @@ curl http://localhost:8787/stats-history
   ],
   "series": {
     "hourly": [],
-    "daily": []
+    "daily": [],
+    "weekly": [],
+    "monthly": []
+  },
+  "exports": {
+    "default_format": "json",
+    "available_formats": ["json", "csv"],
+    "available_series": ["history", "hourly", "daily", "weekly", "monthly"]
   }
 }
 ```
 
 `/stats-history` is the stable frontend-facing API for durable proxy
 compression history. It survives proxy restarts, tolerates missing or malformed
-state files, and powers the historical view in `/dashboard`.
+state files, and powers the historical view in `/dashboard`. It now includes
+hourly, daily, weekly, and monthly chart-ready rollups.
+
+For export-friendly downloads:
+
+```bash
+curl "http://localhost:8787/stats-history?format=csv&series=daily"
+curl "http://localhost:8787/stats-history?format=csv&series=monthly"
+```
+
+CSV exports are available for `history`, `hourly`, `daily`, `weekly`, and
+`monthly`. Plain JSON remains the default response format.
 
 ### Prometheus Metrics
 

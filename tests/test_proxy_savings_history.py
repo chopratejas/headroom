@@ -247,18 +247,24 @@ def test_savings_tracker_rollups_are_chart_friendly(tmp_path, monkeypatch):
         tokens_saved=10,
         timestamp="2026-03-28T08:00:00Z",
     )
+    tracker.record_compression_savings(
+        model="gpt-4o",
+        tokens_saved=20,
+        timestamp="2026-04-02T14:00:00Z",
+    )
 
     response = tracker.history_response()
 
-    assert response["lifetime"]["tokens_saved"] == 185
-    assert response["lifetime"]["compression_savings_usd"] == pytest.approx(0.185)
-    assert len(response["history"]) == 4
+    assert response["lifetime"]["tokens_saved"] == 205
+    assert response["lifetime"]["compression_savings_usd"] == pytest.approx(0.205)
+    assert len(response["history"]) == 5
 
     hourly = response["series"]["hourly"]
     assert [point["timestamp"] for point in hourly] == [
         "2026-03-27T09:00:00Z",
         "2026-03-27T10:00:00Z",
         "2026-03-28T08:00:00Z",
+        "2026-04-02T14:00:00Z",
     ]
     assert hourly[0]["tokens_saved"] == 150
     assert hourly[0]["total_tokens_saved"] == 150
@@ -266,16 +272,50 @@ def test_savings_tracker_rollups_are_chart_friendly(tmp_path, monkeypatch):
     assert hourly[1]["total_tokens_saved"] == 175
     assert hourly[2]["tokens_saved"] == 10
     assert hourly[2]["total_tokens_saved"] == 185
+    assert hourly[3]["tokens_saved"] == 20
+    assert hourly[3]["total_tokens_saved"] == 205
 
     daily = response["series"]["daily"]
     assert [point["timestamp"] for point in daily] == [
         "2026-03-27T00:00:00Z",
         "2026-03-28T00:00:00Z",
+        "2026-04-02T00:00:00Z",
     ]
     assert daily[0]["tokens_saved"] == 175
     assert daily[0]["total_tokens_saved"] == 175
     assert daily[1]["tokens_saved"] == 10
     assert daily[1]["total_tokens_saved"] == 185
+    assert daily[2]["tokens_saved"] == 20
+    assert daily[2]["total_tokens_saved"] == 205
+
+    weekly = response["series"]["weekly"]
+    assert [point["timestamp"] for point in weekly] == [
+        "2026-03-23T00:00:00Z",
+        "2026-03-30T00:00:00Z",
+    ]
+    assert weekly[0]["tokens_saved"] == 185
+    assert weekly[0]["total_tokens_saved"] == 185
+    assert weekly[1]["tokens_saved"] == 20
+    assert weekly[1]["total_tokens_saved"] == 205
+
+    monthly = response["series"]["monthly"]
+    assert [point["timestamp"] for point in monthly] == [
+        "2026-03-01T00:00:00Z",
+        "2026-04-01T00:00:00Z",
+    ]
+    assert monthly[0]["tokens_saved"] == 185
+    assert monthly[0]["total_tokens_saved"] == 185
+    assert monthly[1]["tokens_saved"] == 20
+    assert monthly[1]["total_tokens_saved"] == 205
+
+    assert response["exports"]["available_formats"] == ["json", "csv"]
+    assert response["exports"]["available_series"] == [
+        "history",
+        "hourly",
+        "daily",
+        "weekly",
+        "monthly",
+    ]
 
 
 def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_path, monkeypatch):
@@ -306,7 +346,8 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         assert history_data["schema_version"] == 1
         assert history_data["storage_path"] == str(savings_path)
         assert history_data["lifetime"]["tokens_saved"] == 40
-        assert list(history_data["series"].keys()) == ["hourly", "daily"]
+        assert list(history_data["series"].keys()) == ["hourly", "daily", "weekly", "monthly"]
+        assert history_data["exports"]["available_series"][-2:] == ["weekly", "monthly"]
 
     with TestClient(create_app(config)) as client:
         history = client.get("/stats-history")
@@ -321,6 +362,35 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
 
         persisted = json.loads(savings_path.read_text())
         assert persisted["lifetime"]["tokens_saved"] == 55
+
+
+def test_stats_history_csv_export_is_frontend_friendly(tmp_path, monkeypatch):
+    savings_path = tmp_path / "proxy_savings.json"
+    monkeypatch.setenv("HEADROOM_SAVINGS_PATH", str(savings_path))
+
+    config = ProxyConfig(
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        log_requests=False,
+    )
+
+    with TestClient(create_app(config)) as client:
+        _record_request(client, model="gpt-4o", tokens_saved=40)
+        _record_request(client, model="gpt-4o", tokens_saved=10)
+
+        response = client.get("/stats-history?format=csv&series=daily")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert "attachment; filename=\"headroom-stats-history-daily.csv\"" == response.headers[
+            "content-disposition"
+        ]
+        lines = response.text.strip().splitlines()
+        assert lines[0] == (
+            "timestamp,tokens_saved,compression_savings_usd_delta,total_tokens_saved,"
+            "compression_savings_usd"
+        )
+        assert len(lines) >= 2
+        assert "total_tokens_saved" in lines[0]
 
 
 def test_malformed_savings_state_is_ignored_safely(tmp_path, monkeypatch):
@@ -359,3 +429,6 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         assert "Session" in html
         assert "Historical" in html
         assert "fetch('/stats-history')" in html
+        assert "Export CSV" in html
+        assert "Weekly Savings" in html
+        assert "Monthly Savings" in html

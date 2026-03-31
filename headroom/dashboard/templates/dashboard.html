@@ -526,7 +526,36 @@
 
         <template x-if="viewMode === 'history'">
             <div>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div class="flex flex-col gap-4 mb-6 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                        <div class="text-sm font-medium text-gray-300">Historical Proxy Compression</div>
+                        <div class="text-xs text-gray-500">
+                            Durable local savings history from <span class="font-mono">/stats-history</span>
+                        </div>
+                    </div>
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <div class="inline-flex rounded-lg border border-border bg-surface p-1">
+                            <template x-for="[label, key] in historyGranularityOptions" :key="key">
+                                <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
+                                        :class="historyGranularity === key ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
+                                        @click="historyGranularity = key"
+                                        x-text="label"></button>
+                            </template>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button class="px-3 py-1.5 text-sm rounded-md border border-border bg-surface text-gray-300 hover:text-white transition-colors"
+                                    @click="downloadHistory('json')">
+                                Export JSON
+                            </button>
+                            <button class="px-3 py-1.5 text-sm rounded-md border border-border bg-surface text-gray-300 hover:text-white transition-colors"
+                                    @click="downloadHistory('csv')">
+                                Export CSV
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
                     <div class="bg-surface rounded-lg p-4 border border-border">
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Lifetime Compression Savings</div>
                         <div class="flex items-baseline gap-2">
@@ -558,12 +587,39 @@
                     </div>
 
                     <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Active Weeks</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums"
+                                  x-text="formatNumber((historyStats.series?.weekly || []).length)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500">Weekly UTC rollups</div>
+                    </div>
+
+                    <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Active Months</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums"
+                                  x-text="formatNumber((historyStats.series?.monthly || []).length)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500">Monthly UTC rollups</div>
+                    </div>
+
+                    <div class="bg-surface rounded-lg p-4 border border-border">
                         <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Average Saved / Day</div>
                         <div class="flex items-baseline gap-2">
                             <span class="text-3xl font-light tabular-nums"
                                   x-text="formatNumber(historyAverageTokensPerDay)"></span>
                         </div>
                         <div class="mt-2 text-xs text-gray-500">Based on persisted daily buckets</div>
+                    </div>
+
+                    <div class="bg-surface rounded-lg p-4 border border-border">
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Average Saved / Week</div>
+                        <div class="flex items-baseline gap-2">
+                            <span class="text-3xl font-light tabular-nums"
+                                  x-text="formatNumber(historyAverageTokensPerWeek)"></span>
+                        </div>
+                        <div class="mt-2 text-xs text-gray-500">Based on persisted weekly buckets</div>
                     </div>
                 </div>
 
@@ -575,6 +631,8 @@
                                     <span class="text-sm font-medium text-gray-300">Historical Savings Trend</span>
                                     <span class="text-xs text-gray-500 font-mono" x-text="historyTrendLabel"></span>
                                 </div>
+                                <div class="text-xs text-gray-500 mb-4"
+                                     x-text="'Showing ' + formatNumber(historySelectedPointCount) + ' ' + historySelectedSeriesLabel.toLowerCase() + ' points'"></div>
                                 <template x-if="historicalTrend.length >= 2">
                                     <div class="h-48">
                                         <svg class="w-full h-full" viewBox="0 0 200 64" preserveAspectRatio="none">
@@ -593,7 +651,7 @@
                                 </template>
                                 <template x-if="historicalTrend.length < 2">
                                     <div class="h-48 flex items-center justify-center text-sm text-gray-500 italic">
-                                        Historical trend data will appear after more saved checkpoints.
+                                        Historical trend data will appear after more saved checkpoints in this granularity.
                                     </div>
                                 </template>
                             </div>
@@ -607,14 +665,19 @@
                                               x-text="formatNumber(historyStats.lifetime?.tokens_saved || 0) + ' tokens'"></span>
                                     </div>
                                     <div class="flex justify-between items-center">
-                                        <span class="text-sm text-gray-400">Hourly buckets</span>
+                                        <span class="text-sm text-gray-400">Selected series</span>
                                         <span class="font-mono text-sm"
-                                              x-text="formatNumber((historyStats.series?.hourly || []).length)"></span>
+                                              x-text="historySelectedSeriesLabel"></span>
                                     </div>
                                     <div class="flex justify-between items-center">
-                                        <span class="text-sm text-gray-400">Daily buckets</span>
+                                        <span class="text-sm text-gray-400">Selected points</span>
                                         <span class="font-mono text-sm"
-                                              x-text="formatNumber((historyStats.series?.daily || []).length)"></span>
+                                              x-text="formatNumber(historySelectedPointCount)"></span>
+                                    </div>
+                                    <div class="flex justify-between items-center">
+                                        <span class="text-sm text-gray-400">Average / month</span>
+                                        <span class="font-mono text-sm"
+                                              x-text="formatNumber(historyAverageTokensPerMonth) + ' tokens'"></span>
                                     </div>
                                     <div class="flex justify-between items-center">
                                         <span class="text-sm text-gray-400">Retention</span>
@@ -625,7 +688,7 @@
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
                             <div class="bg-surface rounded-lg p-4 border border-border">
                                 <div class="text-sm font-medium mb-4 text-gray-300">Daily Savings</div>
                                 <template x-if="(historyStats.series?.daily || []).length > 0">
@@ -655,23 +718,79 @@
                             </div>
 
                             <div class="bg-surface rounded-lg p-4 border border-border">
-                                <div class="text-sm font-medium mb-4 text-gray-300">Recent Historical Checkpoints</div>
-                                <div class="space-y-3">
-                                    <template x-for="point in recentHistoricalPoints" :key="point.timestamp">
-                                        <div class="flex items-center justify-between">
-                                            <div>
-                                                <div class="text-sm text-gray-300" x-text="formatDateTime(point.timestamp)"></div>
-                                                <div class="text-xs text-gray-500">Cumulative proxy compression savings</div>
+                                <div class="text-sm font-medium mb-4 text-gray-300">Weekly Savings</div>
+                                <template x-if="(historyStats.series?.weekly || []).length > 0">
+                                    <div class="space-y-3">
+                                        <template x-for="point in recentWeeklyHistory" :key="point.timestamp">
+                                            <div class="flex items-center justify-between">
+                                                <div>
+                                                    <div class="text-sm text-gray-300" x-text="formatDate(point.timestamp)"></div>
+                                                    <div class="text-xs text-gray-500"
+                                                         x-text="formatNumber(point.total_tokens_saved) + ' cumulative'"></div>
+                                                </div>
+                                                <div class="text-right">
+                                                    <div class="font-mono text-sm text-accent"
+                                                         x-text="formatNumber(point.tokens_saved) + ' tokens'"></div>
+                                                    <div class="text-xs text-emerald-400"
+                                                         x-text="'$' + formatCurrency(point.compression_savings_usd_delta || 0)"></div>
+                                                </div>
                                             </div>
-                                            <div class="text-right">
-                                                <div class="font-mono text-sm text-accent"
-                                                     x-text="formatNumber(point.total_tokens_saved) + ' tokens'"></div>
-                                                <div class="text-xs text-emerald-400"
-                                                     x-text="'$' + formatCurrency(point.compression_savings_usd || 0)"></div>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="(historyStats.series?.weekly || []).length === 0">
+                                    <div class="text-sm text-gray-500 italic py-8 text-center">
+                                        Weekly rollups will appear after persisted history spans multiple days.
+                                    </div>
+                                </template>
+                            </div>
+
+                            <div class="bg-surface rounded-lg p-4 border border-border">
+                                <div class="text-sm font-medium mb-4 text-gray-300">Monthly Savings</div>
+                                <template x-if="(historyStats.series?.monthly || []).length > 0">
+                                    <div class="space-y-3">
+                                        <template x-for="point in recentMonthlyHistory" :key="point.timestamp">
+                                            <div class="flex items-center justify-between">
+                                                <div>
+                                                    <div class="text-sm text-gray-300" x-text="formatMonth(point.timestamp)"></div>
+                                                    <div class="text-xs text-gray-500"
+                                                         x-text="formatNumber(point.total_tokens_saved) + ' cumulative'"></div>
+                                                </div>
+                                                <div class="text-right">
+                                                    <div class="font-mono text-sm text-accent"
+                                                         x-text="formatNumber(point.tokens_saved) + ' tokens'"></div>
+                                                    <div class="text-xs text-emerald-400"
+                                                         x-text="'$' + formatCurrency(point.compression_savings_usd_delta || 0)"></div>
+                                                </div>
                                             </div>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="(historyStats.series?.monthly || []).length === 0">
+                                    <div class="text-sm text-gray-500 italic py-8 text-center">
+                                        Monthly rollups will appear after persisted history spans multiple months.
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <div class="bg-surface rounded-lg p-4 border border-border">
+                            <div class="text-sm font-medium mb-4 text-gray-300">Recent Historical Checkpoints</div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <template x-for="point in recentHistoricalPoints" :key="point.timestamp">
+                                    <div class="flex items-center justify-between rounded-lg border border-border px-3 py-3">
+                                        <div>
+                                            <div class="text-sm text-gray-300" x-text="formatDateTime(point.timestamp)"></div>
+                                            <div class="text-xs text-gray-500">Cumulative proxy compression savings</div>
                                         </div>
-                                    </template>
-                                </div>
+                                        <div class="text-right">
+                                            <div class="font-mono text-sm text-accent"
+                                                 x-text="formatNumber(point.total_tokens_saved) + ' tokens'"></div>
+                                            <div class="text-xs text-emerald-400"
+                                                 x-text="'$' + formatCurrency(point.compression_savings_usd || 0)"></div>
+                                        </div>
+                                    </div>
+                                </template>
                             </div>
                         </div>
                     </div>
@@ -711,6 +830,7 @@
                 version: '0.3.0',
                 lastUpdate: 'never',
                 viewMode: 'session',
+                historyGranularity: 'daily',
                 requestHistory: [],
                 savingsHistory: [],
                 expandedRows: {},
@@ -792,6 +912,14 @@
                     });
                 },
 
+                formatMonth(ts) {
+                    if (!ts) return '-';
+                    return new Date(ts).toLocaleDateString(undefined, {
+                        month: 'short',
+                        year: 'numeric',
+                    });
+                },
+
                 formatDateTime(ts) {
                     if (!ts) return '-';
                     return new Date(ts).toLocaleString(undefined, {
@@ -811,24 +939,55 @@
 
                 // --- Historical View ---
 
+                get historyGranularityOptions() {
+                    return [
+                        ['Daily', 'daily'],
+                        ['Weekly', 'weekly'],
+                        ['Monthly', 'monthly'],
+                        ['Checkpoints', 'history'],
+                    ];
+                },
+
                 get hasHistoricalData() {
                     return (this.historyStats.history || []).length > 0;
                 },
 
+                get historySelectedSeriesKey() {
+                    return this.historyGranularity === 'history' ? 'history' : this.historyGranularity;
+                },
+
+                get historySelectedSeriesLabel() {
+                    const labels = {
+                        history: 'Checkpoints',
+                        daily: 'Daily',
+                        weekly: 'Weekly',
+                        monthly: 'Monthly',
+                    };
+                    return labels[this.historySelectedSeriesKey] || 'History';
+                },
+
+                get historySelectedPointCount() {
+                    if (this.historySelectedSeriesKey === 'history') {
+                        return (this.historyStats.history || []).length;
+                    }
+                    return (this.historyStats.series?.[this.historySelectedSeriesKey] || []).length;
+                },
+
                 get historicalTrend() {
-                    const daily = this.historyStats.series?.daily || [];
-                    if (daily.length >= 2) return daily;
-                    const hourly = this.historyStats.series?.hourly || [];
-                    if (hourly.length >= 2) return hourly;
-                    return this.historyStats.history || [];
+                    if (this.historySelectedSeriesKey === 'history') {
+                        return this.historyStats.history || [];
+                    }
+                    return this.historyStats.series?.[this.historySelectedSeriesKey] || [];
                 },
 
                 get historyTrendLabel() {
-                    const daily = this.historyStats.series?.daily || [];
-                    if (daily.length >= 2) return 'Daily cumulative savings';
-                    const hourly = this.historyStats.series?.hourly || [];
-                    if (hourly.length >= 2) return 'Hourly cumulative savings';
-                    return 'Checkpoint history';
+                    const labels = {
+                        history: 'Checkpoint history',
+                        daily: 'Daily cumulative savings',
+                        weekly: 'Weekly cumulative savings',
+                        monthly: 'Monthly cumulative savings',
+                    };
+                    return labels[this.historySelectedSeriesKey] || 'Historical savings';
                 },
 
                 get historyWindowLabel() {
@@ -847,12 +1006,51 @@
                     return Math.round(lifetime / daily.length);
                 },
 
+                get historyAverageTokensPerWeek() {
+                    const weekly = this.historyStats.series?.weekly || [];
+                    const lifetime = this.historyStats.lifetime?.tokens_saved || 0;
+                    if (weekly.length === 0) return 0;
+                    return Math.round(lifetime / weekly.length);
+                },
+
+                get historyAverageTokensPerMonth() {
+                    const monthly = this.historyStats.series?.monthly || [];
+                    const lifetime = this.historyStats.lifetime?.tokens_saved || 0;
+                    if (monthly.length === 0) return 0;
+                    return Math.round(lifetime / monthly.length);
+                },
+
                 get recentDailyHistory() {
                     return [...(this.historyStats.series?.daily || [])].slice(-7).reverse();
                 },
 
+                get recentWeeklyHistory() {
+                    return [...(this.historyStats.series?.weekly || [])].slice(-6).reverse();
+                },
+
+                get recentMonthlyHistory() {
+                    return [...(this.historyStats.series?.monthly || [])].slice(-6).reverse();
+                },
+
                 get recentHistoricalPoints() {
                     return [...(this.historyStats.history || [])].slice(-8).reverse();
+                },
+
+                async downloadHistory(format = 'json', series = null) {
+                    const selectedSeries = series || this.historySelectedSeriesKey;
+                    const params = new URLSearchParams({ format, series: selectedSeries });
+                    const response = await fetch('/stats-history?' + params.toString());
+                    if (!response.ok) throw new Error('Failed to export history');
+
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `headroom-stats-history-${selectedSeries}.${format}`;
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    window.URL.revokeObjectURL(url);
                 },
 
                 // --- Prefix Cache ---

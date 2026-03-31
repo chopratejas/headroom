@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Durable proxy savings history**
   - Persists proxy compression savings history locally at `~/.headroom/proxy_savings.json`
   - Supports `HEADROOM_SAVINGS_PATH` to override the storage location
-  - Adds `/stats-history` with lifetime totals plus hourly/daily rollups for frontends
+  - Adds `/stats-history` with lifetime totals plus hourly/daily/weekly/monthly rollups
+  - Supports JSON and CSV export from `/stats-history`
   - Extends `/stats` with a `persistent_savings` block while keeping `savings_history` backward compatible
-  - Adds a historical mode to `/dashboard` backed by `/stats-history`
+  - Adds a historical mode to `/dashboard` backed by `/stats-history`, including export actions
 - **Proxy telemetry SDK override** via `HEADROOM_SDK`
   - Downstream apps can override the anonymous telemetry `sdk` field without patching installed files
   - Blank values fall back to the default `proxy` label

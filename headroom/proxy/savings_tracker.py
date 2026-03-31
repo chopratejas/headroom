@@ -12,7 +12,9 @@ import logging
 import os
 import tempfile
 import threading
+from csv import DictWriter
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +64,19 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _bucket_start(timestamp: datetime, bucket: str) -> datetime:
+    if bucket == "hour":
+        return timestamp.replace(minute=0, second=0, microsecond=0)
+    if bucket == "day":
+        return timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+    if bucket == "week":
+        day_start = timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+        return day_start - timedelta(days=day_start.weekday())
+    if bucket == "month":
+        return timestamp.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    raise ValueError(f"Unsupported savings history bucket: {bucket}")
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -230,18 +245,54 @@ class SavingsTracker:
         """Return frontend-friendly historical data for `/stats-history`."""
         snapshot = self.snapshot()
         history = snapshot["history"]
+        series = {
+            "hourly": self._build_rollup(history, bucket="hour"),
+            "daily": self._build_rollup(history, bucket="day"),
+            "weekly": self._build_rollup(history, bucket="week"),
+            "monthly": self._build_rollup(history, bucket="month"),
+        }
         return {
             "schema_version": snapshot["schema_version"],
             "generated_at": _to_utc_iso(_utc_now()),
             "storage_path": snapshot["storage_path"],
             "lifetime": snapshot["lifetime"],
             "history": history,
-            "series": {
-                "hourly": self._build_rollup(history, bucket="hour"),
-                "daily": self._build_rollup(history, bucket="day"),
+            "series": series,
+            "exports": {
+                "default_format": "json",
+                "available_formats": ["json", "csv"],
+                "available_series": ["history", *series.keys()],
             },
             "retention": snapshot["retention"],
         }
+
+    def export_rows(self, series: str = "history") -> list[dict[str, Any]]:
+        """Return export rows for history or a rollup series."""
+        response = self.history_response()
+        if series == "history":
+            return [dict(item) for item in response["history"]]
+        return [dict(item) for item in response["series"].get(series, [])]
+
+    def export_csv(self, series: str = "history") -> str:
+        """Export history or rollup series as CSV."""
+        rows = self.export_rows(series=series)
+        if series == "history":
+            fieldnames = ["timestamp", "total_tokens_saved", "compression_savings_usd"]
+        else:
+            fieldnames = [
+                "timestamp",
+                "tokens_saved",
+                "compression_savings_usd_delta",
+                "total_tokens_saved",
+                "compression_savings_usd",
+            ]
+
+        buffer = StringIO()
+        writer = DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
+        return buffer.getvalue()
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -392,10 +443,7 @@ class SavingsTracker:
             if timestamp is None:
                 continue
 
-            if bucket == "hour":
-                bucket_start = timestamp.replace(minute=0, second=0, microsecond=0)
-            else:
-                bucket_start = timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+            bucket_start = _bucket_start(timestamp, bucket)
 
             bucket_key = _to_utc_iso(bucket_start)
             total_tokens_saved = _coerce_int(point.get("total_tokens_saved"))

@@ -122,11 +122,19 @@ other Headroom frontends. It returns:
 
 - lifetime proxy compression totals
 - bounded persisted checkpoint history
-- derived hourly and daily rollups for charts
+- derived hourly, daily, weekly, and monthly rollups for charts
 - UTC timestamps throughout
 
 By default the proxy stores this history at `~/.headroom/proxy_savings.json`.
 Set `HEADROOM_SAVINGS_PATH` to override the location.
+
+`/dashboard` uses this endpoint directly for its historical view, including the
+daily/weekly/monthly rollups and built-in JSON / CSV export buttons.
+
+```bash
+curl "http://localhost:8787/stats-history?format=csv&series=weekly"
+curl "http://localhost:8787/stats-history?format=csv&series=monthly"
+```
 
 ### Prometheus Metrics
 

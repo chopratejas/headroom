@@ -7292,8 +7292,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         }
 
     @app.get("/stats-history")
-    async def stats_history():
+    async def stats_history(
+        format: Literal["json", "csv"] = "json",
+        series: Literal["history", "hourly", "daily", "weekly", "monthly"] = "history",
+    ):
         """Get durable proxy compression savings history for frontends."""
+        if format == "csv":
+            filename = f"headroom-stats-history-{series}.csv"
+            return Response(
+                content=proxy.metrics.savings_tracker.export_csv(series=series),
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+
         return proxy.metrics.savings_tracker.history_response()
 
     @app.get("/metrics")
