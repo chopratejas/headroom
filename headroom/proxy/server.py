@@ -2653,8 +2653,11 @@ class HeadroomProxy:
                     usage = backend_response.body.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
 
+                    _backend_name = (
+                        self.anthropic_backend.name if self.anthropic_backend else "anthropic"
+                    )
                     await self.metrics.record_request(
-                        provider="bedrock",
+                        provider=_backend_name,
                         model=model,
                         input_tokens=optimized_tokens,
                         output_tokens=output_tokens,
@@ -2674,7 +2677,7 @@ class HeadroomProxy:
                             RequestLog(
                                 request_id=request_id,
                                 timestamp=datetime.now().isoformat(),
-                                provider="bedrock",
+                                provider=_backend_name,
                                 model=model,
                                 input_tokens_original=original_tokens,
                                 input_tokens_optimized=optimized_tokens,
@@ -4869,8 +4872,11 @@ class HeadroomProxy:
                 total_latency = (time.time() - start_time) * 1000
                 output_tokens = stream_state["output_tokens"]
 
+                _backend_name = (
+                    self.anthropic_backend.name if self.anthropic_backend else "anthropic"
+                )
                 await self.metrics.record_request(
-                    provider="bedrock",
+                    provider=_backend_name,
                     model=model,
                     input_tokens=optimized_tokens,
                     output_tokens=output_tokens,
@@ -4891,7 +4897,7 @@ class HeadroomProxy:
                         RequestLog(
                             request_id=request_id,
                             timestamp=datetime.now().isoformat(),
-                            provider="bedrock",
+                            provider=_backend_name,
                             model=model,
                             input_tokens_original=original_tokens,
                             input_tokens_optimized=optimized_tokens,
@@ -6264,6 +6270,14 @@ class HeadroomProxy:
 
             body["input"] = messages_to_responses_items(opt_msgs, original_items, preserved_indices)
 
+        # /v1/responses is OpenAI-specific (Codex) — always routes direct.
+        # LiteLLM/AnyLLM backends use /v1/chat/completions or /v1/messages.
+        if self.anthropic_backend is not None:
+            logger.debug(
+                f"[{request_id}] /v1/responses always routes to OpenAI direct "
+                f"(backend '{self.anthropic_backend.name}' not used for Responses API)"
+            )
+
         url = f"{self.OPENAI_API_URL}/v1/responses"
 
         try:
@@ -6277,7 +6291,7 @@ class HeadroomProxy:
                     model,
                     request_id,
                     original_tokens,
-                    original_tokens,
+                    optimized_tokens,
                     tokens_saved,
                     transforms_applied,
                     tags,
@@ -6360,31 +6374,46 @@ class HeadroomProxy:
             )
             return
 
-        await websocket.accept()
         request_id = await self._next_request_id()
 
         # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)
+
+        # Extract subprotocol from client — this is an application-level negotiation
+        # that MUST be forwarded end-to-end (unlike sec-websocket-key which is per-connection).
+        # Codex and OpenAI negotiate a subprotocol; stripping it causes OpenAI to return 500.
+        client_subprotocols: list[str] = []
+        raw_protocol = ws_headers.get("sec-websocket-protocol", "")
+        if raw_protocol:
+            client_subprotocols = [p.strip() for p in raw_protocol.split(",") if p.strip()]
+
+        # Accept client connection with the requested subprotocol
+        if client_subprotocols:
+            await websocket.accept(subprotocol=client_subprotocols[0])
+        else:
+            await websocket.accept()
 
         # Build upstream WebSocket URL (http→ws, https→wss)
         base = self.OPENAI_API_URL
         ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
         upstream_url = f"{ws_base}/v1/responses"
 
-        # Forward all relevant headers (auth, org, project, beta, etc.)
-        # Skip hop-by-hop headers that shouldn't be forwarded
+        # Forward all client headers except hop-by-hop / per-connection headers.
+        # These are WebSocket handshake mechanics that the `websockets` library
+        # generates fresh for the upstream connection — forwarding them would conflict.
+        # Everything else (auth, org, beta, user-agent, custom headers) is forwarded as-is.
         _skip_headers = frozenset(
             {
-                "host",
-                "connection",
-                "upgrade",
-                "sec-websocket-key",
-                "sec-websocket-version",
-                "sec-websocket-extensions",
-                "sec-websocket-accept",
-                "sec-websocket-protocol",
-                "content-length",
-                "transfer-encoding",
+                "host",  # must match upstream, not local proxy
+                "connection",  # hop-by-hop
+                "upgrade",  # hop-by-hop
+                "sec-websocket-key",  # per-connection cryptographic nonce
+                "sec-websocket-version",  # protocol version (websockets lib sets this)
+                "sec-websocket-extensions",  # per-connection negotiation
+                "sec-websocket-accept",  # server-side only
+                "sec-websocket-protocol",  # handled via subprotocols param below
+                "content-length",  # hop-by-hop
+                "transfer-encoding",  # hop-by-hop
             }
         )
         upstream_headers: dict[str, str] = {}
@@ -6392,9 +6421,29 @@ class HeadroomProxy:
             if k.lower() not in _skip_headers:
                 upstream_headers[k] = v
 
+        # Ensure Authorization header is present — fall back to OPENAI_API_KEY env var.
+        # Safety net for clients that don't forward auth headers via WebSocket upgrade.
+        _has_auth = "authorization" in {k.lower() for k in upstream_headers}
+        if not _has_auth:
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if api_key:
+                upstream_headers["Authorization"] = f"Bearer {api_key}"
+                logger.debug(f"[{request_id}] WS: injected Authorization from OPENAI_API_KEY env")
+            else:
+                logger.warning(
+                    f"[{request_id}] WS: no Authorization header from client and "
+                    f"OPENAI_API_KEY not set — upstream will likely reject"
+                )
+
         # Ensure the required beta header is present — OpenAI returns 500 without it
         if "openai-beta" not in {k.lower() for k in upstream_headers}:
             upstream_headers["OpenAI-Beta"] = "responses-api=v1"
+
+        logger.debug(
+            f"[{request_id}] WS upstream headers: "
+            f"{[k for k in upstream_headers if k.lower() != 'authorization']}, "
+            f"subprotocols={client_subprotocols}"
+        )
 
         try:
             # Receive the first message from client (the response.create request)
@@ -6479,6 +6528,11 @@ class HeadroomProxy:
             async with websockets.connect(
                 upstream_url,
                 additional_headers=upstream_headers,
+                subprotocols=(
+                    [websockets.Subprotocol(p) for p in client_subprotocols]
+                    if client_subprotocols and hasattr(websockets, "Subprotocol")
+                    else client_subprotocols or None
+                ),
                 ssl=ssl_ctx if upstream_url.startswith("wss://") else None,
             ) as upstream:
                 # Send (potentially compressed) first message
@@ -6490,16 +6544,28 @@ class HeadroomProxy:
                         while True:
                             msg = await websocket.receive_text()
                             await upstream.send(msg)
-                    except Exception:
+                    except Exception as relay_err:
+                        if "WebSocketDisconnect" not in type(relay_err).__name__:
+                            logger.debug(
+                                f"[{request_id}] WS client→upstream relay ended: {relay_err}"
+                            )
                         with contextlib.suppress(Exception):
                             await upstream.close()
 
                 async def _upstream_to_client() -> None:
                     try:
                         async for msg in upstream:
-                            await websocket.send_text(msg if isinstance(msg, str) else msg.decode())
-                    except Exception:
-                        pass
+                            if isinstance(msg, str):
+                                await websocket.send_text(msg)
+                            elif isinstance(msg, bytes):
+                                await websocket.send_bytes(msg)
+                            else:
+                                await websocket.send_text(str(msg))
+                    except Exception as relay_err:
+                        if "WebSocketDisconnect" not in type(relay_err).__name__:
+                            logger.debug(
+                                f"[{request_id}] WS upstream→client relay ended: {relay_err}"
+                            )
                     finally:
                         with contextlib.suppress(Exception):
                             await websocket.close()
@@ -6524,7 +6590,19 @@ class HeadroomProxy:
 
         except Exception as e:
             if "WebSocketDisconnect" not in type(e).__name__:
-                logger.error(f"[{request_id}] WS proxy error: {e}")
+                # Extract response body from websockets InvalidStatus for better debugging
+                error_detail = str(e)
+                if hasattr(e, "response"):
+                    try:
+                        resp = e.response
+                        body_bytes = getattr(resp, "body", None) or b""
+                        if body_bytes:
+                            error_detail += (
+                                f" | body: {body_bytes[:500].decode('utf-8', errors='replace')}"
+                            )
+                    except Exception:
+                        pass
+                logger.error(f"[{request_id}] WS proxy error: {error_detail}")
             with contextlib.suppress(Exception):
                 await websocket.close(code=1011, reason=str(e)[:120])
 

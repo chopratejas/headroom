@@ -54,7 +54,14 @@ def _get_log_path() -> Path:
     return log_dir / "proxy.log"
 
 
-def _start_proxy(port: int, *, learn: bool = False) -> subprocess.Popen:
+def _start_proxy(
+    port: int,
+    *,
+    learn: bool = False,
+    backend: str | None = None,
+    anyllm_provider: str | None = None,
+    region: str | None = None,
+) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
 
     Logs are written to ~/.headroom/logs/proxy.log to avoid pipe buffer
@@ -71,6 +78,19 @@ def _start_proxy(port: int, *, learn: bool = False) -> subprocess.Popen:
     # Forward --learn flag to proxy subprocess
     if learn:
         cmd.append("--learn")
+
+    # Forward backend configuration to proxy subprocess
+    _backend = backend or os.environ.get("HEADROOM_BACKEND")
+    if _backend:
+        cmd.extend(["--backend", _backend])
+
+    _anyllm = anyllm_provider or os.environ.get("HEADROOM_ANYLLM_PROVIDER")
+    if _anyllm:
+        cmd.extend(["--anyllm-provider", _anyllm])
+
+    _region = region or os.environ.get("HEADROOM_REGION")
+    if _region:
+        cmd.extend(["--region", _region])
 
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
@@ -233,7 +253,15 @@ def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
     return True
 
 
-def _ensure_proxy(port: int, no_proxy: bool, *, learn: bool = False) -> subprocess.Popen | None:
+def _ensure_proxy(
+    port: int,
+    no_proxy: bool,
+    *,
+    learn: bool = False,
+    backend: str | None = None,
+    anyllm_provider: str | None = None,
+    region: str | None = None,
+) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
     if not no_proxy:
         if _check_proxy(port):
@@ -242,7 +270,13 @@ def _ensure_proxy(port: int, no_proxy: bool, *, learn: bool = False) -> subproce
         else:
             click.echo(f"  Starting Headroom proxy on port {port}...")
             try:
-                proc = _start_proxy(port, learn=learn)
+                proc = _start_proxy(
+                    port,
+                    learn=learn,
+                    backend=backend,
+                    anyllm_provider=anyllm_provider,
+                    region=region,
+                )
                 click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
                 return proc
             except RuntimeError as e:
@@ -303,6 +337,9 @@ def _launch_tool(
     env_vars_display: list[str],
     *,
     learn: bool = False,
+    backend: str | None = None,
+    anyllm_provider: str | None = None,
+    region: str | None = None,
 ) -> None:
     """Common logic: start proxy, launch tool, clean up."""
     proxy_holder: list[subprocess.Popen | None] = [None]
@@ -318,7 +355,14 @@ def _launch_tool(
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
-        proxy_holder[0] = _ensure_proxy(port, no_proxy, learn=learn)
+        proxy_holder[0] = _ensure_proxy(
+            port,
+            no_proxy,
+            learn=learn,
+            backend=backend,
+            anyllm_provider=anyllm_provider,
+            region=region,
+        )
 
         click.echo()
         click.echo(f"  Launching {tool_label} (API routed through Headroom)...")
@@ -449,10 +493,31 @@ def claude(
 @click.option(
     "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to AGENTS.md)"
 )
+@click.option(
+    "--backend",
+    default=None,
+    help="API backend for the proxy: 'anthropic', 'anyllm', 'litellm-vertex', etc. (env: HEADROOM_BACKEND)",
+)
+@click.option(
+    "--anyllm-provider",
+    default=None,
+    help="Provider for any-llm backend: openai, mistral, groq, etc. (env: HEADROOM_ANYLLM_PROVIDER)",
+)
+@click.option(
+    "--region", default=None, help="Cloud region for Bedrock/Vertex (env: HEADROOM_REGION)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("codex_args", nargs=-1, type=click.UNPROCESSED)
 def codex(
-    port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, codex_args: tuple
+    port: int,
+    no_rtk: bool,
+    no_proxy: bool,
+    learn: bool,
+    backend: str | None,
+    anyllm_provider: str | None,
+    region: str | None,
+    verbose: bool,
+    codex_args: tuple,
 ) -> None:
     """Launch OpenAI Codex CLI through Headroom proxy.
 
@@ -467,6 +532,7 @@ def codex(
         headroom wrap codex -- "fix the bug"        # Pass prompt to codex
         headroom wrap codex --no-rtk                # Skip rtk setup
         headroom wrap codex --port 9999             # Custom proxy port
+        headroom wrap codex --backend anyllm --anyllm-provider groq
     """
     codex_bin = shutil.which("codex")
     if not codex_bin:
@@ -499,6 +565,9 @@ def codex(
         tool_label="CODEX",
         env_vars_display=[f"OPENAI_BASE_URL=http://127.0.0.1:{port}/v1"],
         learn=learn,
+        backend=backend,
+        anyllm_provider=anyllm_provider,
+        region=region,
     )
 
 
@@ -512,10 +581,23 @@ def codex(
 @click.option("--no-rtk", is_flag=True, help="Skip rtk installation and conventions injection")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option("--learn", is_flag=True, help="Enable live traffic learning")
+@click.option(
+    "--backend", default=None, help="API backend: 'anthropic', 'anyllm', 'litellm-vertex', etc."
+)
+@click.option("--anyllm-provider", default=None, help="Provider for any-llm backend")
+@click.option("--region", default=None, help="Cloud region for Bedrock/Vertex")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("aider_args", nargs=-1, type=click.UNPROCESSED)
 def aider(
-    port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool, aider_args: tuple
+    port: int,
+    no_rtk: bool,
+    no_proxy: bool,
+    learn: bool,
+    backend: str | None,
+    anyllm_provider: str | None,
+    region: str | None,
+    verbose: bool,
+    aider_args: tuple,
 ) -> None:
     """Launch aider through Headroom proxy.
 
@@ -530,6 +612,7 @@ def aider(
         headroom wrap aider -- --model gpt-4o            # Use GPT-4o
         headroom wrap aider -- --model claude-sonnet-4   # Use Claude
         headroom wrap aider --no-rtk                     # Skip rtk setup
+        headroom wrap aider --backend litellm-vertex --region us-central1
     """
     aider_bin = shutil.which("aider")
     if not aider_bin:
@@ -562,6 +645,9 @@ def aider(
             f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}",
         ],
         learn=learn,
+        backend=backend,
+        anyllm_provider=anyllm_provider,
+        region=region,
     )
 
 

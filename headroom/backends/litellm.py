@@ -662,9 +662,19 @@ class LiteLLMBackend(Backend):
                     )
                     kwargs["messages"].insert(0, {"role": "system", "content": system_text})
 
-            # AWS region for Bedrock
-            if self.provider == "bedrock" and self.region:
-                kwargs["aws_region_name"] = self.region
+            # Provider-specific region config
+            if self.region:
+                if self.provider == "bedrock":
+                    kwargs["aws_region_name"] = self.region
+                elif self.provider in ("vertex_ai", "vertex_ai_beta"):
+                    kwargs["vertex_location"] = self.region
+
+            # Forward API key from request headers if present
+            auth_header = headers.get("authorization", headers.get("Authorization", ""))
+            if auth_header.startswith("Bearer "):
+                kwargs["api_key"] = auth_header[7:]
+            elif headers.get("x-api-key"):
+                kwargs["api_key"] = headers["x-api-key"]
 
             logger.debug(f"LiteLLM request: model={litellm_model}")
 
@@ -752,8 +762,19 @@ class LiteLLMBackend(Backend):
                     )
                     kwargs["messages"].insert(0, {"role": "system", "content": system_text})
 
-            if self.provider == "bedrock" and self.region:
-                kwargs["aws_region_name"] = self.region
+            # Provider-specific region config
+            if self.region:
+                if self.provider == "bedrock":
+                    kwargs["aws_region_name"] = self.region
+                elif self.provider in ("vertex_ai", "vertex_ai_beta"):
+                    kwargs["vertex_location"] = self.region
+
+            # Forward API key from request headers if present
+            auth_header = headers.get("authorization", headers.get("Authorization", ""))
+            if auth_header.startswith("Bearer "):
+                kwargs["api_key"] = auth_header[7:]
+            elif headers.get("x-api-key"):
+                kwargs["api_key"] = headers["x-api-key"]
 
             msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
@@ -961,12 +982,19 @@ class LiteLLMBackend(Backend):
                 if param in body:
                     kwargs[param] = body[param]
 
-            # Provider-specific config
-            if self.provider == "bedrock" and self.region:
-                kwargs["aws_region_name"] = self.region
-            elif self.provider == "databricks":
-                # Databricks uses env vars for auth
-                pass
+            # Provider-specific region config
+            if self.region:
+                if self.provider == "bedrock":
+                    kwargs["aws_region_name"] = self.region
+                elif self.provider in ("vertex_ai", "vertex_ai_beta"):
+                    kwargs["vertex_location"] = self.region
+
+            # Forward API key from request headers if present
+            auth_header = headers.get("authorization", headers.get("Authorization", ""))
+            if auth_header.startswith("Bearer "):
+                kwargs["api_key"] = auth_header[7:]
+            elif headers.get("x-api-key"):
+                kwargs["api_key"] = headers["x-api-key"]
 
             logger.debug(f"LiteLLM OpenAI request: model={litellm_model}")
 
@@ -1086,8 +1114,19 @@ class LiteLLMBackend(Backend):
             if "stream_options" in body:
                 kwargs["stream_options"] = body["stream_options"]
 
-            if self.provider == "bedrock" and self.region:
-                kwargs["aws_region_name"] = self.region
+            # Provider-specific region config
+            if self.region:
+                if self.provider == "bedrock":
+                    kwargs["aws_region_name"] = self.region
+                elif self.provider in ("vertex_ai", "vertex_ai_beta"):
+                    kwargs["vertex_location"] = self.region
+
+            # Forward API key from request headers if present
+            auth_header = headers.get("authorization", headers.get("Authorization", ""))
+            if auth_header.startswith("Bearer "):
+                kwargs["api_key"] = auth_header[7:]
+            elif headers.get("x-api-key"):
+                kwargs["api_key"] = headers["x-api-key"]
 
             response = await acompletion(**kwargs)
 

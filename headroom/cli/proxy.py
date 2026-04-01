@@ -250,13 +250,12 @@ def proxy(
     if license_key:
         license_status = f"MANAGED (key={license_key[:8]}...)"
 
-    effective_region = bedrock_region or region
-    backend_status = "Anthropic (direct API)"
+    anthropic_url = config.anthropic_api_url or "https://api.anthropic.com"
+    openai_url = config.openai_api_url or "https://api.openai.com"
     backend_section = ""
 
     if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
         # any-llm backend
-        backend_status = f"{effective_anyllm_provider.title()} via any-llm"
         backend_section = """
   Set credentials for your provider (e.g., OPENAI_API_KEY, MISTRAL_API_KEY)
   Providers: https://mozilla-ai.github.io/any-llm/providers/
@@ -267,14 +266,6 @@ def proxy(
 
         provider = config.backend.replace("litellm-", "")
         provider_config = get_provider_config(provider)
-
-        # Build backend status
-        if provider_config.uses_region:
-            backend_status = (
-                f"{provider_config.display_name} via LiteLLM (region={effective_region})"
-            )
-        else:
-            backend_status = f"{provider_config.display_name} via LiteLLM"
 
         # Build usage instructions from provider config
         env_vars_str = (
@@ -314,7 +305,6 @@ Memory (Multi-Provider):
 Starting proxy server...
 
   URL:          http://{config.host}:{config.port}
-  Backend:      {backend_status}
   Mode:         {config.mode}
   Optimization: {"ENABLED" if config.optimize else "DISABLED"}
   Caching:      {"ENABLED" if config.cache_enabled else "DISABLED"}
@@ -322,18 +312,19 @@ Starting proxy server...
   Memory:       {memory_status}
   License:      {license_status}
 {backend_section}
-Usage with Claude Code:
-  ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
+Routing:
+  /v1/messages         → {anthropic_url}
+  /v1/chat/completions → {openai_url}
+  /v1/responses        → {openai_url}  (HTTP + WebSocket)
 
-Usage with OpenAI-compatible clients:
-  OPENAI_BASE_URL=http://{config.host}:{config.port}/v1 your-app
+Usage:
+  Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
+  Codex / OpenAI: OPENAI_BASE_URL=http://{config.host}:{config.port}/v1 your-app
 {memory_section}
 Endpoints:
   GET  /health     Health check
   GET  /stats      Detailed statistics
   GET  /metrics    Prometheus metrics
-  POST /v1/messages           Anthropic API
-  POST /v1/chat/completions   OpenAI API
 
 Press Ctrl+C to stop.
 """)
