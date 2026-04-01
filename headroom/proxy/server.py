@@ -1541,7 +1541,7 @@ class HeadroomProxy:
             if config.mode == "token_headroom":
                 router_config.protect_recent_reads_fraction = 0.3
             transforms = [
-                CacheAligner(CacheAlignerConfig(enabled=True)),
+                CacheAligner(CacheAlignerConfig(enabled=False)),
                 ContentRouter(router_config),
                 context_manager,
             ]
@@ -1549,7 +1549,7 @@ class HeadroomProxy:
         else:
             # Legacy mode: sequential pipeline
             transforms = [
-                CacheAligner(CacheAlignerConfig(enabled=True)),
+                CacheAligner(CacheAlignerConfig(enabled=False)),
                 SmartCrusher(
                     SmartCrusherConfig(  # type: ignore[arg-type]
                         enabled=True,
