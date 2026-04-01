@@ -6514,16 +6514,11 @@ class HeadroomProxy:
 
             # --- Connect to upstream OpenAI WebSocket ---
             logger.debug(f"[{request_id}] WS connecting to {upstream_url}")
-            import ssl
 
-            ssl_ctx = ssl.create_default_context()
-            # Use certifi certs if available (common on macOS)
-            try:
-                import certifi
-
-                ssl_ctx.load_verify_locations(certifi.where())
-            except ImportError:
-                pass
+            # Use ssl=True to let the websockets library handle SSL natively.
+            # Manual ssl.create_default_context() + certifi doesn't load the
+            # Windows system cert store, causing HTTP 500 on wss:// connections.
+            use_ssl: bool | None = True if upstream_url.startswith("wss://") else None
 
             async with websockets.connect(
                 upstream_url,
@@ -6533,7 +6528,7 @@ class HeadroomProxy:
                     if client_subprotocols and hasattr(websockets, "Subprotocol")
                     else client_subprotocols or None
                 ),
-                ssl=ssl_ctx if upstream_url.startswith("wss://") else None,
+                ssl=use_ssl,
             ) as upstream:
                 # Send (potentially compressed) first message
                 await upstream.send(first_msg_raw)
