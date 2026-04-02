@@ -1,15 +1,57 @@
+# VCS
 .git
+.github
+.gitignore
+
+# Python artifacts
 __pycache__
 *.pyc
 *.pyo
+*.egg-info
+dist/
+build/
+
+# Dev/test tooling
 .pytest_cache
 .coverage
 .mypy_cache
 .ruff_cache
+.pre-commit-config.yaml
+.venv
+venv
+
+# Tests & docs (not needed in image)
 tests/
 docs/
+mkdocs.yml
 CHANGELOG.md
 LICENSE
 NOTICE
+
+# JS/TS artifacts (dashboard, SDK — not part of proxy image)
+apps/
+sdk/
+plugins/
+node_modules/
+*.tgz
+
+# Secrets & local config
 .env
+.env.*
 *.log
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Misc
+.pi-lens/
+.superpowers/
+examples/
+node-compile-cache/
