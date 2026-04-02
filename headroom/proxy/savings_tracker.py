@@ -1,8 +1,8 @@
-"""Durable proxy savings history tracking.
+"""Durable proxy savings and display-session tracking.
 
-Persists cumulative proxy compression savings to a local JSON file so
-historical charts survive proxy restarts and can be shared by multiple
-Headroom frontends.
+Persists cumulative proxy compression savings plus a canonical display session
+window to a local JSON file so historical charts and dashboard session stats
+survive proxy restarts and can be shared by multiple Headroom frontends.
 """
 
 from __future__ import annotations
@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 HEADROOM_SAVINGS_PATH_ENV_VAR = "HEADROOM_SAVINGS_PATH"
 DEFAULT_SAVINGS_DIR = ".headroom"
 DEFAULT_SAVINGS_FILE = "proxy_savings.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_MAX_HISTORY_POINTS = 5000
 DEFAULT_MAX_HISTORY_AGE_DAYS = 365
+DEFAULT_DISPLAY_SESSION_INACTIVITY_MINUTES = 60
 
 try:
     import litellm
@@ -140,6 +141,48 @@ def _estimate_compression_savings_usd(model: str, tokens_saved: int) -> float:
         return 0.0
 
 
+def _estimate_input_cost_usd(
+    model: str,
+    input_tokens: int,
+    *,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    uncached_input_tokens: int = 0,
+) -> float:
+    """Estimate input spend in USD for a request.
+
+    Uses provider cache pricing when a complete cache breakdown is available and
+    otherwise falls back to list-price input tokens.
+    """
+    total_input_tokens = _coerce_int(input_tokens)
+    if total_input_tokens <= 0 or not LITELLM_AVAILABLE:
+        return 0.0
+
+    cache_read = _coerce_int(cache_read_tokens)
+    cache_write = _coerce_int(cache_write_tokens)
+    uncached = _coerce_int(uncached_input_tokens)
+
+    try:
+        resolved = _resolve_litellm_model(model)
+        info = litellm.model_cost.get(resolved, {})
+        input_cost_per_token = info.get("input_cost_per_token")
+        if not input_cost_per_token:
+            return 0.0
+
+        if cache_read + cache_write + uncached > 0:
+            cache_read_cost = info.get("cache_read_input_token_cost", input_cost_per_token)
+            cache_write_cost = info.get("cache_creation_input_token_cost", input_cost_per_token)
+            return (
+                float(cache_read) * float(cache_read_cost)
+                + float(cache_write) * float(cache_write_cost)
+                + float(uncached) * float(input_cost_per_token)
+            )
+
+        return float(total_input_tokens) * float(input_cost_per_token)
+    except Exception:
+        return 0.0
+
+
 def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     """Normalize persisted history entries across schema shapes."""
     timestamp: datetime | None = None
@@ -178,6 +221,49 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     }
 
 
+def _empty_display_session() -> dict[str, Any]:
+    return {
+        "requests": 0,
+        "tokens_saved": 0,
+        "compression_savings_usd": 0.0,
+        "total_input_tokens": 0,
+        "total_input_cost_usd": 0.0,
+        "savings_percent": 0.0,
+        "started_at": None,
+        "last_activity_at": None,
+    }
+
+
+def _normalize_display_session(entry: Any) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return _empty_display_session()
+
+    started_at = _parse_timestamp(entry.get("started_at"))
+    last_activity_at = _parse_timestamp(entry.get("last_activity_at"))
+
+    if started_at is None or last_activity_at is None or last_activity_at < started_at:
+        return _empty_display_session()
+
+    tokens_saved = _coerce_int(entry.get("tokens_saved"))
+    total_input_tokens = _coerce_int(entry.get("total_input_tokens"))
+    total_before = tokens_saved + total_input_tokens
+    savings_percent = round((tokens_saved / total_before * 100) if total_before > 0 else 0.0, 2)
+
+    return {
+        "requests": _coerce_int(entry.get("requests")),
+        "tokens_saved": tokens_saved,
+        "compression_savings_usd": round(
+            _coerce_float(entry.get("compression_savings_usd")),
+            6,
+        ),
+        "total_input_tokens": total_input_tokens,
+        "total_input_cost_usd": round(_coerce_float(entry.get("total_input_cost_usd")), 6),
+        "savings_percent": savings_percent,
+        "started_at": _to_utc_iso(started_at),
+        "last_activity_at": _to_utc_iso(last_activity_at),
+    }
+
+
 class SavingsTracker:
     """Persist bounded proxy compression savings history."""
 
@@ -186,10 +272,15 @@ class SavingsTracker:
         path: str | None = None,
         max_history_points: int = DEFAULT_MAX_HISTORY_POINTS,
         max_history_age_days: int = DEFAULT_MAX_HISTORY_AGE_DAYS,
+        display_session_inactivity_minutes: int = DEFAULT_DISPLAY_SESSION_INACTIVITY_MINUTES,
     ) -> None:
         self._path = Path(path or get_default_savings_storage_path())
         self._max_history_points = max_history_points
         self._max_history_age_days = max_history_age_days
+        self._display_session_inactivity_minutes = max(
+            _coerce_int(display_session_inactivity_minutes, DEFAULT_DISPLAY_SESSION_INACTIVITY_MINUTES),
+            1,
+        )
         self._lock = threading.Lock()
         self._state = self._load_state()
 
@@ -257,6 +348,126 @@ class SavingsTracker:
             self._save_locked()
             return True
 
+    def record_request(
+        self,
+        *,
+        model: str,
+        input_tokens: int,
+        tokens_saved: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        uncached_input_tokens: int = 0,
+        total_input_tokens: int | None = None,
+        total_input_cost_usd: float | None = None,
+        timestamp: datetime | str | None = None,
+    ) -> bool:
+        """Persist a canonical display-session update for every request."""
+        timestamp_dt = (
+            _parse_timestamp(timestamp)
+            if isinstance(timestamp, str)
+            else timestamp.astimezone(timezone.utc)
+            if isinstance(timestamp, datetime)
+            else _utc_now()
+        )
+        if timestamp_dt is None:
+            timestamp_dt = _utc_now()
+
+        delta_tokens_saved = _coerce_int(tokens_saved)
+        delta_input_tokens = _coerce_int(input_tokens)
+        delta_savings_usd = _estimate_compression_savings_usd(model, delta_tokens_saved)
+        delta_input_cost_usd = _estimate_input_cost_usd(
+            model,
+            delta_input_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            uncached_input_tokens=uncached_input_tokens,
+        )
+
+        with self._lock:
+            lifetime = self._state["lifetime"]
+            previous_total_input_tokens = lifetime["total_input_tokens"]
+            previous_total_input_cost_usd = lifetime["total_input_cost_usd"]
+
+            next_total_input_tokens = max(
+                previous_total_input_tokens + delta_input_tokens,
+                _coerce_int(
+                    total_input_tokens,
+                    default=previous_total_input_tokens + delta_input_tokens,
+                ),
+            )
+            next_total_input_cost_usd = round(
+                max(
+                    previous_total_input_cost_usd + delta_input_cost_usd,
+                    _coerce_float(
+                        total_input_cost_usd,
+                        default=previous_total_input_cost_usd + delta_input_cost_usd,
+                    ),
+                ),
+                6,
+            )
+            session_input_tokens_delta = max(
+                next_total_input_tokens - previous_total_input_tokens,
+                0,
+            )
+            session_input_cost_delta = round(
+                max(next_total_input_cost_usd - previous_total_input_cost_usd, 0.0),
+                6,
+            )
+
+            lifetime["requests"] += 1
+            lifetime["tokens_saved"] += delta_tokens_saved
+            lifetime["compression_savings_usd"] = round(
+                lifetime["compression_savings_usd"] + delta_savings_usd,
+                6,
+            )
+            lifetime["total_input_tokens"] = next_total_input_tokens
+            lifetime["total_input_cost_usd"] = next_total_input_cost_usd
+
+            session = self._state["display_session"]
+            last_activity = _parse_timestamp(session.get("last_activity_at"))
+            if last_activity is None or self._is_display_session_expired(
+                last_activity,
+                reference_time=timestamp_dt,
+            ):
+                session = _empty_display_session()
+                session["started_at"] = _to_utc_iso(timestamp_dt)
+                self._state["display_session"] = session
+
+            session["requests"] += 1
+            session["tokens_saved"] += delta_tokens_saved
+            session["compression_savings_usd"] = round(
+                session["compression_savings_usd"] + delta_savings_usd,
+                6,
+            )
+            session["total_input_tokens"] += session_input_tokens_delta
+            session["total_input_cost_usd"] = round(
+                session["total_input_cost_usd"] + session_input_cost_delta,
+                6,
+            )
+            total_before = session["tokens_saved"] + session["total_input_tokens"]
+            session["savings_percent"] = round(
+                (session["tokens_saved"] / total_before * 100) if total_before > 0 else 0.0,
+                2,
+            )
+            session["last_activity_at"] = _to_utc_iso(timestamp_dt)
+            if session.get("started_at") is None:
+                session["started_at"] = session["last_activity_at"]
+
+            if delta_tokens_saved > 0:
+                self._state["history"].append(
+                    {
+                        "timestamp": _to_utc_iso(timestamp_dt),
+                        "total_tokens_saved": lifetime["tokens_saved"],
+                        "compression_savings_usd": lifetime["compression_savings_usd"],
+                        "total_input_tokens": lifetime["total_input_tokens"],
+                        "total_input_cost_usd": lifetime["total_input_cost_usd"],
+                    }
+                )
+                self._trim_history_locked(reference_time=timestamp_dt)
+
+            self._save_locked()
+            return True
+
     def stats_preview(self, recent_points: int = 20) -> dict[str, Any]:
         """Return a compact preview for `/stats`."""
         snapshot = self.snapshot()
@@ -264,6 +475,8 @@ class SavingsTracker:
             "schema_version": snapshot["schema_version"],
             "storage_path": snapshot["storage_path"],
             "lifetime": snapshot["lifetime"],
+            "display_session": snapshot["display_session"],
+            "display_session_policy": snapshot["display_session_policy"],
             "history_points": len(snapshot["history"]),
             "recent_history": snapshot["history"][-recent_points:],
             "retention": snapshot["retention"],
@@ -284,6 +497,8 @@ class SavingsTracker:
             "generated_at": _to_utc_iso(_utc_now()),
             "storage_path": snapshot["storage_path"],
             "lifetime": snapshot["lifetime"],
+            "display_session": snapshot["display_session"],
+            "display_session_policy": snapshot["display_session_policy"],
             "history": history,
             "series": series,
             "exports": {
@@ -339,6 +554,10 @@ class SavingsTracker:
                 "schema_version": SCHEMA_VERSION,
                 "storage_path": str(self._path),
                 "lifetime": dict(self._state["lifetime"]),
+                "display_session": self._display_session_snapshot_locked(),
+                "display_session_policy": {
+                    "rollover_inactivity_minutes": self._display_session_inactivity_minutes,
+                },
                 "history": history,
                 "retention": {
                     "max_history_points": self._max_history_points,
@@ -350,11 +569,13 @@ class SavingsTracker:
         return {
             "schema_version": SCHEMA_VERSION,
             "lifetime": {
+                "requests": 0,
                 "tokens_saved": 0,
                 "compression_savings_usd": 0.0,
                 "total_input_tokens": 0,
                 "total_input_cost_usd": 0.0,
             },
+            "display_session": _empty_display_session(),
             "history": [],
         }
 
@@ -386,11 +607,13 @@ class SavingsTracker:
         normalized_history.sort(key=lambda item: item["timestamp"])
 
         lifetime_raw = raw.get("lifetime", {})
+        lifetime_requests = 0
         lifetime_tokens_saved = 0
         lifetime_savings_usd = 0.0
         lifetime_input_tokens = 0
         lifetime_input_cost_usd = 0.0
         if isinstance(lifetime_raw, dict):
+            lifetime_requests = _coerce_int(lifetime_raw.get("requests"))
             lifetime_tokens_saved = _coerce_int(lifetime_raw.get("tokens_saved"))
             lifetime_savings_usd = _coerce_float(lifetime_raw.get("compression_savings_usd"))
             lifetime_input_tokens = _coerce_int(lifetime_raw.get("total_input_tokens"))
@@ -415,11 +638,13 @@ class SavingsTracker:
         state = {
             "schema_version": SCHEMA_VERSION,
             "lifetime": {
+                "requests": lifetime_requests,
                 "tokens_saved": lifetime_tokens_saved,
                 "compression_savings_usd": round(lifetime_savings_usd, 6),
                 "total_input_tokens": lifetime_input_tokens,
                 "total_input_cost_usd": round(lifetime_input_cost_usd, 6),
             },
+            "display_session": _normalize_display_session(raw.get("display_session")),
             "history": normalized_history,
         }
 
@@ -463,6 +688,7 @@ class SavingsTracker:
             payload = {
                 "schema_version": SCHEMA_VERSION,
                 "lifetime": self._state["lifetime"],
+                "display_session": self._state["display_session"],
                 "history": self._state["history"],
             }
             json_data = json.dumps(payload, indent=2)
@@ -486,6 +712,47 @@ class SavingsTracker:
                 raise
         except OSError as e:
             logger.warning("Failed to save savings history to %s: %s", self._path, e)
+
+    def _display_session_snapshot_locked(
+        self,
+        reference_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        session = dict(self._state["display_session"])
+        last_activity = _parse_timestamp(session.get("last_activity_at"))
+        if last_activity is None or self._is_display_session_expired(
+            last_activity,
+            reference_time=reference_time,
+        ):
+            return _empty_display_session()
+
+        total_before = _coerce_int(session.get("tokens_saved")) + _coerce_int(
+            session.get("total_input_tokens")
+        )
+        session["savings_percent"] = round(
+            (_coerce_int(session.get("tokens_saved")) / total_before * 100)
+            if total_before > 0
+            else 0.0,
+            2,
+        )
+        session["compression_savings_usd"] = round(
+            _coerce_float(session.get("compression_savings_usd")),
+            6,
+        )
+        session["total_input_cost_usd"] = round(
+            _coerce_float(session.get("total_input_cost_usd")),
+            6,
+        )
+        return session
+
+    def _is_display_session_expired(
+        self,
+        last_activity: datetime,
+        *,
+        reference_time: datetime | None = None,
+    ) -> bool:
+        return (reference_time or _utc_now()) - last_activity > timedelta(
+            minutes=self._display_session_inactivity_minutes
+        )
 
     def _build_rollup(self, history: list[dict[str, Any]], bucket: str) -> list[dict[str, Any]]:
         if not history:

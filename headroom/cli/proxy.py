@@ -324,6 +324,7 @@ Usage:
 Endpoints:
   GET  /health     Health check
   GET  /stats      Detailed statistics
+  GET  /stats-history Durable compression history + display session
   GET  /metrics    Prometheus metrics
 
 Press Ctrl+C to stop.

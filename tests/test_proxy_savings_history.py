@@ -18,15 +18,21 @@ from headroom.proxy.savings_tracker import HEADROOM_SAVINGS_PATH_ENV_VAR, Saving
 from headroom.proxy.server import ProxyConfig, create_app
 
 
-def _record_request(client: TestClient, *, model: str, tokens_saved: int) -> None:
+def _record_request(
+    client: TestClient,
+    *,
+    model: str,
+    tokens_saved: int,
+    input_tokens: int = 120,
+) -> None:
     proxy = client.app.state.proxy
     if proxy.cost_tracker:
-        proxy.cost_tracker.record_tokens(model, tokens_saved, 120)
+        proxy.cost_tracker.record_tokens(model, tokens_saved, input_tokens)
     asyncio.run(
         proxy.metrics.record_request(
             provider="openai",
             model=model,
-            input_tokens=120,
+            input_tokens=input_tokens,
             output_tokens=24,
             tokens_saved=tokens_saved,
             latency_ms=15.0,
@@ -99,13 +105,15 @@ def test_savings_tracker_sanitizes_legacy_state_and_applies_retention(tmp_path):
     tracker = SavingsTracker(path=str(path), max_history_points=1, max_history_age_days=2)
     snapshot = tracker.snapshot()
 
-    assert snapshot["schema_version"] == 1
+    assert snapshot["schema_version"] == 2
     assert snapshot["lifetime"] == {
+        "requests": 0,
         "tokens_saved": 30,
         "compression_savings_usd": pytest.approx(0.03),
         "total_input_tokens": 0,
         "total_input_cost_usd": 0.0,
     }
+    assert snapshot["display_session"] == savings_tracker_module._empty_display_session()
     assert snapshot["history"] == [
         {
             "timestamp": "2026-03-27T09:00:00Z",
@@ -129,11 +137,13 @@ def test_non_dict_savings_state_resets_to_default(tmp_path):
     snapshot = tracker.snapshot()
 
     assert snapshot["lifetime"] == {
+        "requests": 0,
         "tokens_saved": 0,
         "compression_savings_usd": 0.0,
         "total_input_tokens": 0,
         "total_input_cost_usd": 0.0,
     }
+    assert snapshot["display_session"] == savings_tracker_module._empty_display_session()
     assert snapshot["history"] == []
 
 
@@ -223,9 +233,17 @@ def test_litellm_resolution_and_savings_estimation_fallbacks(monkeypatch):
     assert savings_tracker_module._estimate_compression_savings_usd(
         "claude-sonnet-4-6", 100
     ) == pytest.approx(0.2)
+    assert savings_tracker_module._estimate_input_cost_usd(
+        "claude-sonnet-4-6",
+        100,
+        cache_read_tokens=10,
+        cache_write_tokens=5,
+        uncached_input_tokens=85,
+    ) == pytest.approx(0.2)
 
     fake_litellm.model_cost = {}
     assert savings_tracker_module._estimate_compression_savings_usd("gpt-4o", 100) == 0.0
+    assert savings_tracker_module._estimate_input_cost_usd("gpt-4o", 100) == 0.0
 
     monkeypatch.setattr(
         fake_litellm,
@@ -237,6 +255,86 @@ def test_litellm_resolution_and_savings_estimation_fallbacks(monkeypatch):
 
     monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", False)
     assert savings_tracker_module._estimate_compression_savings_usd("gpt-4o", 100) == 0.0
+    assert savings_tracker_module._estimate_input_cost_usd("gpt-4o", 100) == 0.0
+
+
+def test_display_session_rolls_after_inactivity_and_counts_zero_savings_requests(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "proxy_savings.json"
+    tracker = SavingsTracker(path=str(path), display_session_inactivity_minutes=30)
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_compression_savings_usd",
+        lambda model, tokens_saved: tokens_saved / 1000.0,
+    )
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_input_cost_usd",
+        lambda model, input_tokens, **kwargs: input_tokens / 1000.0,
+    )
+
+    tracker.record_request(
+        model="gpt-4o",
+        input_tokens=120,
+        tokens_saved=0,
+        timestamp="2026-03-27T09:00:00Z",
+    )
+    tracker.record_request(
+        model="gpt-4o",
+        input_tokens=80,
+        tokens_saved=20,
+        timestamp="2026-03-27T09:10:00Z",
+    )
+
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_utc_now",
+        lambda: datetime(2026, 3, 27, 9, 15, tzinfo=timezone.utc),
+    )
+    active_session = tracker.snapshot()["display_session"]
+    assert active_session == {
+        "requests": 2,
+        "tokens_saved": 20,
+        "compression_savings_usd": pytest.approx(0.02),
+        "total_input_tokens": 200,
+        "total_input_cost_usd": pytest.approx(0.2),
+        "savings_percent": pytest.approx(9.09),
+        "started_at": "2026-03-27T09:00:00Z",
+        "last_activity_at": "2026-03-27T09:10:00Z",
+    }
+
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_utc_now",
+        lambda: datetime(2026, 3, 27, 9, 45, tzinfo=timezone.utc),
+    )
+    assert tracker.snapshot()["display_session"] == savings_tracker_module._empty_display_session()
+
+    tracker.record_request(
+        model="gpt-4o",
+        input_tokens=50,
+        tokens_saved=5,
+        timestamp="2026-03-27T10:05:00Z",
+    )
+
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_utc_now",
+        lambda: datetime(2026, 3, 27, 10, 10, tzinfo=timezone.utc),
+    )
+    rolled = tracker.snapshot()
+    assert rolled["lifetime"]["requests"] == 3
+    assert rolled["display_session"] == {
+        "requests": 1,
+        "tokens_saved": 5,
+        "compression_savings_usd": pytest.approx(0.005),
+        "total_input_tokens": 50,
+        "total_input_cost_usd": pytest.approx(0.05),
+        "savings_percent": pytest.approx(9.09),
+        "started_at": "2026-03-27T10:05:00Z",
+        "last_activity_at": "2026-03-27T10:05:00Z",
+    }
 
 
 def test_savings_tracker_rollups_preserve_spend_and_input_history(tmp_path, monkeypatch):
@@ -407,11 +505,15 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         history = client.get("/stats-history")
         assert history.status_code == 200
         history_data = history.json()
-        assert history_data["schema_version"] == 1
+        assert history_data["schema_version"] == 2
         assert history_data["storage_path"] == str(savings_path)
         assert history_data["lifetime"]["tokens_saved"] == 40
         assert history_data["lifetime"]["total_input_tokens"] == 120
         assert history_data["lifetime"]["total_input_cost_usd"] == pytest.approx(0.24)
+        assert history_data["display_session"]["requests"] == 1
+        assert history_data["display_session"]["tokens_saved"] == 40
+        assert history_data["display_session"]["total_input_tokens"] == 120
+        assert history_data["display_session"]["savings_percent"] == pytest.approx(25.0)
         assert list(history_data["series"].keys()) == ["hourly", "daily", "weekly", "monthly"]
         assert history_data["exports"]["available_series"][-2:] == ["weekly", "monthly"]
         assert history_data["series"]["hourly"][0]["total_input_tokens_delta"] == 120
@@ -419,10 +521,14 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
             0.24
         )
 
+        assert stats_data["display_session"] == history_data["display_session"]
+        assert stats_data["persistent_savings"]["display_session"] == history_data["display_session"]
+
     with TestClient(create_app(config)) as client:
         history = client.get("/stats-history")
         assert history.status_code == 200
         assert history.json()["lifetime"]["tokens_saved"] == 40
+        assert history.json()["display_session"]["requests"] == 1
 
         _record_request(client, model="gpt-4o", tokens_saved=15)
 
@@ -430,7 +536,12 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         assert updated["lifetime"]["tokens_saved"] == 55
         assert updated["lifetime"]["total_input_tokens"] == 240
         assert updated["lifetime"]["total_input_cost_usd"] == pytest.approx(0.48)
+        assert updated["lifetime"]["requests"] == 2
         assert len(updated["history"]) == 2
+        assert updated["display_session"]["requests"] == 2
+        assert updated["display_session"]["tokens_saved"] == 55
+        assert updated["display_session"]["total_input_tokens"] == 240
+        assert updated["display_session"]["savings_percent"] == pytest.approx(18.64)
         assert updated["series"]["daily"][0]["total_input_tokens_delta"] == 240
         assert updated["series"]["daily"][0]["total_input_cost_usd_delta"] == pytest.approx(0.48)
 
@@ -438,6 +549,7 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         assert persisted["lifetime"]["tokens_saved"] == 55
         assert persisted["lifetime"]["total_input_tokens"] == 240
         assert persisted["lifetime"]["total_input_cost_usd"] == pytest.approx(0.48)
+        assert persisted["display_session"]["requests"] == 2
 
 
 def test_stats_history_csv_export_is_frontend_friendly(tmp_path, monkeypatch):

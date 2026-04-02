@@ -1269,6 +1269,7 @@ class PrometheusMetrics:
         waste_signals: dict[str, int] | None = None,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        uncached_input_tokens: int = 0,
     ):
         """Record metrics for a request."""
         async with self._lock:
@@ -1342,14 +1343,17 @@ class PrometheusMetrics:
             if len(self.savings_history) > 500:
                 self.savings_history = self.savings_history[-500:]
 
-            if tokens_saved > 0:
-                total_input_tokens, total_input_cost_usd = self._current_savings_tracker_totals()
-                self.savings_tracker.record_compression_savings(
-                    model=model,
-                    tokens_saved=tokens_saved,
-                    total_input_tokens=total_input_tokens,
-                    total_input_cost_usd=total_input_cost_usd,
-                )
+            total_input_tokens, total_input_cost_usd = self._current_savings_tracker_totals()
+            self.savings_tracker.record_request(
+                model=model,
+                input_tokens=input_tokens,
+                tokens_saved=tokens_saved,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                uncached_input_tokens=uncached_input_tokens,
+                total_input_tokens=total_input_tokens,
+                total_input_cost_usd=total_input_cost_usd,
+            )
 
     async def record_rate_limited(self):
         async with self._lock:
@@ -3082,6 +3086,7 @@ class HeadroomProxy:
                     waste_signals=waste_signals_dict,
                     cache_read_tokens=cr_tokens,
                     cache_write_tokens=cw_tokens,
+                    uncached_input_tokens=uncached_input_tokens,
                 )
 
                 # Log request
@@ -4843,6 +4848,7 @@ class HeadroomProxy:
                     pipeline_timing=pipeline_timing,
                     cache_read_tokens=cache_read_tokens,
                     cache_write_tokens=cache_write_tokens,
+                    uncached_input_tokens=uncached_input_tokens,
                 )
 
         return StreamingResponse(
@@ -7386,6 +7392,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         - Request metrics (total, cached, failed, by model/provider)
         - Token usage and savings
         - Cost tracking
+        - Canonical persisted display_session metrics for downstream dashboards
         - Compression (CCR) statistics
         - Telemetry/TOIN (data flywheel) statistics
         - Cache and rate limiter stats
@@ -7483,6 +7490,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         cache_net_usd = prefix_cache_stats.get("totals", {}).get("net_savings_usd", 0.0)
         total_tokens_all_layers = compression_tokens + cli_tokens_avoided
         persistent_savings = m.savings_tracker.stats_preview()
+        display_session = persistent_savings.get("display_session", {})
 
         return {
             "summary": summary,
@@ -7558,6 +7566,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             else {},
             "waste_signals": dict(m.waste_signals_total) if m.waste_signals_total else {},
             "savings_history": m.savings_history[-100:],  # Last 100 data points
+            "display_session": display_session,
             "persistent_savings": persistent_savings,
             "prefix_cache": prefix_cache_stats,
             "cost": _merge_cost_stats(
@@ -7605,7 +7614,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         format: Literal["json", "csv"] = "json",
         series: Literal["history", "hourly", "daily", "weekly", "monthly"] = "history",
     ):
-        """Get durable proxy compression savings history for frontends."""
+        """Get durable proxy compression history plus display-session state."""
         if format == "csv":
             filename = f"headroom-stats-history-{series}.csv"
             return Response(
