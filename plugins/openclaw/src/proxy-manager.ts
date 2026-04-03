@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 
 export interface ProxyManagerConfig {
   proxyUrl?: string;
+  proxyPort?: number;
+  pythonPath?: string;
   autoStart?: boolean;
   startupTimeoutMs?: number;
 }
@@ -39,11 +41,6 @@ interface LaunchSpec {
   checkArgs: string[];
 }
 
-const DEFAULT_PROXY_CANDIDATES = [
-  "http://127.0.0.1:8787",
-  "http://localhost:8787",
-];
-
 const defaultLogger: ProxyManagerLogger = {
   info: (m) => console.log(`[headroom] ${m}`),
   warn: (m) => console.warn(`[headroom] ${m}`),
@@ -65,11 +62,13 @@ export class ProxyManager {
    * Ensure a proxy is available. Returns the normalized URL origin.
    */
   async start(): Promise<string> {
+    const port = this.getProxyPort();
     const explicitUrl =
       typeof this.config.proxyUrl === "string" && this.config.proxyUrl.trim().length > 0
         ? normalizeAndValidateProxyUrl(this.config.proxyUrl)
         : null;
-    const candidateUrls = explicitUrl ? [explicitUrl] : [...DEFAULT_PROXY_CANDIDATES];
+    const defaultCandidates = this.getDefaultProxyCandidates(port);
+    const candidateUrls = explicitUrl ? [explicitUrl] : [...defaultCandidates];
     const probeByUrl = new Map<string, ProxyProbeResult>();
 
     for (const url of candidateUrls) {
@@ -92,7 +91,7 @@ export class ProxyManager {
     }
 
     if (this.config.autoStart !== false) {
-      const startupUrl = explicitUrl ?? DEFAULT_PROXY_CANDIDATES[0];
+      const startupUrl = explicitUrl ?? defaultCandidates[0];
       const startupProbe = probeByUrl.get(startupUrl);
       if (startupProbe?.reachable && !startupProbe.isHeadroom) {
         throw new Error(
@@ -126,9 +125,22 @@ export class ProxyManager {
     }
 
     throw new Error(
-      `Headroom proxy not detected on default endpoints (${DEFAULT_PROXY_CANDIDATES.join(", ")}). ` +
+      `Headroom proxy not detected on default endpoints (${defaultCandidates.join(", ")}). ` +
         "Set proxyUrl explicitly or enable autoStart.",
     );
+  }
+
+  private getProxyPort(): number {
+    const rawPort = this.config.proxyPort;
+    if (!Number.isInteger(rawPort) || rawPort === undefined) return 8787;
+    if (rawPort < 1 || rawPort > 65535) {
+      throw new Error("proxyPort must be an integer between 1 and 65535");
+    }
+    return rawPort;
+  }
+
+  private getDefaultProxyCandidates(port: number): string[] {
+    return [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
   }
 
   /**
@@ -228,7 +240,8 @@ export class ProxyManager {
     }
 
     // 4) Python module fallback
-    for (const pyCmd of ["python", "python3", "py"]) {
+    const pythonCommands = this.getPythonCommands();
+    for (const pyCmd of pythonCommands) {
       specs.push({
         label: `Python: ${pyCmd} -m headroom.cli`,
         command: pyCmd,
@@ -239,6 +252,20 @@ export class ProxyManager {
     }
 
     return specs;
+  }
+
+  private getPythonCommands(): string[] {
+    const commands: string[] = [];
+    const configured = typeof this.config.pythonPath === "string"
+      ? this.config.pythonPath.trim()
+      : "";
+    if (configured.length > 0) {
+      commands.push(configured);
+    }
+    for (const fallback of ["python", "python3", "py"]) {
+      if (!commands.includes(fallback)) commands.push(fallback);
+    }
+    return commands;
   }
 
   private canExecute(command: string, args: string[]): boolean {

@@ -50,16 +50,17 @@ Why this matters:
 
 `proxyUrl` must be localhost (`127.0.0.1` or `localhost`). If the proxy is not running, the plugin will try to start it with `headroom proxy --host ... --port ...`.
 `proxyUrl` is optional. If omitted, the plugin auto-detects on:
-- `http://127.0.0.1:8787`
-- `http://localhost:8787`
-If no proxy is found, it will auto-start on `http://127.0.0.1:8787` (when `autoStart` is enabled).
+- `http://127.0.0.1:<proxyPort>`
+- `http://localhost:<proxyPort>`
+Default `proxyPort` is `8787`.
 
-If set, `proxyUrl` must be localhost (`127.0.0.1` or `localhost`). If that proxy is not running, the plugin will try to start it with `headroom proxy --host ... --port ...`.
+If set, `proxyUrl` must be localhost (`127.0.0.1` or `localhost`).
 Auto-start launch order is:
 1. `headroom` from `PATH`
 2. local npm bin (`node_modules/.bin/headroom`)
 3. global npm bin
 4. Python module (`python -m headroom.cli proxy ...`)
+If `pythonPath` is set, it is tried first in the Python fallback step.
 
 ## Required Proxy Setup
 
@@ -94,7 +95,9 @@ Compression is lossless via CCR (Compress-Cache-Retrieve): originals are stored 
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `proxyUrl` | auto-detected | Optional URL of a Headroom proxy (`http://127.0.0.1:<port>` or `http://localhost:<port>`). Defaults to probing `:8787`. |
+| `proxyUrl` | auto-detected | Optional URL of a Headroom proxy (`http://127.0.0.1:<port>` or `http://localhost:<port>`). |
+| `proxyPort` | `8787` | Port used for default auto-detect/auto-start when `proxyUrl` is not set. |
+| `pythonPath` | auto-detected | Optional Python executable override for Python fallback launcher. |
 | `autoStart` | `true` | Auto-start `headroom proxy` if not already running |
 | `startupTimeoutMs` | `20000` | Time to wait for auto-started proxy to become healthy |
 

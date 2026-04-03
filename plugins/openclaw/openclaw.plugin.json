@@ -4,6 +4,14 @@
     "proxyUrl": {
       "label": "Proxy URL",
       "help": "Optional. URL of a Headroom proxy on localhost (example: http://127.0.0.1:8787). If omitted, plugin auto-detects defaults."
+    },
+    "proxyPort": {
+      "label": "Proxy Port",
+      "help": "Default port used for auto-detect/auto-start when proxyUrl is not set (default: 8787)."
+    },
+    "pythonPath": {
+      "label": "Python Path",
+      "help": "Optional explicit python executable for python fallback launcher (for example: python, python3, py, or full path)."
     }
   },
   "configSchema": {
@@ -16,6 +24,15 @@
       "proxyUrl": {
         "type": "string",
         "pattern": "^http:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$"
+      },
+      "proxyPort": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 8787
+      },
+      "pythonPath": {
+        "type": "string"
       },
       "autoStart": {
         "type": "boolean",
