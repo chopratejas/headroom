@@ -134,9 +134,15 @@ class BatchHandlerMixin:
                 continue
 
             # Apply optimization
+            original_tokens = 0  # Set before try so error handler can use it
+            optimized_tokens = 0
             try:
-                # Default context limit for most models
-                context_limit = 128000
+                # Look up model context limit, fall back to 128K
+                context_limit = (
+                    self.openai_provider.get_context_limit(model)
+                    if hasattr(self, "openai_provider")
+                    else 128000
+                )
 
                 # Use OpenAI pipeline (similar message format after conversion)
                 result = self.openai_pipeline.apply(
@@ -219,8 +225,7 @@ class BatchHandlerMixin:
                 )
                 # Pass through unchanged on failure — count original as optimized
                 compressed_requests.append(batch_req)
-                # original_tokens may be unbound if pipeline failed before producing result
-                # Just skip the token accounting for this failed request
+                total_optimized_tokens += original_tokens  # 0 if pipeline never ran
 
         # Update body with compressed requests
         body["batch"]["input_config"]["requests"]["requests"] = compressed_requests
