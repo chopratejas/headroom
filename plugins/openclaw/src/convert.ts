@@ -54,7 +54,8 @@ export function agentToOpenAI(messages: any[]): OpenAIMessage[] {
         continue;
       }
 
-      // Content blocks: extract text and tool_use blocks
+      // Content blocks: extract text and tool call blocks.
+      // OpenClaw uses `toolCall`; some adapters still emit legacy `tool_use`.
       if (Array.isArray(content)) {
         const textParts: string[] = [];
         const toolCalls: any[] = [];
@@ -64,16 +65,20 @@ export function agentToOpenAI(messages: any[]): OpenAIMessage[] {
             textParts.push(block);
           } else if (block.type === "text") {
             textParts.push(block.text);
-          } else if (block.type === "tool_use") {
+          } else if (block.type === "tool_use" || block.type === "toolCall") {
+            const args =
+              block.type === "toolCall"
+                ? block.arguments
+                : block.input;
             toolCalls.push({
               id: block.id,
               type: "function",
               function: {
                 name: block.name,
                 arguments:
-                  typeof block.input === "string"
-                    ? block.input
-                    : JSON.stringify(block.input ?? {}),
+                  typeof args === "string"
+                    ? args
+                    : JSON.stringify(args ?? {}),
               },
             });
           }
@@ -155,11 +160,12 @@ export function openAIToAgent(messages: OpenAIMessage[]): any[] {
           } catch {
             input = tc.function.arguments ?? {};
           }
+          // Emit OpenClaw-native block shape so downstream transports keep call linkage.
           blocks.push({
-            type: "tool_use",
+            type: "toolCall",
             id: tc.id,
             name: tc.function.name,
-            input,
+            arguments: input,
           });
         }
       }
@@ -174,10 +180,19 @@ export function openAIToAgent(messages: OpenAIMessage[]): any[] {
     }
 
     if (msg.role === "tool") {
+      const textContent =
+        typeof msg.content === "string"
+          ? msg.content
+          : msg.content == null
+            ? ""
+            : JSON.stringify(msg.content);
+      const toolCallId = msg.tool_call_id ?? "unknown";
       result.push({
         role: "toolResult",
-        content: msg.content ?? "",
-        tool_use_id: msg.tool_call_id ?? "unknown",
+        // OpenClaw transport layers expect toolResult content blocks, not a raw string.
+        content: [{ type: "text", text: textContent }],
+        toolCallId,
+        tool_use_id: toolCallId,
         timestamp: Date.now(),
       });
       continue;

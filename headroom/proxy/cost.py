@@ -240,7 +240,7 @@ def build_session_summary(
             if entry.model and "count_tokens" in entry.model:
                 uncompressed_reasons["passthrough"] += 1
                 continue
-            if entry.tokens_saved > 0 and entry.savings_percent > 0:
+            if entry.tokens_saved > 0:
                 compressed_requests.append(
                     {
                         "savings_pct": round(entry.savings_percent, 1),

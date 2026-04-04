@@ -140,6 +140,10 @@ class ClaudeCodeWriter(ContextWriter):
     def _resolve_context_path(self, project: ProjectInfo) -> Path:
         if project.context_file:
             return project.context_file
+        # If project path is the home directory, write to ~/.claude/CLAUDE.md
+        # (the global location Claude Code reads) instead of ~/CLAUDE.md
+        if project.project_path == Path.home():
+            return Path.home() / ".claude" / "CLAUDE.md"
         return project.project_path / "CLAUDE.md"
 
     def _resolve_memory_path(self, project: ProjectInfo) -> Path:

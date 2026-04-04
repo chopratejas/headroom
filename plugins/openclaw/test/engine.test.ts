@@ -46,6 +46,25 @@ describe("AgentMessage conversion", () => {
     expect(openai[0].tool_calls![0].function.name).toBe("search");
   });
 
+  it("converts assistant with toolCall blocks", () => {
+    const agent = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Let me search" },
+          { type: "toolCall", id: "call_1|fc_1", name: "search", arguments: { q: "test" } },
+        ],
+        timestamp: Date.now(),
+      },
+    ];
+    const openai = agentToOpenAI(agent);
+    expect(openai[0].role).toBe("assistant");
+    expect(openai[0].content).toBe("Let me search");
+    expect(openai[0].tool_calls).toHaveLength(1);
+    expect(openai[0].tool_calls![0].id).toBe("call_1|fc_1");
+    expect(openai[0].tool_calls![0].function.name).toBe("search");
+  });
+
   it("converts toolResult message", () => {
     const agent = [
       {
@@ -92,7 +111,7 @@ describe("AgentMessage conversion", () => {
         role: "assistant",
         content: [
           { type: "text", text: "Searching..." },
-          { type: "tool_use", id: "tu_1", name: "search", input: { q: "test" } },
+          { type: "toolCall", id: "call_1|fc_1", name: "search", arguments: { q: "test" } },
         ],
         timestamp: Date.now(),
       },
@@ -104,7 +123,7 @@ describe("AgentMessage conversion", () => {
     expect(Array.isArray(content)).toBe(true);
     expect(content).toContainEqual(expect.objectContaining({ type: "text", text: "Searching..." }));
     expect(content).toContainEqual(
-      expect.objectContaining({ type: "tool_use", id: "tu_1", name: "search" }),
+      expect.objectContaining({ type: "toolCall", id: "call_1|fc_1", name: "search" }),
     );
   });
 
@@ -120,7 +139,7 @@ describe("AgentMessage conversion", () => {
     const openai = agentToOpenAI(original);
     const back = openAIToAgent(openai);
     expect(back[0].role).toBe("toolResult");
-    expect(back[0].content).toBe('{"data": true}');
+    expect(back[0].content).toEqual([{ type: "text", text: '{"data": true}' }]);
     expect(back[0].tool_use_id).toBe("tu_1");
   });
 });

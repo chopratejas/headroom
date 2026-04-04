@@ -191,5 +191,7 @@ async def _read_request_json(request: Request) -> dict[str, Any]:
     except UnicodeDecodeError as exc:
         raise ValueError(f"Request body is not valid UTF-8 (possibly compressed?): {exc}") from exc
 
-    result: dict[str, Any] = json.loads(text)
+    result = json.loads(text)
+    if not isinstance(result, dict):
+        raise ValueError("Request body must be a JSON object, not " + type(result).__name__)
     return result

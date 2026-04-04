@@ -80,7 +80,7 @@ class StreamingMixin:
                         usage["input_tokens"] = chunk_usage.get("prompt_tokens", 0)
                         usage["output_tokens"] = chunk_usage.get("completion_tokens", 0)
                         # OpenAI has cached tokens in prompt_tokens_details
-                        details = chunk_usage.get("prompt_tokens_details", {})
+                        details = chunk_usage.get("prompt_tokens_details") or {}
                         usage["cache_read_input_tokens"] = details.get("cached_tokens", 0)
 
                 elif provider == "gemini":
@@ -164,7 +164,7 @@ class StreamingMixin:
                     if chunk_usage:
                         usage_found["input_tokens"] = chunk_usage.get("prompt_tokens", 0)
                         usage_found["output_tokens"] = chunk_usage.get("completion_tokens", 0)
-                        details = chunk_usage.get("prompt_tokens_details", {})
+                        details = chunk_usage.get("prompt_tokens_details") or {}
                         usage_found["cache_read_input_tokens"] = details.get("cached_tokens", 0)
 
                 elif provider == "gemini":

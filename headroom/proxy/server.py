@@ -132,14 +132,8 @@ logging.basicConfig(
 logger = logging.getLogger("headroom.proxy")
 
 # Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis
-_HEADROOM_LOG_DIR = Path.home() / ".headroom" / "logs"
-
-
 _setup_file_logging()
 
-
-# Maximum rate limiter buckets (prevents DoS via spoofed API keys)
-MAX_RATE_LIMITER_BUCKETS = 1000
 
 # Compression pipeline timeout in seconds
 

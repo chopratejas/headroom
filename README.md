@@ -125,6 +125,7 @@ headroom wrap claude       # Starts proxy + launches Claude Code
 headroom wrap codex        # Starts proxy + launches OpenAI Codex CLI
 headroom wrap aider        # Starts proxy + launches Aider
 headroom wrap cursor       # Starts proxy + prints Cursor config
+headroom wrap openclaw     # Installs + configures OpenClaw plugin
 ```
 
 Headroom starts a proxy, points your tool at it, and compresses everything automatically.
@@ -164,7 +165,7 @@ Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `h
 | **Any Python proxy** | ASGI Middleware | `app.add_middleware(CompressionMiddleware)` |
 | **Agno agents** | Wrap model | `HeadroomAgnoModel(your_model)` |
 | **LangChain** | Wrap model | `HeadroomChatModel(your_llm)` |
-| **OpenClaw** | ContextEngine plugin | [See OpenClaw plugin](#openclaw-plugin) |
+| **OpenClaw** | One-command wrap | `headroom wrap openclaw` |
 | **Claude Code** | Wrap | `headroom wrap claude` |
 | **Codex / Aider** | Wrap | `headroom wrap codex` or `headroom wrap aider` |
 
@@ -417,6 +418,40 @@ pip install "headroom-ai[ml]"          # ML compression (Kompress, requires torc
 pip install "headroom-ai[agno]"        # Agno integration
 pip install "headroom-ai[langchain]"   # LangChain (experimental)
 pip install "headroom-ai[evals]"       # Evaluation framework only
+```
+
+### Container images (GHCR tags)
+
+- supported platforms: `linux/amd64`, `linux/arm64`
+- tags `:code` - image with Code-Aware Compression (AST-based) i.e. `pip install "headroom-ai[proxy,code]"`
+- tags `:slim` - image with distorless base
+
+| Tag                 |                                                      | Extras       | Docker Bake target          |
+|---------------------|------------------------------------------------------|--------------|-----------------------------|
+| `<version>`         | ```ghcr.io/chopratejas/headroom:<version>```         | `proxy`      | `runtime`                   |
+| `latest`            | ```ghcr.io/chopratejas/headroom:latest```            | `proxy`      | `runtime`                   |
+| `nonroot`           | ```ghcr.io/chopratejas/headroom:nonroot```           | `proxy`      | `runtime-nonroot`           |
+| `code`              | ```ghcr.io/chopratejas/headroom:code```              | `proxy,code` | `runtime-code`              |
+| `code-nonroot`      | ```ghcr.io/chopratejas/headroom:code-nonroot```      | `proxy,code` | `runtime-code-nonroot`      |
+| `slim`              | ```ghcr.io/chopratejas/headroom:slim```              | `proxy`      | `runtime-slim`              |
+| `slim-nonroot`      | ```ghcr.io/chopratejas/headroom:slim-nonroot```      | `proxy`      | `runtime-slim-nonroot`      |
+| `code-slim`         | ```ghcr.io/chopratejas/headroom:code-slim```         | `proxy,code` | `runtime-code-slim`         |
+| `code-slim-nonroot` | ```ghcr.io/chopratejas/headroom:code-slim-nonroot``` | `proxy,code` | `runtime-code-slim-nonroot` |
+
+### Docker Bake
+
+```bash
+# List all available build targets
+docker buildx bake --list targets
+
+# Build default image locally (proxy + nonroot)
+docker buildx bake runtime-default
+
+# Build one variant and load to local Docker image store
+docker buildx bake runtime-code-slim-nonroot \
+  --set runtime-code-slim-nonroot.platform=linux/amd64 \
+  --set runtime-code-slim-nonroot.tags=headroom:local \
+  --load
 ```
 
 Python 3.10+

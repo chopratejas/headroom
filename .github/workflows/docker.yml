@@ -12,12 +12,31 @@ env:
 permissions:
   contents: read
   packages: write
-  attestations: write
-  id-token: write
 
 jobs:
-  docker:
+  docker-variant-tags:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: ""
+            bake_target: runtime
+          - variant: nonroot
+            bake_target: runtime-nonroot
+          - variant: code
+            bake_target: runtime-code
+          - variant: code-nonroot
+            bake_target: runtime-code-nonroot
+          - variant: slim
+            bake_target: runtime-slim
+          - variant: slim-nonroot
+            bake_target: runtime-slim-nonroot
+          - variant: code-slim
+            bake_target: runtime-code-slim
+          - variant: code-slim-nonroot
+            bake_target: runtime-code-slim-nonroot
+
     steps:
       - uses: actions/checkout@v6
 
@@ -34,34 +53,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (variant)
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=sha-
+            type=ref,event=branch,suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=ref,event=pr,suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=semver,pattern={{version}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=semver,pattern={{major}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=sha,prefix=${{ matrix.variant != '' && format('{0}-', matrix.variant) || 'sha-' }}
+            type=raw,value=${{ matrix.variant }},enable=${{ matrix.variant != '' }}
+            type=raw,value=latest,enable=${{ matrix.variant == '' }}
 
-      - name: Build and push
-        id: push
-        uses: docker/build-push-action@v7
+      - name: Build and push variant (bake)
+        id: bake
+        uses: docker/bake-action@v7
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          files: |
+            ./docker-bake.hcl
+            cwd://${{ steps.meta.outputs.bake-file-tags }}
+            cwd://${{ steps.meta.outputs.bake-file-labels }}
+          targets: ${{ matrix.bake_target }}
+          push: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max

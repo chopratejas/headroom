@@ -98,6 +98,7 @@ Headroom works as a **transparent proxy** (zero code changes), a **Python functi
     headroom wrap codex        # OpenAI Codex CLI
     headroom wrap aider        # Aider
     headroom wrap cursor       # Cursor
+    headroom wrap openclaw     # OpenClaw plugin bootstrap
     ```
 
     Starts the proxy, points your tool at it, compresses everything automatically.
@@ -215,7 +216,7 @@ npm install headroom-ai
 ContextEngine plugin for OpenClaw agents. Auto-compresses context in `assemble()`.
 
 ```bash
-openclaw plugins install headroom-openclaw
+headroom wrap openclaw
 ```
 
 [OpenClaw Plugin &rarr;](https://github.com/chopratejas/headroom/tree/main/plugins/openclaw)

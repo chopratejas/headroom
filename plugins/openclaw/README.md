@@ -4,6 +4,14 @@ Context compression plugin for [OpenClaw](https://github.com/openclaw/openclaw).
 
 ## Install
 
+Recommended one-command setup:
+
+```bash
+headroom wrap openclaw
+```
+
+Manual install:
+
 ```bash
 pip install "headroom-ai[proxy]"
 openclaw plugins install --dangerously-force-unsafe-install headroom-ai/openclaw

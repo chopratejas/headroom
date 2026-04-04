@@ -143,7 +143,6 @@ class AnthropicHandlerMixin:
         from headroom.proxy.helpers import (
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
-            _get_image_compressor,
             _read_request_json,
         )
         from headroom.proxy.models import RequestLog
@@ -211,6 +210,9 @@ class AnthropicHandlerMixin:
         if _bypass:
             logger.info(f"[{request_id}] Bypass: skipping compression (header)")
 
+        # NOTE: Upstream temporarily disabled broad image compression due to
+        # token-counting inaccuracies. We only compress the latest non-frozen
+        # user turn later in this handler to preserve Anthropic prefix caching.
         # Extract headers and tags
         headers = dict(request.headers.items())
         headers.pop("host", None)

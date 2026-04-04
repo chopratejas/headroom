@@ -5,6 +5,7 @@ Usage:
     headroom wrap codex                     # Start proxy + OpenAI Codex CLI
     headroom wrap aider                     # Start proxy + aider
     headroom wrap cursor                    # Start proxy + print Cursor config instructions
+    headroom wrap openclaw                  # Install + configure OpenClaw plugin
     headroom wrap claude --no-rtk           # Without rtk hooks
     headroom wrap claude --port 9999        # Custom proxy port
     headroom wrap claude -- --model opus    # Pass args to claude
@@ -13,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import signal
@@ -384,6 +386,73 @@ def _launch_tool(
         cleanup()
 
 
+def _run_checked(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    action: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run subprocess and raise a ClickException with actionable context on failure."""
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError as e:
+        raise click.ClickException(f"{action} failed: command not found: {cmd[0]}") from e
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        stdout = (e.stdout or "").strip()
+        details = stderr or stdout or f"exit code {e.returncode}"
+        raise click.ClickException(f"{action} failed: {details}") from e
+
+
+def _resolve_openclaw_extensions_dir(openclaw_bin: str) -> Path:
+    """Resolve OpenClaw extension root from active config file path."""
+    result = _run_checked([openclaw_bin, "config", "file"], action="openclaw config file")
+    lines = result.stdout.strip().splitlines()
+    config_path_str = lines[-1].strip() if lines else ""
+    if not config_path_str:
+        raise click.ClickException(
+            "Unable to resolve OpenClaw config path from `openclaw config file`."
+        )
+    config_path = Path(config_path_str).expanduser()
+    return config_path.parent / "extensions"
+
+
+def _copy_openclaw_plugin_into_extensions(
+    *,
+    plugin_dir: Path,
+    openclaw_bin: str,
+) -> Path:
+    """Fallback install path when `openclaw plugins install` is blocked on linked source."""
+    dist_dir = plugin_dir / "dist"
+    if not dist_dir.exists():
+        raise click.ClickException(
+            f"Plugin dist folder missing at {dist_dir}. Build the plugin first."
+        )
+
+    extensions_dir = _resolve_openclaw_extensions_dir(openclaw_bin)
+    target_dir = extensions_dir / "headroom"
+    target_dist = target_dir / "dist"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if target_dist.exists():
+        shutil.rmtree(target_dist)
+    shutil.copytree(dist_dir, target_dist)
+
+    for filename in ("openclaw.plugin.json", "package.json", "README.md"):
+        source = plugin_dir / filename
+        if source.exists():
+            shutil.copy2(source, target_dir / filename)
+
+    return target_dir
+
+
 @main.group()
 def wrap() -> None:
     """Wrap CLI tools to run through Headroom.
@@ -398,6 +467,7 @@ def wrap() -> None:
         headroom wrap codex               # OpenAI Codex CLI
         headroom wrap aider               # Aider
         headroom wrap cursor              # Cursor (prints config instructions)
+        headroom wrap openclaw            # OpenClaw plugin bootstrap
     """
 
 
@@ -744,3 +814,230 @@ def cursor(port: int, no_rtk: bool, no_proxy: bool, learn: bool, verbose: bool) 
         raise SystemExit(1) from e
     finally:
         cleanup()
+
+
+# =============================================================================
+# OpenClaw
+# =============================================================================
+
+
+@wrap.command("openclaw")
+@click.option(
+    "--plugin-path",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
+    default=None,
+    help="Path to local OpenClaw plugin source directory (advanced/dev override)",
+)
+@click.option(
+    "--plugin-spec",
+    default="headroom-ai/openclaw",
+    show_default=True,
+    help="NPM plugin spec for OpenClaw install (used when --plugin-path is omitted)",
+)
+@click.option(
+    "--skip-build",
+    is_flag=True,
+    help="Skip npm install/build in local source mode (--plugin-path)",
+)
+@click.option(
+    "--copy",
+    is_flag=True,
+    help="Install by copying plugin path instead of using --link",
+)
+@click.option("--proxy-port", default=8787, type=int, help="Headroom proxy port")
+@click.option("--startup-timeout-ms", default=20000, type=int, help="Proxy startup timeout")
+@click.option(
+    "--python-path",
+    default=None,
+    help="Optional Python executable for proxy launcher fallback",
+)
+@click.option(
+    "--no-auto-start",
+    is_flag=True,
+    help="Disable plugin auto-start of local headroom proxy",
+)
+@click.option(
+    "--no-restart",
+    is_flag=True,
+    help="Do not restart OpenClaw gateway at the end",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+def openclaw(
+    plugin_path: Path | None,
+    plugin_spec: str,
+    skip_build: bool,
+    copy: bool,
+    proxy_port: int,
+    startup_timeout_ms: int,
+    python_path: str | None,
+    no_auto_start: bool,
+    no_restart: bool,
+    verbose: bool,
+) -> None:
+    """Install and configure Headroom OpenClaw plugin in one command.
+
+    \b
+    What this command does:
+      1. Installs OpenClaw plugin from npm (or local --plugin-path)
+      2. Builds plugin source if --plugin-path is used
+      3. Writes minimal plugin config and sets contextEngine slot
+      4. Validates config
+      5. Restarts OpenClaw gateway (unless --no-restart)
+
+    \b
+    Example:
+      headroom wrap openclaw
+      headroom wrap openclaw --plugin-path C:\\git\\headroom\\plugins\\openclaw
+    """
+    openclaw_bin = shutil.which("openclaw")
+    if not openclaw_bin:
+        raise click.ClickException("'openclaw' not found in PATH. Install OpenClaw CLI first.")
+
+    plugin_dir = plugin_path.resolve() if plugin_path else None
+    local_source_mode = plugin_dir is not None
+    if plugin_dir:
+        if not plugin_dir.exists():
+            raise click.ClickException(f"Plugin path not found: {plugin_dir}.")
+        if not (plugin_dir / "package.json").exists():
+            raise click.ClickException(f"Invalid plugin path (missing package.json): {plugin_dir}")
+        if not (plugin_dir / "openclaw.plugin.json").exists():
+            raise click.ClickException(
+                f"Invalid plugin path (missing openclaw.plugin.json): {plugin_dir}"
+            )
+
+    npm_bin = shutil.which("npm")
+    if not skip_build and not npm_bin:
+        raise click.ClickException(
+            "'npm' not found in PATH. Install Node/npm or rerun with --skip-build."
+        )
+
+    click.echo()
+    click.echo("  ╔═══════════════════════════════════════════════╗")
+    click.echo("  ║           HEADROOM WRAP: OPENCLAW             ║")
+    click.echo("  ╚═══════════════════════════════════════════════╝")
+    click.echo()
+    if local_source_mode:
+        click.echo(f"  Plugin source: local ({plugin_dir})")
+    else:
+        click.echo(f"  Plugin source: npm ({plugin_spec})")
+
+    if local_source_mode and not skip_build:
+        click.echo("  Building OpenClaw plugin (npm install + npm run build)...")
+        _run_checked([npm_bin or "npm", "install"], cwd=plugin_dir, action="npm install")
+        _run_checked([npm_bin or "npm", "run", "build"], cwd=plugin_dir, action="npm run build")
+    elif not local_source_mode and skip_build:
+        click.echo("  Skipping build: npm install mode does not build local source.")
+
+    install_cmd = [
+        openclaw_bin,
+        "plugins",
+        "install",
+        "--dangerously-force-unsafe-install",
+    ]
+    if local_source_mode:
+        if copy:
+            install_cmd.append(str(plugin_dir))
+            install_cwd = None
+        else:
+            install_cmd.extend(["--link", "."])
+            install_cwd = plugin_dir
+    else:
+        install_cmd.append(plugin_spec)
+        install_cwd = None
+
+    click.echo("  Installing OpenClaw plugin with required unsafe-install flag...")
+    install_result = subprocess.run(
+        install_cmd,
+        cwd=str(install_cwd) if install_cwd else None,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if install_result.returncode != 0:
+        combined_error = "\n".join(
+            x for x in [install_result.stderr.strip(), install_result.stdout.strip()] if x
+        )
+        plugin_already_exists = "plugin already exists" in combined_error.lower()
+        linked_install_bug = (
+            "also not a valid hook pack" in combined_error.lower()
+            and "--dangerously-force-unsafe-install" in " ".join(install_cmd)
+        )
+        if plugin_already_exists:
+            click.echo("  Plugin already installed; continuing with configuration/update steps.")
+        elif linked_install_bug and local_source_mode and plugin_dir is not None:
+            click.echo(
+                "  OpenClaw linked-path install bug detected; applying extension-path fallback..."
+            )
+            target_dir = _copy_openclaw_plugin_into_extensions(
+                plugin_dir=plugin_dir,
+                openclaw_bin=openclaw_bin,
+            )
+            click.echo(f"  Fallback plugin copy completed: {target_dir}")
+        else:
+            details = combined_error or f"exit code {install_result.returncode}"
+            raise click.ClickException(f"openclaw plugins install failed: {details}")
+    elif verbose and install_result.stdout.strip():
+        click.echo(install_result.stdout.strip())
+
+    plugin_config: dict[str, object] = {
+        "proxyPort": proxy_port,
+        "autoStart": not no_auto_start,
+        "startupTimeoutMs": startup_timeout_ms,
+    }
+    if python_path:
+        plugin_config["pythonPath"] = python_path
+    entry = {"enabled": True, "config": plugin_config}
+
+    click.echo("  Writing plugin configuration...")
+    _run_checked(
+        [
+            openclaw_bin,
+            "config",
+            "set",
+            "plugins.entries.headroom",
+            json.dumps(entry, separators=(",", ":")),
+            "--strict-json",
+        ],
+        action="openclaw config set plugins.entries.headroom",
+    )
+    _run_checked(
+        [
+            openclaw_bin,
+            "config",
+            "set",
+            "plugins.slots.contextEngine",
+            json.dumps("headroom"),
+            "--strict-json",
+        ],
+        action="openclaw config set plugins.slots.contextEngine",
+    )
+    _run_checked(
+        [openclaw_bin, "config", "validate"],
+        action="openclaw config validate",
+    )
+
+    if no_restart:
+        click.echo("  Skipping gateway restart (--no-restart).")
+        click.echo("  Run `openclaw gateway restart` to apply plugin changes.")
+    else:
+        click.echo("  Warning: restarting OpenClaw gateway to apply plugin changes.")
+        restart_result = _run_checked(
+            [openclaw_bin, "gateway", "restart"],
+            action="openclaw gateway restart",
+        )
+        if verbose and restart_result.stdout.strip():
+            click.echo(restart_result.stdout.strip())
+
+    inspect_result = _run_checked(
+        [openclaw_bin, "plugins", "inspect", "headroom"],
+        action="openclaw plugins inspect headroom",
+    )
+    if verbose and inspect_result.stdout.strip():
+        click.echo(inspect_result.stdout.strip())
+
+    click.echo()
+    click.echo("✓ OpenClaw is configured to use Headroom context compression.")
+    click.echo("  Plugin: headroom")
+    click.echo("  Slot:   plugins.slots.contextEngine = headroom")
+    click.echo()
