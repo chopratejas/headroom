@@ -39,7 +39,6 @@ class OpenAIHandlerMixin:
             COMPRESSION_TIMEOUT_SECONDS,
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
-            _get_image_compressor,
             _read_request_json,
         )
         from headroom.tokenizers import get_tokenizer
@@ -103,18 +102,20 @@ class OpenAIHandlerMixin:
         if _bypass:
             logger.info(f"[{request_id}] Bypass: skipping compression (header)")
 
-        # Image compression (before text optimization)
-        if self.config.image_optimize and messages and not _bypass:
-            compressor = _get_image_compressor()
-            if compressor and compressor.has_images(messages):
-                messages = compressor.compress(messages, provider="openai")
-                if compressor.last_result:
-                    logger.info(
-                        f"Image compression: {compressor.last_result.technique.value} "
-                        f"({compressor.last_result.savings_percent:.0f}% saved, "
-                        f"{compressor.last_result.original_tokens} -> "
-                        f"{compressor.last_result.compressed_tokens} tokens)"
-                    )
+        # TODO: Re-enable image compression once token counting is accurate.
+        # See anthropic.py handler for details on why this is disabled.
+        #
+        # if self.config.image_optimize and messages and not _bypass:
+        #     compressor = _get_image_compressor()
+        #     if compressor and compressor.has_images(messages):
+        #         messages = compressor.compress(messages, provider="openai")
+        #         if compressor.last_result:
+        #             logger.info(
+        #                 f"Image compression: {compressor.last_result.technique.value} "
+        #                 f"({compressor.last_result.savings_percent:.0f}% saved, "
+        #                 f"{compressor.last_result.original_tokens} -> "
+        #                 f"{compressor.last_result.compressed_tokens} tokens)"
+        #             )
 
         headers = dict(request.headers.items())
         headers.pop("host", None)

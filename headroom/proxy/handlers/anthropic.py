@@ -39,7 +39,6 @@ class AnthropicHandlerMixin:
         from headroom.proxy.helpers import (
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
-            _get_image_compressor,
             _read_request_json,
         )
         from headroom.proxy.models import RequestLog
@@ -107,18 +106,24 @@ class AnthropicHandlerMixin:
         if _bypass:
             logger.info(f"[{request_id}] Bypass: skipping compression (header)")
 
-        # Image compression (before text optimization)
-        if self.config.image_optimize and messages and not _bypass:
-            compressor = _get_image_compressor()
-            if compressor and compressor.has_images(messages):
-                messages = compressor.compress(messages, provider="anthropic")
-                if compressor.last_result:
-                    logger.info(
-                        f"Image compression: {compressor.last_result.technique.value} "
-                        f"({compressor.last_result.savings_percent:.0f}% saved, "
-                        f"{compressor.last_result.original_tokens} -> "
-                        f"{compressor.last_result.compressed_tokens} tokens)"
-                    )
+        # TODO: Re-enable image compression once token counting is accurate.
+        # Image compression was disabled because the tokenizer counted base64
+        # image data as text tokens (330K per 1MB image), inflating savings by
+        # 3-4x. The compressor itself works, but reported metrics were wrong.
+        # To re-enable: fix tokenizer to extract image dimensions and use
+        # Anthropic's formula (width*height/750), then uncomment below.
+        #
+        # if self.config.image_optimize and messages and not _bypass:
+        #     compressor = _get_image_compressor()
+        #     if compressor and compressor.has_images(messages):
+        #         messages = compressor.compress(messages, provider="anthropic")
+        #         if compressor.last_result:
+        #             logger.info(
+        #                 f"Image compression: {compressor.last_result.technique.value} "
+        #                 f"({compressor.last_result.savings_percent:.0f}% saved, "
+        #                 f"{compressor.last_result.original_tokens} -> "
+        #                 f"{compressor.last_result.compressed_tokens} tokens)"
+        #             )
 
         # Extract headers and tags
         headers = dict(request.headers.items())
