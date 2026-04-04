@@ -1048,7 +1048,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "total_tokens_saved": total_tokens_saved,
             }
         else:
-            compression_cache_stats = {"mode": PROXY_MODE_TOKEN}
+            compression_cache_stats = {"mode": proxy.config.mode}
 
         # Build unified savings summary (all layers)
         compression_tokens = m.tokens_saved_total

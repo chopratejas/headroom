@@ -6,6 +6,7 @@ Contains all OpenAI Chat Completions, Responses API, and passthrough handlers.
 from __future__ import annotations
 
 import asyncio
+import copy
 import contextlib
 import json
 import logging
@@ -26,6 +27,43 @@ logger = logging.getLogger("headroom.proxy")
 class OpenAIHandlerMixin:
     """Mixin providing OpenAI API handler methods for HeadroomProxy."""
 
+    @staticmethod
+    def _strict_previous_turn_frozen_count(
+        messages: list[dict[str, Any]],
+        base_frozen_count: int,
+    ) -> int:
+        """Freeze all prior turns in cache mode; only final user turn is mutable."""
+        if not messages:
+            return base_frozen_count
+        final_idx = len(messages) - 1
+        if messages[final_idx].get("role") == "user":
+            return max(base_frozen_count, final_idx)
+        return len(messages)
+
+    @staticmethod
+    def _restore_frozen_prefix(
+        original_messages: list[dict[str, Any]],
+        candidate_messages: list[dict[str, Any]],
+        *,
+        frozen_message_count: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Force frozen prefix bytes to match original request exactly."""
+        if frozen_message_count <= 0 or not original_messages:
+            return candidate_messages, 0
+
+        frozen = min(frozen_message_count, len(original_messages))
+        restored = list(candidate_messages)
+
+        if len(restored) < frozen:
+            return list(original_messages[:frozen]) + restored, frozen
+
+        changed = 0
+        for idx in range(frozen):
+            if restored[idx] != original_messages[idx]:
+                restored[idx] = original_messages[idx]
+                changed += 1
+        return restored, changed
+
     async def handle_openai_chat(
         self,
         request: Request,
@@ -41,7 +79,7 @@ class OpenAIHandlerMixin:
             MAX_REQUEST_BODY_SIZE,
             _read_request_json,
         )
-        from headroom.proxy.modes import is_token_mode
+        from headroom.proxy.modes import is_cache_mode, is_token_mode
         from headroom.tokenizers import get_tokenizer
         from headroom.utils import extract_user_query
 
@@ -78,6 +116,7 @@ class OpenAIHandlerMixin:
             )
         model = body.get("model", "unknown")
         messages = body.get("messages", [])
+        original_client_messages = copy.deepcopy(messages)
 
         # Validate message array size
         if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
@@ -184,6 +223,11 @@ class OpenAIHandlerMixin:
             openai_session_id, "openai"
         )
         openai_frozen_count = openai_prefix_tracker.get_frozen_message_count()
+        if is_cache_mode(self.config.mode):
+            openai_frozen_count = self._strict_previous_turn_frozen_count(
+                original_client_messages,
+                openai_frozen_count,
+            )
 
         _compression_failed = False
         original_messages = messages  # Preserve for 400-retry fallback
@@ -304,6 +348,17 @@ class OpenAIHandlerMixin:
                     )
 
         # Query Echo: disabled — hurts prefix caching in long conversations.
+        if is_cache_mode(self.config.mode):
+            optimized_messages, restored_count = self._restore_frozen_prefix(
+                original_client_messages,
+                optimized_messages,
+                frozen_message_count=openai_frozen_count,
+            )
+            if restored_count > 0:
+                logger.warning(
+                    f"[{request_id}] Restored {restored_count} frozen prefix message(s) "
+                    "to preserve cache stability (openai)"
+                )
 
         body["messages"] = optimized_messages
         if tools is not None:
