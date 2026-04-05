@@ -206,6 +206,9 @@ python -c "from headroom import compress; print(compress([{'role':'user','conten
 
 # Run local proxy mode benchmark (no API calls)
 python benchmarks/proxy_mode_benchmark.py --turns 12 --show-real-harness
+
+# Replay local Claude Code transcripts (no API calls)
+python benchmarks/claude_session_mode_benchmark.py --workers 1
 ```
 
 This benchmark compares `token` vs `cache` proxy modes on the same synthetic conversation:
@@ -214,3 +217,20 @@ This benchmark compares `token` vs `cache` proxy modes on the same synthetic con
 - `cache` should preserve prior-turn stability and can win in long sessions with strong prefix-cache reuse.
 
 `--show-real-harness` prints optional steps for running the same comparison with Claude Code, but does not call APIs by default.
+
+The Claude session benchmark replays local transcript data from `~/.claude/projects`
+through `baseline`, `token`, and `cache` modes. It estimates raw tokens, cache
+read/write tokens, paid input/output costs, and prompt-window winners under two
+assumptions:
+
+- cached tokens count against the model window
+- cache reads do not count against the model window
+
+Notes:
+
+- It writes local output to `benchmark_results/`, which is gitignored.
+- It is intentionally conservative on memory. Run with `--workers 1` for the
+  most stable full-corpus replay. Higher worker counts increase memory use.
+- It uses transcript-visible messages only. Hidden Claude Code system/tool schemas
+  are not available in the local `.jsonl` files, so the numbers are comparative
+  estimates rather than exact provider billing replicas.
