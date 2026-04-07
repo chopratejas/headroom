@@ -81,9 +81,9 @@ Default `proxyPort` is `8787`.
 
 ### Upstream gateway routing
 
-By default, the plugin also rewrites the built-in `openai-codex` provider base URL to the active Headroom proxy. That means Codex provider traffic flows through Headroom, so `/stats` can observe real upstream request and cache activity instead of only local context compression.
+By default, the plugin also rewrites the built-in `openai-codex` provider base URL to the active Headroom proxy at runtime. That means Codex provider traffic flows through Headroom, so `/stats` can observe real upstream request and cache activity instead of only local context compression.
 
-This does not replace Headroom's existing Codex routing rules. The proxy already decides between `api.openai.com` and `chatgpt.com/backend-api/codex/responses` based on ChatGPT auth. The plugin change only points OpenClaw's `openai-codex` provider at the active proxy and preserves the rest of the provider config.
+This does not replace Headroom's existing Codex routing rules. The proxy already decides between `api.openai.com` and `chatgpt.com/backend-api/codex/responses` based on ChatGPT auth. The plugin change only points OpenClaw's provider config at the active proxy in memory and preserves the rest of the provider config.
 
 You can also route additional provider ids such as `anthropic`, `copilot`, or `minimax-portal` through the same proxy:
 
@@ -102,7 +102,12 @@ You can also route additional provider ids such as `anthropic`, `copilot`, or `m
 }
 ```
 
-When `gatewayProviderIds` is set, it becomes the exact list the plugin rewrites.
+When `gatewayProviderIds` is set, it becomes the exact list the plugin rewrites in memory for the current gateway process.
+
+The routing is intentionally lightweight and reversible:
+- the plugin does not persist provider `baseUrl` changes back to `openclaw.json`
+- disabling the plugin, clearing `gatewayProviderIds`, or restarting without Headroom restores OpenClaw's normal provider resolution
+- if you want durable provider rewrites, use `headroom wrap openclaw` instead of relying on plugin install side effects
 
 If you need to disable that behavior:
 
@@ -183,8 +188,8 @@ Compression is lossless via CCR (Compress-Cache-Retrieve): originals are stored 
 | `pythonPath` | auto-detected | Optional Python executable override for Python fallback launcher. |
 | `autoStart` | `true` | Auto-start a local `headroom proxy` if not already running (local URLs only; ignored for remote proxies) |
 | `startupTimeoutMs` | `20000` | Time to wait for auto-started proxy to become healthy |
-| `routeCodexViaProxy` | `true` | Rewrite OpenClaw's built-in `openai-codex` provider to use the active Headroom proxy so upstream Codex requests pass through Headroom. |
-| `gatewayProviderIds` | `[]` | Optional explicit list of OpenClaw provider ids to route through the active Headroom proxy. When set, this overrides the default `openai-codex` routing list. |
+| `routeCodexViaProxy` | `true` | Rewrite OpenClaw's built-in `openai-codex` provider to use the active Headroom proxy in memory so upstream Codex requests pass through Headroom. |
+| `gatewayProviderIds` | `[]` | Optional explicit list of OpenClaw provider ids to route through the active Headroom proxy in memory. When set, this overrides the default `openai-codex` routing list. |
 
 ## Comparison with lossless-claw
 

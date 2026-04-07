@@ -17,7 +17,6 @@
 
 import { HeadroomContextEngine } from "../engine.js";
 import {
-  applyGatewayProviderBaseUrls,
   applyGatewayProviderBaseUrlsInPlace,
   resolveGatewayProviderIds,
 } from "../gateway-config.js";
@@ -49,31 +48,15 @@ export default function headroomPlugin(api: any) {
     try {
       const activeProxyUrl = await engine.ensureProxyUrl();
 
-      applyGatewayProviderBaseUrlsInPlace(api.config, activeProxyUrl, gatewayProviderIds);
-
-      const currentConfig = api.runtime?.config?.loadConfig?.();
-      const writeConfigFile = api.runtime?.config?.writeConfigFile;
-      if (!currentConfig || typeof writeConfigFile !== "function") {
-        logger.info(
-          `[headroom] Upstream gateway routing active in memory for ${gatewayProviderIds.join(", ")} via ${activeProxyUrl}`,
-        );
-        return;
-      }
-
-      const { changed, config: nextConfig } = applyGatewayProviderBaseUrls(
-        currentConfig,
-        activeProxyUrl,
-        gatewayProviderIds,
-      );
+      const changed = applyGatewayProviderBaseUrlsInPlace(api.config, activeProxyUrl, gatewayProviderIds);
 
       if (changed) {
-        await writeConfigFile(nextConfig);
         logger.info(
-          `[headroom] Routed ${gatewayProviderIds.join(", ")} through Headroom proxy at ${activeProxyUrl}`,
+          `[headroom] Routed ${gatewayProviderIds.join(", ")} through Headroom proxy in memory at ${activeProxyUrl}`,
         );
       } else {
         logger.info(
-          `[headroom] Upstream gateway already routed for ${gatewayProviderIds.join(", ")} at ${activeProxyUrl}`,
+          `[headroom] Upstream gateway already routed in memory for ${gatewayProviderIds.join(", ")} at ${activeProxyUrl}`,
         );
       }
     } catch (error) {
