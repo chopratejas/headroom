@@ -79,6 +79,29 @@ Install automatically selects the `contextEngine` slot for `headroom` on current
 
 Default `proxyPort` is `8787`.
 
+### Upstream gateway routing
+
+By default, the plugin also rewrites the built-in `openai-codex` provider base URL to the active Headroom proxy. That means Codex provider traffic flows through Headroom, so `/stats` can observe real upstream request and cache activity instead of only local context compression.
+
+This does not replace Headroom's existing Codex routing rules. The proxy already decides between `api.openai.com` and `chatgpt.com/backend-api/codex/responses` based on ChatGPT auth. The plugin change only points OpenClaw's `openai-codex` provider at the active proxy and preserves the rest of the provider config.
+
+If you need to disable that behavior:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "headroom": {
+        "enabled": true,
+        "config": {
+          "routeCodexViaProxy": false
+        }
+      }
+    }
+  }
+}
+```
+
 ### Local proxy (auto-start)
 
 When `proxyUrl` points to localhost (or is omitted), the plugin will auto-start `headroom proxy` if no running proxy is detected. Launch order:
@@ -141,6 +164,7 @@ Compression is lossless via CCR (Compress-Cache-Retrieve): originals are stored 
 | `pythonPath` | auto-detected | Optional Python executable override for Python fallback launcher. |
 | `autoStart` | `true` | Auto-start a local `headroom proxy` if not already running (local URLs only; ignored for remote proxies) |
 | `startupTimeoutMs` | `20000` | Time to wait for auto-started proxy to become healthy |
+| `routeCodexViaProxy` | `true` | Rewrite OpenClaw's built-in `openai-codex` provider to use the active Headroom proxy so upstream Codex requests pass through Headroom. |
 
 ## Comparison with lossless-claw
 
