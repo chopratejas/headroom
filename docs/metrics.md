@@ -53,6 +53,41 @@ for backward compatibility. The new `persistent_savings` block is durable local
 proxy compression history stored by default at `~/.headroom/proxy_savings.json`.
 Use `HEADROOM_SAVINGS_PATH` to override the file location.
 
+For Anthropic-style providers that return cache-write TTL buckets, `/stats`
+also surfaces observed cache TTL usage under `prefix_cache`:
+
+```json
+{
+  "prefix_cache": {
+    "by_provider": {
+      "anthropic": {
+        "observed_ttl_buckets": {
+          "5m": {"tokens": 20000, "requests": 8},
+          "1h": {"tokens": 50000, "requests": 12}
+        },
+        "observed_ttl_mix": {
+          "5m_pct": 28.6,
+          "1h_pct": 71.4,
+          "active_buckets": ["5m", "1h"]
+        }
+      }
+    },
+    "totals": {
+      "observed_ttl_buckets": {
+        "5m": {"tokens": 20000, "requests": 8},
+        "1h": {"tokens": 50000, "requests": 12}
+      }
+    }
+  }
+}
+```
+
+These fields are observational only:
+
+- they reflect provider-reported cache write buckets
+- they do not configure TTL
+- they do not represent remaining expiration time
+
 ### Historical Savings Endpoint
 
 ```bash

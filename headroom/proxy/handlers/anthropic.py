@@ -40,6 +40,24 @@ class AnthropicHandlerMixin:
             canonical = str(tool)
         return (name, canonical)
 
+    @staticmethod
+    def _extract_anthropic_cache_ttl_metrics(usage: dict[str, Any] | None) -> tuple[int, int]:
+        """Extract observed Anthropic cache-write TTL bucket usage.
+
+        Returns (cache_write_5m_tokens, cache_write_1h_tokens) from provider usage.
+        These are observational metrics only; they do not imply configured or
+        remaining TTL.
+        """
+        if not isinstance(usage, dict):
+            return (0, 0)
+        cache_creation = usage.get("cache_creation")
+        if not isinstance(cache_creation, dict):
+            return (0, 0)
+        return (
+            int(cache_creation.get("ephemeral_5m_input_tokens", 0) or 0),
+            int(cache_creation.get("ephemeral_1h_input_tokens", 0) or 0),
+        )
+
     @classmethod
     def _sort_tools_deterministically(
         cls, tools: list[dict[str, Any]] | None
@@ -1196,12 +1214,15 @@ class AnthropicHandlerMixin:
                 output_tokens = 0
                 cr_tokens = 0
                 cw_tokens = 0
+                cw_5m_tokens = 0
+                cw_1h_tokens = 0
                 uncached_input_tokens = 0
                 if resp_json:
                     usage = resp_json.get("usage", {})
                     output_tokens = usage.get("output_tokens", 0)
                     cr_tokens = usage.get("cache_read_input_tokens", 0)
                     cw_tokens = usage.get("cache_creation_input_tokens", 0)
+                    cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(usage)
                     uncached_input_tokens = usage.get("input_tokens", 0)
 
                 # Update prefix cache tracker for next turn
@@ -1225,6 +1246,8 @@ class AnthropicHandlerMixin:
                         optimized_tokens,
                         cache_read_tokens=cr_tokens,
                         cache_write_tokens=cw_tokens,
+                        cache_write_5m_tokens=cw_5m_tokens,
+                        cache_write_1h_tokens=cw_1h_tokens,
                         uncached_tokens=uncached_input_tokens,
                     )
 
@@ -1252,6 +1275,8 @@ class AnthropicHandlerMixin:
                     waste_signals=waste_signals_dict,
                     cache_read_tokens=cr_tokens,
                     cache_write_tokens=cw_tokens,
+                    cache_write_5m_tokens=cw_5m_tokens,
+                    cache_write_1h_tokens=cw_1h_tokens,
                     uncached_input_tokens=uncached_input_tokens,
                 )
 

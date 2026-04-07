@@ -77,6 +77,10 @@ class PrometheusMetrics:
             lambda: {
                 "cache_read_tokens": 0,
                 "cache_write_tokens": 0,
+                "cache_write_5m_tokens": 0,
+                "cache_write_1h_tokens": 0,
+                "cache_write_5m_requests": 0,
+                "cache_write_1h_requests": 0,
                 "requests": 0,
                 "hit_requests": 0,  # requests with cache_read > 0
                 "bust_count": 0,
@@ -158,6 +162,8 @@ class PrometheusMetrics:
         waste_signals: dict[str, int] | None = None,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        cache_write_5m_tokens: int = 0,
+        cache_write_1h_tokens: int = 0,
         uncached_input_tokens: int = 0,
     ):
         """Record metrics for a request."""
@@ -178,6 +184,12 @@ class PrometheusMetrics:
                 pc = self.cache_by_provider[provider]
                 pc["cache_read_tokens"] += cache_read_tokens
                 pc["cache_write_tokens"] += cache_write_tokens
+                pc["cache_write_5m_tokens"] += cache_write_5m_tokens
+                pc["cache_write_1h_tokens"] += cache_write_1h_tokens
+                if cache_write_5m_tokens > 0:
+                    pc["cache_write_5m_requests"] += 1
+                if cache_write_1h_tokens > 0:
+                    pc["cache_write_1h_requests"] += 1
                 pc["requests"] += 1
                 if cache_read_tokens > 0:
                     pc["hit_requests"] += 1

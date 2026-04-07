@@ -133,6 +133,16 @@ curl http://localhost:8787/stats
 small recent preview. The existing `savings_history` field is still present and
 remains session-scoped for backward compatibility.
 
+For providers that return cache-write TTL bucket usage, `/stats` also includes
+observed TTL breakdowns under `prefix_cache`:
+
+- `observed_ttl_buckets.5m.tokens`
+- `observed_ttl_buckets.1h.tokens`
+- `observed_ttl_mix`
+
+These are provider-reported observations, not configured TTL and not remaining
+expiration time.
+
 ### Historical Savings
 
 ```bash

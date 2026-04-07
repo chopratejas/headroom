@@ -24,6 +24,19 @@ logger = logging.getLogger("headroom.proxy")
 class StreamingMixin:
     """Mixin providing streaming response methods for HeadroomProxy."""
 
+    @staticmethod
+    def _extract_anthropic_cache_ttl_metrics(usage: dict[str, Any] | None) -> tuple[int, int]:
+        """Extract observed Anthropic cache-write TTL bucket usage."""
+        if not isinstance(usage, dict):
+            return (0, 0)
+        cache_creation = usage.get("cache_creation")
+        if not isinstance(cache_creation, dict):
+            return (0, 0)
+        return (
+            int(cache_creation.get("ephemeral_5m_input_tokens", 0) or 0),
+            int(cache_creation.get("ephemeral_1h_input_tokens", 0) or 0),
+        )
+
     def _parse_sse_usage(self, chunk: bytes, provider: str) -> dict[str, int] | None:
         """Parse usage information from SSE chunk.
 
@@ -31,7 +44,9 @@ class StreamingMixin:
         For OpenAI: Looks for final chunk with usage object (requires stream_options.include_usage=true)
         For Gemini: Looks for usageMetadata in each chunk
 
-        Returns dict with keys: input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
+        Returns dict with keys: input_tokens, output_tokens, cache_read_input_tokens,
+        cache_creation_input_tokens, cache_creation_ephemeral_5m_input_tokens,
+        cache_creation_ephemeral_1h_input_tokens
         Returns None if no usage found in this chunk.
         """
         try:
@@ -67,6 +82,11 @@ class StreamingMixin:
                             usage["cache_creation_input_tokens"] = msg_usage.get(
                                 "cache_creation_input_tokens", 0
                             )
+                            cache_write_5m, cache_write_1h = (
+                                self._extract_anthropic_cache_ttl_metrics(msg_usage)
+                            )
+                            usage["cache_creation_ephemeral_5m_input_tokens"] = cache_write_5m
+                            usage["cache_creation_ephemeral_1h_input_tokens"] = cache_write_1h
 
                     elif event_type == "message_delta":
                         delta_usage = data.get("usage", {})
@@ -148,6 +168,11 @@ class StreamingMixin:
                             usage_found["cache_creation_input_tokens"] = msg_usage.get(
                                 "cache_creation_input_tokens", 0
                             )
+                            cache_write_5m, cache_write_1h = (
+                                self._extract_anthropic_cache_ttl_metrics(msg_usage)
+                            )
+                            usage_found["cache_creation_ephemeral_5m_input_tokens"] = cache_write_5m
+                            usage_found["cache_creation_ephemeral_1h_input_tokens"] = cache_write_1h
                             # INFO logging for cache token tracking (temporary for debugging)
                             logger.info(
                                 f"[CACHE] Anthropic usage: input={usage_found.get('input_tokens')}, "
@@ -450,6 +475,8 @@ class StreamingMixin:
             "output_tokens": None,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
+            "cache_creation_ephemeral_5m_input_tokens": 0,
+            "cache_creation_ephemeral_1h_input_tokens": 0,
             "total_bytes": 0,
             "sse_buffer": "",  # Buffer for incomplete SSE events
             "ttfb_ms": None,  # Time to first byte from upstream
@@ -550,6 +577,14 @@ class StreamingMixin:
                                 stream_state["cache_creation_input_tokens"] = usage[
                                     "cache_creation_input_tokens"
                                 ]
+                            if "cache_creation_ephemeral_5m_input_tokens" in usage:
+                                stream_state["cache_creation_ephemeral_5m_input_tokens"] = usage[
+                                    "cache_creation_ephemeral_5m_input_tokens"
+                                ]
+                            if "cache_creation_ephemeral_1h_input_tokens" in usage:
+                                stream_state["cache_creation_ephemeral_1h_input_tokens"] = usage[
+                                    "cache_creation_ephemeral_1h_input_tokens"
+                                ]
 
                 # Memory tool handling after stream completes
                 # Chunks were already yielded in real-time above, so we only
@@ -637,6 +672,8 @@ class StreamingMixin:
                 # misleading for aggregation (often just 1 with prompt caching).
                 cache_read_tokens = stream_state["cache_read_input_tokens"]
                 cache_write_tokens = stream_state["cache_creation_input_tokens"]
+                cache_write_5m_tokens = stream_state["cache_creation_ephemeral_5m_input_tokens"]
+                cache_write_1h_tokens = stream_state["cache_creation_ephemeral_1h_input_tokens"]
                 uncached_input_tokens = stream_state.get("input_tokens") or 0
 
                 # Structured perf log line for `headroom perf` analysis
@@ -672,6 +709,8 @@ class StreamingMixin:
                         optimized_tokens,
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
+                        cache_write_5m_tokens=cache_write_5m_tokens,
+                        cache_write_1h_tokens=cache_write_1h_tokens,
                         uncached_tokens=uncached_input_tokens,
                     )
 
@@ -687,6 +726,8 @@ class StreamingMixin:
                     pipeline_timing=pipeline_timing,
                     cache_read_tokens=cache_read_tokens,
                     cache_write_tokens=cache_write_tokens,
+                    cache_write_5m_tokens=cache_write_5m_tokens,
+                    cache_write_1h_tokens=cache_write_1h_tokens,
                     uncached_input_tokens=uncached_input_tokens,
                 )
 

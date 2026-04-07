@@ -78,6 +78,10 @@ def build_prefix_cache_stats(
     totals = {
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
+        "cache_write_5m_tokens": 0,
+        "cache_write_1h_tokens": 0,
+        "cache_write_5m_requests": 0,
+        "cache_write_1h_requests": 0,
         "requests": 0,
         "hit_requests": 0,
         "bust_count": 0,
@@ -119,6 +123,10 @@ def build_prefix_cache_stats(
         # for observability but don't penalise our savings number.
         read_tokens: int = pc["cache_read_tokens"]  # type: ignore[assignment]
         write_tokens: int = pc["cache_write_tokens"]  # type: ignore[assignment]
+        write_5m_tokens: int = pc["cache_write_5m_tokens"]  # type: ignore[assignment]
+        write_1h_tokens: int = pc["cache_write_1h_tokens"]  # type: ignore[assignment]
+        write_5m_requests: int = pc["cache_write_5m_requests"]  # type: ignore[assignment]
+        write_1h_requests: int = pc["cache_write_1h_requests"]  # type: ignore[assignment]
         savings_usd = 0.0
         write_premium_usd = 0.0
 
@@ -134,6 +142,10 @@ def build_prefix_cache_stats(
         provider_stats = {
             "cache_read_tokens": read_tokens,
             "cache_write_tokens": write_tokens,
+            "cache_write_5m_tokens": write_5m_tokens,
+            "cache_write_1h_tokens": write_1h_tokens,
+            "cache_write_5m_requests": write_5m_requests,
+            "cache_write_1h_requests": write_1h_requests,
             "requests": pc["requests"],
             "hit_requests": pc["hit_requests"],
             "hit_rate": hit_rate,
@@ -145,12 +157,37 @@ def build_prefix_cache_stats(
             "write_premium_usd": round(write_premium_usd, 4),
             "net_savings_usd": round(savings_usd, 4),
             "label": str(econ["label"]),
+            "observed_ttl_buckets": {
+                "5m": {
+                    "tokens": write_5m_tokens,
+                    "requests": write_5m_requests,
+                },
+                "1h": {
+                    "tokens": write_1h_tokens,
+                    "requests": write_1h_requests,
+                },
+            },
         }
+        total_observed_ttl_tokens = write_5m_tokens + write_1h_tokens
+        if total_observed_ttl_tokens > 0:
+            provider_stats["observed_ttl_mix"] = {
+                "5m_pct": round(write_5m_tokens / total_observed_ttl_tokens * 100, 1),
+                "1h_pct": round(write_1h_tokens / total_observed_ttl_tokens * 100, 1),
+                "active_buckets": [
+                    bucket
+                    for bucket, tokens in (("5m", write_5m_tokens), ("1h", write_1h_tokens))
+                    if tokens > 0
+                ],
+            }
         by_provider[provider] = provider_stats
 
         # Accumulate totals
         totals["cache_read_tokens"] += read_tokens
         totals["cache_write_tokens"] += write_tokens
+        totals["cache_write_5m_tokens"] += write_5m_tokens
+        totals["cache_write_1h_tokens"] += write_1h_tokens
+        totals["cache_write_5m_requests"] += write_5m_requests
+        totals["cache_write_1h_requests"] += write_1h_requests
         totals["requests"] += pc["requests"]
         totals["hit_requests"] += pc["hit_requests"]
         totals["bust_count"] += pc["bust_count"]
@@ -164,6 +201,33 @@ def build_prefix_cache_stats(
     totals["hit_rate"] = (
         round(totals["hit_requests"] / totals["requests"] * 100, 1) if totals["requests"] > 0 else 0
     )
+    total_observed_ttl_tokens = totals["cache_write_5m_tokens"] + totals["cache_write_1h_tokens"]
+    totals["observed_ttl_buckets"] = {
+        "5m": {
+            "tokens": totals["cache_write_5m_tokens"],
+            "requests": totals["cache_write_5m_requests"],
+        },
+        "1h": {
+            "tokens": totals["cache_write_1h_tokens"],
+            "requests": totals["cache_write_1h_requests"],
+        },
+    }
+    totals["observed_ttl_mix"] = {
+        "5m_pct": round(totals["cache_write_5m_tokens"] / total_observed_ttl_tokens * 100, 1)
+        if total_observed_ttl_tokens > 0
+        else 0.0,
+        "1h_pct": round(totals["cache_write_1h_tokens"] / total_observed_ttl_tokens * 100, 1)
+        if total_observed_ttl_tokens > 0
+        else 0.0,
+        "active_buckets": [
+            bucket
+            for bucket, tokens in (
+                ("5m", totals["cache_write_5m_tokens"]),
+                ("1h", totals["cache_write_1h_tokens"]),
+            )
+            if tokens > 0
+        ],
+    }
 
     return {
         "by_provider": by_provider,
@@ -180,7 +244,9 @@ def build_prefix_cache_stats(
             "Prefix caching is performed by the LLM provider (Anthropic, OpenAI). "
             "Headroom reports cache stats as observed from API responses. "
             "CacheAligner and prefix freeze improve cache hit rates by stabilizing "
-            "the message prefix, but baseline caching happens without Headroom."
+            "the message prefix, but baseline caching happens without Headroom. "
+            "Observed TTL bucket metrics reflect provider-reported cache write usage "
+            "(for example Anthropic 5m vs 1h), not configured or remaining TTL."
         ),
     }
 
@@ -356,6 +422,8 @@ class CostTracker:
         # API-reported cache breakdown per model (for accurate cost calculation)
         self._api_cache_read_by_model: dict[str, int] = {}
         self._api_cache_write_by_model: dict[str, int] = {}
+        self._api_cache_write_5m_by_model: dict[str, int] = {}
+        self._api_cache_write_1h_by_model: dict[str, int] = {}
         self._api_uncached_by_model: dict[str, int] = {}
 
     # Cache resolved model names to avoid repeated litellm lookups.
@@ -480,6 +548,8 @@ class CostTracker:
         tokens_sent: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        cache_write_5m_tokens: int = 0,
+        cache_write_1h_tokens: int = 0,
         uncached_tokens: int = 0,
     ):
         """Record token counts per model.
@@ -502,6 +572,12 @@ class CostTracker:
         )
         self._api_cache_write_by_model[model] = (
             self._api_cache_write_by_model.get(model, 0) + cache_write_tokens
+        )
+        self._api_cache_write_5m_by_model[model] = (
+            self._api_cache_write_5m_by_model.get(model, 0) + cache_write_5m_tokens
+        )
+        self._api_cache_write_1h_by_model[model] = (
+            self._api_cache_write_1h_by_model.get(model, 0) + cache_write_1h_tokens
         )
         self._api_uncached_by_model[model] = (
             self._api_uncached_by_model.get(model, 0) + uncached_tokens
@@ -574,6 +650,8 @@ class CostTracker:
                 "requests": reqs,
                 "tokens_saved": saved,
                 "tokens_sent": sent,
+                "cache_write_5m_tokens": self._api_cache_write_5m_by_model.get(model, 0),
+                "cache_write_1h_tokens": self._api_cache_write_1h_by_model.get(model, 0),
                 "reduction_pct": round(saved / (saved + sent) * 100, 1)
                 if (saved + sent) > 0
                 else 0,
@@ -625,6 +703,8 @@ class CostTracker:
             "total_tokens_saved": total_saved,
             "total_input_tokens": total_input_tokens,
             "total_input_cost_usd": round(cost_with_headroom, 4),
+            "cache_write_5m_tokens": sum(self._api_cache_write_5m_by_model.values()),
+            "cache_write_1h_tokens": sum(self._api_cache_write_1h_by_model.values()),
             "per_model": per_model,
             "cost_with_headroom_usd": round(cost_with_headroom, 4),
             "savings_usd": round(savings_usd, 4),

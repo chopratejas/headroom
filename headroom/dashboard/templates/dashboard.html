@@ -208,6 +208,60 @@
                         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-border inline-block"></span> Uncached</span>
                     </div>
                 </div>
+                <template x-if="hasObservedTtlBuckets">
+                    <div class="mt-5 border-t border-border pt-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <div>
+                                <div class="text-xs text-gray-500 uppercase tracking-[0.22em]">Observed TTL Buckets</div>
+                                <div class="text-sm text-gray-300 mt-1">Provider-reported cache write mix</div>
+                            </div>
+                            <div class="text-xs text-gray-500 font-mono" x-text="observedTtlWindowLabel"></div>
+                        </div>
+                        <div class="grid grid-cols-1 xl:grid-cols-[1.3fr_0.9fr] gap-4">
+                            <div class="rounded-2xl border border-cyan-500/20 bg-[linear-gradient(180deg,rgba(34,211,238,0.10),rgba(12,16,22,0.88))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="text-[11px] uppercase tracking-[0.22em] text-cyan-300/75">Bucket Mix</div>
+                                <div class="mt-1 text-2xl font-light text-cyan-50">
+                                    <span data-testid="ttl-bucket-mix-1h-total" x-text="formatNumber(stats.prefix_cache?.totals?.cache_write_1h_tokens || 0)"></span>
+                                    <span class="text-sm text-cyan-300/70">1h</span>
+                                    <span class="mx-2 text-cyan-500/60">/</span>
+                                    <span data-testid="ttl-bucket-mix-5m-total" x-text="formatNumber(stats.prefix_cache?.totals?.cache_write_5m_tokens || 0)"></span>
+                                    <span class="text-sm text-cyan-300/70">5m</span>
+                                </div>
+                            </div>
+                            <div data-testid="ttl-bucket-headline" class="rounded-full border border-cyan-400/20 bg-black/20 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-cyan-200/80" x-text="observedTtlHeadline"></div>
+                                </div>
+                                <div class="mt-4">
+                                    <div class="flex justify-between text-xs text-gray-500 mb-1">
+                                        <span>Observed write-token split</span>
+                                        <span x-text="(stats.prefix_cache?.totals?.observed_ttl_mix?.active_buckets || []).join(' + ')"></span>
+                                    </div>
+                                    <div class="h-3 overflow-hidden rounded-full bg-black/30 ring-1 ring-white/5 flex">
+                                        <div class="h-full bg-cyan-400 transition-all duration-500" :style="'width:' + (stats.prefix_cache?.totals?.observed_ttl_mix?.['1h_pct'] || 0) + '%'"></div>
+                                        <div class="h-full bg-violet-400 transition-all duration-500" :style="'width:' + (stats.prefix_cache?.totals?.observed_ttl_mix?.['5m_pct'] || 0) + '%'"></div>
+                                    </div>
+                                    <div class="mt-2 flex flex-wrap gap-3 text-xs text-gray-400">
+                                        <span class="inline-flex items-center gap-1.5"><span class="inline-block h-2 w-2 rounded-full bg-cyan-400"></span><span data-testid="ttl-bucket-mix-1h-pct" x-text="'1h ' + (stats.prefix_cache?.totals?.observed_ttl_mix?.['1h_pct'] || 0).toFixed(1) + '%'"></span></span>
+                                        <span class="inline-flex items-center gap-1.5"><span class="inline-block h-2 w-2 rounded-full bg-violet-400"></span><span data-testid="ttl-bucket-mix-5m-pct" x-text="'5m ' + (stats.prefix_cache?.totals?.observed_ttl_mix?.['5m_pct'] || 0).toFixed(1) + '%'"></span></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-3">
+                                <div class="rounded-2xl border border-white/8 bg-black/20 p-4">
+                                    <div class="text-[11px] uppercase tracking-[0.18em] text-cyan-300/75">1h Cache Writes</div>
+                                    <div data-testid="ttl-bucket-1h-value" class="mt-2 text-3xl font-light text-cyan-50" x-text="formatNumber(stats.prefix_cache?.totals?.observed_ttl_buckets?.['1h']?.tokens || 0)"></div>
+                                    <div class="mt-1 text-xs text-gray-500" x-text="formatNumber(stats.prefix_cache?.totals?.observed_ttl_buckets?.['1h']?.requests || 0) + ' requests observed'"></div>
+                                </div>
+                                <div class="rounded-2xl border border-white/8 bg-black/20 p-4">
+                                    <div class="text-[11px] uppercase tracking-[0.18em] text-violet-300/75">5m Cache Writes</div>
+                                    <div data-testid="ttl-bucket-5m-value" class="mt-2 text-3xl font-light text-violet-50" x-text="formatNumber(stats.prefix_cache?.totals?.observed_ttl_buckets?.['5m']?.tokens || 0)"></div>
+                                    <div class="mt-1 text-xs text-gray-500" x-text="formatNumber(stats.prefix_cache?.totals?.observed_ttl_buckets?.['5m']?.requests || 0) + ' requests observed'"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </template>
                 <!-- Per-provider breakdown -->
                 <template x-if="Object.keys(stats.prefix_cache?.by_provider || {}).length > 0">
                     <div class="mt-4 border-t border-border pt-3">
@@ -219,10 +273,13 @@
                                         <span class="px-2 py-0.5 bg-border rounded text-xs font-mono" x-text="prov"></span>
                                         <span class="text-xs text-gray-500" x-text="pc.label"></span>
                                     </div>
-                                    <div class="flex items-center gap-4 text-xs font-mono">
+                                    <div class="flex flex-wrap items-center justify-end gap-4 text-xs font-mono">
                                         <span class="text-emerald-400" x-text="formatNumber(pc.cache_read_tokens) + ' reads (' + pc.read_discount + ' off)'"></span>
                                         <template x-if="pc.write_premium !== 'none'">
                                             <span class="text-amber-400" x-text="formatNumber(pc.cache_write_tokens) + ' writes (+' + pc.write_premium + ')'"></span>
+                                        </template>
+                                        <template x-if="pc.observed_ttl_mix">
+                                            <span class="text-cyan-300" x-text="'TTL 1h ' + (pc.observed_ttl_mix['1h_pct'] || 0).toFixed(1) + '% / 5m ' + (pc.observed_ttl_mix['5m_pct'] || 0).toFixed(1) + '%'"></span>
                                         </template>
                                         <span :class="pc.bust_count > 0 ? 'text-red-400' : 'text-gray-500'" x-text="pc.bust_count + ' busts'"></span>
                                         <span class="text-emerald-400" x-text="'$' + formatCurrency(pc.net_savings_usd)"></span>
@@ -1052,6 +1109,26 @@
                     const total = (t.cache_read_tokens || 0) + (t.cache_write_tokens || 0);
                     if (total === 0) return 0;
                     return Math.round((t.cache_write_tokens || 0) / total * 100);
+                },
+
+                get hasObservedTtlBuckets() {
+                    const buckets = this.stats.prefix_cache?.totals?.observed_ttl_buckets || {};
+                    return ((buckets['5m']?.tokens || 0) + (buckets['1h']?.tokens || 0)) > 0;
+                },
+
+                get observedTtlHeadline() {
+                    const mix = this.stats.prefix_cache?.totals?.observed_ttl_mix || {};
+                    const oneHour = mix['1h_pct'] || 0;
+                    const fiveMinute = mix['5m_pct'] || 0;
+                    if (oneHour === fiveMinute) return 'Balanced';
+                    return oneHour > fiveMinute ? '1h leaning' : '5m leaning';
+                },
+
+                get observedTtlWindowLabel() {
+                    const mix = this.stats.prefix_cache?.totals?.observed_ttl_mix || {};
+                    const active = mix.active_buckets || [];
+                    if (!active.length) return 'No TTL bucket data';
+                    return active.length === 1 ? active[0] + ' only' : active.join(' / ');
                 },
 
                 // --- Waste Signals ---
