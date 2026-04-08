@@ -212,6 +212,66 @@ class TestPrefixCacheTracker:
         assert len(counts) == 1
         assert counts[0] > 100
 
+    def test_estimate_tool_result_content(self):
+        """Token estimation should count tool_result content field."""
+        tool_content = "x" * 3500  # ~1000 tokens
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": tool_content,
+                    }
+                ],
+            },
+        ]
+        counts = PrefixCacheTracker._estimate_message_tokens(messages)
+        assert len(counts) == 1
+        # Should be ~1000 tokens, definitely > 100
+        assert counts[0] > 100
+
+    def test_estimate_tool_use_input(self):
+        """Token estimation should count tool_use input field."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "/very/long/path/" + "x" * 700},
+                    }
+                ],
+            },
+        ]
+        counts = PrefixCacheTracker._estimate_message_tokens(messages)
+        assert len(counts) == 1
+        # Should count the serialized input dict
+        assert counts[0] > 50
+
+    def test_estimate_tool_result_nested_blocks(self):
+        """Token estimation should handle nested content blocks in tool_result."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [
+                            {"type": "text", "text": "A" * 3500},
+                        ],
+                    }
+                ],
+            },
+        ]
+        counts = PrefixCacheTracker._estimate_message_tokens(messages)
+        assert len(counts) == 1
+        assert counts[0] > 100
+
     def test_session_ttl_expiry(self):
         """Tracker should report as expired after TTL."""
         config = PrefixFreezeConfig(session_ttl_seconds=1)

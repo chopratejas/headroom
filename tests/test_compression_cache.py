@@ -172,6 +172,111 @@ class TestCompressionCacheFrozenCount:
         ]
         assert cache.compute_frozen_count(messages) == 2
 
+    def test_stable_hash_allows_frozen_count_past_uncached_tool_result(
+        self, cache: CompressionCache
+    ) -> None:
+        """Tool_results marked stable should not stop the frozen count walk."""
+        tool_content = "excluded Read output — big file contents"
+        h = CompressionCache.content_hash(tool_content)
+        cache.mark_stable(h)
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        # Without mark_stable, this would stop at msg[1] → frozen=1.
+        # With stable hash, the walk continues past msg[1] → frozen=3.
+        assert cache.compute_frozen_count(messages) == 3
+
+    def test_update_from_result_identical_content_marks_stable(
+        self, cache: CompressionCache
+    ) -> None:
+        """When orig == compressed, update_from_result marks the hash as stable."""
+        tool_content = "unchanged tool output"
+        originals = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
+                ],
+            },
+        ]
+        # Compressed is identical to originals (no compression happened)
+        compressed = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
+                ],
+            },
+        ]
+        cache.update_from_result(originals, compressed)
+
+        h = CompressionCache.content_hash(tool_content)
+        assert h in cache._stable_hashes
+
+        # Frozen count should now walk past this tool_result
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
+                ],
+            },
+            {"role": "user", "content": "more stuff"},
+        ]
+        assert cache.compute_frozen_count(messages) == 3
+
+    def test_mark_stable_from_messages(self, cache: CompressionCache) -> None:
+        """mark_stable_from_messages records hashes for tool_results."""
+        content_a = "tool output A"
+        content_b = "tool output B"
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": content_a}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t2", "content": content_b}
+                ],
+            },
+        ]
+        # Mark first 2 messages (msg[0] + msg[1])
+        cache.mark_stable_from_messages(messages, 2)
+
+        ha = CompressionCache.content_hash(content_a)
+        hb = CompressionCache.content_hash(content_b)
+        assert ha in cache._stable_hashes
+        assert hb not in cache._stable_hashes  # msg[2] not included
+
+    def test_should_defer_compression_new_content(self, cache: CompressionCache) -> None:
+        """First-time content should be deferred."""
+        h = CompressionCache.content_hash("brand new content")
+        assert cache.should_defer_compression(h, ttl_seconds=300, batch_window=30) is True
+
+    def test_should_defer_compression_near_ttl(self, cache: CompressionCache) -> None:
+        """Content near TTL boundary should NOT be deferred."""
+        import time
+
+        h = CompressionCache.content_hash("old content")
+        # Backdate first_seen to simulate age near TTL
+        cache._first_seen[h] = time.time() - 280  # 280s old, TTL=300, window=30
+        assert cache.should_defer_compression(h, ttl_seconds=300, batch_window=30) is False
+
 
 class TestCompressionCacheApplyAndUpdate:
     def test_apply_cached_swaps_tool_results(self, cache: CompressionCache) -> None:

@@ -450,6 +450,7 @@ class StreamingMixin:
         memory_user_id: str | None = None,
         pipeline_timing: dict[str, float] | None = None,
         prefix_tracker: Any | None = None,
+        original_messages: list[dict] | None = None,
     ) -> StreamingResponse:
         """Stream response with metrics tracking and memory tool handling.
 
@@ -551,9 +552,13 @@ class StreamingMixin:
                         # real-time clients (LangGraph, LangChain, etc.)
                         yield chunk
 
-                        if memory_enabled:
-                            # Also buffer for post-stream memory processing
-                            buffered_chunks.append(chunk)
+                        # Buffer SSE data for memory processing and/or prefix tracker
+                        _track_sse = memory_enabled or (
+                            prefix_tracker is not None and provider == "anthropic"
+                        )
+                        if _track_sse:
+                            if memory_enabled:
+                                buffered_chunks.append(chunk)
                             full_sse_data += chunk_str
                             if len(full_sse_data) > MAX_SSE_BUFFER_SIZE:
                                 logger.warning(
@@ -696,10 +701,31 @@ class StreamingMixin:
 
                 # Update prefix cache tracker for next turn (streaming path)
                 if prefix_tracker is not None:
+                    import copy as _copy
+
+                    forwarded_messages = body.get("messages", [])
+                    next_forwarded = _copy.deepcopy(forwarded_messages)
+                    next_original = _copy.deepcopy(original_messages or forwarded_messages)
+
+                    # Reconstruct assistant response from SSE data so the
+                    # prefix tracker accounts for it in the cached prefix
+                    if full_sse_data and provider == "anthropic":
+                        _parsed = (
+                            parsed_response
+                            if parsed_response is not None
+                            else self._parse_sse_to_response(full_sse_data, provider)
+                        )
+                        if _parsed:
+                            asst_msg = self._assistant_message_from_response_json(_parsed)
+                            if asst_msg is not None:
+                                next_forwarded.append(_copy.deepcopy(asst_msg))
+                                next_original.append(_copy.deepcopy(asst_msg))
+
                     prefix_tracker.update_from_response(
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
-                        messages=body.get("messages", []),
+                        messages=next_forwarded,
+                        original_messages=next_original,
                     )
 
                 if self.cost_tracker:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -228,19 +229,45 @@ class PrefixCacheTracker:
 
     @staticmethod
     def _estimate_message_tokens(messages: list[dict[str, Any]]) -> list[int]:
-        """Rough token count per message (chars / 3.5)."""
+        """Rough token count per message (chars / 3.5).
+
+        Counts text, tool_result content, and tool_use input fields
+        for accurate Anthropic-format estimation.
+        """
         counts = []
         for msg in messages:
             content = msg.get("content", "")
             if isinstance(content, str):
                 chars = len(content)
             elif isinstance(content, list):
-                chars = sum(
-                    len(str(block.get("text", ""))) for block in content if isinstance(block, dict)
-                )
+                chars = 0
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type", "")
+                    if block_type == "text":
+                        chars += len(block.get("text", ""))
+                    elif block_type == "tool_result":
+                        inner = block.get("content", "")
+                        if isinstance(inner, str):
+                            chars += len(inner)
+                        elif isinstance(inner, list):
+                            chars += sum(
+                                len(b.get("text", "")) for b in inner if isinstance(b, dict)
+                            )
+                    elif block_type == "tool_use":
+                        inp = block.get("input")
+                        if isinstance(inp, str):
+                            chars += len(inp)
+                        elif isinstance(inp, dict):
+                            chars += len(json.dumps(inp, separators=(",", ":")))
+                    else:
+                        text = block.get("text", "")
+                        if text:
+                            chars += len(text)
             else:
                 chars = 0
-            # Add overhead for role, tool_use blocks, etc.
+            # Add overhead for role, block structure, etc.
             chars += 20
             counts.append(max(1, int(chars / 3.5)))
         return counts

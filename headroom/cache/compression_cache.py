@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import logging
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -82,6 +83,8 @@ class CompressionCache:
     def __init__(self, max_entries: int = 10000) -> None:
         self.max_entries = max_entries
         self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._stable_hashes: set[str] = set()
+        self._first_seen: dict[str, float] = {}
         self._hits: int = 0
         self._misses: int = 0
         self._total_tokens_saved: int = 0
@@ -115,10 +118,51 @@ class CompressionCache:
             _, evicted = self._cache.popitem(last=False)
             self._total_tokens_saved -= evicted.tokens_saved
 
+    def mark_stable(self, content_hash: str) -> None:
+        """Mark a content hash as stable (unchanged, not compressed).
+
+        Used for tool_results that the content router excluded or skipped.
+        These messages appear verbatim every turn, so they are prefix-stable
+        even though no compressed version exists in the cache.
+        """
+        self._stable_hashes.add(content_hash)
+
+    def mark_stable_from_messages(self, messages: list[dict], up_to: int) -> None:
+        """Mark all tool_result hashes in messages[:up_to] as stable."""
+        for msg in messages[:up_to]:
+            if _is_tool_result_message(msg):
+                content = _extract_tool_result_content(msg)
+                if content is not None:
+                    self._stable_hashes.add(self.content_hash(content))
+
+    def should_defer_compression(
+        self,
+        content_hash: str,
+        ttl_seconds: float = 300.0,
+        batch_window: float = 30.0,
+    ) -> bool:
+        """Whether to defer compressing this content to avoid mid-TTL busts.
+
+        Returns True if the content was first seen recently enough that
+        compressing it now would bust the cached prefix with no TTL benefit.
+        Returns False near the TTL boundary (within batch_window of expiry),
+        meaning we should compress now and accept one bust.
+        """
+        now = time.time()
+        first_seen = self._first_seen.get(content_hash)
+        if first_seen is None:
+            self._first_seen[content_hash] = now
+            return True  # First time seeing this — defer
+        age = now - first_seen
+        if age >= ttl_seconds - batch_window:
+            return False  # Near TTL boundary — compress now (batch window)
+        return True  # Still within TTL — defer to preserve cache
+
     def get_stats(self) -> dict:
         """Return cache statistics."""
         return {
             "entries": len(self._cache),
+            "stable_hashes": len(self._stable_hashes),
             "hits": self._hits,
             "misses": self._misses,
             "tokens_saved": self._total_tokens_saved,
@@ -151,7 +195,7 @@ class CompressionCache:
                 content = _extract_tool_result_content(msg)
                 if content is not None:
                     h = self.content_hash(content)
-                    if h not in self._cache:
+                    if h not in self._cache and h not in self._stable_hashes:
                         break
                 else:
                     # tool_result with non-string content; treat as unstable
@@ -200,6 +244,8 @@ class CompressionCache:
             if orig_content is None or comp_content is None:
                 continue
             if orig_content == comp_content:
+                # Content unchanged — mark as stable for frozen count walk
+                self._stable_hashes.add(self.content_hash(orig_content))
                 continue
             h = self.content_hash(orig_content)
             tokens_saved = len(orig_content) // 4 - len(comp_content) // 4

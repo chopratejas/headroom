@@ -458,6 +458,35 @@ class AnthropicHandlerMixin:
         tokenizer = get_tokenizer(model)
         original_tokens = tokenizer.count_messages(messages)
 
+        # Enterprise Security: scan request before compression
+        _security_ctx = None
+        if self.security:
+            try:
+                messages, _security_ctx = self.security.scan_request(
+                    messages,
+                    {
+                        "provider": "anthropic",
+                        "model": model,
+                        "request_id": str(request_id),
+                        "user_id": headers.get("x-api-key", "")[:16],
+                    },
+                )
+            except Exception as e:
+                if hasattr(e, "reason"):
+                    from fastapi.responses import JSONResponse as _JSONResp
+
+                    return _JSONResp(
+                        status_code=403,
+                        content={
+                            "type": "error",
+                            "error": {
+                                "type": "security_block",
+                                "message": str(e),
+                            },
+                        },
+                    )
+                logger.warning(f"[{request_id}] Security scan error: {e}")
+
         # Hook: pre_compress — let hooks modify messages before compression
 
         if self.config.hooks and not is_cache_mode(self.config.mode):
@@ -538,6 +567,41 @@ class AnthropicHandlerMixin:
                     # Safety: never freeze beyond provider-confirmed cached prefix.
                     cache_frozen_count = comp_cache.compute_frozen_count(messages)
                     frozen_message_count = min(frozen_message_count, cache_frozen_count)
+                    # Record all tool_results in the verified frozen prefix as stable
+                    comp_cache.mark_stable_from_messages(messages, frozen_message_count)
+
+                    # TTL-aware deferral: extend freeze to cover messages whose
+                    # first-time compression would bust the cache mid-TTL window.
+                    # This batches first-time compressions near the 5-min TTL
+                    # boundary, trading one big bust for many small ones.
+                    ttl_frozen = frozen_message_count
+                    from headroom.cache.compression_cache import (
+                        _extract_tool_result_content,
+                        _is_tool_result_message,
+                    )
+
+                    for idx in range(frozen_message_count, len(messages)):
+                        msg = messages[idx]
+                        if _is_tool_result_message(msg):
+                            tr_content = _extract_tool_result_content(msg)
+                            if tr_content is not None:
+                                h = comp_cache.content_hash(tr_content)
+                                # Already compressed or stable — keep going
+                                if h in comp_cache._cache or h in comp_cache._stable_hashes:
+                                    ttl_frozen = idx + 1
+                                elif comp_cache.should_defer_compression(h):
+                                    # New content within TTL — defer and freeze
+                                    comp_cache.mark_stable(h)
+                                    ttl_frozen = idx + 1
+                                else:
+                                    break  # TTL expired — compress this turn
+                            else:
+                                break
+                        else:
+                            # Non-tool_result messages are stable (user/assistant text)
+                            ttl_frozen = idx + 1
+
+                    frozen_message_count = ttl_frozen
 
                     result = await asyncio.wait_for(
                         asyncio.to_thread(
@@ -966,6 +1030,7 @@ class AnthropicHandlerMixin:
                     memory_user_id=memory_user_id,
                     pipeline_timing=pipeline_timing,
                     prefix_tracker=prefix_tracker,
+                    original_messages=original_client_messages,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -1357,6 +1422,23 @@ class AnthropicHandlerMixin:
                     response_headers["x-headroom-cached"] = "true"
                 if _compression_failed:
                     response_headers["x-headroom-compression-failed"] = "true"
+
+                # Enterprise Security: scan response + de-anonymize
+                if self.security and _security_ctx and resp_json:
+                    try:
+                        resp_json = self.security.scan_response(resp_json, _security_ctx)
+                        response = httpx.Response(
+                            status_code=200,
+                            content=json.dumps(resp_json).encode(),
+                            headers=response_headers,
+                        )
+                        return Response(
+                            content=response.content,
+                            status_code=response.status_code,
+                            headers=response_headers,
+                        )
+                    except Exception as sec_err:
+                        logger.warning(f"[{request_id}] Security response scan error: {sec_err}")
 
                 return Response(
                     content=response.content,
