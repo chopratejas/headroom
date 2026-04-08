@@ -184,9 +184,7 @@ class TestCompressionCacheFrozenCount:
             {"role": "user", "content": "hello"},
             {
                 "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
-                ],
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}],
             },
             {"role": "user", "content": "follow up"},
         ]
@@ -203,9 +201,7 @@ class TestCompressionCacheFrozenCount:
             {"role": "user", "content": "hi"},
             {
                 "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
-                ],
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}],
             },
         ]
         # Compressed is identical to originals (no compression happened)
@@ -213,9 +209,7 @@ class TestCompressionCacheFrozenCount:
             {"role": "user", "content": "hi"},
             {
                 "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
-                ],
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}],
             },
         ]
         cache.update_from_result(originals, compressed)
@@ -228,9 +222,7 @@ class TestCompressionCacheFrozenCount:
             {"role": "user", "content": "hello"},
             {
                 "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": tool_content}
-                ],
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}],
             },
             {"role": "user", "content": "more stuff"},
         ]
@@ -244,15 +236,11 @@ class TestCompressionCacheFrozenCount:
             {"role": "user", "content": "hi"},
             {
                 "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "t1", "content": content_a}
-                ],
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": content_a}],
             },
             {
                 "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "t2", "content": content_b}
-                ],
+                "content": [{"type": "tool_result", "tool_use_id": "t2", "content": content_b}],
             },
         ]
         # Mark first 2 messages (msg[0] + msg[1])

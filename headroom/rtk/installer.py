@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import logging
 import platform
-import ssl
 import stat
 import subprocess
 import tarfile
@@ -78,19 +77,16 @@ def download_rtk(version: str | None = None) -> Path:
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"Invalid URL scheme in {url}")
 
-        # Try default SSL first, fall back to unverified for macOS framework Python
+        # Fail closed on TLS errors rather than executing an unverifiable download.
         try:
             with urlopen(url, timeout=30) as response:
                 data = response.read()
-        except Exception as ssl_err:
-            if "CERTIFICATE_VERIFY_FAILED" in str(ssl_err):
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                with urlopen(url, timeout=30, context=ctx) as response:
-                    data = response.read()
-            else:
-                raise
+        except Exception as download_err:
+            if "CERTIFICATE_VERIFY_FAILED" in str(download_err):
+                raise RuntimeError(
+                    "TLS verification failed downloading rtk; fix the local trust store and retry."
+                ) from download_err
+            raise
     except Exception as e:
         raise RuntimeError(f"Failed to download rtk from {url}: {e}") from e
 

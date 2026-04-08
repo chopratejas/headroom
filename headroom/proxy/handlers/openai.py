@@ -593,7 +593,11 @@ class OpenAIHandlerMixin:
                 # Cache
                 if self.cache and response.status_code == 200:
                     await self.cache.set(
-                        messages, model, response.content, dict(response.headers), tokens_saved
+                        messages,
+                        model,
+                        response.content,
+                        dict(response.headers),
+                        tokens_saved,
                     )
 
                 await self.metrics.record_request(
@@ -1077,7 +1081,9 @@ class OpenAIHandlerMixin:
                                 body["instructions"] = opt[0]["content"]
                                 opt = opt[1:]
                             if result.tokens_after <= original_tokens:
-                                body["input"] = messages_to_responses_items(opt, input_data, preserved)
+                                body["input"] = messages_to_responses_items(
+                                    opt, input_data, preserved
+                                )
                             else:
                                 logger.warning(
                                     f"[{request_id}] WS optimization inflated tokens "
@@ -1543,7 +1549,10 @@ class OpenAIHandlerMixin:
             return JSONResponse(
                 status_code=400,
                 content={
-                    "error": {"message": f"Invalid JSON: {e}", "type": "invalid_request_error"}
+                    "error": {
+                        "message": f"Invalid JSON: {e}",
+                        "type": "invalid_request_error",
+                    }
                 },
             )
 

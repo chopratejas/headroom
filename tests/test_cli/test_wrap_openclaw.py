@@ -25,6 +25,9 @@ def plugin_dir(tmp_path: Path) -> Path:
     plugin.mkdir(parents=True)
     (plugin / "package.json").write_text('{"name":"headroom-openclaw"}\n')
     (plugin / "openclaw.plugin.json").write_text('{"id":"headroom"}\n')
+    hook_shim = plugin / "hook-shim"
+    hook_shim.mkdir()
+    (hook_shim / "index.js").write_text("export default {};\n")
     return plugin
 
 
@@ -416,11 +419,24 @@ def test_copy_openclaw_plugin_into_extensions_handles_missing_and_existing_dist(
     (plugin / "package.json").write_text("{}\n")
     (plugin / "openclaw.plugin.json").write_text("{}\n")
 
+    with patch("headroom.cli.wrap._resolve_openclaw_extensions_dir", return_value=tmp_path):
+        with pytest.raises(Exception, match="Plugin hook-shim folder missing"):
+            wrap_cli._copy_openclaw_plugin_into_extensions(
+                plugin_dir=plugin, openclaw_bin="openclaw"
+            )
+
+    hook_shim = plugin / "hook-shim"
+    hook_shim.mkdir()
+    (hook_shim / "index.js").write_text("shim\n")
+
     ext_root = tmp_path / ".openclaw" / "extensions"
     target_headroom = ext_root / "headroom"
     target_dist = target_headroom / "dist"
+    target_hook_shim = target_headroom / "hook-shim"
     target_dist.mkdir(parents=True)
     (target_dist / "old.js").write_text("old\n")
+    target_hook_shim.mkdir(parents=True)
+    (target_hook_shim / "old.js").write_text("old-shim\n")
 
     with patch("headroom.cli.wrap._resolve_openclaw_extensions_dir", return_value=ext_root):
         out = wrap_cli._copy_openclaw_plugin_into_extensions(
@@ -430,3 +446,5 @@ def test_copy_openclaw_plugin_into_extensions_handles_missing_and_existing_dist(
     assert out == target_headroom
     assert (target_dist / "index.js").exists()
     assert not (target_dist / "old.js").exists()
+    assert (target_hook_shim / "index.js").exists()
+    assert not (target_hook_shim / "old.js").exists()

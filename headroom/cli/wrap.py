@@ -436,14 +436,23 @@ def _copy_openclaw_plugin_into_extensions(
         raise click.ClickException(
             f"Plugin dist folder missing at {dist_dir}. Build the plugin first."
         )
+    hook_shim_dir = plugin_dir / "hook-shim"
+    if not hook_shim_dir.exists():
+        raise click.ClickException(
+            f"Plugin hook-shim folder missing at {hook_shim_dir}. Build the plugin first."
+        )
 
     extensions_dir = _resolve_openclaw_extensions_dir(openclaw_bin)
     target_dir = extensions_dir / "headroom"
     target_dist = target_dir / "dist"
+    target_hook_shim = target_dir / "hook-shim"
     target_dir.mkdir(parents=True, exist_ok=True)
     if target_dist.exists():
         shutil.rmtree(target_dist)
+    if target_hook_shim.exists():
+        shutil.rmtree(target_hook_shim)
     shutil.copytree(dist_dir, target_dist)
+    shutil.copytree(hook_shim_dir, target_hook_shim)
 
     for filename in ("openclaw.plugin.json", "package.json", "README.md"):
         source = plugin_dir / filename

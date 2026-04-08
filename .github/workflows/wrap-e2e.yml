@@ -1,0 +1,22 @@
+name: Wrap E2E
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  docker-wrap-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wrap e2e image
+        run: docker build -f e2e/wrap/Dockerfile -t headroom-wrap-e2e .
+
+      - name: Run wrap e2e container
+        run: docker run --rm headroom-wrap-e2e

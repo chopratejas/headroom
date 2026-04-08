@@ -31,7 +31,13 @@ NOTICE
 # JS/TS artifacts (dashboard, SDK — not part of proxy image)
 apps/
 sdk/
+!sdk/
+!sdk/typescript/
+!sdk/typescript/**
 plugins/
+!plugins/
+!plugins/openclaw/
+!plugins/openclaw/**
 node_modules/
 *.tgz
 

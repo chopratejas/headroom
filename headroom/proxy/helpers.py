@@ -82,9 +82,7 @@ def _setup_file_logging() -> None:
         # Disable propagation to root to avoid duplicate writes when
         # wrap.py redirects stderr to the same log file.
         headroom_logger = logging.getLogger("headroom")
-        if not any(
-            isinstance(h, RotatingFileHandler) for h in headroom_logger.handlers
-        ):
+        if not any(isinstance(h, RotatingFileHandler) for h in headroom_logger.handlers):
             headroom_logger.addHandler(handler)
         headroom_logger.propagate = False
     except OSError:
@@ -129,7 +127,12 @@ def _get_rtk_stats() -> dict[str, Any] | None:
     except Exception:
         pass
 
-    return {"installed": True, "total_commands": 0, "tokens_saved": 0, "avg_savings_pct": 0.0}
+    return {
+        "installed": True,
+        "total_commands": 0,
+        "tokens_saved": 0,
+        "avg_savings_pct": 0.0,
+    }
 
 
 async def _read_request_json(request: Request) -> dict[str, Any]:
