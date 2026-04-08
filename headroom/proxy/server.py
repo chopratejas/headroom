@@ -1758,13 +1758,40 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     @app.api_route("/v1/responses/{sub_path:path}", methods=["GET", "POST", "DELETE"])
     async def openai_responses_sub(request: Request, sub_path: str):
         """Passthrough for /v1/responses/* sub-endpoints (compact, cancel, etc.)."""
-        # Route to correct endpoint based on auth mode (ChatGPT vs API key)
+        from fastapi.responses import Response
+
         headers = dict(request.headers.items())
+        headers.pop("host", None)
+
+        # Route to correct endpoint based on auth mode.
+        # ChatGPT session auth (codex login) uses chatgpt.com with /responses/...
+        # path (no /v1/ prefix). API key auth uses api.openai.com/v1/responses/...
         if headers.get("chatgpt-account-id"):
-            base_url = "https://chatgpt.com/backend-api/codex"
+            url = f"https://chatgpt.com/backend-api/codex/responses/{sub_path}"
         else:
-            base_url = proxy.OPENAI_API_URL
-        return await proxy.handle_passthrough(request, base_url, "responses", "openai")
+            url = f"{proxy.OPENAI_API_URL}/v1/responses/{sub_path}"
+
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
+
+        body = await request.body()
+        try:
+            assert proxy.http_client is not None
+            resp = await proxy.http_client.request(
+                request.method,
+                url,
+                headers=headers,
+                content=body,
+                timeout=120.0,
+            )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+            )
+        except Exception as e:
+            logger.error(f"Passthrough /v1/responses/{sub_path} failed: {e}")
+            return Response(content=str(e), status_code=502)
 
     # OpenAI Batch API endpoints (with compression!)
     @app.post("/v1/batches")
