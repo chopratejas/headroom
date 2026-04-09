@@ -1,3 +1,4 @@
+import httpx
 from fastapi import WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -35,3 +36,38 @@ def test_codex_responses_websocket_aliases_delegate_to_openai_handler(monkeypatc
                 assert websocket.receive_json() == {"ok": True, "path": path}
 
     assert seen_paths == ["/backend-api/responses", "/backend-api/codex/responses"]
+
+
+def test_codex_responses_subpath_aliases_delegate_to_passthrough():
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def request(self, method, url, **_kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append((method, url))
+            return httpx.Response(200, json={"method": method, "url": url})
+
+        async def aclose(self) -> None:
+            return None
+
+    with TestClient(create_app(ProxyConfig())) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
+        client.app.state.proxy.OPENAI_API_URL = "https://api.openai.test"
+
+        api_key_response = client.post(
+            "/backend-api/responses/compact?trace=1",
+            json={"model": "gpt-5.3-codex"},
+        )
+        chatgpt_response = client.post(
+            "/backend-api/codex/responses/compact?trace=2",
+            headers={"chatgpt-account-id": "acct_123"},
+            json={"model": "gpt-5.3-codex"},
+        )
+
+    assert api_key_response.status_code == 200
+    assert chatgpt_response.status_code == 200
+    assert fake_http_client.calls == [
+        ("POST", "https://api.openai.test/v1/responses/compact?trace=1"),
+        ("POST", "https://chatgpt.com/backend-api/codex/responses/compact?trace=2"),
+    ]
