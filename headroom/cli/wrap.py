@@ -256,6 +256,7 @@ def _inject_codex_provider_config(port: int) -> None:
         f'name = "OpenAI via Headroom proxy"\n'
         f'base_url = "http://127.0.0.1:{port}/v1"\n'
         f'env_key = "OPENAI_API_KEY"\n'
+        f"requires_openai_auth = true\n"
         f"supports_websockets = true\n"
         f"# --- end Headroom ---\n"
     )
