@@ -852,10 +852,32 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#health-check" class="md-nav__link">
+  <a href="#liveness" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Health Check
+        Liveness
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#readiness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Readiness
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregate-health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregate Health
       
     </span>
   </a>
@@ -2199,10 +2221,32 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#health-check" class="md-nav__link">
+  <a href="#liveness" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Health Check
+        Liveness
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#readiness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Readiness
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#aggregate-health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregate Health
       
     </span>
   </a>
@@ -2597,22 +2641,61 @@
 </span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--llmlingua<span class="w"> </span>--llmlingua-rate<span class="w"> </span><span class="m">0</span>.5
 </span></code></pre></div>
 <h2 id="api-endpoints">API Endpoints<a class="headerlink" href="#api-endpoints" title="Permanent link">&para;</a></h2>
-<h3 id="health-check">Health Check<a class="headerlink" href="#health-check" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>curl<span class="w"> </span>http://localhost:8787/health
+<h3 id="liveness">Liveness<a class="headerlink" href="#liveness" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>curl<span class="w"> </span>http://localhost:8787/livez
 </span></code></pre></div>
 <p>Response:
 <div class="language-json highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">,</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;optimize&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;stats&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">&quot;total_requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="nt">&quot;tokens_saved&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15000</span><span class="p">,</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="nt">&quot;savings_percent&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">45.2</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="p">}</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;service&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;headroom-proxy&quot;</span><span class="p">,</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">,</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;alive&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.21&quot;</span><span class="p">,</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-10T16:36:25Z&quot;</span><span class="p">,</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="nt">&quot;uptime_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12.483</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<h3 id="readiness">Readiness<a class="headerlink" href="#readiness" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>curl<span class="w"> </span>http://localhost:8787/readyz
+</span></code></pre></div>
+<p>Response:
+<div class="language-json highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;service&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;headroom-proxy&quot;</span><span class="p">,</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">,</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.21&quot;</span><span class="p">,</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-10T16:36:25Z&quot;</span><span class="p">,</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nt">&quot;uptime_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12.483</span><span class="p">,</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="nt">&quot;checks&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">    </span><span class="nt">&quot;startup&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">},</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">    </span><span class="nt">&quot;http_client&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">},</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">    </span><span class="nt">&quot;cache&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">},</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">    </span><span class="nt">&quot;rate_limiter&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">},</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">    </span><span class="nt">&quot;memory&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;disabled&quot;</span><span class="p">}</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<p><code>/readyz</code> returns HTTP 503 when Headroom has not completed startup or a required enabled subsystem is unavailable. This is the endpoint used by the container health checks.</p>
+<h3 id="aggregate-health">Aggregate Health<a class="headerlink" href="#aggregate-health" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>curl<span class="w"> </span>http://localhost:8787/health
+</span></code></pre></div>
+<p>Response:
+<div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">,</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.21&quot;</span><span class="p">,</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">  </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="nt">&quot;optimize&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="nt">&quot;cache&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">    </span><span class="nt">&quot;rate_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">  </span><span class="nt">&quot;checks&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">    </span><span class="nt">&quot;startup&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">},</span>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="w">    </span><span class="nt">&quot;http_client&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ready&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;healthy&quot;</span><span class="p">}</span>
+</span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="p">}</span>
 </span></code></pre></div></p>
 <h3 id="detailed-statistics">Detailed Statistics<a class="headerlink" href="#detailed-statistics" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>curl<span class="w"> </span>http://localhost:8787/stats
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>curl<span class="w"> </span>http://localhost:8787/stats
 </span></code></pre></div>
 <p><code>/stats</code> remains the live/session-oriented endpoint and now also includes a
 <code>persistent_savings</code> block with durable proxy compression lifetime totals plus a
@@ -2628,7 +2711,7 @@ observed TTL breakdowns under <code>prefix_cache</code>:</p>
 <p>These are provider-reported observations, not configured TTL and not remaining
 expiration time.</p>
 <h3 id="historical-savings">Historical Savings<a class="headerlink" href="#historical-savings" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>curl<span class="w"> </span>http://localhost:8787/stats-history
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>curl<span class="w"> </span>http://localhost:8787/stats-history
 </span></code></pre></div>
 <p><code>/stats-history</code> exposes durable proxy compression history for dashboards and
 other Headroom frontends. It returns:</p>
@@ -2642,49 +2725,49 @@ other Headroom frontends. It returns:</p>
 Set <code>HEADROOM_SAVINGS_PATH</code> to override the location.</p>
 <p><code>/dashboard</code> uses this endpoint directly for its historical view, including the
 daily/weekly/monthly rollups and built-in JSON / CSV export buttons.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8787/stats-history?format=csv&amp;series=weekly&quot;</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8787/stats-history?format=csv&amp;series=monthly&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8787/stats-history?format=csv&amp;series=weekly&quot;</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>curl<span class="w"> </span><span class="s2">&quot;http://localhost:8787/stats-history?format=csv&amp;series=monthly&quot;</span>
 </span></code></pre></div>
 <h3 id="prometheus-metrics">Prometheus Metrics<a class="headerlink" href="#prometheus-metrics" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>curl<span class="w"> </span>http://localhost:8787/metrics
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>curl<span class="w"> </span>http://localhost:8787/metrics
 </span></code></pre></div>
 <p><code>/metrics</code> remains the built-in Prometheus-formatted operational view. The proxy now also emits the same operational events through the OTEL facade when OTEL metrics are configured.</p>
 <h3 id="llm-apis">LLM APIs<a class="headerlink" href="#llm-apis" title="Permanent link">&para;</a></h3>
 <p>The proxy supports both Anthropic and OpenAI API formats:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Anthropic format</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>POST<span class="w"> </span>/v1/messages
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># OpenAI format</span>
-</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>POST<span class="w"> </span>/v1/chat/completions
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># Anthropic format</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>POST<span class="w"> </span>/v1/messages
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1"># OpenAI format</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>POST<span class="w"> </span>/v1/chat/completions
 </span></code></pre></div>
 <h3 id="post-v1compress"><code>POST /v1/compress</code><a class="headerlink" href="#post-v1compress" title="Permanent link">&para;</a></h3>
 <p>Compression-only endpoint. Compresses messages without calling any LLM. Used by the <a href="../typescript-sdk/">TypeScript SDK</a> and any HTTP client that wants compression as a service.</p>
 <p><strong>Request:</strong>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="p">{</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span><span class="w">     </span><span class="c1">// OpenAI chat format</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4o&quot;</span><span class="w">     </span><span class="c1">// model name (for token counting)</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="p">}</span>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="p">{</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span><span class="w">     </span><span class="c1">// OpenAI chat format</span>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4o&quot;</span><span class="w">     </span><span class="c1">// model name (for token counting)</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="p">}</span>
 </span></code></pre></div></p>
 <p><strong>Response:</strong>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="p">{</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span><span class="w">            </span><span class="c1">// compressed messages</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span><span class="nt">&quot;tokens_before&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15000</span><span class="p">,</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="nt">&quot;tokens_after&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3500</span><span class="p">,</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span><span class="nt">&quot;tokens_saved&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">11500</span><span class="p">,</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span><span class="nt">&quot;compression_ratio&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.23</span><span class="p">,</span>
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span><span class="nt">&quot;transforms_applied&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;router:smart_crusher:0.35&quot;</span><span class="p">],</span>
-</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">  </span><span class="nt">&quot;ccr_hashes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;a1b2c3&quot;</span><span class="p">]</span>
-</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="p">}</span>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="p">{</span>
+</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a><span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span><span class="w">            </span><span class="c1">// compressed messages</span>
+</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="w">  </span><span class="nt">&quot;tokens_before&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15000</span><span class="p">,</span>
+</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="w">  </span><span class="nt">&quot;tokens_after&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3500</span><span class="p">,</span>
+</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="w">  </span><span class="nt">&quot;tokens_saved&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">11500</span><span class="p">,</span>
+</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="w">  </span><span class="nt">&quot;compression_ratio&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.23</span><span class="p">,</span>
+</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a><span class="w">  </span><span class="nt">&quot;transforms_applied&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;router:smart_crusher:0.35&quot;</span><span class="p">],</span>
+</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a><span class="w">  </span><span class="nt">&quot;ccr_hashes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;a1b2c3&quot;</span><span class="p">]</span>
+</span><span id="__span-18-9"><a id="__codelineno-18-9" name="__codelineno-18-9" href="#__codelineno-18-9"></a><span class="p">}</span>
 </span></code></pre></div></p>
 <p><strong>Headers:</strong>
 - <code>x-headroom-bypass: true</code> — skip compression, return messages as-is</p>
 <p><strong>Error responses:</strong> 400 (missing fields), 401 (bad API key), 503 (compression failed)</p>
 <h2 id="using-with-claude-code">Using with Claude Code<a class="headerlink" href="#using-with-claude-code" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># Start proxy</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--port<span class="w"> </span><span class="m">8787</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># In another terminal</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="nv">ANTHROPIC_BASE_URL</span><span class="o">=</span>http://localhost:8787<span class="w"> </span>claude
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Start proxy</span>
+</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--port<span class="w"> </span><span class="m">8787</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="c1"># In another terminal</span>
+</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="nv">ANTHROPIC_BASE_URL</span><span class="o">=</span>http://localhost:8787<span class="w"> </span>claude
 </span></code></pre></div>
 <h2 id="using-with-cursor">Using with Cursor<a class="headerlink" href="#using-with-cursor" title="Permanent link">&para;</a></h2>
 <ol>
@@ -2692,31 +2775,31 @@ daily/weekly/monthly rollups and built-in JSON / CSV export buttons.</p>
 <li>In Cursor settings, set the base URL to <code>http://localhost:8787</code></li>
 </ol>
 <h2 id="using-with-openai-sdk">Using with OpenAI SDK<a class="headerlink" href="#using-with-openai-sdk" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpenAI</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="n">client</span> <span class="o">=</span> <span class="n">OpenAI</span><span class="p">(</span>
-</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;http://localhost:8787/v1&quot;</span><span class="p">,</span>
-</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span><span class="p">,</span>  <span class="c1"># Still needed for upstream</span>
-</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpenAI</span>
+</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>
+</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="n">client</span> <span class="o">=</span> <span class="n">OpenAI</span><span class="p">(</span>
+</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;http://localhost:8787/v1&quot;</span><span class="p">,</span>
+</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span><span class="p">,</span>  <span class="c1"># Still needed for upstream</span>
+</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
 <h3 id="llmlingua-ml-compression-opt-in">LLMLingua ML Compression (Opt-In)<a class="headerlink" href="#llmlingua-ml-compression-opt-in" title="Permanent link">&para;</a></h3>
 <p>When enabled, the proxy uses Microsoft's LLMLingua-2 model for ML-based token compression:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--llmlingua
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--llmlingua
 </span></code></pre></div>
 <p><strong>How it works:</strong>
 - LLMLinguaCompressor is added to the transform pipeline (before RollingWindow)
 - Automatically detects content type (JSON, code, text) and adjusts compression
 - Stores original content in CCR for retrieval if needed</p>
 <p><strong>Startup feedback:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a># When enabled and available:
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>LLMLingua: ENABLED  (device=cuda, rate=0.3)
-</span><span id="__span-18-3"><a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>
-</span><span id="__span-18-4"><a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a># When installed but not enabled (helpful hint):
-</span><span id="__span-18-5"><a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>LLMLingua: available (enable with --llmlingua for ML compression)
-</span><span id="__span-18-6"><a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a>
-</span><span id="__span-18-7"><a id="__codelineno-18-7" name="__codelineno-18-7" href="#__codelineno-18-7"></a># When enabled but not installed:
-</span><span id="__span-18-8"><a id="__codelineno-18-8" name="__codelineno-18-8" href="#__codelineno-18-8"></a>WARNING: LLMLingua requested but not installed. Install with: pip install headroom-ai[llmlingua]
+<div class="language-text highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a># When enabled and available:
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>LLMLingua: ENABLED  (device=cuda, rate=0.3)
+</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>
+</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a># When installed but not enabled (helpful hint):
+</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a>LLMLingua: available (enable with --llmlingua for ML compression)
+</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a>
+</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a># When enabled but not installed:
+</span><span id="__span-22-8"><a id="__codelineno-22-8" name="__codelineno-22-8" href="#__codelineno-22-8"></a>WARNING: LLMLingua requested but not installed. Install with: pip install headroom-ai[llmlingua]
 </span></code></pre></div>
 <p><strong>Why opt-in?</strong>
 | Concern | Default Proxy | With LLMLingua |
@@ -2749,37 +2832,37 @@ daily/weekly/monthly rollups and built-in JSON / CSV export buttons.</p>
 </ul>
 <h3 id="prometheus-metrics_1">Prometheus Metrics<a class="headerlink" href="#prometheus-metrics_1" title="Permanent link">&para;</a></h3>
 <p>Export metrics for monitoring:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>headroom_requests_total
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>headroom_tokens_saved_total
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>headroom_cost_usd_total
-</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>headroom_latency_ms_sum
+<div class="language-text highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>headroom_requests_total
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>headroom_tokens_saved_total
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>headroom_cost_usd_total
+</span><span id="__span-23-4"><a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a>headroom_latency_ms_sum
 </span></code></pre></div>
 <h2 id="configuration-via-environment">Configuration via Environment<a class="headerlink" href="#configuration-via-environment" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_HOST</span><span class="o">=</span><span class="m">0</span>.0.0.0
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_PORT</span><span class="o">=</span><span class="m">8787</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_BUDGET</span><span class="o">=</span><span class="m">100</span>.0
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_TARGET_API_URL</span><span class="o">=</span>https://custom.openai.endpoint.com
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>headroom<span class="w"> </span>proxy
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_HOST</span><span class="o">=</span><span class="m">0</span>.0.0.0
+</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_PORT</span><span class="o">=</span><span class="m">8787</span>
+</span><span id="__span-24-3"><a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_BUDGET</span><span class="o">=</span><span class="m">100</span>.0
+</span><span id="__span-24-4"><a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_TARGET_API_URL</span><span class="o">=</span>https://custom.openai.endpoint.com
+</span><span id="__span-24-5"><a id="__codelineno-24-5" name="__codelineno-24-5" href="#__codelineno-24-5"></a>headroom<span class="w"> </span>proxy
 </span></code></pre></div>
 <h2 id="running-in-production">Running in Production<a class="headerlink" href="#running-in-production" title="Permanent link">&para;</a></h2>
 <p>For production deployments:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="c1"># Use a process manager</span>
-</span><span id="__span-21-2"><a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>pip<span class="w"> </span>install<span class="w"> </span>gunicorn
-</span><span id="__span-21-3"><a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a>
-</span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="c1"># Run with gunicorn</span>
-</span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>gunicorn<span class="w"> </span>headroom.proxy.server:app<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">  </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="w">  </span>--bind<span class="w"> </span><span class="m">0</span>.0.0.0:8787<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a><span class="w">  </span>--worker-class<span class="w"> </span>uvicorn.workers.UvicornWorker
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="c1"># Use a process manager</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>pip<span class="w"> </span>install<span class="w"> </span>gunicorn
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="c1"># Run with gunicorn</span>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a>gunicorn<span class="w"> </span>headroom.proxy.server:app<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-25-6"><a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a><span class="w">  </span>--workers<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-25-7"><a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a><span class="w">  </span>--bind<span class="w"> </span><span class="m">0</span>.0.0.0:8787<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-25-8"><a id="__codelineno-25-8" name="__codelineno-25-8" href="#__codelineno-25-8"></a><span class="w">  </span>--worker-class<span class="w"> </span>uvicorn.workers.UvicornWorker
 </span></code></pre></div>
 <p>Or with Docker:</p>
-<div class="language-dockerfile highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.11-slim</span>
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="k">RUN</span><span class="w"> </span>apt-get<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>--no-install-recommends<span class="w"> </span>build-essential<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[proxy]&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-4"><a id="__codelineno-22-4" name="__codelineno-22-4" href="#__codelineno-22-4"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>purge<span class="w"> </span>-y<span class="w"> </span>build-essential<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>autoremove<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-22-5"><a id="__codelineno-22-5" name="__codelineno-22-5" href="#__codelineno-22-5"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>rm<span class="w"> </span>-rf<span class="w"> </span>/var/lib/apt/lists/*
-</span><span id="__span-22-6"><a id="__codelineno-22-6" name="__codelineno-22-6" href="#__codelineno-22-6"></a><span class="k">EXPOSE</span><span class="w"> </span><span class="s">8787</span>
-</span><span id="__span-22-7"><a id="__codelineno-22-7" name="__codelineno-22-7" href="#__codelineno-22-7"></a><span class="k">CMD</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;headroom&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;proxy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;--host&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">]</span>
+<div class="language-dockerfile highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.11-slim</span>
+</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="k">RUN</span><span class="w"> </span>apt-get<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>--no-install-recommends<span class="w"> </span>build-essential<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;headroom-ai[proxy]&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-26-4"><a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>purge<span class="w"> </span>-y<span class="w"> </span>build-essential<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>autoremove<span class="w"> </span>-y<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-26-5"><a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span>rm<span class="w"> </span>-rf<span class="w"> </span>/var/lib/apt/lists/*
+</span><span id="__span-26-6"><a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="k">EXPOSE</span><span class="w"> </span><span class="s">8787</span>
+</span><span id="__span-26-7"><a id="__codelineno-26-7" name="__codelineno-26-7" href="#__codelineno-26-7"></a><span class="k">CMD</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;headroom&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;proxy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;--host&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">]</span>
 </span></code></pre></div>
 <blockquote>
 <p><strong>Note:</strong> <code>build-essential</code> is required at install time because <code>headroom-ai</code> includes <code>hnswlib</code>, a C++ extension that must be compiled from source. It is removed after installation to keep the image slim.</p>
