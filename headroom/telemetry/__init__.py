@@ -47,6 +47,11 @@ TOIN (Tool Output Intelligence Network):
     toin.record_retrieval(sig_hash, retrieval_type, query, query_fields)
 """
 
+from .beacon import (
+    format_telemetry_notice,
+    is_telemetry_enabled,
+    is_telemetry_warn_enabled,
+)
 from .collector import (
     TelemetryCollector,
     TelemetryConfig,
@@ -70,6 +75,10 @@ from .toin import (
 )
 
 __all__ = [
+    # Beacon helpers
+    "format_telemetry_notice",
+    "is_telemetry_enabled",
+    "is_telemetry_warn_enabled",
     # Collector
     "TelemetryCollector",
     "TelemetryConfig",

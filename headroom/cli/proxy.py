@@ -333,6 +333,17 @@ Memory (Multi-Provider):
   - Database: {config.memory_db_path}
 """
 
+    from headroom.telemetry.beacon import is_telemetry_enabled
+
+    # Build telemetry section for the startup banner
+    if is_telemetry_enabled():
+        telemetry_line = (
+            "  Telemetry:    ENABLED (anonymous aggregate stats)\n"
+            "                Disable: HEADROOM_TELEMETRY=off or headroom proxy --no-telemetry"
+        )
+    else:
+        telemetry_line = "  Telemetry:    DISABLED"
+
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                         HEADROOM PROXY                                 ║
@@ -348,6 +359,7 @@ Starting proxy server...
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
   License:      {license_status}
+{telemetry_line}
 {backend_section}
 Routing:
   /v1/messages         → {anthropic_url}

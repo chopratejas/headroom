@@ -127,6 +127,7 @@ from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
 from headroom.telemetry import get_telemetry_collector
+from headroom.telemetry.beacon import is_telemetry_enabled
 from headroom.telemetry.toin import get_toin
 from headroom.transforms import (
     CacheAligner,
@@ -615,6 +616,15 @@ class HeadroomProxy(
         else:
             logger.info("CCR: DISABLED")
         logger.info(f"Savings history: {self.metrics.savings_tracker.storage_path}")
+
+        # Log anonymous telemetry status so operators can see it in the log stream
+        if is_telemetry_enabled():
+            logger.info(
+                "Anonymous telemetry: ENABLED (aggregate stats only — no prompts or content). "
+                "Opt out: HEADROOM_TELEMETRY=off or --no-telemetry"
+            )
+        else:
+            logger.info("Anonymous telemetry: DISABLED")
 
     async def shutdown(self):
         """Cleanup async resources."""
@@ -1169,6 +1179,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "ccr_retrievals": compression_stats.get("total_retrievals", 0),
             },
             "compression_cache": compression_cache_stats,
+            "anon_telemetry_shipping": is_telemetry_enabled(),
             "telemetry": {
                 "enabled": telemetry_stats.get("enabled", False),
                 "total_compressions": telemetry_stats.get("total_compressions", 0),

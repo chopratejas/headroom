@@ -35,6 +35,20 @@ import click
 
 from .main import main
 
+
+def _print_telemetry_notice() -> None:
+    """Print a telemetry notice when anonymous telemetry is enabled.
+
+    Respects the HEADROOM_TELEMETRY and HEADROOM_TELEMETRY_WARN feature flags.
+    Does nothing when telemetry or warnings are disabled.
+    """
+    from headroom.telemetry.beacon import format_telemetry_notice
+
+    notice = format_telemetry_notice(prefix="  ")
+    if notice:
+        click.echo(notice)
+
+
 # Proxy health check (reused from evals/suite_runner.py pattern)
 
 
@@ -434,6 +448,7 @@ def _launch_tool(
             click.echo(f"  {var}")
         if args:
             click.echo(f"  Extra args: {' '.join(args)}")
+        _print_telemetry_notice()
         click.echo()
 
         result = subprocess.run([binary, *args], env=env)
@@ -735,6 +750,7 @@ def claude(
         click.echo(f"  ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
+        _print_telemetry_notice()
         click.echo()
 
         env = os.environ.copy()
