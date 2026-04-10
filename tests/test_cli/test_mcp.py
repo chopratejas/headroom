@@ -53,6 +53,9 @@ def mock_claude_config_path(temp_claude_dir):
     def which_no_claude(cmd):
         if cmd == "claude":
             return None
+        if cmd == "headroom":
+            # Deterministic: install path uses `headroom` when on PATH; avoid env-specific python -m fallback.
+            return "/opt/headroom/bin/headroom"
         return _real_which(cmd)
 
     with patch("headroom.cli.mcp.MCP_CONFIG_PATH", config_path):

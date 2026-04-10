@@ -59,7 +59,8 @@ python -m venv .venv
 source .venv/bin/activate  # or `.venv\Scripts\activate` on Windows
 
 # Install in development mode with all dependencies
-pip install -e ".[dev,relevance,proxy]"
+# Include langchain so LangChain integration tests import cleanly (full pytest).
+pip install -e ".[dev,relevance,proxy,langchain]"
 
 # Run tests
 pytest

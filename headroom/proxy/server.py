@@ -139,6 +139,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("headroom.proxy")
 
+
+def _optional_anthropic_client_for_token_count() -> Any | None:
+    """Anthropic SDK client for accurate pipeline token counts (count_tokens API).
+
+    Returns None when the package is missing or ANTHROPIC_API_KEY is unset (OpenAI-only
+    proxy use). In those cases AnthropicProvider falls back to tiktoken approximation.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        from anthropic import Anthropic
+
+        return Anthropic()
+    except ImportError:
+        logger.debug(
+            "anthropic package not installed; pipeline uses tiktoken approximation for Claude models"
+        )
+        return None
+
+
 # Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis
 _HEADROOM_LOG_DIR = Path.home() / ".headroom" / "logs"
 
@@ -1597,8 +1617,10 @@ class HeadroomProxy:
             gurl = config.gemini_api_url.rstrip("/")
             HeadroomProxy.GEMINI_API_URL = gurl
 
-        # Initialize providers
-        self.anthropic_provider = AnthropicProvider()
+        # Initialize providers (SDK client enables accurate Anthropic token counting)
+        self.anthropic_provider = AnthropicProvider(
+            client=_optional_anthropic_client_for_token_count()
+        )
         self.openai_provider = OpenAIProvider()
 
         # Initialize transforms based on routing mode
@@ -2412,11 +2434,11 @@ class HeadroomProxy:
         # Hook: pre_compress — let hooks modify messages before compression
         if self.config.hooks:
             from headroom.hooks import CompressContext
-            from headroom.transforms.query_echo import extract_user_query
+            from headroom.transforms import query_echo as _query_echo
 
             _hook_ctx = CompressContext(
                 model=model,
-                user_query=extract_user_query(messages),
+                user_query=_query_echo.extract_user_query(messages),
                 provider="anthropic",
             )
             try:
