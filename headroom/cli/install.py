@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import click
 
 from headroom.install.health import probe_json, probe_ready
@@ -64,6 +66,38 @@ def _stop_deployment(manifest: DeploymentManifest) -> None:
     if manifest.supervisor_kind == SupervisorKind.SERVICE.value:
         stop_supervisor(manifest)
     stop_runtime(manifest)
+
+
+def _remove_deployment(manifest: DeploymentManifest) -> None:
+    try:
+        _stop_deployment(manifest)
+    except Exception:
+        pass
+    try:
+        remove_supervisor(manifest)
+    except Exception:
+        pass
+    try:
+        revert_mutations(manifest)
+    except Exception:
+        pass
+    delete_manifest(manifest.profile)
+
+
+def _restore_deployment(manifest: DeploymentManifest) -> None:
+    restored = deepcopy(manifest)
+    restored.mutations = apply_mutations(restored)
+    restored.artifacts = install_supervisor(restored)
+    save_manifest(restored)
+    _start_deployment(restored)
+
+
+def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
+    if manifest.supervisor_kind == SupervisorKind.TASK.value:
+        raise click.ClickException(
+            f"Deployment '{manifest.profile}' uses persistent-task scheduling; "
+            f"`headroom install {action}` is not supported for task deployments."
+        )
 
 
 @install.command("apply")
@@ -171,28 +205,19 @@ def install_apply(
     existing = load_manifest(profile)
     if existing is not None:
         click.echo(f"Updating existing deployment profile '{profile}'...")
-        revert_mutations(existing)
-        try:
-            remove_supervisor(existing)
-        except Exception:
-            pass
-        stop_runtime(existing)
+        _remove_deployment(existing)
 
-    manifest.mutations = apply_mutations(manifest)
-    manifest.artifacts = install_supervisor(manifest)
-    save_manifest(manifest)
-
-    if manifest.preset == InstallPreset.PERSISTENT_DOCKER.value:
-        start_persistent_docker(manifest)
-    elif manifest.supervisor_kind == SupervisorKind.SERVICE.value:
-        start_supervisor(manifest)
-    else:
-        start_detached_agent(profile)
-
-    if not wait_ready(manifest, timeout_seconds=45):
-        raise click.ClickException(
-            f"Persistent deployment '{profile}' did not become ready at {manifest.health_url}."
-        )
+    try:
+        manifest.mutations = apply_mutations(manifest)
+        manifest.artifacts = install_supervisor(manifest)
+        save_manifest(manifest)
+        _start_deployment(manifest)
+    except Exception:
+        _remove_deployment(manifest)
+        if existing is not None:
+            click.echo(f"Restoring previous deployment '{profile}'...")
+            _restore_deployment(existing)
+        raise
 
     click.echo(
         f"Installed persistent deployment '{profile}' "
@@ -229,6 +254,7 @@ def install_start(profile: str) -> None:
     """Start a persistent deployment."""
 
     manifest = _require_manifest(profile)
+    _reject_task_lifecycle(manifest, "start")
     _start_deployment(manifest)
     click.echo(f"Started deployment '{profile}'.")
 
@@ -239,6 +265,7 @@ def install_stop(profile: str) -> None:
     """Stop a persistent deployment."""
 
     manifest = _require_manifest(profile)
+    _reject_task_lifecycle(manifest, "stop")
     _stop_deployment(manifest)
     click.echo(f"Stopped deployment '{profile}'.")
 
@@ -249,6 +276,7 @@ def install_restart(profile: str) -> None:
     """Restart a persistent deployment."""
 
     manifest = _require_manifest(profile)
+    _reject_task_lifecycle(manifest, "restart")
     _stop_deployment(manifest)
     _start_deployment(manifest)
     click.echo(f"Restarted deployment '{profile}'.")

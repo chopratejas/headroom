@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict
 
 from .models import ArtifactRecord, DeploymentManifest, ManagedMutation, iso_utc_now
@@ -53,8 +54,8 @@ def list_manifests() -> list[DeploymentManifest]:
 
 
 def delete_manifest(profile: str = "default") -> None:
-    """Delete the deployment manifest if present."""
+    """Delete the full deployment profile state if present."""
 
-    path = manifest_path(profile)
-    if path.exists():
-        path.unlink()
+    root = profile_root(profile)
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)

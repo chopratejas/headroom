@@ -24,6 +24,7 @@ trap cleanup EXIT
 mkdir -p "${TMP_HOME}/.local"
 export HOME="${TMP_HOME}"
 export PATH="${HOME}/.local/bin:${PATH}"
+export HEADROOM_DOCKER_IMAGE="${IMAGE}"
 
 bash "${ROOT_DIR}/scripts/install.sh"
 
@@ -42,8 +43,9 @@ status_output="$("${WRAPPER}" install status --profile "${PROFILE}")"
 printf '%s\n' "${status_output}"
 grep -Fq "Status:     running" <<<"${status_output}"
 curl --fail --silent "http://127.0.0.1:${PORT}/readyz" >/dev/null
+health_output="$(curl --fail --silent "http://127.0.0.1:${PORT}/health")"
 
-python3 - <<'PY' "${HOME}" "${PROFILE}" "${PORT}"
+python3 - <<'PY' "${HOME}" "${PROFILE}" "${PORT}" "${health_output}"
 import json
 import sys
 from pathlib import Path
@@ -51,10 +53,14 @@ from pathlib import Path
 home = Path(sys.argv[1])
 profile = sys.argv[2]
 port = int(sys.argv[3])
+health = json.loads(sys.argv[4])
 manifest = json.loads((home / ".headroom" / "deploy" / profile / "manifest.json").read_text())
 assert manifest["preset"] == "persistent-docker"
 assert manifest["port"] == port
 assert manifest["telemetry_enabled"] is False
+assert health["deployment"]["profile"] == profile
+assert health["deployment"]["preset"] == "persistent-docker"
+assert health["deployment"]["runtime"] == "docker"
 PY
 
 if apply_error="$("${WRAPPER}" install apply --scope user 2>&1)"; then

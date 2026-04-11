@@ -250,16 +250,28 @@ def test_bash_native_installer_supports_persistent_docker_lifecycle(tmp_path: Pa
     home = tmp_path / "home"
     (home / ".local").mkdir(parents=True)
     env = _build_env(home, tmp_path)
+    env["HEADROOM_DOCKER_IMAGE"] = "headroom:test-image"
 
     try:
         _run(["bash", str(REPO_ROOT / "scripts" / "install.sh")], env=env, cwd=REPO_ROOT)
 
         wrapper = home / ".local" / "bin" / "headroom"
         assert wrapper.exists()
+        assert "HEADROOM_IMAGE_DEFAULT=headroom:test-image" in wrapper.read_text(encoding="utf-8")
 
         help_result = _run([str(wrapper), "install", "-?"], env=env)
         assert "persistent-docker preset only" in help_result.stdout
         _run([str(wrapper), "--help"], env=env)
+        wrap_help = _run([str(wrapper), "wrap", "--help"], env=env)
+        assert "Supported commands:" in wrap_help.stdout
+        assert "copilot" not in wrap_help.stdout
+        unsupported_wrap = _run(
+            [str(wrapper), "wrap", "copilot", "--help"],
+            env=env,
+            check=False,
+        )
+        assert unsupported_wrap.returncode != 0
+        assert "does not support 'wrap copilot'" in unsupported_wrap.stderr
 
         invalid_profile = _run(
             [str(wrapper), "install", "status", "--profile", ".."],
@@ -418,6 +430,7 @@ def test_powershell_native_installer_supports_persistent_docker_lifecycle(tmp_pa
     home = tmp_path / "home"
     (home / ".local").mkdir(parents=True)
     env = _build_env(home, tmp_path)
+    env["HEADROOM_DOCKER_IMAGE"] = "headroom:test-image"
 
     try:
         _run(
@@ -435,6 +448,8 @@ def test_powershell_native_installer_supports_persistent_docker_lifecycle(tmp_pa
 
         wrapper = home / ".local" / "bin" / "headroom.ps1"
         assert wrapper.exists()
+        assert "__HEADROOM_INSTALL_IMAGE__" not in wrapper.read_text(encoding="utf-8")
+        assert "headroom:test-image" in wrapper.read_text(encoding="utf-8")
         cmd_wrapper = home / ".local" / "bin" / "headroom.cmd"
         assert cmd_wrapper.exists()
 
@@ -482,6 +497,19 @@ def test_powershell_native_installer_supports_persistent_docker_lifecycle(tmp_pa
             ],
             env=env,
         )
+        wrap_help = _run(
+            ["cmd.exe", "/c", str(cmd_wrapper), "wrap", "--help"],
+            env=env,
+        )
+        assert "Supported commands:" in wrap_help.stdout
+        assert "copilot" not in wrap_help.stdout
+        unsupported_wrap = _run(
+            ["cmd.exe", "/c", str(cmd_wrapper), "wrap", "copilot", "--help"],
+            env=env,
+            check=False,
+        )
+        assert unsupported_wrap.returncode != 0
+        assert "does not support 'wrap copilot'" in unsupported_wrap.stderr
         invalid_profile = _run(
             ["cmd.exe", "/c", str(cmd_wrapper), "install", "status", "--profile", ".."],
             env=env,
@@ -569,8 +597,12 @@ def test_powershell_native_installer_supports_persistent_docker_lifecycle(tmp_pa
 
         manifest_path = home / ".headroom" / "deploy" / "smoke" / "manifest.json"
         state_path = home / ".headroom" / "deploy" / "smoke" / "docker-native.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        manifest_bytes = manifest_path.read_bytes()
+        state_bytes = state_path.read_bytes()
+        assert not manifest_bytes.startswith(b"\xef\xbb\xbf")
+        assert not state_bytes.startswith(b"\xef\xbb\xbf")
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+        state = json.loads(state_bytes.decode("utf-8"))
         assert manifest["preset"] == "persistent-docker"
         assert manifest["port"] == port
         assert manifest["memory_enabled"] is True

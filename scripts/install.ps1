@@ -66,11 +66,12 @@ function Write-Wrapper {
 
     $wrapperPath = Join-Path $TargetDir 'headroom.ps1'
     $cmdPath = Join-Path $TargetDir 'headroom.cmd'
+    $resolvedInstallImage = $InstallImage.Replace("'", "''")
 
     $wrapper = @'
 $ErrorActionPreference = 'Stop'
 
-$HeadroomImage = if ($env:HEADROOM_DOCKER_IMAGE) { $env:HEADROOM_DOCKER_IMAGE } else { 'ghcr.io/chopratejas/headroom:latest' }
+$HeadroomImage = if ($env:HEADROOM_DOCKER_IMAGE) { $env:HEADROOM_DOCKER_IMAGE } else { '__HEADROOM_INSTALL_IMAGE__' }
 $ContainerHome = if ($env:HEADROOM_CONTAINER_HOME) { $env:HEADROOM_CONTAINER_HOME } else { '/tmp/headroom-home' }
 $HostHome = $HOME
 
@@ -306,6 +307,15 @@ function Require-OptionValue {
     }
 }
 
+function Write-Utf8NoBomFile {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Get-PersistentDockerArgs {
     Ensure-HostDirs
     $args = New-Object System.Collections.Generic.List[string]
@@ -388,7 +398,7 @@ function Write-PersistentState {
         container_name = Get-PersistentContainerName -Profile $Profile
         health_url = "http://127.0.0.1:$Port/readyz"
     }
-    $state | ConvertTo-Json -Depth 4 | Set-Content -Path (Get-PersistentStatePath -Profile $Profile) -Encoding utf8
+    Write-Utf8NoBomFile -Path (Get-PersistentStatePath -Profile $Profile) -Content ($state | ConvertTo-Json -Depth 4)
 }
 
 function Write-PersistentManifest {
@@ -443,7 +453,7 @@ function Write-PersistentManifest {
         artifacts = @()
     }
 
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path (Get-PersistentManifestPath -Profile $Profile) -Encoding utf8
+    Write-Utf8NoBomFile -Path (Get-PersistentManifestPath -Profile $Profile) -Content ($manifest | ConvertTo-Json -Depth 8)
 }
 
 function Read-PersistentState {
@@ -479,6 +489,13 @@ function Start-PersistentDockerInstall {
     $dockerArgs = New-Object System.Collections.Generic.List[string]
     $dockerArgs.AddRange([string[]]@('run','-d','--restart','unless-stopped','--name',$containerName,'-p',"$Port`:$Port"))
     $dockerArgs.AddRange((Get-PersistentDockerArgs))
+    $dockerArgs.AddRange([string[]]@(
+        '--env',"HEADROOM_DEPLOYMENT_PROFILE=$Profile",
+        '--env','HEADROOM_DEPLOYMENT_PRESET=persistent-docker',
+        '--env','HEADROOM_DEPLOYMENT_RUNTIME=docker',
+        '--env','HEADROOM_DEPLOYMENT_SUPERVISOR=none',
+        '--env','HEADROOM_DEPLOYMENT_SCOPE=user'
+    ))
     $dockerArgs.Add($Image)
     $dockerArgs.Add('--host')
     $dockerArgs.Add('0.0.0.0')
@@ -591,6 +608,26 @@ function Show-InstallApplyHelp {
         '  --no-telemetry                Disable anonymous telemetry in the runtime.',
         '  --image TEXT                  Docker image to use.  [default: HEADROOM_DOCKER_IMAGE or ghcr.io/chopratejas/headroom:latest]',
         '  -?, --help                    Show this message and exit.'
+    )
+    Write-Host ($lines -join [Environment]::NewLine)
+}
+
+function Show-WrapHelp {
+    $lines = @(
+        'Usage: headroom wrap <COMMAND> [OPTIONS] [-- ARGS...]',
+        '',
+        '  Launch supported host tools through a Docker-native Headroom proxy.',
+        '',
+        'Supported commands:',
+        '  claude',
+        '  codex',
+        '  aider',
+        '  cursor',
+        '  openclaw',
+        '',
+        'Notes:',
+        '  - GitHub Copilot CLI wrapping is not supported by the Docker-native wrapper.',
+        '  - Use the Python-native CLI for unsupported wrap targets.'
     )
     Write-Host ($lines -join [Environment]::NewLine)
 }
@@ -723,7 +760,7 @@ function Parse-InstallApplyArgs {
                 $i += 1
                 continue
             }
-            '^(--help|-\\?)$' {
+            '^(--help|-\?)$' {
                 Show-InstallApplyHelp
                 exit 0
             }
@@ -765,7 +802,7 @@ function Parse-InstallProfileArgs {
                 $i += 1
                 continue
             }
-            '^(--help|-\\?)$' {
+            '^(--help|-\?)$' {
                 Show-InstallHelp
                 exit 0
             }
@@ -1527,7 +1564,7 @@ switch ($args[0]) {
     }
     'wrap' {
         if ($args.Count -eq 1 -or $args[1] -eq '--help' -or $args[1] -eq '-?') {
-            Invoke-HeadroomDocker -Arguments @('wrap','--help')
+            Show-WrapHelp
             exit 0
         }
 
@@ -1537,6 +1574,17 @@ switch ($args[0]) {
 
         $tool = $args[1]
         $wrapArgs = if ($args.Count -gt 2) { $args[2..($args.Count - 1)] } else { @() }
+
+        switch ($tool) {
+            'claude' { }
+            'codex' { }
+            'aider' { }
+            'cursor' { }
+            'openclaw' { }
+            default {
+                Fail "Docker-native wrapper does not support 'wrap $tool'. Supported targets: claude, codex, aider, cursor, openclaw"
+            }
+        }
 
         if ($tool -eq 'openclaw') {
             if (Test-HelpFlag -Arguments $wrapArgs) {
@@ -1561,14 +1609,6 @@ switch ($args[0]) {
         if ($parsed.Backend) { $proxyArgs.AddRange([string[]]@('--backend', $parsed.Backend)) }
         if ($parsed.Anyllm) { $proxyArgs.AddRange([string[]]@('--anyllm-provider', $parsed.Anyllm)) }
         if ($parsed.Region) { $proxyArgs.AddRange([string[]]@('--region', $parsed.Region)) }
-
-        switch ($tool) {
-            'claude' { }
-            'codex' { }
-            'aider' { }
-            'cursor' { }
-            default { Fail "Unsupported wrap target: $tool" }
-        }
 
         $containerName = $null
         try {
@@ -1671,6 +1711,8 @@ switch ($args[0]) {
     }
 }
 '@
+
+    $wrapper = $wrapper.Replace('__HEADROOM_INSTALL_IMAGE__', $resolvedInstallImage)
 
     $cmdWrapper = ([string][char]64) + "echo off`r`npowershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File ""%~dp0headroom.ps1"" %*`r`n"
 

@@ -15,6 +15,31 @@ from .health import probe_ready
 from .models import DeploymentManifest, InstallPreset, RuntimeKind
 from .paths import log_path, pid_path
 
+PASSTHROUGH_ENV_PREFIXES = (
+    "HEADROOM_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "GEMINI_",
+    "AWS_",
+    "AZURE_",
+    "VERTEX_",
+    "GOOGLE_",
+    "GOOGLE_CLOUD_",
+    "MISTRAL_",
+    "GROQ_",
+    "OPENROUTER_",
+    "XAI_",
+    "TOGETHER_",
+    "COHERE_",
+    "OLLAMA_",
+    "LITELLM_",
+    "OTEL_",
+    "SUPABASE_",
+    "QDRANT_",
+    "NEO4J_",
+    "LANGSMITH_",
+)
+
 
 def _deployment_env(manifest: DeploymentManifest) -> dict[str, str]:
     return {
@@ -42,12 +67,24 @@ def _runtime_env(manifest: DeploymentManifest) -> dict[str, str]:
     return env
 
 
+def _ensure_host_dirs() -> None:
+    for subdir in (".headroom", ".claude", ".codex", ".gemini"):
+        (Path.home() / subdir).mkdir(parents=True, exist_ok=True)
+
+
+def _mount_source(home: str, subdir: str) -> str:
+    if os.name == "nt":
+        return f"{home}\\{subdir}"
+    return f"{home}/{subdir}"
+
+
 def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
     """Build the raw foreground command that runs the proxy."""
 
     if manifest.runtime_kind == RuntimeKind.PYTHON.value:
         return [sys.executable, "-m", "headroom.cli", "proxy", *manifest.proxy_args]
 
+    _ensure_host_dirs()
     home = str(Path.home())
     container_home = "/tmp/headroom-home"
     command = [
@@ -65,25 +102,25 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
         "--env",
         "PYTHONUNBUFFERED=1",
         "--volume",
-        f"{home}\\.headroom:{container_home}/.headroom"
-        if os.name == "nt"
-        else f"{home}/.headroom:{container_home}/.headroom",
+        f"{_mount_source(home, '.headroom')}:{container_home}/.headroom",
         "--volume",
-        f"{home}\\.claude:{container_home}/.claude"
-        if os.name == "nt"
-        else f"{home}/.claude:{container_home}/.claude",
+        f"{_mount_source(home, '.claude')}:{container_home}/.claude",
         "--volume",
-        f"{home}\\.codex:{container_home}/.codex"
-        if os.name == "nt"
-        else f"{home}/.codex:{container_home}/.codex",
+        f"{_mount_source(home, '.codex')}:{container_home}/.codex",
         "--volume",
-        f"{home}\\.gemini:{container_home}/.gemini"
-        if os.name == "nt"
-        else f"{home}/.gemini:{container_home}/.gemini",
+        f"{_mount_source(home, '.gemini')}:{container_home}/.gemini",
     ]
+    if os.name != "nt":
+        getuid = getattr(os, "getuid", None)
+        getgid = getattr(os, "getgid", None)
+        if callable(getuid) and callable(getgid):
+            command.extend(["--user", f"{getuid()}:{getgid()}"])
     runtime_env = {**manifest.base_env, **_deployment_env(manifest)}
     for name, value in runtime_env.items():
         command.extend(["--env", f"{name}={value}"])
+    for name in sorted(os.environ):
+        if name.startswith(PASSTHROUGH_ENV_PREFIXES):
+            command.extend(["--env", name])
     command.extend(
         [
             manifest.image,

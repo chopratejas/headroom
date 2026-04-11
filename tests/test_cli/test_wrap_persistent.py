@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import click
+
 from headroom.cli.wrap import _ensure_proxy
 
 
@@ -54,3 +56,17 @@ def test_ensure_proxy_recovers_persistent_deployment_when_socket_is_bound(monkey
 
     assert result is None
     assert calls == ["start:default"]
+
+
+def test_ensure_proxy_rejects_unhealthy_persistent_deployment(monkeypatch) -> None:
+    monkeypatch.setattr("headroom.cli.wrap._check_proxy", lambda port: True)
+    monkeypatch.setattr("headroom.cli.wrap._find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
+    monkeypatch.setattr("headroom.cli.wrap._recover_persistent_proxy", lambda port: False)
+
+    try:
+        _ensure_proxy(8787, False)
+    except click.ClickException as exc:
+        assert "is not healthy" in str(exc)
+    else:
+        raise AssertionError("expected unhealthy persistent deployment to raise")

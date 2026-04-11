@@ -51,6 +51,10 @@ def _env_block(values: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _powershell_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _unix_scope_values(manifest: DeploymentManifest) -> dict[str, str]:
     merged = dict(manifest.base_env)
     for env_map in manifest.tool_envs.values():
@@ -92,16 +96,34 @@ def _apply_windows_env_scope(manifest: DeploymentManifest) -> list[ManagedMutati
     merged = _unix_scope_values(manifest)
     mutations: list[ManagedMutation] = []
     for name, value in merged.items():
+        previous = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"$value = [Environment]::GetEnvironmentVariable({_powershell_literal(name)},{_powershell_literal(scope_name)}); "
+                "if ($null -eq $value) { '__HEADROOM_UNSET__' } else { $value }",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         command = [
             "powershell",
             "-NoProfile",
             "-Command",
-            f"[Environment]::SetEnvironmentVariable('{name}','{value}','{scope_name}')",
+            f"[Environment]::SetEnvironmentVariable({_powershell_literal(name)},{_powershell_literal(value)},{_powershell_literal(scope_name)})",
         ]
         subprocess.run(command, check=True)
         mutations.append(
             ManagedMutation(
-                target="env", kind="windows-env", data={"name": name, "scope": scope_name}
+                target="env",
+                kind="windows-env",
+                data={
+                    "name": name,
+                    "scope": scope_name,
+                    "previous": None if previous == "__HEADROOM_UNSET__" else previous,
+                },
             )
         )
     return mutations
@@ -112,12 +134,21 @@ def _remove_windows_env_scope(mutations: list[ManagedMutation]) -> None:
         if mutation.kind != "windows-env":
             continue
         name = mutation.data.get("name")
+        if not isinstance(name, str):
+            raise ValueError("Windows environment mutation is missing a variable name")
         scope_name = mutation.data.get("scope", "User")
+        if not isinstance(scope_name, str):
+            raise ValueError("Windows environment mutation is missing a valid scope")
+        previous = mutation.data.get("previous")
+        if previous is None:
+            value_literal = "$null"
+        else:
+            value_literal = _powershell_literal(previous)
         command = [
             "powershell",
             "-NoProfile",
             "-Command",
-            f"[Environment]::SetEnvironmentVariable('{name}',$null,'{scope_name}')",
+            f"[Environment]::SetEnvironmentVariable({_powershell_literal(name)},{value_literal},{_powershell_literal(scope_name)})",
         ]
         subprocess.run(command, check=True)
 
@@ -238,10 +269,7 @@ def apply_mutations(manifest: DeploymentManifest) -> list[ManagedMutation]:
         else:
             mutations.extend(_apply_unix_env_scope(manifest))
         if ToolTarget.OPENCLAW.value in manifest.targets:
-            try:
-                mutations.append(_apply_openclaw_provider_scope(manifest))
-            except click.ClickException:
-                pass
+            mutations.append(_apply_openclaw_provider_scope(manifest))
         return mutations
 
     if ToolTarget.CLAUDE.value in manifest.targets:
@@ -249,10 +277,7 @@ def apply_mutations(manifest: DeploymentManifest) -> list[ManagedMutation]:
     if ToolTarget.CODEX.value in manifest.targets:
         mutations.append(_apply_codex_provider_scope(manifest))
     if ToolTarget.OPENCLAW.value in manifest.targets:
-        try:
-            mutations.append(_apply_openclaw_provider_scope(manifest))
-        except click.ClickException:
-            pass
+        mutations.append(_apply_openclaw_provider_scope(manifest))
     return mutations
 
 

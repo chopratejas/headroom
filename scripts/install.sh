@@ -55,11 +55,12 @@ write_wrapper() {
 
   {
     printf '#!%s\n\n' "${BASH_PATH}"
+    printf 'HEADROOM_IMAGE_DEFAULT=%q\n' "${INSTALL_IMAGE}"
     cat <<'WRAPPER'
 
 set -euo pipefail
 
-HEADROOM_IMAGE="${HEADROOM_DOCKER_IMAGE:-ghcr.io/chopratejas/headroom:latest}"
+HEADROOM_IMAGE="${HEADROOM_DOCKER_IMAGE:-${HEADROOM_IMAGE_DEFAULT}}"
 HEADROOM_CONTAINER_HOME="${HEADROOM_CONTAINER_HOME:-/tmp/headroom-home}"
 HEADROOM_HOST_HOME="${HOME:?}"
 
@@ -487,6 +488,13 @@ start_persistent_docker_install() {
 
   args=(docker run -d --restart unless-stopped --name "${container_name}" -p "${port}:${port}")
   append_persistent_container_args args
+  args+=(
+    --env "HEADROOM_DEPLOYMENT_PROFILE=${profile}"
+    --env "HEADROOM_DEPLOYMENT_PRESET=persistent-docker"
+    --env "HEADROOM_DEPLOYMENT_RUNTIME=docker"
+    --env "HEADROOM_DEPLOYMENT_SUPERVISOR=none"
+    --env "HEADROOM_DEPLOYMENT_SCOPE=user"
+  )
   args+=("${image}" --host 0.0.0.0 "${proxy_args[@]:2}")
   "${args[@]}" >/dev/null
 
@@ -589,6 +597,25 @@ Options:
   --no-telemetry                Disable anonymous telemetry in the runtime.
   --image TEXT                  Docker image to use.  [default: HEADROOM_DOCKER_IMAGE or ghcr.io/chopratejas/headroom:latest]
   -?, --help                    Show this message and exit.
+EOF
+}
+
+print_wrap_help() {
+  cat <<'EOF'
+Usage: headroom wrap <COMMAND> [OPTIONS] [-- ARGS...]
+
+  Launch supported host tools through a Docker-native Headroom proxy.
+
+Supported commands:
+  claude
+  codex
+  aider
+  cursor
+  openclaw
+
+Notes:
+  - GitHub Copilot CLI wrapping is not supported by the Docker-native wrapper.
+  - Use the Python-native CLI for unsupported wrap targets.
 EOF
 }
 
@@ -1406,13 +1433,21 @@ main() {
       ;;
     wrap)
       if (($# == 1)) || [[ "$2" == "--help" || "$2" == "-?" ]]; then
-        run_headroom wrap --help
+        print_wrap_help
         return
       fi
 
       (($# >= 2)) || die "Usage: headroom wrap <claude|codex|aider|cursor|openclaw> [...]"
       local tool="$2"
       shift 2
+
+      case "${tool}" in
+        claude|codex|aider|cursor|openclaw)
+          ;;
+        *)
+          die "Docker-native wrapper does not support 'wrap ${tool}'. Supported targets: claude, codex, aider, cursor, openclaw"
+          ;;
+      esac
 
       if [[ "${tool}" == "openclaw" ]]; then
         if contains_help_flag "$@"; then
@@ -1444,14 +1479,6 @@ main() {
       if [[ -n "${region}" ]]; then
         proxy_args+=(--region "${region}")
       fi
-
-      case "${tool}" in
-        claude|codex|aider|cursor)
-          ;;
-        *)
-          die "Unsupported wrap target: ${tool}"
-          ;;
-      esac
 
       local container_name=""
       if [[ "${no_proxy}" -eq 0 ]]; then

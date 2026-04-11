@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import click
 from click.testing import CliRunner
 
 from headroom.cli.main import main
@@ -111,3 +112,130 @@ def test_install_restart_uses_internal_helpers(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert "Restarted deployment 'default'." in result.output
     assert calls == ["stop_supervisor", "stop_runtime", "start_supervisor"]
+
+
+def test_install_apply_rejects_invalid_profile() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["install", "apply", "--profile", "../bad"])
+
+    assert result.exit_code != 0
+    assert "Invalid profile name '../bad'" in result.output
+
+
+def test_install_apply_rejects_provider_scope_targets_without_support() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ["install", "apply", "--scope", "provider", "--providers", "manual", "--target", "copilot"],
+    )
+
+    assert result.exit_code != 0
+    assert "Provider scope supports only claude, codex, and openclaw" in result.output
+
+
+def test_install_apply_restores_previous_deployment_after_failed_update(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class Manifest:
+        def __init__(self, profile: str, targets: list[str]) -> None:
+            self.profile = profile
+            self.preset = "persistent-service"
+            self.runtime_kind = "python"
+            self.supervisor_kind = "service"
+            self.scope = "user"
+            self.health_url = "http://127.0.0.1:8787/readyz"
+            self.targets = targets
+            self.mutations = []
+            self.artifacts = []
+
+    new_manifest = Manifest("default", ["claude"])
+    existing_manifest = Manifest("default", ["codex"])
+
+    monkeypatch.setattr("headroom.cli.install.build_manifest", lambda **_: new_manifest)
+    monkeypatch.setattr("headroom.cli.install.load_manifest", lambda profile: existing_manifest)
+    monkeypatch.setattr(
+        "headroom.cli.install.apply_mutations",
+        lambda deployment: calls.append(f"apply:{','.join(deployment.targets)}") or [],
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.install_supervisor",
+        lambda deployment: calls.append(f"supervisor:{','.join(deployment.targets)}") or [],
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.save_manifest",
+        lambda deployment: calls.append(f"save:{','.join(deployment.targets)}"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.stop_supervisor",
+        lambda deployment: calls.append(f"stop-supervisor:{','.join(deployment.targets)}"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.stop_runtime",
+        lambda deployment: calls.append(f"stop-runtime:{','.join(deployment.targets)}"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.remove_supervisor",
+        lambda deployment: calls.append(f"remove-supervisor:{','.join(deployment.targets)}"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.revert_mutations",
+        lambda deployment: calls.append(f"revert:{','.join(deployment.targets)}"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.delete_manifest",
+        lambda profile: calls.append(f"delete:{profile}"),
+    )
+
+    def _start(deployment) -> None:
+        calls.append(f"start:{','.join(deployment.targets)}")
+        if deployment is new_manifest:
+            raise click.ClickException("boom")
+
+    monkeypatch.setattr("headroom.cli.install._start_deployment", _start)
+
+    result = runner.invoke(main, ["install", "apply"])
+
+    assert result.exit_code != 0
+    assert "Restoring previous deployment 'default'" in result.output
+    assert calls == [
+        "stop-supervisor:codex",
+        "stop-runtime:codex",
+        "remove-supervisor:codex",
+        "revert:codex",
+        "delete:default",
+        "apply:claude",
+        "supervisor:claude",
+        "save:claude",
+        "start:claude",
+        "stop-supervisor:claude",
+        "stop-runtime:claude",
+        "remove-supervisor:claude",
+        "revert:claude",
+        "delete:default",
+        "apply:codex",
+        "supervisor:codex",
+        "save:codex",
+        "start:codex",
+    ]
+
+
+def test_install_start_rejects_task_lifecycle(monkeypatch) -> None:
+    runner = CliRunner()
+
+    class Manifest:
+        profile = "default"
+        preset = "persistent-task"
+        runtime_kind = "python"
+        supervisor_kind = "task"
+        scope = "user"
+        health_url = "http://127.0.0.1:8787/readyz"
+
+    monkeypatch.setattr("headroom.cli.install.load_manifest", lambda profile: Manifest())
+
+    result = runner.invoke(main, ["install", "start"])
+
+    assert result.exit_code != 0
+    assert "headroom install start" in result.output

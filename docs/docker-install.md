@@ -108,6 +108,8 @@ In Docker-native mode this surface is intentionally scoped to **persistent-docke
 
 Those broader lifecycle and config-mutation flows still belong to the Python-native `headroom install ...` command.
 
+Persistent Docker deployments launched by the wrapper also tag the proxy process with deployment metadata, so `/health` reports the active `profile`, `preset`, `runtime`, `supervisor`, and `scope` the same way the Python install subsystem does.
+
 ## Docker Compose support
 
 Use `docker/docker-compose.native.yml` when you want an explicit compose-managed proxy or CLI shell, or when you prefer compose over the native wrapper's `headroom install ...` surface.

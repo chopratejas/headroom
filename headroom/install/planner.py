@@ -6,13 +6,17 @@ import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
+import click
+
 from .models import (
+    ConfigScope,
     DeploymentManifest,
     InstallPreset,
     ProviderSelectionMode,
     SupervisorKind,
     ToolTarget,
 )
+from .paths import validate_profile_name
 
 SUPPORTED_TARGETS = [
     ToolTarget.CLAUDE,
@@ -20,6 +24,11 @@ SUPPORTED_TARGETS = [
     ToolTarget.CODEX,
     ToolTarget.AIDER,
     ToolTarget.CURSOR,
+    ToolTarget.OPENCLAW,
+]
+PROVIDER_SCOPE_TARGETS = [
+    ToolTarget.CLAUDE,
+    ToolTarget.CODEX,
     ToolTarget.OPENCLAW,
 ]
 
@@ -44,25 +53,41 @@ def detect_targets() -> list[str]:
     return detected
 
 
-def resolve_targets(provider_mode: str, requested_targets: Iterable[str]) -> list[str]:
+def resolve_targets(
+    provider_mode: str, requested_targets: Iterable[str], *, scope: str = ConfigScope.USER.value
+) -> list[str]:
     """Resolve target selection according to the requested provider mode."""
 
+    valid_targets = SUPPORTED_TARGETS
+    if scope == ConfigScope.PROVIDER.value:
+        valid_targets = PROVIDER_SCOPE_TARGETS
+
+    valid = {target.value for target in valid_targets}
+    requested = [target.strip().lower() for target in requested_targets]
+
+    if scope == ConfigScope.PROVIDER.value:
+        unsupported = [target for target in requested if target and target not in valid]
+        if unsupported:
+            unsupported_list = ", ".join(sorted(set(unsupported)))
+            raise click.ClickException(
+                "Provider scope supports only claude, codex, and openclaw; "
+                f"unsupported targets: {unsupported_list}"
+            )
+
     if provider_mode == ProviderSelectionMode.ALL.value:
-        return [target.value for target in SUPPORTED_TARGETS]
+        return [target.value for target in valid_targets]
 
     if provider_mode == ProviderSelectionMode.AUTO.value:
-        detected = detect_targets()
+        detected = [target for target in detect_targets() if target in valid]
         return detected or [
             ToolTarget.CLAUDE.value,
             ToolTarget.CODEX.value,
-            ToolTarget.COPILOT.value,
+            *([] if scope == ConfigScope.PROVIDER.value else [ToolTarget.COPILOT.value]),
         ]
 
     normalized = []
     seen: set[str] = set()
-    valid = {target.value for target in SUPPORTED_TARGETS}
-    for target in requested_targets:
-        value = target.strip().lower()
+    for value in requested:
         if value in valid and value not in seen:
             seen.add(value)
             normalized.append(value)
@@ -128,6 +153,8 @@ def build_manifest(
 ) -> DeploymentManifest:
     """Create a normalized deployment manifest."""
 
+    normalized_profile = validate_profile_name(profile)
+
     if preset == InstallPreset.PERSISTENT_SERVICE.value:
         supervisor_kind = SupervisorKind.SERVICE.value
     elif preset == InstallPreset.PERSISTENT_TASK.value:
@@ -135,7 +162,7 @@ def build_manifest(
     else:
         supervisor_kind = SupervisorKind.NONE.value
 
-    resolved_targets = resolve_targets(provider_mode, targets)
+    resolved_targets = resolve_targets(provider_mode, targets, scope=scope)
     tool_envs = build_tool_envs(port, backend, resolved_targets)
     base_env = {
         "HEADROOM_PORT": str(port),
@@ -173,9 +200,9 @@ def build_manifest(
     if region:
         proxy_args.extend(["--region", region])
 
-    container_name = f"headroom-{profile}"
+    container_name = f"headroom-{normalized_profile}"
     return DeploymentManifest(
-        profile=profile,
+        profile=normalized_profile,
         preset=preset,
         runtime_kind=runtime_kind,
         supervisor_kind=supervisor_kind,
@@ -192,7 +219,7 @@ def build_manifest(
         memory_db_path=str(Path.home() / ".headroom" / "memory.db"),
         telemetry_enabled=telemetry_enabled,
         image=image,
-        service_name=f"headroom-{profile}",
+        service_name=f"headroom-{normalized_profile}",
         container_name=container_name,
         health_url=f"http://127.0.0.1:{port}/readyz",
         base_env=base_env,

@@ -121,6 +121,31 @@ jobs:
         run: |
           bash e2e/docker-native-install.sh
 
+      - name: Run Docker-native compose smoke test
+        env:
+          HEADROOM_IMAGE: headroom-native-e2e:latest
+          HEADROOM_HOST_HOME: ${{ github.workspace }}
+          HEADROOM_WORKSPACE: ${{ github.workspace }}
+        run: |
+          mkdir -p .headroom .claude .codex .gemini
+          trap 'docker compose -f docker/docker-compose.native.yml down -v' EXIT
+          docker compose -f docker/docker-compose.native.yml up -d proxy
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/readyz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker compose -f docker/docker-compose.native.yml logs proxy
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run Docker-native wrap e2e
+        run: |
+          docker build -f e2e/wrap/Dockerfile -t headroom-wrap-e2e .
+          docker run --rm headroom-wrap-e2e
+
   windows-native-wrapper:
     runs-on: windows-latest
     steps:

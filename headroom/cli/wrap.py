@@ -460,6 +460,12 @@ def _recover_persistent_proxy(port: int) -> bool:
         click.echo(f"  Reusing persistent deployment '{manifest.profile}' on port {port}")
         return True
 
+    if manifest.supervisor_kind == SupervisorKind.TASK.value:
+        click.echo(
+            f"  Warning: task-based deployment '{manifest.profile}' cannot be auto-recovered via wrap"
+        )
+        return False
+
     click.echo(f"  Recovering persistent deployment '{manifest.profile}' on port {port}...")
     try:
         if manifest.preset == InstallPreset.PERSISTENT_DOCKER.value:
@@ -517,6 +523,9 @@ def _ensure_proxy(
                 return None
             if _recover_persistent_proxy(port):
                 return None
+            raise click.ClickException(
+                f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
+            )
 
         if _check_proxy(port):
             click.echo(f"  Proxy already running on port {port}")

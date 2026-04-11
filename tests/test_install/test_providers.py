@@ -7,6 +7,8 @@ from headroom.install.models import DeploymentManifest
 from headroom.install.providers import (
     _apply_claude_provider_scope,
     _apply_codex_provider_scope,
+    _apply_windows_env_scope,
+    _remove_windows_env_scope,
     _revert_claude_provider_scope,
     _revert_codex_provider_scope,
 )
@@ -91,3 +93,48 @@ def test_apply_openclaw_provider_scope_uses_manifest_port(monkeypatch, tmp_path:
     _apply_openclaw_provider_scope(manifest)
 
     assert recorded == [["headroom", "wrap", "openclaw", "--no-auto-start", "--proxy-port", "9999"]]
+
+
+def test_windows_env_scope_restores_previous_values(monkeypatch, tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    manifest.scope = "user"
+    manifest.targets = ["claude"]
+    manifest.base_env = {"HEADROOM_PORT": "8787"}
+    manifest.tool_envs = {"claude": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}}
+
+    calls: list[list[str]] = []
+    previous_values = {
+        "HEADROOM_PORT": "7777",
+        "ANTHROPIC_BASE_URL": "https://old",
+    }
+
+    class Result:
+        def __init__(self, stdout: str = "") -> None:
+            self.stdout = stdout
+
+    def fake_run(command: list[str], **kwargs):
+        calls.append(command)
+        script = command[-1]
+        if "GetEnvironmentVariable" in script:
+            name = script.split("GetEnvironmentVariable('", 1)[1].split("'", 1)[0]
+            value = previous_values.get(name, "__HEADROOM_UNSET__")
+            return Result(stdout=value)
+        return Result()
+
+    monkeypatch.setattr("headroom.install.providers.subprocess.run", fake_run)
+
+    mutations = _apply_windows_env_scope(manifest)
+    _remove_windows_env_scope(mutations)
+
+    previous_by_name = {mutation.data["name"]: mutation.data["previous"] for mutation in mutations}
+    assert previous_by_name["HEADROOM_PORT"] == "7777"
+    assert previous_by_name["ANTHROPIC_BASE_URL"] == "https://old"
+    assert any(
+        "[Environment]::SetEnvironmentVariable('HEADROOM_PORT','7777','User')" in command[-1]
+        for command in calls
+    )
+    assert any(
+        "[Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL','https://old','User')"
+        in command[-1]
+        for command in calls
+    )

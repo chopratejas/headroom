@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
+
+import click
+
+_PROFILE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def validate_profile_name(profile: str) -> str:
+    """Validate and normalize a deployment profile name."""
+
+    if profile in {".", ".."} or not _PROFILE_RE.fullmatch(profile):
+        raise click.ClickException(f"Invalid profile name '{profile}'")
+    return profile
 
 
 def deploy_root() -> Path:
@@ -15,7 +28,7 @@ def deploy_root() -> Path:
 def profile_root(profile: str) -> Path:
     """Return the directory for a named deployment profile."""
 
-    return deploy_root() / profile
+    return deploy_root() / validate_profile_name(profile)
 
 
 def manifest_path(profile: str) -> Path:

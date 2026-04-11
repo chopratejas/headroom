@@ -261,6 +261,7 @@ def create_shims(shim_dir: Path) -> None:
         raise SystemExit(0)
         """
     )
+    write_executable(shim_dir / "claude", generic_shim)
     write_executable(shim_dir / "codex", generic_shim)
     write_executable(shim_dir / "aider", generic_shim)
     write_executable(shim_dir / "rtk", rtk_shim)
@@ -466,6 +467,27 @@ def verify_codex_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path
     )
 
 
+def verify_claude_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path) -> None:
+    port = PROXY_PORT + 10
+    run(
+        ["headroom", "wrap", "claude", "--port", str(port), "--", "--help"],
+        env=base_env,
+        cwd=project_dir,
+        timeout=120,
+    )
+    entries = read_jsonl(log_dir / "claude.jsonl")
+    assert_true(len(entries) > 0, "Claude shim should have been invoked")
+    env_vars = entries[-1]["env"]
+    assert_true(
+        env_vars.get("ANTHROPIC_BASE_URL") == f"http://127.0.0.1:{port}",
+        "Claude wrap should set ANTHROPIC_BASE_URL",
+    )
+    assert_true(
+        entries[-1]["probes"] == [{"url": f"http://127.0.0.1:{port}/health", "status": 200}],
+        "Claude shim should prove ANTHROPIC_BASE_URL points at a live proxy",
+    )
+
+
 def verify_aider_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path) -> None:
     port = AIDER_PORT
     run(
@@ -624,6 +646,13 @@ def verify_openclaw_wrap(
             stop_process(gateway_proc)
         stop_openclaw_gateway(base_env, project_dir)
 
+    run(["headroom", "unwrap", "openclaw"], env=base_env, cwd=project_dir, timeout=120)
+    state = json.loads(config_path.read_text(encoding="utf-8"))
+    assert_true(
+        state["plugins"]["slots"]["contextEngine"] == "legacy",
+        "OpenClaw unwrap should restore the context engine slot",
+    )
+
 
 def main() -> None:
     verify_installs()
@@ -653,6 +682,7 @@ def main() -> None:
 
         try:
             verify_proxy_round_trip(base_env, mock_server)
+            verify_claude_wrap(base_env, project_dir, log_dir)
             verify_codex_wrap(base_env, project_dir, log_dir)
             verify_aider_wrap(base_env, project_dir, log_dir)
             verify_cursor_wrap(base_env, project_dir)
