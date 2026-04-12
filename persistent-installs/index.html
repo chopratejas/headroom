@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://chopratejas.github.io/headroom/shared-context/">
+        <link rel="canonical" href="https://chopratejas.github.io/headroom/persistent-installs/">
       
       
-        <link rel="prev" href="../memory/">
+        <link rel="prev" href="../docker-install/">
       
       
-        <link rel="next" href="../learn/">
+        <link rel="next" href="../configuration/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Shared Context - Headroom</title>
+        <title>Persistent Installs - Headroom</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#sharedcontext-compressed-inter-agent-context-sharing" class="md-skip">
+        <a href="#persistent-installs" class="md-skip">
           Skip to content
         </a>
       
@@ -116,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Shared Context
+              Persistent Installs
             
           </span>
         </div>
@@ -245,10 +245,12 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
+      <li class="md-tabs__item md-tabs__item--active">
         <a href="../quickstart/" class="md-tabs__link">
           
   
@@ -267,12 +269,10 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
+      <li class="md-tabs__item">
         <a href="../proxy/" class="md-tabs__link">
           
   
@@ -479,8 +479,10 @@
       
   
   
+    
   
   
+  
     
     
       
@@ -498,21 +500,22 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
         
           
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
-        
-          
-          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
             
   
   
@@ -530,7 +533,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -629,10 +632,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../persistent-installs/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistent Installs
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -648,6 +678,209 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick examples
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick examples">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#persistent-service-on-the-local-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent service on the local machine
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persistent-watchdog-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent watchdog task
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persistent-docker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent Docker
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#presets-and-runtime-kinds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Presets and runtime kinds
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Presets and runtime kinds">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#presets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Presets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#runtime-kinds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime kinds
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-scopes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration scopes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration scopes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#provider-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider scope today
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider selection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#health-and-wrap-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Health and wrap behavior
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#docker-native-relationship" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docker-native relationship
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-guides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related guides
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -692,10 +925,8 @@
       
   
   
-    
   
   
-  
     
     
       
@@ -717,22 +948,21 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
             
   
   
@@ -750,7 +980,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -905,37 +1135,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Shared Context
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../shared-context/" class="md-nav__link">
         
   
   
@@ -951,203 +1154,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick Start
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#api" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        API
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#putkey-content-agentnone" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        put(key, content, *, agent=None)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#getkey-fullfalse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get(key, *, full=False)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_entrykey" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_entry(key)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#keys" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        keys()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stats" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        stats()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#clear" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        clear()
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#framework-examples" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Framework Examples
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Framework Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#crewai" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CrewAI
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#langgraph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        LangGraph
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#openai-agents-sdk" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        OpenAI Agents SDK
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#any-framework" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Any Framework
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How It Works
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -2100,10 +2106,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
+  <a href="#runtime-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick Start
+        Runtime matrix
       
     </span>
   </a>
@@ -2111,22 +2117,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#api" class="md-nav__link">
+  <a href="#quick-examples" class="md-nav__link">
     <span class="md-ellipsis">
       
-        API
+        Quick examples
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="API">
+    <nav class="md-nav" aria-label="Quick examples">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#putkey-content-agentnone" class="md-nav__link">
+  <a href="#persistent-service-on-the-local-machine" class="md-nav__link">
     <span class="md-ellipsis">
       
-        put(key, content, *, agent=None)
+        Persistent service on the local machine
       
     </span>
   </a>
@@ -2134,10 +2140,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#getkey-fullfalse" class="md-nav__link">
+  <a href="#persistent-watchdog-task" class="md-nav__link">
     <span class="md-ellipsis">
       
-        get(key, *, full=False)
+        Persistent watchdog task
       
     </span>
   </a>
@@ -2145,43 +2151,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#get_entrykey" class="md-nav__link">
+  <a href="#persistent-docker" class="md-nav__link">
     <span class="md-ellipsis">
       
-        get_entry(key)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#keys" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        keys()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stats" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        stats()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#clear" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        clear()
+        Persistent Docker
       
     </span>
   </a>
@@ -2194,10 +2167,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#command-surface" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Command surface
       
     </span>
   </a>
@@ -2205,22 +2178,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#framework-examples" class="md-nav__link">
+  <a href="#presets-and-runtime-kinds" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Framework Examples
+        Presets and runtime kinds
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Framework Examples">
+    <nav class="md-nav" aria-label="Presets and runtime kinds">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#crewai" class="md-nav__link">
+  <a href="#presets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CrewAI
+        Presets
       
     </span>
   </a>
@@ -2228,32 +2201,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#langgraph" class="md-nav__link">
+  <a href="#runtime-kinds" class="md-nav__link">
     <span class="md-ellipsis">
       
-        LangGraph
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#openai-agents-sdk" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        OpenAI Agents SDK
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#any-framework" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Any Framework
+        Runtime kinds
       
     </span>
   </a>
@@ -2266,10 +2217,71 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
+  <a href="#configuration-scopes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How It Works
+        Configuration scopes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration scopes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#provider-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider scope today
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider selection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#health-and-wrap-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Health and wrap behavior
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#docker-native-relationship" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docker-native relationship
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-guides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related guides
       
     </span>
   </a>
@@ -2296,120 +2308,185 @@
   
 
 
-<h1 id="sharedcontext-compressed-inter-agent-context-sharing">SharedContext — Compressed Inter-Agent Context Sharing<a class="headerlink" href="#sharedcontext-compressed-inter-agent-context-sharing" title="Permanent link">&para;</a></h1>
-<p>When agents hand off to each other, context gets replayed in full. SharedContext compresses what moves between agents using Headroom's compression pipeline.</p>
-<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Agent A stores large output</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">big_research_output</span><span class="p">,</span> <span class="n">agent</span><span class="o">=</span><span class="s2">&quot;researcher&quot;</span><span class="p">)</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># Agent B gets compressed version (~80% smaller)</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">)</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="c1"># Agent B needs full details</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">full</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">full</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<h1 id="persistent-installs">Persistent Installs<a class="headerlink" href="#persistent-installs" title="Permanent link">&para;</a></h1>
+<p>Headroom can now be installed as a durable local runtime instead of only being started ad hoc with <code>headroom proxy</code> or <code>headroom wrap ...</code>.</p>
+<p>Use the Python-native <code>headroom install</code> CLI when you want supported tools to keep talking to an always-on proxy at <code>http://127.0.0.1:8787</code> and have <code>wrap</code> reuse or recover that deployment instead of starting a second ephemeral proxy.</p>
+<h2 id="runtime-matrix">Runtime matrix<a class="headerlink" href="#runtime-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>What stays running</th>
+<th>Primary entrypoint</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Persistent Service</td>
+<td>Native background service</td>
+<td><code>headroom install apply --preset persistent-service</code></td>
+</tr>
+<tr>
+<td>Persistent Task</td>
+<td>Scheduled watchdog + on-demand runner</td>
+<td><code>headroom install apply --preset persistent-task</code></td>
+</tr>
+<tr>
+<td>Persistent Docker</td>
+<td>Restartable Docker container</td>
+<td><code>headroom install apply --preset persistent-docker</code></td>
+</tr>
+<tr>
+<td>On-Demand CLI (Python)</td>
+<td>Nothing after command exits</td>
+<td><code>headroom proxy</code></td>
+</tr>
+<tr>
+<td>On-Demand CLI (Docker)</td>
+<td>Nothing after container exits</td>
+<td>Docker-native wrapper / compose CLI</td>
+</tr>
+<tr>
+<td>Wrapped (Python)</td>
+<td>Proxy lasts for wrapped session</td>
+<td><code>headroom wrap ...</code></td>
+</tr>
+<tr>
+<td>Wrapped (Docker)</td>
+<td>Containerized proxy + host tool session</td>
+<td>Docker-native wrapper</td>
+</tr>
+</tbody>
+</table>
+<h2 id="quick-examples">Quick examples<a class="headerlink" href="#quick-examples" title="Permanent link">&para;</a></h2>
+<h3 id="persistent-service-on-the-local-machine">Persistent service on the local machine<a class="headerlink" href="#persistent-service-on-the-local-machine" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-service<span class="w"> </span>--providers<span class="w"> </span>auto
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>status
 </span></code></pre></div>
-<h2 id="api">API<a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
-<h3 id="putkey-content-agentnone"><code>put(key, content, *, agent=None)</code><a class="headerlink" href="#putkey-content-agentnone" title="Permanent link">&para;</a></h3>
-<p>Store content under a key. Compresses automatically using Headroom's full pipeline (SmartCrusher for JSON, CodeCompressor for code, Kompress for text).</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">entry</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">,</span> <span class="n">big_json_output</span><span class="p">,</span> <span class="n">agent</span><span class="o">=</span><span class="s2">&quot;researcher&quot;</span><span class="p">)</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">entry</span><span class="o">.</span><span class="n">original_tokens</span>     <span class="c1"># 20,000</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">entry</span><span class="o">.</span><span class="n">compressed_tokens</span>   <span class="c1"># 4,000</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">entry</span><span class="o">.</span><span class="n">savings_percent</span>     <span class="c1"># 80.0</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">entry</span><span class="o">.</span><span class="n">transforms</span>          <span class="c1"># [&quot;router:json:0.20&quot;]</span>
+<p>This installs a background service on the current machine, applies persistent tool wiring, and keeps the proxy healthy on port <code>8787</code>.</p>
+<h3 id="persistent-watchdog-task">Persistent watchdog task<a class="headerlink" href="#persistent-watchdog-task" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-task<span class="w"> </span>--providers<span class="w"> </span>manual<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--target<span class="w"> </span>codex
 </span></code></pre></div>
-<h3 id="getkey-fullfalse"><code>get(key, *, full=False)</code><a class="headerlink" href="#getkey-fullfalse" title="Permanent link">&para;</a></h3>
-<p>Retrieve content. Returns compressed version by default, original with <code>full=True</code>.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">compressed</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">)</span>           <span class="c1"># 4K tokens</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">original</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">,</span> <span class="n">full</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># 20K tokens</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">missing</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;nonexistent&quot;</span><span class="p">)</span>           <span class="c1"># None</span>
+<p>This installs a scheduled recovery path instead of a traditional always-running service.</p>
+<h3 id="persistent-docker">Persistent Docker<a class="headerlink" href="#persistent-docker" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--preset<span class="w"> </span>persistent-docker<span class="w"> </span>--scope<span class="w"> </span>user<span class="w"> </span>--providers<span class="w"> </span>auto
 </span></code></pre></div>
-<h3 id="get_entrykey"><code>get_entry(key)</code><a class="headerlink" href="#get_entrykey" title="Permanent link">&para;</a></h3>
-<p>Get the full <code>ContextEntry</code> with metadata.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">entry</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get_entry</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">)</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">entry</span><span class="o">.</span><span class="n">key</span>                <span class="c1"># &quot;findings&quot;</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">entry</span><span class="o">.</span><span class="n">agent</span>              <span class="c1"># &quot;researcher&quot;</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">entry</span><span class="o">.</span><span class="n">original_tokens</span>    <span class="c1"># 20000</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">entry</span><span class="o">.</span><span class="n">compressed_tokens</span>  <span class="c1"># 4000</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">entry</span><span class="o">.</span><span class="n">savings_percent</span>    <span class="c1"># 80.0</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">entry</span><span class="o">.</span><span class="n">timestamp</span>          <span class="c1"># 1710000000.0</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">entry</span><span class="o">.</span><span class="n">transforms</span>         <span class="c1"># [&quot;router:json:0.20&quot;]</span>
+<p>This uses Docker's restart policy instead of an OS supervisor.</p>
+<p>If you are using the Docker-native host wrapper instead of a Python install, you can now use <code>headroom install apply|status|start|stop|restart|remove</code> for the <code>persistent-docker</code> preset directly from the installed wrapper. Service/task installs and provider/user/system mutation flows still belong to the Python-native CLI.</p>
+<h2 id="command-surface">Command surface<a class="headerlink" href="#command-surface" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>headroom install apply
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>headroom install status
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>headroom install start
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>headroom install stop
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>headroom install restart
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>headroom install remove
 </span></code></pre></div>
-<h3 id="keys"><code>keys()</code><a class="headerlink" href="#keys" title="Permanent link">&para;</a></h3>
-<p>List all non-expired keys.</p>
-<h3 id="stats"><code>stats()</code><a class="headerlink" href="#stats" title="Permanent link">&para;</a></h3>
-<p>Aggregated stats across all entries.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">stats</span><span class="p">()</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">stats</span><span class="o">.</span><span class="n">entries</span>                  <span class="c1"># 3</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">stats</span><span class="o">.</span><span class="n">total_original_tokens</span>    <span class="c1"># 60000</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">stats</span><span class="o">.</span><span class="n">total_compressed_tokens</span>  <span class="c1"># 12000</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">stats</span><span class="o">.</span><span class="n">total_tokens_saved</span>       <span class="c1"># 48000</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">stats</span><span class="o">.</span><span class="n">savings_percent</span>          <span class="c1"># 80.0</span>
-</span></code></pre></div>
-<h3 id="clear"><code>clear()</code><a class="headerlink" href="#clear" title="Permanent link">&para;</a></h3>
-<p>Remove all entries.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">(</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-5-20250929&quot;</span><span class="p">,</span>  <span class="c1"># For token counting</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">ttl</span><span class="o">=</span><span class="mi">3600</span><span class="p">,</span>                             <span class="c1"># 1 hour (default)</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">max_entries</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>                       <span class="c1"># Evicts oldest when full</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="framework-examples">Framework Examples<a class="headerlink" href="#framework-examples" title="Permanent link">&para;</a></h2>
-<h3 id="crewai">CrewAI<a class="headerlink" href="#crewai" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="c1"># After researcher task</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">,</span> <span class="n">researcher_task</span><span class="o">.</span><span class="n">output</span><span class="o">.</span><span class="n">raw</span><span class="p">)</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="c1"># Coder task gets compressed context</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="n">coder_context</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="langgraph">LangGraph<a class="headerlink" href="#langgraph" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">researcher_node</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="n">result</span> <span class="o">=</span> <span class="n">do_research</span><span class="p">()</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    <span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;research_summary&quot;</span><span class="p">:</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">)}</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="k">def</span><span class="w"> </span><span class="nf">coder_node</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="c1"># Compressed summary in state, full details on demand</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>    <span class="n">full</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">full</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;code&quot;</span><span class="p">:</span> <span class="n">write_code</span><span class="p">(</span><span class="n">full</span><span class="p">)}</span>
-</span></code></pre></div>
-<h3 id="openai-agents-sdk">OpenAI Agents SDK<a class="headerlink" href="#openai-agents-sdk" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">compress_handoff</span><span class="p">(</span><span class="n">messages</span><span class="p">):</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="k">for</span> <span class="n">msg</span> <span class="ow">in</span> <span class="n">messages</span><span class="p">:</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">content</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1000</span><span class="p">:</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>            <span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>            <span class="n">msg</span><span class="o">.</span><span class="n">content</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="k">return</span> <span class="n">messages</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="n">handoff</span><span class="p">(</span><span class="n">agent</span><span class="o">=</span><span class="n">coder</span><span class="p">,</span> <span class="n">input_filter</span><span class="o">=</span><span class="n">compress_handoff</span><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="any-framework">Any Framework<a class="headerlink" href="#any-framework" title="Permanent link">&para;</a></h3>
-<p>SharedContext is framework-agnostic. It's just <code>put()</code> and <code>get()</code>. Use it wherever context moves between agents.</p>
-<h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>Under the hood, <code>put()</code> calls <code>headroom.compress()</code> (the same pipeline used by the proxy) and stores the original in memory. <code>get()</code> returns the compressed version. <code>get(full=True)</code> returns the original.</p>
+<p><code>apply</code> creates or updates a named deployment profile, stores its manifest under <code>~/.headroom/deploy/&lt;profile&gt;/manifest.json</code>, applies reversible configuration changes, and starts the selected runtime.</p>
+<h2 id="presets-and-runtime-kinds">Presets and runtime kinds<a class="headerlink" href="#presets-and-runtime-kinds" title="Permanent link">&para;</a></h2>
+<h3 id="presets">Presets<a class="headerlink" href="#presets" title="Permanent link">&para;</a></h3>
 <ul>
-<li>JSON arrays → SmartCrusher (70-95% compression)</li>
-<li>Code → CodeCompressor (AST-aware, with <code>[code]</code> extra)</li>
-<li>Text → Kompress (ModernBERT, with <code>[ml]</code> extra) or passthrough</li>
-<li>Entries expire after TTL (default 1 hour)</li>
-<li>Oldest entries evicted when max_entries reached</li>
+<li><code>persistent-service</code> -&gt; native service supervisor</li>
+<li><code>persistent-task</code> -&gt; scheduled watchdog / recovery supervisor</li>
+<li><code>persistent-docker</code> -&gt; Docker restart policy with no extra OS supervisor</li>
+</ul>
+<h3 id="runtime-kinds">Runtime kinds<a class="headerlink" href="#runtime-kinds" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>--runtime python</code> runs <code>headroom proxy</code> directly</li>
+<li><code>--runtime docker</code> runs Headroom inside Docker while keeping the deployment managed locally</li>
+</ul>
+<p>For <code>persistent-docker</code>, the runtime is always Docker.</p>
+<h2 id="configuration-scopes">Configuration scopes<a class="headerlink" href="#configuration-scopes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>What changes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>provider</code></td>
+<td>Tool-specific config surfaces where Headroom can make a precise reversible edit</td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td>User-level shell or environment surfaces</td>
+</tr>
+<tr>
+<td><code>system</code></td>
+<td>Machine-wide shell or environment surfaces</td>
+</tr>
+</tbody>
+</table>
+<h3 id="provider-scope-today">Provider scope today<a class="headerlink" href="#provider-scope-today" title="Permanent link">&para;</a></h3>
+<p>Provider scope is intentionally conservative. The current direct adapters are:</p>
+<ul>
+<li>Claude Code -&gt; <code>~/.claude/settings.json</code> <code>env</code></li>
+<li>Codex -&gt; managed block in <code>~/.codex/config.toml</code></li>
+<li>OpenClaw -&gt; existing <code>wrap openclaw</code> / <code>unwrap openclaw</code> flow</li>
+</ul>
+<p>For Copilot, Aider, Cursor, and broader env-driven setups, prefer <code>--scope user</code> or <code>--scope system</code>.</p>
+<h2 id="provider-selection">Provider selection<a class="headerlink" href="#provider-selection" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--providers auto</code></td>
+<td>Detect supported tools on the host and configure the best available defaults</td>
+</tr>
+<tr>
+<td><code>--providers all</code></td>
+<td>Configure all known targets</td>
+</tr>
+<tr>
+<td><code>--providers manual --target ...</code></td>
+<td>Configure only the named tools</td>
+</tr>
+</tbody>
+</table>
+<p>Examples:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--providers<span class="w"> </span>auto
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--providers<span class="w"> </span>all<span class="w"> </span>--scope<span class="w"> </span>user
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>headroom<span class="w"> </span>install<span class="w"> </span>apply<span class="w"> </span>--providers<span class="w"> </span>manual<span class="w"> </span>--target<span class="w"> </span>claude<span class="w"> </span>--target<span class="w"> </span>copilot
+</span></code></pre></div>
+<h2 id="health-and-wrap-behavior">Health and wrap behavior<a class="headerlink" href="#health-and-wrap-behavior" title="Permanent link">&para;</a></h2>
+<p>Persistent deployments publish the same <code>readyz</code> and <code>health</code> endpoints as ad hoc proxy runs.</p>
+<p><code>/health</code> now also exposes deployment metadata when the proxy was launched through the install subsystem:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;deployment&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">&quot;profile&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;default&quot;</span><span class="p">,</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">&quot;preset&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;persistent-service&quot;</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">&quot;runtime&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python&quot;</span><span class="p">,</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="nt">&quot;supervisor&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;service&quot;</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="nt">&quot;scope&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The Python-native <code>headroom wrap ...</code> flow checks for a matching persistent deployment on the requested port before it starts a new ephemeral proxy. If an installed deployment exists but is stopped or unhealthy, it attempts to recover it first.</p>
+<p>The Docker-native host wrapper does <strong>not</strong> yet reuse or recover persistent profiles automatically; it still starts a fresh proxy container unless you opt into <code>--no-proxy</code>.</p>
+<h2 id="docker-native-relationship">Docker-native relationship<a class="headerlink" href="#docker-native-relationship" title="Permanent link">&para;</a></h2>
+<p>The Docker-native host wrapper and the Python install CLI solve different layers of the runtime story:</p>
+<ul>
+<li><a href="../docker-install/">Docker-Native Install</a> -&gt; containerized on-demand CLI, wrapped host-tool flows, and Docker-native <code>persistent-docker</code> lifecycle commands</li>
+<li><code>headroom install ...</code> -&gt; full persistent service, task, and Docker lifecycle management, including provider/user/system mutation</li>
+</ul>
+<p>For a no-Python persistent Docker workflow, use the compose-managed proxy path from <code>docker/docker-compose.native.yml</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_HOST_HOME</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">&quot;</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nb">export</span><span class="w"> </span><span class="nv">HEADROOM_WORKSPACE</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">&quot;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>docker/docker-compose.native.yml<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>proxy
+</span></code></pre></div>
+<p>That keeps <code>localhost:8787</code> stable and restarts the proxy automatically.</p>
+<h2 id="related-guides">Related guides<a class="headerlink" href="#related-guides" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../cli/">CLI Reference</a></li>
+<li><a href="../docker-install/">Docker-Native Install</a></li>
+<li><a href="../proxy/">Proxy Server</a></li>
+<li><a href="../macos-deployment/">macOS LaunchAgent</a></li>
 </ul>
 
 

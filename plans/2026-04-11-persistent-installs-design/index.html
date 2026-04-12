@@ -10,31 +10,27 @@
       
       
       
-        <link rel="canonical" href="https://chopratejas.github.io/headroom/shared-context/">
+        <link rel="canonical" href="https://chopratejas.github.io/headroom/plans/2026-04-11-persistent-installs-design/">
       
       
-        <link rel="prev" href="../memory/">
-      
-      
-        <link rel="next" href="../learn/">
       
       
         
       
       
-      <link rel="icon" href="../assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>Shared Context - Headroom</title>
+        <title>Persistent Deployments / Installs Design - Headroom</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -53,9 +49,9 @@
       
     
     
-      <link rel="stylesheet" href="../stylesheets/extra.css">
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -80,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#sharedcontext-compressed-inter-agent-context-sharing" class="md-skip">
+        <a href="#persistent-deployments-installs-design" class="md-skip">
           Skip to content
         </a>
       
@@ -96,7 +92,7 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
+    <a href="../.." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
@@ -116,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Shared Context
+              Persistent Deployments / Installs Design
             
           </span>
         </div>
@@ -228,7 +224,7 @@
   
   
     <li class="md-tabs__item">
-      <a href=".." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -249,7 +245,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../quickstart/" class="md-tabs__link">
+        <a href="../../quickstart/" class="md-tabs__link">
           
   
   
@@ -267,13 +263,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../proxy/" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../proxy/" class="md-tabs__link">
           
   
   
@@ -295,7 +289,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../integration-guide/" class="md-tabs__link">
+        <a href="../../integration-guide/" class="md-tabs__link">
           
   
   
@@ -317,7 +311,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../ARCHITECTURE/" class="md-tabs__link">
+        <a href="../../ARCHITECTURE/" class="md-tabs__link">
           
   
   
@@ -339,7 +333,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../benchmarks/" class="md-tabs__link">
+        <a href="../../benchmarks/" class="md-tabs__link">
           
   
   
@@ -361,7 +355,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../cli/" class="md-tabs__link">
+        <a href="../../cli/" class="md-tabs__link">
           
   
   
@@ -383,7 +377,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../macos-deployment/" class="md-tabs__link">
+        <a href="../../macos-deployment/" class="md-tabs__link">
           
   
   
@@ -425,7 +419,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
+    <a href="../.." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
@@ -455,7 +449,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -548,7 +542,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../quickstart/" class="md-nav__link">
+      <a href="../../quickstart/" class="md-nav__link">
         
   
   
@@ -576,7 +570,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../getting-started/" class="md-nav__link">
+      <a href="../../getting-started/" class="md-nav__link">
         
   
   
@@ -604,7 +598,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../docker-install/" class="md-nav__link">
+      <a href="../../docker-install/" class="md-nav__link">
         
   
   
@@ -632,7 +626,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../persistent-installs/" class="md-nav__link">
+      <a href="../../persistent-installs/" class="md-nav__link">
         
   
   
@@ -660,7 +654,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../configuration/" class="md-nav__link">
+      <a href="../../configuration/" class="md-nav__link">
         
   
   
@@ -692,10 +686,8 @@
       
   
   
-    
   
   
-  
     
     
       
@@ -717,22 +709,21 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
             
   
   
@@ -750,7 +741,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -768,7 +759,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../proxy/" class="md-nav__link">
+      <a href="../../proxy/" class="md-nav__link">
         
   
   
@@ -796,7 +787,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../compression/" class="md-nav__link">
+      <a href="../../compression/" class="md-nav__link">
         
   
   
@@ -824,7 +815,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ccr/" class="md-nav__link">
+      <a href="../../ccr/" class="md-nav__link">
         
   
   
@@ -852,7 +843,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../image-compression/" class="md-nav__link">
+      <a href="../../image-compression/" class="md-nav__link">
         
   
   
@@ -880,7 +871,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../memory/" class="md-nav__link">
+      <a href="../../memory/" class="md-nav__link">
         
   
   
@@ -905,37 +896,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Shared Context
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../shared-context/" class="md-nav__link">
         
   
   
@@ -951,203 +915,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick Start
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#api" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        API
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#putkey-content-agentnone" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        put(key, content, *, agent=None)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#getkey-fullfalse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get(key, *, full=False)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_entrykey" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_entry(key)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#keys" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        keys()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stats" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        stats()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#clear" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        clear()
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#framework-examples" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Framework Examples
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Framework Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#crewai" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CrewAI
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#langgraph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        LangGraph
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#openai-agents-sdk" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        OpenAI Agents SDK
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#any-framework" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Any Framework
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How It Works
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1160,7 +927,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../learn/" class="md-nav__link">
+      <a href="../../learn/" class="md-nav__link">
         
   
   
@@ -1261,7 +1028,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../integration-guide/" class="md-nav__link">
+      <a href="../../integration-guide/" class="md-nav__link">
         
   
   
@@ -1289,7 +1056,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../langchain/" class="md-nav__link">
+      <a href="../../langchain/" class="md-nav__link">
         
   
   
@@ -1317,7 +1084,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../agno/" class="md-nav__link">
+      <a href="../../agno/" class="md-nav__link">
         
   
   
@@ -1345,7 +1112,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../strands/" class="md-nav__link">
+      <a href="../../strands/" class="md-nav__link">
         
   
   
@@ -1373,7 +1140,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../mcp/" class="md-nav__link">
+      <a href="../../mcp/" class="md-nav__link">
         
   
   
@@ -1472,7 +1239,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ARCHITECTURE/" class="md-nav__link">
+      <a href="../../ARCHITECTURE/" class="md-nav__link">
         
   
   
@@ -1500,7 +1267,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../transforms/" class="md-nav__link">
+      <a href="../../transforms/" class="md-nav__link">
         
   
   
@@ -1528,7 +1295,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../text-compression/" class="md-nav__link">
+      <a href="../../text-compression/" class="md-nav__link">
         
   
   
@@ -1556,7 +1323,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../llmlingua/" class="md-nav__link">
+      <a href="../../llmlingua/" class="md-nav__link">
         
   
   
@@ -1653,7 +1420,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../benchmarks/" class="md-nav__link">
+      <a href="../../benchmarks/" class="md-nav__link">
         
   
   
@@ -1681,7 +1448,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../LATENCY_BENCHMARKS/" class="md-nav__link">
+      <a href="../../LATENCY_BENCHMARKS/" class="md-nav__link">
         
   
   
@@ -1709,7 +1476,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../LIMITATIONS/" class="md-nav__link">
+      <a href="../../LIMITATIONS/" class="md-nav__link">
         
   
   
@@ -1812,7 +1579,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cli/" class="md-nav__link">
+      <a href="../../cli/" class="md-nav__link">
         
   
   
@@ -1840,7 +1607,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../api/" class="md-nav__link">
+      <a href="../../api/" class="md-nav__link">
         
   
   
@@ -1868,7 +1635,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../sdk/" class="md-nav__link">
+      <a href="../../sdk/" class="md-nav__link">
         
   
   
@@ -1896,7 +1663,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../metrics/" class="md-nav__link">
+      <a href="../../metrics/" class="md-nav__link">
         
   
   
@@ -1924,7 +1691,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../errors/" class="md-nav__link">
+      <a href="../../errors/" class="md-nav__link">
         
   
   
@@ -1952,7 +1719,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../troubleshooting/" class="md-nav__link">
+      <a href="../../troubleshooting/" class="md-nav__link">
         
   
   
@@ -2045,7 +1812,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../macos-deployment/" class="md-nav__link">
+      <a href="../../macos-deployment/" class="md-nav__link">
         
   
   
@@ -2100,10 +1867,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
+  <a href="#problem" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick Start
+        Problem
       
     </span>
   </a>
@@ -2111,93 +1878,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#api" class="md-nav__link">
+  <a href="#goals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        API
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#putkey-content-agentnone" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        put(key, content, *, agent=None)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#getkey-fullfalse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get(key, *, full=False)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#get_entrykey" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_entry(key)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#keys" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        keys()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stats" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        stats()
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#clear" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        clear()
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
+        Goals
       
     </span>
   </a>
@@ -2205,71 +1889,87 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#framework-examples" class="md-nav__link">
+  <a href="#architecture" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Framework Examples
+        Architecture
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Framework Examples">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#crewai" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CrewAI
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#langgraph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        LangGraph
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#openai-agents-sdk" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        OpenAI Agents SDK
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#any-framework" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Any Framework
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
+  <a href="#command-model" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How It Works
+        Command model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-adapters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime adapters
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supervisor-adapters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supervisor adapters
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tool-target-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool target configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wrap-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wrap behavior
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#docs-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docs strategy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risks
       
     </span>
   </a>
@@ -2296,120 +1996,117 @@
   
 
 
-<h1 id="sharedcontext-compressed-inter-agent-context-sharing">SharedContext — Compressed Inter-Agent Context Sharing<a class="headerlink" href="#sharedcontext-compressed-inter-agent-context-sharing" title="Permanent link">&para;</a></h1>
-<p>When agents hand off to each other, context gets replayed in full. SharedContext compresses what moves between agents using Headroom's compression pipeline.</p>
-<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Agent A stores large output</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">big_research_output</span><span class="p">,</span> <span class="n">agent</span><span class="o">=</span><span class="s2">&quot;researcher&quot;</span><span class="p">)</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># Agent B gets compressed version (~80% smaller)</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">)</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="c1"># Agent B needs full details</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">full</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">full</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="api">API<a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
-<h3 id="putkey-content-agentnone"><code>put(key, content, *, agent=None)</code><a class="headerlink" href="#putkey-content-agentnone" title="Permanent link">&para;</a></h3>
-<p>Store content under a key. Compresses automatically using Headroom's full pipeline (SmartCrusher for JSON, CodeCompressor for code, Kompress for text).</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">entry</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">,</span> <span class="n">big_json_output</span><span class="p">,</span> <span class="n">agent</span><span class="o">=</span><span class="s2">&quot;researcher&quot;</span><span class="p">)</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">entry</span><span class="o">.</span><span class="n">original_tokens</span>     <span class="c1"># 20,000</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">entry</span><span class="o">.</span><span class="n">compressed_tokens</span>   <span class="c1"># 4,000</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">entry</span><span class="o">.</span><span class="n">savings_percent</span>     <span class="c1"># 80.0</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">entry</span><span class="o">.</span><span class="n">transforms</span>          <span class="c1"># [&quot;router:json:0.20&quot;]</span>
-</span></code></pre></div>
-<h3 id="getkey-fullfalse"><code>get(key, *, full=False)</code><a class="headerlink" href="#getkey-fullfalse" title="Permanent link">&para;</a></h3>
-<p>Retrieve content. Returns compressed version by default, original with <code>full=True</code>.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">compressed</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">)</span>           <span class="c1"># 4K tokens</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">original</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">,</span> <span class="n">full</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># 20K tokens</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">missing</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;nonexistent&quot;</span><span class="p">)</span>           <span class="c1"># None</span>
-</span></code></pre></div>
-<h3 id="get_entrykey"><code>get_entry(key)</code><a class="headerlink" href="#get_entrykey" title="Permanent link">&para;</a></h3>
-<p>Get the full <code>ContextEntry</code> with metadata.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">entry</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get_entry</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">)</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">entry</span><span class="o">.</span><span class="n">key</span>                <span class="c1"># &quot;findings&quot;</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">entry</span><span class="o">.</span><span class="n">agent</span>              <span class="c1"># &quot;researcher&quot;</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">entry</span><span class="o">.</span><span class="n">original_tokens</span>    <span class="c1"># 20000</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">entry</span><span class="o">.</span><span class="n">compressed_tokens</span>  <span class="c1"># 4000</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">entry</span><span class="o">.</span><span class="n">savings_percent</span>    <span class="c1"># 80.0</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">entry</span><span class="o">.</span><span class="n">timestamp</span>          <span class="c1"># 1710000000.0</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">entry</span><span class="o">.</span><span class="n">transforms</span>         <span class="c1"># [&quot;router:json:0.20&quot;]</span>
-</span></code></pre></div>
-<h3 id="keys"><code>keys()</code><a class="headerlink" href="#keys" title="Permanent link">&para;</a></h3>
-<p>List all non-expired keys.</p>
-<h3 id="stats"><code>stats()</code><a class="headerlink" href="#stats" title="Permanent link">&para;</a></h3>
-<p>Aggregated stats across all entries.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">stats</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">stats</span><span class="p">()</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">stats</span><span class="o">.</span><span class="n">entries</span>                  <span class="c1"># 3</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">stats</span><span class="o">.</span><span class="n">total_original_tokens</span>    <span class="c1"># 60000</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">stats</span><span class="o">.</span><span class="n">total_compressed_tokens</span>  <span class="c1"># 12000</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">stats</span><span class="o">.</span><span class="n">total_tokens_saved</span>       <span class="c1"># 48000</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">stats</span><span class="o">.</span><span class="n">savings_percent</span>          <span class="c1"># 80.0</span>
-</span></code></pre></div>
-<h3 id="clear"><code>clear()</code><a class="headerlink" href="#clear" title="Permanent link">&para;</a></h3>
-<p>Remove all entries.</p>
-<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">(</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;claude-sonnet-4-5-20250929&quot;</span><span class="p">,</span>  <span class="c1"># For token counting</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">ttl</span><span class="o">=</span><span class="mi">3600</span><span class="p">,</span>                             <span class="c1"># 1 hour (default)</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">max_entries</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>                       <span class="c1"># Evicts oldest when full</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">)</span>
-</span></code></pre></div>
-<h2 id="framework-examples">Framework Examples<a class="headerlink" href="#framework-examples" title="Permanent link">&para;</a></h2>
-<h3 id="crewai">CrewAI<a class="headerlink" href="#crewai" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="c1"># After researcher task</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">,</span> <span class="n">researcher_task</span><span class="o">.</span><span class="n">output</span><span class="o">.</span><span class="n">raw</span><span class="p">)</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="c1"># Coder task gets compressed context</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="n">coder_context</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;findings&quot;</span><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="langgraph">LangGraph<a class="headerlink" href="#langgraph" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">researcher_node</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="n">result</span> <span class="o">=</span> <span class="n">do_research</span><span class="p">()</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    <span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;research_summary&quot;</span><span class="p">:</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">)}</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="k">def</span><span class="w"> </span><span class="nf">coder_node</span><span class="p">(</span><span class="n">state</span><span class="p">):</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="c1"># Compressed summary in state, full details on demand</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>    <span class="n">full</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;research&quot;</span><span class="p">,</span> <span class="n">full</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;code&quot;</span><span class="p">:</span> <span class="n">write_code</span><span class="p">(</span><span class="n">full</span><span class="p">)}</span>
-</span></code></pre></div>
-<h3 id="openai-agents-sdk">OpenAI Agents SDK<a class="headerlink" href="#openai-agents-sdk" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">SharedContext</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">SharedContext</span><span class="p">()</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">compress_handoff</span><span class="p">(</span><span class="n">messages</span><span class="p">):</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="k">for</span> <span class="n">msg</span> <span class="ow">in</span> <span class="n">messages</span><span class="p">:</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">content</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1000</span><span class="p">:</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>            <span class="n">ctx</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>            <span class="n">msg</span><span class="o">.</span><span class="n">content</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">msg</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="k">return</span> <span class="n">messages</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="n">handoff</span><span class="p">(</span><span class="n">agent</span><span class="o">=</span><span class="n">coder</span><span class="p">,</span> <span class="n">input_filter</span><span class="o">=</span><span class="n">compress_handoff</span><span class="p">)</span>
-</span></code></pre></div>
-<h3 id="any-framework">Any Framework<a class="headerlink" href="#any-framework" title="Permanent link">&para;</a></h3>
-<p>SharedContext is framework-agnostic. It's just <code>put()</code> and <code>get()</code>. Use it wherever context moves between agents.</p>
-<h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
-<p>Under the hood, <code>put()</code> calls <code>headroom.compress()</code> (the same pipeline used by the proxy) and stores the original in memory. <code>get()</code> returns the compressed version. <code>get(full=True)</code> returns the original.</p>
+<h1 id="persistent-deployments-installs-design">Persistent Deployments / Installs Design<a class="headerlink" href="#persistent-deployments-installs-design" title="Permanent link">&para;</a></h1>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>Headroom already supports session-oriented usage through <code>headroom proxy</code>, <code>headroom wrap ...</code>, and the Docker-native wrapper scripts, but there is no first-class way to install Headroom as a durable background runtime. That leaves users to hand-roll launch agents, services, scheduled tasks, or Docker restart policies, and it keeps direct tool usage (<code>claude</code>, <code>codex</code>, <code>copilot</code>, <code>openclaw</code>, etc.) tied to explicit <code>wrap</code> commands.</p>
+<p>The new feature should make Headroom deployable as a persistent local runtime while keeping the existing on-demand and wrapped flows intact.</p>
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
 <ul>
-<li>JSON arrays → SmartCrusher (70-95% compression)</li>
-<li>Code → CodeCompressor (AST-aware, with <code>[code]</code> extra)</li>
-<li>Text → Kompress (ModernBERT, with <code>[ml]</code> extra) or passthrough</li>
-<li>Entries expire after TTL (default 1 hour)</li>
-<li>Oldest entries evicted when max_entries reached</li>
+<li>Support these runtime/install modes as one coherent system:</li>
+<li>Persistent Service</li>
+<li>Persistent Task</li>
+<li>Persistent Docker</li>
+<li>On-Demand CLI (Python)</li>
+<li>On-Demand CLI (Docker)</li>
+<li>Wrapped (Python)</li>
+<li>Wrapped (Docker)</li>
+<li>Support install target selection modes:</li>
+<li>Auto-Detect</li>
+<li>All</li>
+<li>Manual Select</li>
+<li>Support configuration scopes:</li>
+<li>Provider</li>
+<li>User</li>
+<li>System</li>
+<li>Keep <code>wrap</code> idempotent and persistent-aware.</li>
+<li>Preserve local defaults such as <code>localhost:8787</code>.</li>
+</ul>
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<p>Introduce a new shared deployment subsystem under <code>headroom.install</code>.</p>
+<p>Core model:</p>
+<ul>
+<li><code>execution_mode</code>: <code>persistent | on_demand | wrapped</code></li>
+<li><code>runtime_kind</code>: <code>python | docker</code></li>
+<li><code>supervisor_kind</code>: <code>service | task | none</code></li>
+</ul>
+<p>These three axes normalize all seven user-facing runtime modes without duplicating logic across CLI commands, install scripts, and platform-specific deployment adapters.</p>
+<p>The subsystem centers on a persisted deployment manifest in <code>~/.headroom/deploy/</code> that records:</p>
+<ul>
+<li>resolved proxy configuration</li>
+<li>runtime type</li>
+<li>supervisor type</li>
+<li>configured tool targets</li>
+<li>applied config mutations</li>
+<li>generated artifact paths</li>
+<li>health URL and port</li>
+</ul>
+<h2 id="command-model">Command model<a class="headerlink" href="#command-model" title="Permanent link">&para;</a></h2>
+<p>Add a new public <code>headroom install</code> group:</p>
+<ul>
+<li><code>headroom install apply</code></li>
+<li><code>headroom install status</code></li>
+<li><code>headroom install start</code></li>
+<li><code>headroom install stop</code></li>
+<li><code>headroom install restart</code></li>
+<li><code>headroom install remove</code></li>
+</ul>
+<p>Add hidden helper commands for artifact runners and health recovery:</p>
+<ul>
+<li><code>headroom install agent run --profile &lt;name&gt;</code></li>
+<li><code>headroom install agent ensure --profile &lt;name&gt;</code></li>
+</ul>
+<p>Platform supervisors should register the hidden agent entrypoint rather than raw <code>headroom proxy ...</code> so restart, health polling, and manifest handling live in one place.</p>
+<h2 id="runtime-adapters">Runtime adapters<a class="headerlink" href="#runtime-adapters" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>PythonRuntimeAdapter</code>: launches <code>headroom proxy</code> directly.</li>
+<li><code>DockerRuntimeAdapter</code>: launches a detached or foreground Docker container with the existing host mounts and loopback-only port publishing.</li>
+</ul>
+<p>Persistent Docker uses the same deployment manifest and status semantics as service/task installs, but the child runtime is Docker-managed rather than OS-supervised.</p>
+<h2 id="supervisor-adapters">Supervisor adapters<a class="headerlink" href="#supervisor-adapters" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Linux</li>
+<li>Service: systemd unit</li>
+<li>Task: cron watchdog + reboot/start entry</li>
+<li>macOS</li>
+<li>Service: LaunchDaemon / LaunchAgent variant</li>
+<li>Task: launchd user agent or cron-style watchdog where appropriate</li>
+<li>Windows</li>
+<li>Service: Windows Service wrapper</li>
+<li>Task: Scheduled Task startup + periodic health-check task</li>
+</ul>
+<p>Each adapter renders artifacts into <code>~/.headroom/deploy/</code> and stores enough metadata for clean removal.</p>
+<h2 id="tool-target-configuration">Tool target configuration<a class="headerlink" href="#tool-target-configuration" title="Permanent link">&para;</a></h2>
+<p>Provider-level configuration should be target-specific and reversible.</p>
+<p>Initial target adapters:</p>
+<ul>
+<li>Claude Code</li>
+<li>write <code>env</code> keys into Claude settings JSON where appropriate</li>
+<li>Codex</li>
+<li>manage a marked block or targeted settings in <code>~/.codex/config.toml</code></li>
+<li>Copilot CLI</li>
+<li>configure BYOK environment surfaces using persistent env strategy</li>
+<li>OpenClaw</li>
+<li>reuse existing OpenClaw config/plugin merge logic where possible</li>
+<li>Aider / Cursor</li>
+<li>use env-based integration first, with tool-specific config only where a stable supported surface exists</li>
+</ul>
+<p>All non-marker edits must store previous values in the deployment manifest so uninstall removes only Headroom-managed changes.</p>
+<h2 id="wrap-behavior">Wrap behavior<a class="headerlink" href="#wrap-behavior" title="Permanent link">&para;</a></h2>
+<p><code>headroom wrap ...</code> should consult the active deployment manifest before starting a new proxy. If a compatible persistent deployment is present and healthy, <code>wrap</code> should reuse it and only perform any remaining tool-specific preparation. If the deployment exists but is unhealthy, <code>wrap</code> should attempt to recover it through the install subsystem before falling back to an ephemeral proxy.</p>
+<h2 id="docs-strategy">Docs strategy<a class="headerlink" href="#docs-strategy" title="Permanent link">&para;</a></h2>
+<p>The public docs should be reframed around:</p>
+<ul>
+<li>runtime mode</li>
+<li>lifecycle mode</li>
+<li>configuration scope</li>
+<li>direct-use vs <code>wrap</code></li>
+</ul>
+<p>Create a new top-level guide at <code>docs/persistent-installs.md</code> and update the existing Docker install, proxy, CLI, getting-started, quickstart, configuration, troubleshooting, and integration docs to reflect the broader runtime story.</p>
+<h2 id="risks">Risks<a class="headerlink" href="#risks" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Windows service installation is the highest-risk platform path and needs strong test isolation.</li>
+<li>Provider-specific config mutation must remain conservative and reversible.</li>
+<li><code>/health</code> should gain deployment metadata without breaking the existing <code>config</code> payload shape expected by current tests and docs.</li>
 </ul>
 
 
@@ -2503,10 +2200,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>

@@ -830,6 +830,8 @@
       
         
       
+        
+      
     
     
     
@@ -948,6 +950,34 @@
     
   
     Docker-Native Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="persistent-installs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistent Installs
   
 
     
@@ -2548,6 +2578,7 @@
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nv">OPENAI_BASE_URL</span><span class="o">=</span>http://localhost:8787/v1<span class="w"> </span>your-app
 </span></code></pre></div>
 <p>That's it. Your existing code works unchanged, with 40-90% fewer tokens.</p>
+<p>Want an always-on local runtime instead? See <a href="persistent-installs/">Persistent Installs &rarr;</a>.</p>
 </div>
 <div class="tabbed-block">
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">compress</span>
@@ -2570,6 +2601,7 @@
 </span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>headroom<span class="w"> </span>wrap<span class="w"> </span>openclaw<span class="w">     </span><span class="c1"># OpenClaw plugin bootstrap</span>
 </span></code></pre></div>
 <p>Starts the proxy, points your tool at it, compresses everything automatically.</p>
+<p>If you prefer an always-on proxy that <code>wrap</code> can reuse or recover, see <a href="persistent-installs/">Persistent Installs &rarr;</a>.</p>
 </div>
 <div class="tabbed-block">
 <div class="language-typescript highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">compress</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s1">&#39;headroom-ai&#39;</span><span class="p">;</span>
