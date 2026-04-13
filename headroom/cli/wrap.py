@@ -433,11 +433,16 @@ def _resolve_copilot_provider_type(backend: str | None, provider_type: str) -> s
     return "anthropic" if effective_backend == "anthropic" else "openai"
 
 
-def _detect_running_proxy_backend(port: int) -> str | None:
-    """Read the backend of an already-running proxy from its health endpoint."""
+def _query_proxy_config(port: int) -> dict[str, Any] | None:
+    """Query the running proxy's feature configuration via /health.
+
+    Returns a dict with keys like backend, optimize, cache, rate_limit,
+    memory, learn, code_graph, pid.  Returns None if unreachable or the
+    response lacks a config block.
+    """
     url = f"http://127.0.0.1:{port}/health"
     try:
-        with urllib.request.urlopen(url, timeout=1) as response:
+        with urllib.request.urlopen(url, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError):
         return None
@@ -445,9 +450,50 @@ def _detect_running_proxy_backend(port: int) -> str | None:
     config = payload.get("config")
     if not isinstance(config, dict):
         return None
+    return config
 
+
+def _detect_running_proxy_backend(port: int) -> str | None:
+    """Read the backend of an already-running proxy from its health endpoint."""
+    config = _query_proxy_config(port)
+    if config is None:
+        return None
     backend = config.get("backend")
     return backend if isinstance(backend, str) else None
+
+
+def _kill_proxy_by_pid(pid: int, port: int) -> bool:
+    """Terminate a proxy process by PID and wait for the port to free up.
+
+    Sends SIGTERM first, falls back to SIGKILL after 5 seconds.
+    Returns True if the port is free afterwards, False otherwise.
+    """
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # Already gone
+    except PermissionError:
+        click.echo(f"  Warning: No permission to kill proxy PID {pid}")
+        return False
+
+    # Wait for port to free (up to 5 seconds)
+    for _ in range(50):
+        time.sleep(0.1)
+        if not _check_proxy(port):
+            return True
+
+    # SIGTERM didn't work — escalate to SIGKILL
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+    for _ in range(20):
+        time.sleep(0.1)
+        if not _check_proxy(port):
+            return True
+
+    return False
 
 
 def _find_persistent_manifest(port: int) -> Any:
@@ -544,26 +590,70 @@ def _ensure_proxy(
             )
 
         if _check_proxy(port):
-            click.echo(f"  Proxy already running on port {port}")
-            return None
-        else:
-            click.echo(f"  Starting Headroom proxy on port {port}...")
-            try:
-                proc = _start_proxy(
-                    port,
-                    learn=learn,
-                    memory=memory,
-                    agent_type=agent_type,
-                    code_graph=code_graph,
-                    backend=backend,
-                    anyllm_provider=anyllm_provider,
-                    region=region,
-                )
-                click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
-                return proc
-            except RuntimeError as e:
-                click.echo(f"  Error: {e}")
-                raise SystemExit(1) from e
+            # Proxy is running — check if it has the features we need
+            needs_restart = False
+            running_config = _query_proxy_config(port)
+
+            if running_config is not None:
+                missing = []
+                if memory and not running_config.get("memory"):
+                    missing.append("memory")
+                if learn and not running_config.get("learn"):
+                    missing.append("learn")
+                if code_graph and not running_config.get("code_graph"):
+                    missing.append("code_graph")
+
+                if missing:
+                    needs_restart = True
+                    flags_str = ", ".join(f"--{f.replace('_', '-')}" for f in missing)
+                    click.echo(f"  Proxy on port {port} is missing: {flags_str}")
+                    click.echo("  Restarting proxy with upgraded configuration...")
+
+                    # Merge: keep features the running proxy already has
+                    memory = memory or bool(running_config.get("memory"))
+                    learn = learn or bool(running_config.get("learn"))
+                    code_graph = code_graph or bool(running_config.get("code_graph"))
+
+                    proxy_pid = running_config.get("pid")
+                    if proxy_pid is not None:
+                        if not _kill_proxy_by_pid(int(proxy_pid), port):
+                            raise click.ClickException(
+                                f"Failed to stop existing proxy (PID {proxy_pid}) on port {port}. "
+                                "Stop it manually and retry."
+                            )
+                    else:
+                        click.echo(
+                            "  Warning: Running proxy does not expose PID. "
+                            "Cannot restart automatically."
+                        )
+                        click.echo(
+                            f"  Please stop the proxy on port {port} manually "
+                            f"and rerun with {flags_str}."
+                        )
+                        return None
+
+            if not needs_restart:
+                click.echo(f"  Proxy already running on port {port}")
+                return None
+
+        # Start (or restart) the proxy with the requested flags
+        click.echo(f"  Starting Headroom proxy on port {port}...")
+        try:
+            proc = _start_proxy(
+                port,
+                learn=learn,
+                memory=memory,
+                agent_type=agent_type,
+                code_graph=code_graph,
+                backend=backend,
+                anyllm_provider=anyllm_provider,
+                region=region,
+            )
+            click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
+            return proc
+        except RuntimeError as e:
+            click.echo(f"  Error: {e}")
+            raise SystemExit(1) from e
     else:
         if not _check_proxy(port):
             click.echo(f"  Warning: No proxy detected on port {port}")

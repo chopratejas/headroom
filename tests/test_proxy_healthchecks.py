@@ -56,12 +56,15 @@ def test_health_preserves_backwards_compatible_config_payload(client):
     data = response.json()
     assert data["status"] == "healthy"
     assert data["ready"] is True
-    assert data["config"] == {
-        "backend": "anthropic",
-        "optimize": False,
-        "cache": False,
-        "rate_limit": False,
-    }
+    config = data["config"]
+    assert config["backend"] == "anthropic"
+    assert config["optimize"] is False
+    assert config["cache"] is False
+    assert config["rate_limit"] is False
+    assert config["memory"] is False
+    assert config["learn"] is False
+    assert config["code_graph"] is False
+    assert isinstance(config["pid"], int)
 
 
 def test_health_includes_deployment_metadata_when_present(monkeypatch):

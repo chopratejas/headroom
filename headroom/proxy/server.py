@@ -1170,6 +1170,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "optimize": config.optimize,
                 "cache": config.cache_enabled,
                 "rate_limit": config.rate_limit_enabled,
+                "memory": config.memory_enabled,
+                "learn": config.traffic_learning_enabled,
+                "code_graph": config.code_graph_watcher,
+                "pid": os.getpid(),
             }
         return payload
 
