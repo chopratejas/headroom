@@ -197,7 +197,22 @@ Compress what moves between agents — any framework. **[SharedContext Guide](do
 headroom mcp install && claude
 ```
 
-Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `headroom_stats`. **[MCP Guide](docs/mcp.md)**
+Gives your AI tool three MCP tools: `headroom_compress`, `headroom_retrieve`, `headroom_stats`.
+
+**Remote agents (Docker, network):**
+
+```bash
+# Proxy auto-exposes MCP at /mcp via Streamable HTTP
+headroom proxy                                          # → http://host:8787/mcp
+
+# Or standalone MCP server
+headroom mcp serve --transport http --port 8080         # → http://host:8080/mcp
+
+# Configure remote agent
+headroom mcp install --remote http://proxy-host:8787/mcp
+```
+
+**[MCP Guide](docs/mcp.md)**
 
 ### Drop into your existing stack
 
@@ -420,7 +435,8 @@ Context compression is a new space. Here's how the approaches differ:
 | ASGI middleware | **Stable** | [Integration Guide](docs/integration-guide.md#asgi-middleware) |
 | Proxy server | **Stable** | [Proxy Docs](docs/proxy.md) |
 | Agno | **Stable** | [Agno Guide](docs/agno.md) |
-| MCP (Claude Code, Cursor, etc.) | **Stable** | [MCP Guide](docs/mcp.md) |
+| MCP — stdio (local) | **Stable** | [MCP Guide](docs/mcp.md) |
+| MCP — Streamable HTTP (remote/Docker) | **Stable** | [MCP Guide](docs/mcp.md) |
 | Strands | **Stable** | [Strands Guide](docs/strands.md) |
 | LangChain | **Stable** | [LangChain Guide](docs/langchain.md) |
 | **OpenClaw** | **Stable** | [OpenClaw plugin](#openclaw-plugin) |

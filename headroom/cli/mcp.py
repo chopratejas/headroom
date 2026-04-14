@@ -94,11 +94,16 @@ def mcp() -> None:
     help=f"Headroom proxy URL (default: {DEFAULT_PROXY_URL})",
 )
 @click.option(
+    "--remote",
+    default=None,
+    help="Remote MCP URL for HTTP transport (e.g., http://proxy-host:8787/mcp)",
+)
+@click.option(
     "--force",
     is_flag=True,
     help="Overwrite existing headroom config",
 )
-def mcp_install(proxy_url: str, force: bool) -> None:
+def mcp_install(proxy_url: str, remote: str | None, force: bool) -> None:
     """Install Headroom MCP server into Claude Code config.
 
     \b
@@ -106,9 +111,12 @@ def mcp_install(proxy_url: str, force: bool) -> None:
     headroom_retrieve tool for CCR (Compress-Cache-Retrieve).
 
     \b
-    Example:
+    Local (stdio, default):
         headroom mcp install
-        headroom mcp install --proxy-url http://localhost:9000
+
+    \b
+    Remote (HTTP, for Docker/network):
+        headroom mcp install --remote http://proxy-host:8787/mcp
     """
     # Check for MCP SDK
     try:
@@ -117,6 +125,39 @@ def mcp_install(proxy_url: str, force: bool) -> None:
         click.echo("Error: MCP SDK not installed.", err=True)
         click.echo("Install with: pip install 'headroom-ai[mcp]'", err=True)
         raise SystemExit(1) from None
+
+    # Remote mode: URL-based config for HTTP transport
+    if remote:
+        config = load_mcp_config()
+
+        if "headroom" in config.get("mcpServers", {}) and not force:
+            click.echo("Headroom MCP is already configured in Claude Code.")
+            click.echo("Use --force to overwrite, or 'headroom mcp uninstall' first.")
+            raise SystemExit(0)
+
+        if "mcpServers" not in config:
+            config["mcpServers"] = {}
+        config["mcpServers"]["headroom"] = {"url": remote}
+        save_mcp_config(config)
+
+        click.echo(f"""
+✓ Headroom MCP server installed (remote HTTP mode)!
+
+Configuration written to: {MCP_CONFIG_PATH}
+MCP URL: {remote}
+
+The remote Headroom proxy at {remote} must be running.
+Start it with:
+    headroom proxy  (exposes /mcp automatically)
+  or:
+    headroom mcp serve --transport http --port 8080
+
+Claude Code now has remote access to:
+  - headroom_compress — compress content on demand
+  - headroom_retrieve — retrieve originals by hash
+  - headroom_stats — compression statistics
+""")
+        return
 
     command = get_headroom_command()
     env: dict[str, str] = {}
@@ -324,6 +365,23 @@ def mcp_status() -> None:
 
 @mcp.command("serve")
 @click.option(
+    "--transport",
+    type=click.Choice(["stdio", "http"]),
+    default="stdio",
+    help="Transport: stdio (local, default) or http (network)",
+)
+@click.option(
+    "--host",
+    default="0.0.0.0",
+    help="HTTP bind host (only used with --transport http)",
+)
+@click.option(
+    "--port",
+    default=8080,
+    type=int,
+    help="HTTP port (only used with --transport http)",
+)
+@click.option(
     "--proxy-url",
     default=None,
     envvar="HEADROOM_PROXY_URL",
@@ -339,16 +397,20 @@ def mcp_status() -> None:
     is_flag=True,
     help="Enable debug logging",
 )
-def mcp_serve(proxy_url: str | None, direct: bool, debug: bool) -> None:
-    """Start the MCP server (called by Claude Code).
+def mcp_serve(transport: str, host: str, port: int, proxy_url: str | None, direct: bool, debug: bool) -> None:
+    """Start the MCP server (called by Claude Code or remote agents).
 
     \b
-    This command is typically invoked by Claude Code via the MCP config,
-    not run directly. It starts the MCP server with stdio transport.
+    Stdio transport (default, for local Claude Code):
+        headroom mcp serve
 
     \b
-    For manual testing:
-        headroom mcp serve --debug
+    HTTP transport (for remote agents / Docker):
+        headroom mcp serve --transport http --port 8080
+
+    \b
+    The HTTP transport exposes MCP tools at /mcp using the Streamable HTTP protocol.
+    Remote agents connect with: {"url": "http://host:port/mcp"}
     """
     import asyncio
     import logging
@@ -361,33 +423,47 @@ def mcp_serve(proxy_url: str | None, direct: bool, debug: bool) -> None:
         click.echo("Install with: pip install 'headroom-ai[mcp]'", err=True)
         raise SystemExit(1) from None
 
-    if debug:
+    if debug or transport == "http":
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=logging.DEBUG if debug else logging.INFO,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
     else:
-        # Minimal logging for MCP (stdout is used for protocol)
+        # Minimal logging for stdio MCP (stdout is used for protocol)
         logging.basicConfig(
             level=logging.WARNING,
             format="%(levelname)s: %(message)s",
         )
 
-    # Use default if not specified
     effective_proxy_url = proxy_url or DEFAULT_PROXY_URL
 
-    server = create_ccr_mcp_server(
-        proxy_url=effective_proxy_url,
-        direct_mode=direct,
-    )
+    if transport == "http":
+        # Streamable HTTP transport — remote agents connect over network
+        from headroom.ccr.mcp_http import run_standalone
 
-    async def run() -> None:
+        click.echo(f"Starting Headroom MCP HTTP server on {host}:{port}/mcp")
+        click.echo(f"Proxy URL: {effective_proxy_url}")
+        click.echo(f'Configure remote agents with: {{"url": "http://{host}:{port}/mcp"}}')
+        run_standalone(
+            host=host,
+            port=port,
+            proxy_url=effective_proxy_url,
+            check_proxy=not direct,
+        )
+    else:
+        # Stdio transport — local Claude Code / Cursor
+        server = create_ccr_mcp_server(
+            proxy_url=effective_proxy_url,
+            direct_mode=direct,
+        )
+
+        async def run() -> None:
+            try:
+                await server.run_stdio()
+            finally:
+                await server.cleanup()
+
         try:
-            await server.run_stdio()
-        finally:
-            await server.cleanup()
-
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        pass  # Clean exit on Ctrl+C
+            asyncio.run(run())
+        except KeyboardInterrupt:
+            pass  # Clean exit on Ctrl+C

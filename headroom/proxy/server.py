@@ -1078,6 +1078,35 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app.state.ready = False
     app.state.startup_error = None
 
+    # Mount MCP Streamable HTTP endpoint at /mcp (if mcp package available)
+    try:
+        from headroom.ccr.mcp_http import create_mcp_http_server
+
+        _mcp_server = create_mcp_http_server(
+            proxy_url=f"http://127.0.0.1:{config.port}",
+            check_proxy=False,  # We ARE the proxy — no self-calls
+        )
+        # FastMCP.streamable_http_app() returns a Starlette ASGI app
+        try:
+            mcp_app = _mcp_server.streamable_http_app()
+        except AttributeError:
+            # Fallback for older mcp versions: get the ASGI app via sse_app or similar
+            mcp_app = getattr(_mcp_server, "sse_app", None) or getattr(
+                _mcp_server, "asgi_app", None
+            )
+
+        if mcp_app is not None:
+            from starlette.routing import Mount
+
+            app.routes.insert(0, Mount("/mcp", app=mcp_app))
+            logger.info("MCP Streamable HTTP enabled at /mcp")
+        else:
+            logger.debug("MCP HTTP: could not extract ASGI app from FastMCP")
+    except ImportError:
+        logger.debug("MCP not available (install headroom-ai[mcp] for MCP tools)")
+    except Exception as e:
+        logger.debug(f"MCP HTTP setup failed: {e}")
+
     def _iso_utc_now() -> str:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 

@@ -99,32 +99,97 @@ Session compression statistics.
 
 Sub-agent stats are aggregated via a shared stats file at `~/.headroom/session_stats.jsonl`.
 
+## Streamable HTTP Transport (Remote / Docker)
+
+For agents running on a different machine than the Headroom proxy (e.g., Docker, cloud), MCP tools are available over HTTP using the MCP Streamable HTTP protocol.
+
+### Proxy auto-exposes /mcp
+
+When you run `headroom proxy`, MCP tools are automatically available at `/mcp`:
+
+```bash
+headroom proxy  # → http://host:8787/mcp
+```
+
+Remote agents connect with:
+
+```json
+{
+  "mcpServers": {
+    "headroom": {
+      "url": "http://proxy-host:8787/mcp"
+    }
+  }
+}
+```
+
+### Standalone HTTP server
+
+Run MCP tools without the full proxy:
+
+```bash
+headroom mcp serve --transport http --port 8080
+```
+
+### Remote install
+
+Configure Claude Code to use remote MCP over HTTP:
+
+```bash
+headroom mcp install --remote http://proxy-host:8787/mcp
+```
+
+This writes URL-based config instead of the default command-based config.
+
+### Protocol
+
+The Streamable HTTP transport implements the MCP specification:
+- `POST /mcp` -- Send JSON-RPC requests (tool calls, list tools)
+- `GET /mcp` -- Server-sent events stream (server-initiated messages)
+- `DELETE /mcp` -- Terminate session
+
+Stateless mode by default -- each request is independent, no session tracking needed.
+
 ## CLI commands
 
 ```bash
-# Install (registers with Claude Code)
+# Install — local (stdio, default)
 headroom mcp install
-headroom mcp install --proxy-url http://host:9000  # Custom proxy URL
-headroom mcp install --force                        # Overwrite existing
+
+# Install — remote (HTTP, for Docker/network)
+headroom mcp install --remote http://proxy-host:8787/mcp
+
+# Install — custom proxy URL
+headroom mcp install --proxy-url http://host:9000
+
+# Overwrite existing config
+headroom mcp install --force
+
+# Serve — stdio (default, called by Claude Code)
+headroom mcp serve
+
+# Serve — HTTP (for remote agents)
+headroom mcp serve --transport http --port 8080
+
+# Serve — debug mode
+headroom mcp serve --debug
 
 # Check status
 headroom mcp status
 
 # Uninstall
 headroom mcp uninstall
-
-# Debug mode
-headroom mcp serve --debug
 ```
 
 ## Cross-tool compatibility
 
-| Tool | MCP Support | Setup |
-|------|-------------|-------|
-| Claude Code | Native | `headroom mcp install` |
-| Cursor | Supported | Add to Cursor MCP settings |
-| Codex | If supported | Configure MCP server |
-| Any MCP host | Yes | Point to `headroom mcp serve` |
+| Tool | Transport | Setup |
+|------|-----------|-------|
+| Claude Code (local) | stdio | `headroom mcp install` |
+| Claude Code (remote) | HTTP | `headroom mcp install --remote http://host:8787/mcp` |
+| Cursor | stdio / HTTP | Add to MCP settings |
+| Docker agents | HTTP | Point to `http://proxy:8787/mcp` |
+| Any MCP host | stdio / HTTP | `headroom mcp serve` or `--transport http` |
 
 ## Architecture
 
@@ -137,6 +202,22 @@ The LLM calls `headroom_compress` on demand. Compression happens locally in the 
 The proxy compresses all traffic at the HTTP level (before the LLM sees content). MCP tools operate after the LLM receives content. They handle different data and do not double-compress.
 
 `headroom_retrieve` checks the local store first, then falls back to the proxy's store.
+
+### Remote (HTTP transport)
+
+```
+Remote Agent (any machine)
+    |
+    | POST /mcp (JSON-RPC)
+    v
+Headroom Proxy :8787/mcp (Streamable HTTP)
+    |
+    | in-process access
+    v
+Compression Pipeline + CompressionStore
+```
+
+The proxy's `/mcp` endpoint shares the same compression store and pipeline as the proxy itself -- no HTTP round-trips to self.
 
 ## Troubleshooting
 

@@ -841,6 +841,25 @@ class HeadroomMCPServer:
                 self.server.create_initialization_options(),
             )
 
+    def run_http(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+    ) -> None:
+        """Run the server with Streamable HTTP transport.
+
+        Starts a standalone HTTP server exposing MCP tools at /mcp.
+        Used for remote access from agents on different machines.
+        """
+        from headroom.ccr.mcp_http import run_standalone
+
+        run_standalone(
+            host=host,
+            port=port,
+            proxy_url=self.proxy_url,
+            check_proxy=self.check_proxy,
+        )
+
     async def cleanup(self) -> None:
         """Clean up resources."""
         if self._http_client:
