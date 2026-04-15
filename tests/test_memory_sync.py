@@ -12,7 +12,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import time
@@ -20,14 +19,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from headroom.memory.sync import (
-    AgentMemory,
-    AgentMemoryAdapter,
-    SyncResult,
     sync,
     sync_export,
     sync_import,
@@ -37,7 +32,6 @@ from headroom.memory.sync_adapters.claude_code import (
     _parse_frontmatter,
 )
 from headroom.memory.sync_adapters.codex_agent import CodexAdapter
-
 
 # ---------------------------------------------------------------------------
 # Fake backend for testing (no real DB/embeddings needed)
@@ -116,7 +110,9 @@ class TestSyncImport:
         d.mkdir()
         return d
 
-    def _write_claude_memory(self, memory_dir: Path, name: str, content: str, **fm_fields: str) -> None:
+    def _write_claude_memory(
+        self, memory_dir: Path, name: str, content: str, **fm_fields: str
+    ) -> None:
         slug = name.lower().replace(" ", "_")
         fields = {"name": name, "description": content[:80], "type": "project", **fm_fields}
         fm_lines = ["---"]
@@ -142,9 +138,10 @@ class TestSyncImport:
     @pytest.mark.asyncio
     async def test_import_skips_existing(self, backend, claude_dir):
         """Memories already in DB are not re-imported."""
-        backend.add_memory("The secret name is TC", metadata={
-            "content_hash": hashlib.sha256(b"The secret name is TC").hexdigest()[:16]
-        })
+        backend.add_memory(
+            "The secret name is TC",
+            metadata={"content_hash": hashlib.sha256(b"The secret name is TC").hexdigest()[:16]},
+        )
 
         self._write_claude_memory(claude_dir, "Project codename", "The secret name is TC")
         self._write_claude_memory(claude_dir, "New fact", "Something new")
@@ -184,10 +181,13 @@ class TestSyncExport:
 
     @pytest.mark.asyncio
     async def test_export_new_memory_to_claude_files(self, backend, claude_dir):
-        backend.add_memory("Project uses Python 3.12", metadata={
-            "source_agent": "codex",
-            "sync_direction": "export",  # Not from claude import
-        })
+        backend.add_memory(
+            "Project uses Python 3.12",
+            metadata={
+                "source_agent": "codex",
+                "sync_direction": "export",  # Not from claude import
+            },
+        )
 
         adapter = ClaudeCodeAdapter(claude_dir)
         exported = await sync_export(backend, adapter, "tcms")
@@ -205,13 +205,19 @@ class TestSyncExport:
     @pytest.mark.asyncio
     async def test_export_skips_claude_originated(self, backend, claude_dir):
         """Don't re-export memories that were imported FROM claude (anti-echo)."""
-        backend.add_memory("From claude", metadata={
-            "source_agent": "claude",
-            "sync_direction": "import",
-        })
-        backend.add_memory("From codex", metadata={
-            "source_agent": "codex",
-        })
+        backend.add_memory(
+            "From claude",
+            metadata={
+                "source_agent": "claude",
+                "sync_direction": "import",
+            },
+        )
+        backend.add_memory(
+            "From codex",
+            metadata={
+                "source_agent": "codex",
+            },
+        )
 
         adapter = ClaudeCodeAdapter(claude_dir)
         exported = await sync_export(backend, adapter, "tcms")
@@ -419,15 +425,17 @@ class TestClaudeCodeAdapter:
     @pytest.mark.asyncio
     async def test_write_creates_valid_md(self, memory_dir):
         adapter = ClaudeCodeAdapter(memory_dir)
-        written = await adapter.write_memories([
-            {
-                "content": "Project uses FastAPI",
-                "category": "architecture",
-                "headroom_id": "mem_001",
-                "source_agent": "codex",
-                "content_hash": "abc123",
-            }
-        ])
+        written = await adapter.write_memories(
+            [
+                {
+                    "content": "Project uses FastAPI",
+                    "category": "architecture",
+                    "headroom_id": "mem_001",
+                    "source_agent": "codex",
+                    "content_hash": "abc123",
+                }
+            ]
+        )
 
         assert written == 1
         files = list(memory_dir.glob("headroom_*.md"))
@@ -499,10 +507,12 @@ class TestCodexAdapter:
         agents_md.write_text("# Existing instructions\n")
 
         adapter = CodexAdapter(agents_md)
-        written = await adapter.write_memories([
-            {"content": "Port 8787 is default"},
-            {"content": "Uses ruff for linting"},
-        ])
+        written = await adapter.write_memories(
+            [
+                {"content": "Port 8787 is default"},
+                {"content": "Uses ruff for linting"},
+            ]
+        )
 
         assert written == 2
         content = agents_md.read_text()
@@ -568,9 +578,7 @@ class TestCrossAgentInterop:
         return tmp_path / "state.json"
 
     @pytest.mark.asyncio
-    async def test_codex_saves_claude_finds(
-        self, backend, claude_dir, state_path
-    ):
+    async def test_codex_saves_claude_finds(self, backend, claude_dir, state_path):
         """Memory saved via Codex MCP appears in Claude's files after sync."""
         # Simulate Codex saving via MCP (directly to backend)
         backend.add_memory(
@@ -590,9 +598,7 @@ class TestCrossAgentInterop:
         assert "TC" in files[0].read_text()
 
     @pytest.mark.asyncio
-    async def test_claude_saves_codex_finds(
-        self, backend, claude_dir, agents_md, state_path
-    ):
+    async def test_claude_saves_codex_finds(self, backend, claude_dir, agents_md, state_path):
         """Memory saved in Claude's files appears in Codex AGENTS.md after sync."""
         # Claude has a memory
         fm = "---\nname: Linting\ndescription: use ruff\ntype: project\n---"
@@ -610,9 +616,7 @@ class TestCrossAgentInterop:
         assert "ruff" in agents_md.read_text()
 
     @pytest.mark.asyncio
-    async def test_full_round_trip(
-        self, backend, claude_dir, agents_md, state_path
-    ):
+    async def test_full_round_trip(self, backend, claude_dir, agents_md, state_path):
         """Full round trip: Claude → DB → Codex, Codex → DB → Claude."""
         # Claude has a memory
         fm = "---\nname: Framework\ntype: project\n---"

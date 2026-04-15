@@ -13,14 +13,12 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
-
 from headroom.proxy.memory_handler import MEMORY_TOOL_NAMES
-
 
 # ---------------------------------------------------------------------------
 # Minimal WS relay state machine (mirrors the logic in openai.py)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class WSMemoryRelayState:
@@ -57,7 +55,6 @@ class WSMemoryRelayState:
             return result
 
         event_type = event.get("type", "")
-        output_index = event.get("output_index")
 
         # ---- Phase 1: Buffering (before first output item) ----
         if not self.decided:
@@ -133,6 +130,7 @@ class WSMemoryRelayState:
 # Test helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_event(event_type: str, **kwargs: Any) -> str:
     data: dict[str, Any] = {"type": event_type}
     data.update(kwargs)
@@ -151,9 +149,7 @@ def _output_item_added_text(index: int = 0) -> str:
     )
 
 
-def _output_item_added_function_call(
-    name: str, index: int = 0, call_id: str = "call_1"
-) -> str:
+def _output_item_added_function_call(name: str, index: int = 0, call_id: str = "call_1") -> str:
     return _make_event(
         "response.output_item.added",
         output_index=index,
@@ -169,9 +165,7 @@ def _function_call_args_delta(index: int = 0, delta: str = '{"qu') -> str:
     )
 
 
-def _function_call_args_done(
-    index: int = 0, arguments: str = '{"query": "codename"}'
-) -> str:
+def _function_call_args_done(index: int = 0, arguments: str = '{"query": "codename"}') -> str:
     return _make_event(
         "response.function_call_arguments.done",
         output_index=index,
@@ -356,7 +350,9 @@ class TestWSMemoryRelayMemoryTool:
             _output_item_added_function_call("memory_save", index=0, call_id="call_save"),
             _function_call_args_done(index=0, arguments='{"content": "user likes dark mode"}'),
             _output_item_done_function_call(
-                "memory_save", index=0, call_id="call_save",
+                "memory_save",
+                index=0,
+                call_id="call_save",
                 arguments='{"content": "user likes dark mode"}',
             ),
             _response_completed("resp_B"),
@@ -414,7 +410,8 @@ class TestWSMemoryRelayMemoryTool:
 
         # Verify the text content
         text_events = [
-            json.loads(e) for e in all_relayed
+            json.loads(e)
+            for e in all_relayed
             if json.loads(e)["type"] == "response.output_text.delta"
         ]
         assert len(text_events) == 1
@@ -439,7 +436,9 @@ class TestWSMemoryRelayMemoryTool:
             # The model decides to save something too
             _output_item_added_function_call("memory_save", index=1, call_id="call_2"),
             _output_item_done_function_call(
-                "memory_save", index=1, call_id="call_2",
+                "memory_save",
+                index=1,
+                call_id="call_2",
                 arguments='{"content": "test"}',
             ),
             _response_completed("resp_multi"),

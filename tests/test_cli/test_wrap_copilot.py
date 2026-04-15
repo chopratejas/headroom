@@ -21,6 +21,7 @@ def test_wrap_copilot_auto_anthropic_injects_instructions(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-dummy")
     captured: dict[str, object] = {}
 
     def fake_launch_tool(**kwargs):  # noqa: ANN003
@@ -51,7 +52,10 @@ def test_wrap_copilot_auto_anthropic_injects_instructions(
     assert captured["args"] == ("--model", "claude-sonnet-4-20250514")
 
 
-def test_wrap_copilot_openai_backend_sets_completions_env(runner: CliRunner) -> None:
+def test_wrap_copilot_openai_backend_sets_completions_env(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
     captured: dict[str, object] = {}
 
     def fake_launch_tool(**kwargs):  # noqa: ANN003
@@ -90,7 +94,10 @@ def test_wrap_copilot_openai_backend_sets_completions_env(runner: CliRunner) -> 
     assert captured["args"] == ("--model", "gpt-4o")
 
 
-def test_wrap_copilot_auto_detects_running_proxy_backend(runner: CliRunner) -> None:
+def test_wrap_copilot_auto_detects_running_proxy_backend(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
     captured: dict[str, object] = {}
 
     def fake_launch_tool(**kwargs):  # noqa: ANN003
@@ -153,7 +160,10 @@ def test_wrap_copilot_rejects_responses_for_translated_backends(runner: CliRunne
     assert "not supported with translated backends" in result.output
 
 
-def test_wrap_copilot_clears_stale_wire_api_in_anthropic_mode(runner: CliRunner) -> None:
+def test_wrap_copilot_clears_stale_wire_api_in_anthropic_mode(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-dummy")
     captured: dict[str, object] = {}
 
     def fake_launch_tool(**kwargs):  # noqa: ANN003
@@ -164,7 +174,10 @@ def test_wrap_copilot_clears_stale_wire_api_in_anthropic_mode(runner: CliRunner)
             result = runner.invoke(
                 main,
                 ["wrap", "copilot", "--no-rtk", "--", "--model", "claude-sonnet-4-20250514"],
-                env={"COPILOT_PROVIDER_WIRE_API": "responses"},
+                env={
+                    "COPILOT_PROVIDER_WIRE_API": "responses",
+                    "ANTHROPIC_API_KEY": "sk-test-dummy",
+                },
             )
 
     assert result.exit_code == 0, result.output

@@ -33,7 +33,8 @@ def test_headroom_import_stays_lazy() -> None:
     )
 
     data = json.loads(result.stdout.strip())
-    assert data["version"] == "0.5.21"
+    # Version is a non-empty string; don't hardcode a specific value.
+    assert isinstance(data["version"], str) and data["version"]
     assert data["cache_loaded"] is False
     assert data["models_registry_loaded"] is False
     assert data["memory_loaded"] is False
