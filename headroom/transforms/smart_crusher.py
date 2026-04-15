@@ -180,27 +180,31 @@ def _hash_field_name(field_name: str) -> str:
 # Minimum chars for a text field to be worth compressing within an item
 _MIN_FIELD_CHARS_FOR_WITHIN = 200
 
-# Lazy-loaded compressor for within-item text compression
+# Lazy-loaded compressor for within-item text compression (thread-safe)
 _within_compressor: Any = None
 _within_compressor_checked = False
+_within_compressor_lock = threading.Lock()
 
 
 def _get_within_compressor() -> Any:
     """Get a text compressor for within-item field compression.
 
     Returns Kompress if available (requires [ml] extra), else None.
+    Thread-safe via double-checked locking.
     """
     global _within_compressor, _within_compressor_checked
     if not _within_compressor_checked:
-        _within_compressor_checked = True
-        try:
-            from .kompress_compressor import KompressCompressor, is_kompress_available
+        with _within_compressor_lock:
+            if not _within_compressor_checked:
+                try:
+                    from .kompress_compressor import KompressCompressor, is_kompress_available
 
-            if is_kompress_available():
-                _within_compressor = KompressCompressor()
-                logger.debug("Within-item compression: using Kompress")
-        except ImportError:
-            pass
+                    if is_kompress_available():
+                        _within_compressor = KompressCompressor()
+                        logger.debug("Within-item compression: using Kompress")
+                except ImportError:
+                    pass
+                _within_compressor_checked = True
     return _within_compressor
 
 
@@ -435,7 +439,7 @@ def _detect_sequential_pattern(values: list[Any], check_order: bool = True) -> b
     # Get numeric values
     nums = []
     for v in values:
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if isinstance(v, int | float) and not isinstance(v, bool):
             nums.append(v)
         elif isinstance(v, str):
             try:
@@ -546,7 +550,6 @@ def _detect_score_field_statistically(stats: FieldStats, items: list[dict]) -> t
     confidence = 0.0
 
     # Check for bounded range typical of scores
-    stats.max_val - stats.min_val
     min_val, max_val = stats.min_val, stats.max_val
 
     # Common score ranges: [0,1], [0,10], [0,100], [-1,1], [0,5]
@@ -578,7 +581,7 @@ def _detect_score_field_statistically(stats: FieldStats, items: list[dict]) -> t
     for item in items:
         if stats.name in item:
             val = item.get(stats.name)
-            if isinstance(val, (int, float)) and math.isfinite(val):
+            if isinstance(val, int | float) and math.isfinite(val):
                 values_in_order.append(float(val))
     if len(values_in_order) >= 5:
         # Check for descending sort
@@ -804,11 +807,11 @@ def _detect_items_by_learned_semantics(
                 value_canonical = "null"
             elif isinstance(value, bool):
                 value_canonical = "true" if value else "false"
-            elif isinstance(value, (int, float)):
+            elif isinstance(value, int | float):
                 value_canonical = str(value)
             elif isinstance(value, str):
                 value_canonical = value
-            elif isinstance(value, (list, dict)):
+            elif isinstance(value, list | dict):
                 try:
                     value_canonical = json.dumps(value, sort_keys=True, default=str)
                 except (TypeError, ValueError):
@@ -1030,7 +1033,7 @@ class SmartAnalyzer:
         first_val = non_null_values[0]
         if isinstance(first_val, bool):
             field_type = "boolean"
-        elif isinstance(first_val, (int, float)):
+        elif isinstance(first_val, int | float):
             field_type = "numeric"
         elif isinstance(first_val, str):
             field_type = "string"
@@ -1064,7 +1067,7 @@ class SmartAnalyzer:
         # Numeric-specific analysis
         if field_type == "numeric":
             # Filter out NaN and Infinity which break statistics functions
-            nums = [v for v in non_null_values if isinstance(v, (int, float)) and math.isfinite(v)]
+            nums = [v for v in non_null_values if isinstance(v, int | float) and math.isfinite(v)]
             if nums:
                 try:
                     stats.min_val = min(nums)
@@ -1283,7 +1286,7 @@ class SmartAnalyzer:
                     threshold = self.config.variance_threshold * std
                     for i, item in enumerate(items):
                         val = item.get(stats.name)
-                        if isinstance(val, (int, float)):
+                        if isinstance(val, int | float):
                             if abs(val - stats.mean_val) > threshold:
                                 anomaly_indices.add(i)
 
@@ -1953,9 +1956,9 @@ class SmartCrusher(Transform):
         if len(keep_indices) <= effective_max:
             return keep_indices
 
-        # Use provided field_semantics or fall back to instance variable (set by crush())
+        # Use provided field_semantics or fall back to thread-local (set by _crush_array)
         effective_field_semantics = field_semantics or getattr(
-            self, "_current_field_semantics", None
+            getattr(self, "_thread_local", None), "field_semantics", None
         )
 
         # Identify error items using KEYWORD detection (preservation guarantee)
@@ -1976,7 +1979,7 @@ class SmartCrusher(Transform):
                         threshold = self.config.variance_threshold * std
                         for i, item in enumerate(items):
                             val = item.get(field_name)
-                            if isinstance(val, (int, float)):
+                            if isinstance(val, int | float):
                                 if abs(val - stats.mean_val) > threshold:
                                     anomaly_indices.add(i)
 
@@ -2297,6 +2300,10 @@ class SmartCrusher(Transform):
 
         return result, was_modified, info
 
+    # Maximum recursion depth for nested JSON processing.
+    # Prevents RecursionError on adversarial/deeply-nested input.
+    _MAX_PROCESS_DEPTH = 50
+
     def _process_value(
         self,
         value: Any,
@@ -2311,6 +2318,10 @@ class SmartCrusher(Transform):
             Tuple of (processed_value, info_string, ccr_markers).
             ccr_markers is a list of (hash, original_count, compressed_count, summary) tuples.
         """
+        # Guard against deeply nested JSON causing RecursionError
+        if depth >= self._MAX_PROCESS_DEPTH:
+            return value, "", []
+
         info_parts = []
         ccr_markers: list[tuple] = []
 
@@ -2495,9 +2506,12 @@ class SmartCrusher(Transform):
             )
 
         # === TOIN Evolution: Extract field semantics for signal detection ===
-        # Store temporarily on instance for use in _prioritize_indices
+        # Store in thread-local storage for use in _prioritize_indices.
         # This enables learned signal detection without changing all method signatures
-        self._current_field_semantics = (
+        # while remaining thread-safe (no cross-thread contamination).
+        if not hasattr(self, "_thread_local"):
+            self._thread_local = threading.local()
+        self._thread_local.field_semantics = (
             toin_hint.field_semantics if toin_hint.field_semantics else None
         )
 
@@ -2661,12 +2675,14 @@ class SmartCrusher(Transform):
             )
 
             # Clean up temporary instance variable
-            self._current_field_semantics = None
+            if hasattr(self, "_thread_local"):
+                self._thread_local.field_semantics = None
             return result, strategy_info, ccr_hash, dropped_summary
 
         except Exception:
             # Clean up temporary instance variable
-            self._current_field_semantics = None
+            if hasattr(self, "_thread_local"):
+                self._thread_local.field_semantics = None
             # Re-raise any exceptions (removed finally block since we no longer mutate config)
             raise
 
@@ -2814,7 +2830,7 @@ class SmartCrusher(Transform):
             return items, "number:passthrough"
 
         # Filter out non-finite values for statistics
-        finite = [x for x in items if isinstance(x, (int, float)) and math.isfinite(x)]
+        finite = [x for x in items if isinstance(x, int | float) and math.isfinite(x)]
         if not finite:
             return items, "number:no_finite"
 
@@ -2832,7 +2848,7 @@ class SmartCrusher(Transform):
         outlier_indices: set[int] = set()
         if std_val > 0:
             for i, val in enumerate(items):
-                if isinstance(val, (int, float)) and math.isfinite(val):
+                if isinstance(val, int | float) and math.isfinite(val):
                     if abs(val - mean_val) > self.config.variance_threshold * std_val:
                         outlier_indices.add(i)
 
@@ -2844,12 +2860,12 @@ class SmartCrusher(Transform):
                 left = [
                     items[j]
                     for j in range(i - window, i)
-                    if isinstance(items[j], (int, float)) and math.isfinite(items[j])
+                    if isinstance(items[j], int | float) and math.isfinite(items[j])
                 ]
                 right = [
                     items[j]
                     for j in range(i, i + window)
-                    if isinstance(items[j], (int, float)) and math.isfinite(items[j])
+                    if isinstance(items[j], int | float) and math.isfinite(items[j])
                 ]
                 if left and right:
                     left_mean = statistics.mean(left)
@@ -2877,27 +2893,23 @@ class SmartCrusher(Transform):
                 if i not in keep_indices:
                     keep_indices.add(i)
 
-        # Build output: summary string + kept values in original order
-        stats_summary = (
-            f"[{n} numbers: min={min(finite)}, max={max(finite)}, "
-            f"mean={mean_val:.4g}, median={median_val:.4g}, "
-            f"stddev={std_val:.4g}, p25={p25:.4g}, p75={p75:.4g}"
+        # Build output: kept values only (schema-preserving — no generated text)
+        kept_values = [items[i] for i in sorted(keep_indices)]
+
+        # Encode statistics into the strategy string (not the array itself)
+        strategy = (
+            f"number:adaptive({n}->{len(kept_values)}"
+            f",min={min(finite)},max={max(finite)}"
+            f",mean={mean_val:.4g},median={median_val:.4g}"
+            f",stddev={std_val:.4g},p25={p25:.4g},p75={p75:.4g}"
         )
         if outlier_indices:
-            stats_summary += f", outliers={len(outlier_indices)}"
-        if change_indices:
-            stats_summary += f", change_points={len(change_indices)}"
-        stats_summary += "]"
-
-        kept_values = [items[i] for i in sorted(keep_indices)]
-        result: list = [stats_summary] + kept_values
-
-        strategy = f"number:adaptive({n}->{len(kept_values)}"
-        if outlier_indices:
             strategy += f",outliers={len(outlier_indices)}"
+        if change_indices:
+            strategy += f",change_points={len(change_indices)}"
         strategy += ")"
 
-        return result, strategy
+        return kept_values, strategy
 
     def _crush_mixed_array(
         self,
@@ -2930,7 +2942,7 @@ class SmartCrusher(Transform):
                 key = "str"
             elif isinstance(item, bool):
                 key = "bool"
-            elif isinstance(item, (int, float)):
+            elif isinstance(item, int | float):
                 key = "number"
             elif isinstance(item, list):
                 key = "list"
@@ -2979,13 +2991,13 @@ class SmartCrusher(Transform):
                 last_idx = set(indices[-k_last:])
                 keep_indices.update(first_idx | last_idx)
                 # Outliers
-                finite = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
+                finite = [v for v in values if isinstance(v, int | float) and math.isfinite(v)]
                 if len(finite) > 1:
                     mean_v = statistics.mean(finite)
                     std_v = statistics.stdev(finite)
                     if std_v > 0:
                         for idx, val in group_items:
-                            if isinstance(val, (int, float)) and math.isfinite(val):
+                            if isinstance(val, int | float) and math.isfinite(val):
                                 if abs(val - mean_v) > self.config.variance_threshold * std_v:
                                     keep_indices.add(idx)
                 strategy_parts.append(f"num:{len(values)}")
@@ -3553,7 +3565,7 @@ class SmartCrusher(Transform):
                     threshold = self.config.variance_threshold * std
                     for i, item in enumerate(items):
                         val = item.get(name)
-                        if isinstance(val, (int, float)):
+                        if isinstance(val, int | float):
                             if abs(val - stats.mean_val) > threshold:
                                 keep_indices.add(i)
 
