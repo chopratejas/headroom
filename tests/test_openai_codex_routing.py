@@ -104,7 +104,7 @@ class _DummyMetrics:
     async def record_request(self, **kwargs):  # noqa: ANN003
         return None
 
-    async def record_failed(self):
+    async def record_failed(self, **kwargs):  # noqa: ANN003
         return None
 
 
@@ -128,23 +128,57 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
     def __init__(self) -> None:
         self.rate_limiter = None
         self.metrics = _DummyMetrics()
-        self.config = SimpleNamespace(optimize=False)
+        self.config = SimpleNamespace(
+            optimize=False,
+            retry_max_attempts=3,
+            retry_base_delay_ms=10,
+            retry_max_delay_ms=50,
+            connect_timeout_seconds=10,
+        )
         self.usage_reporter = None
-        self.openai_provider = SimpleNamespace()
+        self.openai_provider = SimpleNamespace(get_context_limit=lambda model: 128_000)
+        self.openai_pipeline = SimpleNamespace(apply=MagicMock())
         self.anthropic_backend = None
         self.cost_tracker = None
         self.memory_handler = None
         self.captured_request: tuple[str, str, dict, dict] | None = None
+        self.captured_stream_request: tuple[str, dict, dict] | None = None
 
     async def _next_request_id(self) -> str:
         return "req-1"
 
-    def _extract_tags(self, headers: dict[str, str]) -> list[str]:
-        return []
+    def _extract_tags(self, headers: dict[str, str]) -> dict[str, str]:
+        return {}
 
     async def _retry_request(self, method: str, url: str, headers: dict, body: dict):
         self.captured_request = (method, url, headers, body)
         return _ResponseStub()
+
+    async def _stream_response(
+        self,
+        url: str,
+        headers: dict,
+        body: dict,
+        provider: str,
+        model: str,
+        request_id: str,
+        original_tokens: int,
+        optimized_tokens: int,
+        tokens_saved: int,
+        transforms_applied: list[str],
+        tags: dict[str, str],
+        optimization_latency: float,
+        memory_user_id: str | None = None,
+        **kwargs,
+    ):
+        self.captured_stream_request = (url, headers, body)
+        return SimpleNamespace(
+            status_code=200,
+            url=url,
+            headers=headers,
+            body=body,
+            memory_user_id=memory_user_id,
+        )
 
 
 def _build_request(body: dict, headers: dict[str, str]) -> Request:
@@ -196,6 +230,79 @@ def test_handle_openai_responses_routes_chatgpt_auth_to_backend_api(monkeypatch)
     assert headers["ChatGPT-Account-ID"] == "acct-from-jwt"
     assert body["input"] == "hello"
     assert response.status_code == 200
+
+
+def test_handle_openai_responses_stream_keeps_compression(monkeypatch):
+    request = _build_request(
+        {
+            "model": "gpt-5.4",
+            "stream": True,
+            "instructions": "Keep it short",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                }
+            ],
+        },
+        {"Authorization": "Bearer sk-test"},
+    )
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+    handler.openai_pipeline.apply.return_value = SimpleNamespace(
+        messages=[
+            {"role": "system", "content": "Keep it short"},
+            {"role": "user", "content": "hello"},
+        ],
+        transforms_applied=[],
+        tokens_before=2,
+        tokens_after=2,
+    )
+
+    monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda model: _DummyTokenizer())
+
+    response = anyio.run(handler.handle_openai_responses, request)
+
+    assert response.status_code == 200
+    assert handler.captured_stream_request is not None
+    assert handler.openai_pipeline.apply.call_count == 1
+    assert handler.captured_stream_request[2]["stream"] is True
+
+
+def test_handle_openai_responses_memory_timeout_fails_open(monkeypatch):
+    class _SlowMemoryHandler:
+        def __init__(self):
+            self.config = SimpleNamespace(inject_context=True, inject_tools=False)
+
+        async def search_and_format_context(self, memory_user_id, messages):
+            return "should not be used"
+
+        def has_memory_tool_calls(self, response, provider):
+            return False
+
+    async def _timeout_wait_for(awaitable, timeout):
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise TimeoutError
+
+    request = _build_request(
+        {"model": "gpt-5.4", "input": "hello"},
+        {"Authorization": "Bearer sk-test", "x-headroom-user-id": "user-1"},
+    )
+    handler = _DummyOpenAIHandler()
+    handler.memory_handler = _SlowMemoryHandler()
+
+    monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda model: _DummyTokenizer())
+    monkeypatch.setattr("headroom.proxy.handlers.openai.asyncio.wait_for", _timeout_wait_for)
+
+    response = anyio.run(handler.handle_openai_responses, request)
+
+    assert response.status_code == 200
+    assert handler.captured_request is not None
+    _, _, _, body = handler.captured_request
+    assert body.get("instructions") is None
 
 
 class _DummyWebSocket:

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
+
+import httpx
 
 
 class FakeWebSocket:
@@ -63,6 +66,11 @@ def _make_handler():
     obj = object.__new__(OpenAIHandlerMixin)
     obj.OPENAI_API_URL = "https://api.openai.com"
     obj.http_client = None
+    obj.config = SimpleNamespace(
+        retry_max_attempts=3,
+        retry_base_delay_ms=0,
+        retry_max_delay_ms=0,
+    )
     return obj
 
 
@@ -160,6 +168,27 @@ class TestWsHttpFallback:
         assert posted["stream"] is True
         assert "input" in posted
 
+    def test_fallback_strips_top_level_response_create_type(self):
+        """HTTP fallback should strip top-level response.create metadata."""
+        handler = _make_handler()
+        ws = FakeWebSocket()
+        captured_kwargs: dict = {}
+
+        class CapturingClient:
+            def stream(self, method, url, **kwargs):
+                captured_kwargs.update(kwargs)
+                return FakeStreamResponse(200, ["data: [DONE]\n\n"])
+
+        handler.http_client = CapturingClient()
+
+        body = {"type": "response.create", "model": "gpt-5.4", "input": "hi"}
+        asyncio.run(handler._ws_http_fallback(ws, body, json.dumps(body), {}, "req_type_strip"))
+
+        posted = captured_kwargs["json"]
+        assert posted["model"] == "gpt-5.4"
+        assert posted["stream"] is True
+        assert "type" not in posted
+
     def test_fallback_handles_http_exception(self):
         """HTTP fallback should send error event when HTTP request fails."""
         handler = _make_handler()
@@ -178,6 +207,28 @@ class TestWsHttpFallback:
         event = json.loads(ws.sent_texts[0])
         assert event["type"] == "error"
         assert "unreachable" in event["error"]["message"]
+
+    def test_fallback_retries_connect_timeout(self):
+        """HTTP fallback should retry transient connect timeouts."""
+        handler = _make_handler()
+        ws = FakeWebSocket()
+        attempts = {"count": 0}
+
+        class FlakyClient:
+            def stream(self, method, url, **kwargs):
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise httpx.ConnectTimeout("timed out")
+                return FakeStreamResponse(200, ['data: {"type":"response.completed"}\n\n'])
+
+        handler.http_client = FlakyClient()
+
+        body = {"model": "gpt-5.4", "input": "test"}
+        asyncio.run(handler._ws_http_fallback(ws, body, json.dumps(body), {}, "req_retry"))
+
+        assert attempts["count"] == 2
+        assert len(ws.sent_texts) == 1
+        assert json.loads(ws.sent_texts[0])["type"] == "response.completed"
 
     def test_fallback_routes_chatgpt_auth_to_chatgpt_domain(self):
         """ChatGPT session auth should route to chatgpt.com, not api.openai.com."""

@@ -5,9 +5,11 @@ Contains SSE parsing, streaming response generation, and related utilities.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
+import random
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -493,10 +495,37 @@ class StreamingMixin:
         # (needed to forward ratelimit headers to the client via StreamingResponse)
         assert self.http_client is not None, "http_client must be initialized before streaming"
         try:
-            _upstream_req = self.http_client.build_request("POST", url, json=body, headers=headers)
-            upstream_response = await self.http_client.send(_upstream_req, stream=True)
+            retry_attempts = max(1, getattr(self.config, "retry_max_attempts", 3))
+            upstream_response = None
+            last_connect_error = None
+
+            for attempt in range(retry_attempts):
+                try:
+                    _upstream_req = self.http_client.build_request(
+                        "POST", url, json=body, headers=headers
+                    )
+                    upstream_response = await self.http_client.send(_upstream_req, stream=True)
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                    last_connect_error = e
+                    if attempt >= retry_attempts - 1:
+                        raise
+
+                    delay_with_jitter = min(
+                        self.config.retry_base_delay_ms * (2**attempt),
+                        self.config.retry_max_delay_ms,
+                    ) * (0.5 + random.random())
+                    logger.warning(
+                        f"[{request_id}] Connection error to upstream API "
+                        f"(attempt {attempt + 1}/{retry_attempts}): {e!r}; "
+                        f"retrying in {delay_with_jitter:.0f}ms"
+                    )
+                    await asyncio.sleep(delay_with_jitter / 1000)
+
+            if upstream_response is None:
+                raise last_connect_error or RuntimeError("upstream connection did not start")
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
-            error_msg = str(e)
+            error_msg = str(e) or repr(e)
             logger.error(f"[{request_id}] Connection error to upstream API: {error_msg}")
 
             async def _error_gen():
