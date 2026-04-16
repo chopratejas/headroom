@@ -1,0 +1,246 @@
+---
+title: Proxy Server
+description: Run the Headroom proxy to compress LLM traffic for any client — Claude Code, Cursor, OpenAI SDK, or custom apps.
+---
+
+The Headroom proxy is a standalone HTTP server that compresses all LLM traffic passing through it. Point any client at the proxy and get automatic context optimization.
+
+## Starting the proxy
+
+```bash
+# Basic usage
+headroom proxy
+
+# Custom host and port
+headroom proxy --host 0.0.0.0 --port 8080
+
+# With logging and budget
+headroom proxy \
+  --log-file /var/log/headroom.jsonl \
+  --budget 100.0
+```
+
+Telemetry is enabled by default. Opt out with `HEADROOM_TELEMETRY=off` or `--no-telemetry`.
+
+## CLI options
+
+### Core
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | `127.0.0.1` | Host to bind to |
+| `--port` | `8787` | Port to bind to |
+| `--no-optimize` | `false` | Disable optimization (passthrough mode) |
+| `--no-cache` | `false` | Disable semantic caching |
+| `--no-rate-limit` | `false` | Disable rate limiting |
+| `--log-file` | None | Path to JSONL log file |
+| `--budget` | None | Daily budget limit in USD |
+| `--openai-api-url` | `https://api.openai.com` | Custom OpenAI API URL |
+
+### Context management
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--no-intelligent-context` | `false` | Fall back to RollingWindow (oldest-first drops) |
+| `--no-intelligent-scoring` | `false` | Disable multi-factor importance scoring |
+| `--no-compress-first` | `false` | Disable trying deeper compression before dropping |
+
+By default, the proxy uses **IntelligentContextManager** which scores messages by recency, semantic similarity, TOIN-learned patterns, error indicators, and forward references. Dropped messages are stored in CCR for retrieval.
+
+```bash
+# Use legacy RollingWindow
+headroom proxy --no-intelligent-context
+
+# Faster but less intelligent scoring
+headroom proxy --no-intelligent-scoring
+```
+
+### LLMLingua (ML compression)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--llmlingua` | `false` | Enable LLMLingua-2 ML-based compression |
+| `--llmlingua-device` | `auto` | Device: `auto`, `cuda`, `cpu`, `mps` |
+| `--llmlingua-rate` | `0.3` | Target compression rate (0.3 = keep 30%) |
+
+```bash
+pip install "headroom-ai[llmlingua]"
+
+headroom proxy --llmlingua --llmlingua-device cuda
+headroom proxy --llmlingua --llmlingua-rate 0.2
+```
+
+<Callout type="info" title="LLMLingua resource cost">
+LLMLingua adds ~2 GB of dependencies (torch, transformers), 10-30s cold start, and ~1 GB RAM. Enable when maximum compression justifies the cost.
+</Callout>
+
+## API endpoints
+
+### `GET /health`
+
+```bash
+curl http://localhost:8787/health
+```
+
+```json
+{
+  "status": "healthy",
+  "optimize": true,
+  "stats": {
+    "total_requests": 42,
+    "tokens_saved": 15000,
+    "savings_percent": 45.2
+  }
+}
+```
+
+### `GET /stats`
+
+Live session statistics plus durable `persistent_savings` totals. Stored at `~/.headroom/proxy_savings.json` (override with `HEADROOM_SAVINGS_PATH`).
+
+```bash
+curl http://localhost:8787/stats
+```
+
+### `GET /stats-history`
+
+Durable history with hourly, daily, weekly, and monthly rollups. Powers the `/dashboard` view.
+
+```bash
+curl http://localhost:8787/stats-history
+curl "http://localhost:8787/stats-history?format=csv&series=weekly"
+```
+
+### `GET /metrics`
+
+Prometheus-format metrics for monitoring.
+
+```bash
+curl http://localhost:8787/metrics
+```
+
+```
+headroom_requests_total{mode="optimize"} 1234
+headroom_tokens_saved_total 5678900
+headroom_compression_ratio_bucket{le="0.5"} 890
+headroom_latency_seconds_bucket{le="0.01"} 800
+headroom_cache_hits_total 456
+```
+
+### `POST /v1/messages`
+
+Anthropic API format. The proxy compresses messages, forwards to Anthropic, and returns the response.
+
+### `POST /v1/chat/completions`
+
+OpenAI API format. The proxy compresses messages, forwards to OpenAI, and returns the response.
+
+### `POST /v1/compress`
+
+Compression-only endpoint. Compresses messages without calling any LLM. Used by the TypeScript SDK.
+
+**Request:**
+```json
+{
+  "messages": [{ "role": "user", "content": "..." }],
+  "model": "gpt-4o"
+}
+```
+
+**Response:**
+```json
+{
+  "messages": [{ "role": "user", "content": "..." }],
+  "tokens_before": 15000,
+  "tokens_after": 3500,
+  "tokens_saved": 11500,
+  "compression_ratio": 0.23,
+  "transforms_applied": ["router:smart_crusher:0.35"],
+  "ccr_hashes": ["a1b2c3"]
+}
+```
+
+Set `x-headroom-bypass: true` to skip compression.
+
+## Agent wrapping
+
+Use `headroom wrap` to transparently proxy any CLI tool:
+
+```bash
+# Claude Code
+headroom wrap claude
+
+# OpenAI Codex
+headroom wrap codex
+
+# Aider
+headroom wrap aider
+
+# Cursor
+headroom wrap cursor
+```
+
+Or set the base URL manually:
+
+```bash
+# Claude Code
+ANTHROPIC_BASE_URL=http://localhost:8787 claude
+
+# Cursor / any OpenAI-compatible client
+OPENAI_BASE_URL=http://localhost:8787/v1 cursor
+```
+
+## Cloud providers
+
+```bash
+# AWS Bedrock
+headroom proxy --backend bedrock --region us-east-1
+
+# Google Vertex AI
+headroom proxy --backend vertex_ai --region us-central1
+
+# Azure OpenAI
+headroom proxy --backend azure
+
+# OpenRouter (400+ models)
+OPENROUTER_API_KEY=sk-or-... headroom proxy --backend openrouter
+```
+
+## Environment variables
+
+```bash
+export HEADROOM_HOST=0.0.0.0
+export HEADROOM_PORT=8787
+export HEADROOM_BUDGET=100.0
+export OPENAI_TARGET_API_URL=https://custom.openai.endpoint.com
+headroom proxy
+```
+
+## Production deployment
+
+### gunicorn
+
+```bash
+pip install gunicorn
+
+gunicorn headroom.proxy.server:app \
+  --workers 4 \
+  --bind 0.0.0.0:8787 \
+  --worker-class uvicorn.workers.UvicornWorker
+```
+
+### Docker
+
+```dockerfile
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && pip install "headroom-ai[proxy]" \
+    && apt-get purge -y build-essential && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+EXPOSE 8787
+CMD ["headroom", "proxy", "--host", "0.0.0.0"]
+```
+
+<Callout type="info" title="Build dependencies">
+`build-essential` is required at install time because `headroom-ai` includes `hnswlib`, a C++ extension compiled from source. It is removed after installation to keep the image slim.
+</Callout>

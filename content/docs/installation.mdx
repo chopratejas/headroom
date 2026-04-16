@@ -1,0 +1,164 @@
+---
+title: Installation
+description: Install Headroom via pip, npm, or Docker. Includes all Python extras, TypeScript setup, Docker image tags, and environment variables.
+---
+
+## Python
+
+Headroom requires **Python 3.10+** and is published as `headroom-ai` on PyPI.
+
+### Core package
+
+```bash
+pip install headroom-ai
+```
+
+The core package includes the `compress()` function, SmartCrusher, CacheAligner, and IntelligentContext. No heavy dependencies.
+
+### Extras
+
+Install only what you need, or grab everything with `[all]`:
+
+```bash
+pip install "headroom-ai[all]"
+```
+
+| Extra | What it adds | Install command |
+|---|---|---|
+| `proxy` | Proxy server, MCP tools, HTTP API | `pip install "headroom-ai[proxy]"` |
+| `ml` | Kompress (ModernBERT text compression, requires PyTorch) | `pip install "headroom-ai[ml]"` |
+| `code` | CodeCompressor (tree-sitter AST parsing) | `pip install "headroom-ai[code]"` |
+| `mcp` | MCP server tools (`headroom_compress`, `headroom_retrieve`, `headroom_stats`) | `pip install "headroom-ai[mcp]"` |
+| `langchain` | LangChain `HeadroomChatModel` wrapper | `pip install "headroom-ai[langchain]"` |
+| `agno` | Agno `HeadroomAgnoModel` wrapper | `pip install "headroom-ai[agno]"` |
+| `evals` | Evaluation framework (GSM8K, SQuAD, BFCL benchmarks) | `pip install "headroom-ai[evals]"` |
+| `all` | Everything above | `pip install "headroom-ai[all]"` |
+
+You can combine extras:
+
+```bash
+pip install "headroom-ai[proxy,langchain,ml]"
+```
+
+### Verify the install
+
+```bash
+python -c "import headroom; print(headroom.__version__)"
+```
+
+## TypeScript / Node.js
+
+The TypeScript SDK is published as `headroom-ai` on npm. It requires **Node.js 18+**.
+
+```bash
+npm install headroom-ai
+```
+
+Or with other package managers:
+
+```bash
+pnpm add headroom-ai
+yarn add headroom-ai
+```
+
+<Callout type="info" title="The TS SDK needs a running proxy">
+The TypeScript SDK sends messages to the Headroom proxy over HTTP for compression. The proxy runs the full compression pipeline (Python). Start it before using the SDK:
+
+```bash
+pip install "headroom-ai[proxy]"
+headroom proxy --port 8787
+```
+
+Then point the SDK at it:
+
+```ts
+import { compress } from 'headroom-ai';
+
+const result = await compress(messages, {
+  baseUrl: 'http://localhost:8787',
+});
+```
+</Callout>
+
+### Verify the install
+
+```bash
+node -e "const h = require('headroom-ai'); console.log('headroom-ai loaded')"
+```
+
+## Docker
+
+Pre-built images are published to GitHub Container Registry on every release.
+
+```bash
+docker pull ghcr.io/chopratejas/headroom:latest
+docker run -p 8787:8787 ghcr.io/chopratejas/headroom:latest
+```
+
+### Image tags
+
+| Tag | Extras | Base image | Description |
+|---|---|---|---|
+| `latest` | `proxy` | Debian slim | Default image, runs the proxy |
+| `<version>` | `proxy` | Debian slim | Pinned version |
+| `nonroot` | `proxy` | Debian slim | Runs as non-root user |
+| `code` | `proxy,code` | Debian slim | Includes tree-sitter for code compression |
+| `code-nonroot` | `proxy,code` | Debian slim | Code compression, non-root |
+| `slim` | `proxy` | Distroless | Minimal image, no shell |
+| `slim-nonroot` | `proxy` | Distroless | Minimal, non-root |
+| `code-slim` | `proxy,code` | Distroless | Code compression, minimal |
+| `code-slim-nonroot` | `proxy,code` | Distroless | Code compression, minimal, non-root |
+
+### Build from source
+
+Use Docker Bake for multi-variant builds:
+
+```bash
+# List all targets
+docker buildx bake --list targets
+
+# Build the default runtime image
+docker buildx bake runtime-default
+
+# Build a specific variant with custom registry
+docker buildx bake runtime-code-slim-nonroot \
+  --set '*.tags=my-registry/headroom:code-slim-nonroot'
+```
+
+## Environment variables
+
+These variables configure Headroom at runtime. Set them in your shell, `.env` file, or container environment.
+
+### LLM provider keys
+
+| Variable | Description |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI API key (used when proxying to OpenAI) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (used when proxying to Anthropic) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS credentials for Bedrock backend |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Google Cloud credentials for Vertex AI backend |
+
+### Proxy configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEADROOM_PORT` | `8787` | Port the proxy listens on |
+| `HEADROOM_HOST` | `0.0.0.0` | Host the proxy binds to |
+| `HEADROOM_MODE` | `optimize` | Default mode: `optimize`, `audit`, or `passthrough` |
+| `HEADROOM_LOG_LEVEL` | `INFO` | Logging level |
+
+### TypeScript SDK
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEADROOM_BASE_URL` | `http://localhost:8787` | Proxy URL for the TypeScript SDK |
+| `HEADROOM_API_KEY` | _(none)_ | API key if the proxy requires auth |
+
+## Next steps
+
+<Cards>
+  <Card title="Quickstart" href="/docs/quickstart" />
+  <Card title="Proxy Server" href="/docs/proxy" />
+  <Card title="Configuration" href="/docs/configuration" />
+  <Card title="Vercel AI SDK" href="/docs/vercel-ai-sdk" />
+</Cards>

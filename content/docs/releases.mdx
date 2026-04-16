@@ -1,0 +1,239 @@
+---
+title: Releases & CI/CD
+description: Automated release pipeline with semantic versioning, multi-package publishing, and changelog generation.
+---
+
+## Overview
+
+Headroom uses a unified GitHub Actions workflow (`.github/workflows/release.yml`) that automatically publishes all three packages, generates changelogs from conventional commits, and creates GitHub Releases.
+
+## Packages & Registries
+
+| Package | Type | Registry | Environment Variable |
+|---------|------|----------|----------------------|
+| `headroom-ai` | Python | PyPI | `PYPI_PACKAGE` |
+| `headroom-ai` | TypeScript SDK | npmjs.org | `NPM_SDK_PACKAGE` |
+| `headroom-openclaw` | TypeScript plugin | npmjs.org | `NPM_OPENCLAW_PACKAGE` |
+| `headroom-openclaw` | TypeScript plugin | GitHub Package Registry | — |
+
+## Version Strategy
+
+The workflow uses a **canonical + commit-height** algorithm that eliminates infinite loops:
+
+1. `pyproject.toml` holds the **canonical version** (e.g., `0.5.25`). This is the single source of truth — set manually before merging.
+2. On every push to `main`, the workflow counts commits since the last tagged release at the same canonical level.
+3. The **git tag** uses `v{canonical}.{height}` format (e.g., `v0.5.25.3` = 3 commits since canonical `0.5.25`).
+4. The **npm version** uses 3-part semver — bumped from canonical based on commit type (e.g., `feat:` + canonical `0.5.25` → `0.6.0`).
+
+### Version Files
+
+- `pyproject.toml` — `[project].version` — **canonical** (set manually before merge)
+- `headroom/_version.py` — `__version__` — synced at build time
+- `plugins/openclaw/package.json` — `version` — synced at build time
+- `sdk/typescript/package.json` — `version` — synced at build time
+
+**The workflow NEVER commits back to the repo** — this breaks the infinite loop.
+
+## Conventional Commits & Semantic Bumping
+
+The workflow analyzes the **latest commit** to determine the bump level:
+
+| Commit | Bump | Git Tag Example | npm Version |
+|--------|------|-----------------|-------------|
+| `fix:`, `ci:`, `chore:`, `perf:`, `refactor:` | patch | `v0.5.25.3` | `0.5.26` |
+| `feat:` | minor | `v0.6.0.0` | `0.6.0` |
+| `feat!:` or `feat:` + `BREAKING CHANGE` in body | major | `v1.0.0.0` | `1.0.0` |
+
+Commits are linted in CI via `commitlint` using `@commitlint/config-conventional`.
+
+### How the Canonical + Height Algorithm Works
+
+```
+Canonical in pyproject.toml: 0.5.25
+Last tag at this canonical:  v0.5.25.2 (2 commits ago)
+
+HEAD commit: fix: resolve bug
+  → bump = patch
+  → height = 3 (2 prior + 1 new)
+  → git tag: v0.5.25.3
+  → npm version: 0.5.26 (canonical 0.5.25 + 1 patch bump)
+```
+
+After npm publishes `0.5.26`, update `pyproject.toml` to `0.5.26` (manually, before next release).
+
+## Release Workflow
+
+The `release.yml` workflow runs on every push to `main` and consists of five jobs:
+
+```
+detect-version → build → publish-pypi
+                        → publish-npm
+                        → publish-github-packages → create-release
+```
+
+**Note:** The workflow never commits back to the repo. `pyproject.toml` is updated manually before merging.
+
+### detect-version
+Reads canonical version from `pyproject.toml`, counts commits since last `v{canonical}.*` tag, determines bump level from the latest commit message, and computes both the git tag version (`v{canonical}.{height}`) and npm version (3-part semver).
+
+### build
+1. Syncs version across TypeScript package files via `scripts/version-sync.py --version {npm_version}`
+2. Generates changelog via `scripts/changelog-gen.py`
+3. Builds the Python package (`python -m build`)
+4. Uploads artifacts (dist + changelog)
+
+### publish-pypi
+Downloads the Python dist artifact and publishes to PyPI via `pypa/gh-action-pypi-publish@release/v1` (trusted publisher).
+
+### publish-npm
+Publishes both TypeScript packages to npmjs.org:
+- `sdk/typescript/` as `headroom-ai`
+- `plugins/openclaw/` as `headroom-openclaw`
+
+### publish-github-packages
+Publishes `plugins/openclaw/` to GitHub Package Registry (`npm.pkg.github.com`).
+
+### create-release
+Creates a GitHub Release with the generated changelog as release notes, tagged as `v{canonical}.{height}`.
+
+## Configuration
+
+All package names, registry URLs, and environment names are defined as top-level `env` constants:
+
+```yaml
+env:
+  PYPI_PACKAGE: headroom-ai
+  PYPI_ENVIRONMENT: pypi
+  NPM_REGISTRY_URL: https://registry.npmjs.org
+  NPM_SDK_PACKAGE: headroom-ai
+  NPM_OPENCLAW_PACKAGE: headroom-openclaw
+  GITHUB_PACKAGES_REGISTRY_URL: https://npm.pkg.github.com
+```
+
+To rename a package, update the corresponding constant — all references throughout the workflow update automatically.
+
+## Safety Gates
+
+Each publish job requires **both** of the following to be false:
+
+```yaml
+if: github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
+```
+
+To skip a publish target, set the corresponding GitHub Actions variable:
+
+| Variable | Effect |
+|----------|--------|
+| `PYPI_SKIP=true` | Skip PyPI publish |
+| `NPM_SKIP=true` | Skip both npm publishes |
+| `GITHUB_PKG_SKIP=true` | Skip GitHub Package Registry publish |
+
+Set these in: **GitHub repo → Settings → Variables → Actions Variables → New repository variable**.
+
+## Workflow Triggers
+
+The workflow runs on push to `main`, but ignores pushes that only touch docs, CI config, or scripts:
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/publish.yml"
+      - "scripts/**"
+      - ...
+```
+
+For manual control, use `workflow_dispatch`:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Manual version override (e.g. 0.6.0)"
+        required: false
+      dry_run:
+        description: "Skip publish"
+        type: boolean
+        default: false
+```
+
+- **No version input:** auto-detected from commits (normal flow)
+- **`dry_run: true`:** runs all jobs except publish steps — useful for testing
+
+## Local Testing with `act`
+
+### Prerequisites
+
+```bash
+# Install act
+winget install act
+
+# Optional: install actionlint for schema validation
+winget install actionlint
+```
+
+### Dry-run Test
+
+```bash
+act -W .github/workflows/release.yml -e .github/act/dry-run.json
+```
+
+This runs the full workflow end-to-end with `dry_run=true`, skipping all publish steps.
+
+### Test a Specific Commit Type
+
+```bash
+act -W .github/workflows/release.yml -e .github/act/push-feat.json
+```
+
+The `push-feat.json` event file simulates a `feat:` commit on `main`.
+
+### Local Secrets
+
+```bash
+cp .env.act.example .env.act
+# Edit .env.act and add your test tokens
+```
+
+`act` automatically reads `.env` and passes values as workflow secrets.
+
+## Workflow Files Reference
+
+| File | Purpose |
+|------|---------|
+| `.github/workflows/release.yml` | Main release pipeline |
+| `.github/workflows/ci.yml` | CI — lint, test, commitlint |
+| `.github/workflows/publish.yml` | Manual-only PyPI fallback (superseded by `release.yml`) |
+| `.commitlintrc.json` | Conventional commit rules |
+| `scripts/version-sync.py` | Sync version across all packages |
+| `scripts/changelog-gen.py` | Generate changelog from git log |
+| `scripts/verify-versions.py` | Pre-release version alignment check |
+| `.github/act/dry-run.json` | `act` event file for dry-run testing |
+| `.github/act/push-feat.json` | `act` event file for feat commit testing |
+| `.actrc` | Default `act` flags (Ubuntu runner, reuse, quiet) |
+| `.actrc.local.example` | Local `act` override template |
+
+## Required GitHub Secrets
+
+| Secret | Purpose | Where to Get |
+|--------|---------|--------------|
+| `NPM_TOKEN` | Publishing to npmjs.org | npmjs.com → Account → Access Tokens |
+| `GITHUB_TOKEN` | GitHub Package Registry (auto-provided) | Automatically available in GitHub Actions |
+
+The PyPI publish uses trusted publisher OIDC — no secret required, only the `pypi` GitHub Environment must be configured with your PyPI project.
+
+## First Release Note
+
+TypeScript packages (`headroom-ai` SDK and `headroom-openclaw`) start at version `0.1.0`, while Python `headroom-ai` is at `0.5.25`. Before the first automated release:
+
+1. Update `pyproject.toml` to set the desired canonical version (e.g., `0.6.0`)
+2. Use `workflow_dispatch` with a manual `version` input to set the target version explicitly
+3. The workflow will align all three packages to the same version on first release
+
+### Release Cadence with Canonical + Height
+
+After each release, update `pyproject.toml` to match the published version before merging the next feature branch. This keeps the canonical current and ensures each release gets a unique git tag.
