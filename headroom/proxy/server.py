@@ -2532,7 +2532,8 @@ if __name__ == "__main__":
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {HeadroomProxy.OPENAI_API_URL})"
     )
     parser.add_argument(
-        "--anthropic-api-url", help=f"Custom Anthropic API URL (default: {HeadroomProxy.ANTHROPIC_API_URL})"
+        "--anthropic-api-url",
+        help=f"Custom Anthropic API URL (default: {HeadroomProxy.ANTHROPIC_API_URL})",
     )
 
     # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
