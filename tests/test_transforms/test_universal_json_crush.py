@@ -172,14 +172,15 @@ class TestCrushNumberArray:
         assert len(crushed) < len(numbers)
         assert "number:adaptive" in strategy
 
-    def test_summary_prepended(self, crusher):
+    def test_stats_in_strategy_not_array(self, crusher):
         numbers = list(range(100))
         crushed, strategy = crusher._crush_number_array(numbers)
-        # First element should be the stats summary string
-        assert isinstance(crushed[0], str)
-        assert "numbers:" in crushed[0]
-        assert "min=" in crushed[0]
-        assert "max=" in crushed[0]
+        # Stats should be in the strategy string, not in the array
+        assert "min=" in strategy
+        assert "max=" in strategy
+        # Array should contain only numbers (schema-preserving)
+        for item in crushed:
+            assert isinstance(item, int | float)
 
     def test_outliers_preserved(self, crusher):
         # Normal values around 50 with one extreme outlier
@@ -193,13 +194,13 @@ class TestCrushNumberArray:
         crushed, strategy = crusher._crush_number_array(numbers)
         # With all identical, should compress heavily
         # Summary + a few representatives
-        numeric_values = [v for v in crushed if isinstance(v, (int, float))]
+        numeric_values = [v for v in crushed if isinstance(v, int | float)]
         assert all(v == 42.0 for v in numeric_values)
 
     def test_first_last_kept(self, crusher):
         numbers = list(range(50))
         crushed, strategy = crusher._crush_number_array(numbers)
-        numeric_values = [v for v in crushed if isinstance(v, (int, float))]
+        numeric_values = [v for v in crushed if isinstance(v, int | float)]
         assert 0 in numeric_values  # First
         assert 49 in numeric_values  # Last
 
@@ -207,7 +208,7 @@ class TestCrushNumberArray:
         # Stable at 10, then jumps to 100
         numbers = [10.0] * 50 + [100.0] * 50
         crushed, strategy = crusher_large_k._crush_number_array(numbers)
-        numeric_values = [v for v in crushed if isinstance(v, (int, float))]
+        numeric_values = [v for v in crushed if isinstance(v, int | float)]
         # Both 10.0 and 100.0 should be present
         assert 10.0 in numeric_values
         assert 100.0 in numeric_values
@@ -215,23 +216,24 @@ class TestCrushNumberArray:
     def test_nan_inf_filtered(self, crusher):
         numbers = [1.0, 2.0, float("nan"), float("inf"), 3.0] * 10
         crushed, strategy = crusher._crush_number_array(numbers)
-        # Should not crash; stats should be based on finite values
-        assert isinstance(crushed[0], str)
+        # Should not crash; stats in strategy based on finite values
+        assert "min=" in strategy
+        assert "max=" in strategy
 
     def test_integers_preserved_as_int(self, crusher):
         numbers = list(range(50))
         crushed, strategy = crusher._crush_number_array(numbers)
-        numeric_values = [v for v in crushed if isinstance(v, (int, float))]
+        numeric_values = [v for v in crushed if isinstance(v, int | float)]
         # Integers should remain integers (not converted to float)
         assert any(isinstance(v, int) for v in numeric_values)
 
     def test_statistics_accuracy(self, crusher):
         numbers = list(range(1, 101))  # 1 to 100
         crushed, strategy = crusher._crush_number_array(numbers)
-        summary = crushed[0]
-        assert "min=1" in summary
-        assert "max=100" in summary
-        assert "mean=50.5" in summary
+        # Stats are in the strategy string
+        assert "min=1" in strategy
+        assert "max=100" in strategy
+        assert "mean=50.5" in strategy
 
 
 # =====================================================================
@@ -382,7 +384,7 @@ class TestSafetyGuarantees:
             assert items[-1] in crushed
         else:
             crushed, _ = crusher._crush_number_array(items)
-            numeric = [v for v in crushed if isinstance(v, (int, float))]
+            numeric = [v for v in crushed if isinstance(v, int | float)]
             assert items[0] in numeric
             assert items[-1] in numeric
 
@@ -399,7 +401,7 @@ class TestSafetyGuarantees:
         """Arrays below min_items_to_analyze pass through unchanged."""
         if all(isinstance(i, str) for i in items):
             crushed, strategy = crusher._crush_string_array(items)
-        elif all(isinstance(i, (int, float)) for i in items):
+        elif all(isinstance(i, int | float) for i in items):
             crushed, strategy = crusher._crush_number_array(items)
         else:
             crushed, strategy = crusher._crush_mixed_array(items)
