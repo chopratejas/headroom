@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import io
 import socket
 import sys
@@ -23,6 +24,30 @@ from pathlib import Path
 import pytest
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_websockets_module() -> Iterator[None]:
+    """Some earlier tests replace ``sys.modules['websockets']`` with a stub.
+
+    uvicorn's websockets-sansio backend imports ``websockets.server`` at
+    connect time; if a stub is installed the import fails and the mock
+    proxy never starts. Force-reload the real package before this test.
+    """
+    originals = {
+        name: sys.modules.pop(name, None)
+        for name in list(sys.modules)
+        if name == "websockets" or name.startswith("websockets.")
+    }
+    importlib.import_module("websockets")
+    importlib.import_module("websockets.asyncio.server")
+    yield
+    for name in list(sys.modules):
+        if name == "websockets" or name.startswith("websockets."):
+            del sys.modules[name]
+    for name, mod in originals.items():
+        if mod is not None:
+            sys.modules[name] = mod
 
 # Make sure `scripts/` is importable when running via pytest from repo root.
 ROOT = Path(__file__).resolve().parents[2]
