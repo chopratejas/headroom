@@ -296,8 +296,20 @@ def test_session_stats_path_default(fake_home: Path) -> None:
     assert paths.session_stats_path() == fake_home / ".headroom" / "session_stats.jsonl"
 
 
+def test_sync_state_path_default(fake_home: Path) -> None:
+    assert paths.sync_state_path() == fake_home / ".headroom" / "sync_state.json"
+
+
+def test_bridge_state_path_default(fake_home: Path) -> None:
+    assert paths.bridge_state_path() == fake_home / ".headroom" / "bridge_state.json"
+
+
 def test_log_dir_default(fake_home: Path) -> None:
     assert paths.log_dir() == fake_home / ".headroom" / "logs"
+
+
+def test_proxy_log_path_default(fake_home: Path) -> None:
+    assert paths.proxy_log_path() == fake_home / ".headroom" / "logs" / "proxy.log"
 
 
 def test_debug_400_dir_default(fake_home: Path) -> None:
@@ -320,6 +332,84 @@ def test_deploy_root_default(fake_home: Path) -> None:
 
 def test_beacon_lock_path_includes_port(fake_home: Path) -> None:
     assert paths.beacon_lock_path(8787) == fake_home / ".headroom" / ".beacon_lock_8787"
+
+
+# Every derived-only helper must also honor HEADROOM_WORKSPACE_DIR overrides so
+# that a single env var relocates the whole workspace bucket. One row per
+# helper, each asserting the override flows through end-to-end.
+DERIVED_WORKSPACE_HELPERS = [
+    pytest.param("native_memory_dir", "memories", id="native_memory_dir"),
+    pytest.param("license_cache_path", "license_cache.json", id="license_cache_path"),
+    pytest.param("session_stats_path", "session_stats.jsonl", id="session_stats_path"),
+    pytest.param("sync_state_path", "sync_state.json", id="sync_state_path"),
+    pytest.param("bridge_state_path", "bridge_state.json", id="bridge_state_path"),
+    pytest.param("log_dir", "logs", id="log_dir"),
+    pytest.param("debug_400_dir", "logs/debug_400", id="debug_400_dir"),
+    pytest.param("bin_dir", "bin", id="bin_dir"),
+    pytest.param("deploy_root", "deploy", id="deploy_root"),
+]
+
+
+@pytest.mark.parametrize("fn_name,rel", DERIVED_WORKSPACE_HELPERS)
+def test_derived_helper_follows_workspace_env(
+    fake_home: Path,
+    clean_env: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fn_name: str,
+    rel: str,
+) -> None:
+    ws = tmp_path / "state"
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
+    fn = getattr(paths, fn_name)
+    expected = ws
+    for part in rel.split("/"):
+        expected = expected / part
+    assert fn() == expected
+
+
+def test_proxy_log_path_follows_workspace_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws = tmp_path / "state"
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
+    assert paths.proxy_log_path() == ws / "logs" / "proxy.log"
+
+
+def test_rtk_path_follows_workspace_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws = tmp_path / "state"
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
+    expected_name = "rtk.exe" if os.name == "nt" else "rtk"
+    assert paths.rtk_path() == ws / "bin" / expected_name
+
+
+def test_beacon_lock_path_follows_workspace_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws = tmp_path / "state"
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
+    assert paths.beacon_lock_path(9999) == ws / ".beacon_lock_9999"
+
+
+def test_ensure_workspace_dir_follows_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws = tmp_path / "ws"
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
+    result = paths.ensure_workspace_dir()
+    assert result == ws
+    assert result.is_dir()
+
+
+def test_ensure_config_dir_follows_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = tmp_path / "cfg"
+    clean_env.setenv(paths.HEADROOM_CONFIG_DIR_ENV, str(cfg))
+    result = paths.ensure_config_dir()
+    assert result == cfg
+    assert result.is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +462,20 @@ def test_plugin_dirs_reject_bad_names(fake_home: Path, bad_name: str) -> None:
         paths.plugin_config_dir(bad_name)
     with pytest.raises(ValueError):
         paths.plugin_workspace_dir(bad_name)
+
+
+def test_plugin_config_dir_follows_config_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    clean_env.setenv(paths.HEADROOM_CONFIG_DIR_ENV, str(tmp_path / "cfg"))
+    assert paths.plugin_config_dir("alpha") == tmp_path / "cfg" / "plugins" / "alpha"
+
+
+def test_plugin_workspace_dir_follows_workspace_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(tmp_path / "ws"))
+    assert paths.plugin_workspace_dir("alpha") == tmp_path / "ws" / "plugins" / "alpha"
 
 
 # ---------------------------------------------------------------------------
