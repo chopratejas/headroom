@@ -709,16 +709,36 @@ def test_early_exit_paths_release_semaphore_under_contention(scenario):
         )
 
         # Drive several iterations to confirm each early-exit call fully
-        # releases the semaphore rather than leaking a permit.
+        # releases the semaphore rather than leaking a permit AND that the
+        # exception type or response status matches the contract for this
+        # scenario. `except Exception: pass` would mask the 62d0a50 regression
+        # where HTTPException got swallowed and turned into a 502 JSONResponse.
+        from fastapi import HTTPException
+
         for _ in range(3):
+            raised: BaseException | None = None
+            result = None
             try:
-                await handler.handle_anthropic_messages(req)
-            except Exception:
-                # rate_limiter + cost_tracker raise HTTPException(429);
+                result = await handler.handle_anthropic_messages(req)
+            except HTTPException as exc:
+                raised = exc
+
+            if scenario in ("rate_limiter", "cost_tracker"):
+                # These paths MUST surface HTTPException(429) so FastAPI's
+                # exception handler emits the proper status + Retry-After.
+                assert isinstance(raised, HTTPException), (
+                    f"{scenario}: expected HTTPException to propagate, got "
+                    f"raised={raised!r} result={result!r}"
+                )
+                assert raised.status_code == 429, (
+                    f"{scenario}: wrong status code — got {raised.status_code}"
+                )
+            else:
                 # security returns a JSONResponse; cache returns a Response.
-                # Any exception that escapes is acceptable — what matters is
-                # the semaphore state after the handler returns.
-                pass
+                assert raised is None, (
+                    f"{scenario}: unexpected exception {raised!r}"
+                )
+                assert result is not None
             assert sem._value == original_value, (
                 f"{scenario}: semaphore leak "
                 f"got={sem._value}, want={original_value}"

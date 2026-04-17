@@ -1611,6 +1611,14 @@ class AnthropicHandlerMixin:
                         headers=response_headers,
                     )
 
+            except HTTPException:
+                # FastAPI HTTPException carries its own status code, headers,
+                # and client-facing message (e.g. 429 with Retry-After, 413 for
+                # oversized bodies). Let FastAPI's own exception handler produce
+                # the response — swallowing it into the 502 catch-all below
+                # would regress rate-limit and budget responses to 502 with no
+                # Retry-After header. The outer finally still runs.
+                raise
             except Exception as e:
                 await self.metrics.record_failed(provider="anthropic")
                 # Log full error details internally for debugging
