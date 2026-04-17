@@ -2562,6 +2562,12 @@ def run_server(
         log_level="warning",
         workers=workers if workers > 1 else None,  # None = single process (default)
         limit_concurrency=limit_concurrency,
+        # Defense-in-depth: the loopback guard for /debug/* endpoints trusts
+        # request.client.host. uvicorn's ProxyHeadersMiddleware rewrites that
+        # from X-Forwarded-For when FORWARDED_ALLOW_IPS is broader than the
+        # default. Disabling proxy_headers here guarantees the guard sees the
+        # real peer address regardless of env.
+        proxy_headers=False,
     )
 
 
