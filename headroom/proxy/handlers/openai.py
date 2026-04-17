@@ -38,6 +38,14 @@ logger = logging.getLogger("headroom.proxy")
 # than holding the session hostage on memory lookup.
 RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS = 2.0
 
+# Cap the wait for the first client frame after the WS handshake completes.
+# A zombie or malicious client that accepts the upgrade but never sends the
+# first response.create frame would otherwise hold a slot indefinitely and
+# starve the session registry. 60 s is generous for real clients (Codex
+# typically sends the first frame within a few hundred milliseconds of the
+# accept) but short enough to bound the damage from a hung peer.
+WS_FIRST_FRAME_TIMEOUT_SECONDS = 60.0
+
 
 def _decode_openai_bearer_payload(headers: dict[str, str]) -> dict[str, Any] | None:
     """Best-effort decode of an OpenAI OAuth bearer token payload.
@@ -1363,9 +1371,32 @@ class OpenAIHandlerMixin:
         )
 
         try:
-            # Receive the first message from client (the response.create request)
-            async with stage_timer.measure("first_client_frame"):
-                first_msg_raw = await websocket.receive_text()
+            # Receive the first message from client (the response.create request).
+            # Bound the wait with WS_FIRST_FRAME_TIMEOUT_SECONDS so a zombie
+            # client that opens the WS but never sends a frame cannot hold a
+            # session slot indefinitely. The StageTimer measurement still
+            # captures the elapsed time up to the timeout so operators can
+            # see the slow-client pattern in the stage-timings log.
+            try:
+                async with stage_timer.measure("first_client_frame"):
+                    first_msg_raw = await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=WS_FIRST_FRAME_TIMEOUT_SECONDS,
+                    )
+            except asyncio.TimeoutError:
+                logger.info(
+                    f"[{request_id}] WS first-frame timeout after "
+                    f"{WS_FIRST_FRAME_TIMEOUT_SECONDS:.0f}s; closing session "
+                    f"{session_id} (no client data)"
+                )
+                termination_cause = "client_timeout"
+                with contextlib.suppress(Exception):
+                    # 1001 (going away): server is cleanly terminating a slow
+                    # client, not an internal error.
+                    await websocket.close(code=1001, reason="first-frame timeout")
+                # Exit the outer try so the session-lifecycle ``finally`` runs
+                # deregister / metrics / stage-timings emission as usual.
+                return
 
             # --- Optional: compress the input in the first message ---
             body: dict[str, Any] = {}
