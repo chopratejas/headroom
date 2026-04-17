@@ -249,6 +249,11 @@ def test_harness_reports_unreachable_proxy_fast() -> None:
         ]
     )
     elapsed = time.perf_counter() - t0
-    assert rc == 1, f"expected exit 1, got {rc}. stdout={out} stderr={err}"
+    # P3 Fix 25: EXIT_PROXY_UNREACHABLE=2 distinguishes "proxy didn't
+    # answer" from a generic crash (exit 1) or a threshold miss (exit 3).
+    assert rc == repro_codex_replay.EXIT_PROXY_UNREACHABLE, (
+        f"expected exit {repro_codex_replay.EXIT_PROXY_UNREACHABLE}, "
+        f"got {rc}. stdout={out} stderr={err}"
+    )
     assert "unreachable" in (out + err).lower()
     assert elapsed < 10.0, f"unreachable detection too slow: {elapsed:.2f}s"

@@ -316,8 +316,16 @@ async def _anthropic_client(
             # Retry loop — mimic agent behavior with bounded wall clock.
             if time.perf_counter() >= retry_cutoff:
                 return
-            # Small jitter between 50ms and 250ms.
-            await asyncio.sleep(0.05 + random.random() * 0.2)
+            # Exponential backoff with 50-150% jitter, mirroring the
+            # ``jitter_delay_ms(base_ms=250, max_ms=5000, attempt=n)``
+            # helper used inside the proxy. Keeping the formula inline
+            # so this script stays dependency-free of the proxy package.
+            _base_ms = 250
+            _max_ms = 5000
+            _delay_ms = min(_base_ms * (2 ** (attempt - 1)), _max_ms) * (
+                0.5 + random.random()
+            )
+            await asyncio.sleep(_delay_ms / 1000.0)
 
 
 async def _livez_prober(
@@ -608,9 +616,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Also print the full summary as JSON on stdout (after human summary).",
+        help=(
+            "Emit the full summary as JSON on stdout; the human-readable "
+            "summary is routed to stderr. Without --json, the human summary "
+            "is on stdout and nothing goes to JSON."
+        ),
     )
     return parser
+
+
+# Exit codes. Keep POSIX-style — 0 means success, non-zero categorises
+# the failure so callers (CI, smoke tests, shell wrappers) can branch.
+EXIT_OK = 0
+EXIT_CRASH = 1
+EXIT_PROXY_UNREACHABLE = 2
+EXIT_LIVEZ_THRESHOLD = 3
+EXIT_WARMUP_FAILED = 4
+EXIT_SIGINT = 130
+
+
+def _classify_exit(result: dict[str, Any]) -> int:
+    """Map a harness result dict onto one of the exit constants above."""
+    if result.get("reason") == "proxy_unreachable":
+        return EXIT_PROXY_UNREACHABLE
+    warm = result.get("warmup", {})
+    if not warm.get("skipped", False) and not warm.get("success", True):
+        return EXIT_WARMUP_FAILED
+    livez = result.get("livez", {})
+    if livez and not livez.get("threshold_ok", True):
+        return EXIT_LIVEZ_THRESHOLD
+    return EXIT_OK if result.get("ok") else EXIT_CRASH
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -620,16 +655,21 @@ def main(argv: list[str] | None = None) -> int:
         result = asyncio.run(run_harness(args))
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)
-        return 130
+        return EXIT_SIGINT
     except Exception as exc:  # noqa: BLE001 - top-level guard
         print(f"Harness crashed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
+        return EXIT_CRASH
 
-    print(format_summary(result))
+    # Output routing: when --json is set, JSON on stdout (machine-readable)
+    # and human summary on stderr (so operators still see what happened
+    # without polluting stdout). Without --json, human summary on stdout.
     if args.json:
+        print(format_summary(result), file=sys.stderr)
         print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(format_summary(result))
 
-    return 0 if result.get("ok") else 1
+    return _classify_exit(result)
 
 
 if __name__ == "__main__":
