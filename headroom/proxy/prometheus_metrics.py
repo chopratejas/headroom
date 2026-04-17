@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -170,6 +171,13 @@ class PrometheusMetrics:
         )
 
         self._lock = asyncio.Lock()
+        # Tiny synchronous critical section for stage-timing triple updates
+        # (sum + count + max must move together for a consistent scrape).
+        # threading.Lock is cheaper than asyncio.Lock and does NOT contend
+        # with the async ``export()`` path — scrapes snapshot these dicts
+        # under this lock in a microsecond block, then build the metrics
+        # string without holding anything.
+        self._stage_timing_lock = threading.Lock()
         self._otel_metrics = otel_metrics
 
     def _get_otel_metrics(self) -> HeadroomOtelMetrics:
@@ -348,10 +356,19 @@ class PrometheusMetrics:
         maps stage names to millisecond durations. Mirrors the
         ``transform_timing_*`` aggregation pattern so the ``/metrics``
         endpoint exposes sum/count/max series per ``(path, stage)``.
+
+        Uses a tiny synchronous ``threading.Lock`` around the triple
+        update (sum + count + max) rather than the async
+        ``self._lock``: (1) the updates have no awaits, so there is no
+        async contention benefit, and (2) the async lock is also held
+        by ``export()`` during Prometheus scrapes — which does
+        string-building while holding it. Under N concurrent request
+        finalizations + an active scrape, callers would queue behind
+        the scrape's string-building.
         """
         if not timings:
             return
-        async with self._lock:
+        with self._stage_timing_lock:
             for stage, ms in timings.items():
                 try:
                     ms_val = float(ms)
@@ -423,6 +440,15 @@ class PrometheusMetrics:
 
     async def export(self) -> str:
         """Export metrics in Prometheus format."""
+        # Snapshot stage-timing dicts under the tiny synchronous lock so
+        # we don't race a concurrent ``record_stage_timings`` and observe
+        # an inconsistent (sum, count, max) triple. Freeze into plain
+        # dicts so the scrape's string-building below doesn't hold the
+        # stage-timing lock during I/O-ish work.
+        with self._stage_timing_lock:
+            stage_timing_sum_snapshot = dict(self.stage_timing_sum)
+            stage_timing_count_snapshot = dict(self.stage_timing_count)
+            stage_timing_max_snapshot = dict(self.stage_timing_max)
         async with self._lock:
             lines: list[str] = []
             _append_metric(
@@ -628,14 +654,14 @@ class PrometheusMetrics:
                     )
                 lines.append("")
 
-            if self.stage_timing_sum:
+            if stage_timing_sum_snapshot:
                 lines.extend(
                     [
                         "# HELP headroom_stage_timing_ms_sum Sum of per-stage handler timings in milliseconds",
                         "# TYPE headroom_stage_timing_ms_sum counter",
                     ]
                 )
-                for (path_label, stage), total in self.stage_timing_sum.items():
+                for (path_label, stage), total in stage_timing_sum_snapshot.items():
                     lines.append(
                         f'headroom_stage_timing_ms_sum{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(total, 2)}'
                     )
@@ -646,7 +672,7 @@ class PrometheusMetrics:
                         "# TYPE headroom_stage_timing_ms_count counter",
                     ]
                 )
-                for (path_label, stage), count in self.stage_timing_count.items():
+                for (path_label, stage), count in stage_timing_count_snapshot.items():
                     lines.append(
                         f'headroom_stage_timing_ms_count{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {count}'
                     )
@@ -657,7 +683,7 @@ class PrometheusMetrics:
                         "# TYPE headroom_stage_timing_ms_max gauge",
                     ]
                 )
-                for (path_label, stage), max_value in self.stage_timing_max.items():
+                for (path_label, stage), max_value in stage_timing_max_snapshot.items():
                     lines.append(
                         f'headroom_stage_timing_ms_max{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(max_value, 2)}'
                     )
