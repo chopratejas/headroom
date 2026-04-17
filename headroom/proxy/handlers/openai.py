@@ -12,13 +12,13 @@ import copy
 import json
 import logging
 import os
-import random
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from headroom.proxy.helpers import jitter_delay_ms
 from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
 from headroom.proxy.ws_session_registry import (
     WebSocketSessionRegistry,
@@ -2005,10 +2005,11 @@ class OpenAIHandlerMixin:
                     if ws_attempt >= ws_connect_attempts - 1:
                         break
 
-                    delay_with_jitter = min(
-                        self.config.retry_base_delay_ms * (2**ws_attempt),
+                    delay_with_jitter = jitter_delay_ms(
+                        self.config.retry_base_delay_ms,
                         self.config.retry_max_delay_ms,
-                    ) * (0.5 + random.random())
+                        ws_attempt,
+                    )
                     logger.warning(
                         f"[{request_id}] WS upstream connect failed "
                         f"(attempt {ws_attempt + 1}/{ws_connect_attempts}): {ws_err}; "
@@ -2247,10 +2248,11 @@ class OpenAIHandlerMixin:
                     if http_attempt >= retry_attempts - 1:
                         raise
 
-                    delay_with_jitter = min(
-                        self.config.retry_base_delay_ms * (2**http_attempt),
+                    delay_with_jitter = jitter_delay_ms(
+                        self.config.retry_base_delay_ms,
                         self.config.retry_max_delay_ms,
-                    ) * (0.5 + random.random())
+                        http_attempt,
+                    )
                     logger.warning(
                         f"[{request_id}] WS→HTTP fallback connect failed "
                         f"(attempt {http_attempt + 1}/{retry_attempts}): {http_err}; "

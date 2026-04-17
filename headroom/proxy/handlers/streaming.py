@@ -9,10 +9,11 @@ import asyncio
 import contextlib
 import json
 import logging
-import random
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from headroom.proxy.helpers import jitter_delay_ms
 
 if TYPE_CHECKING:
     from fastapi.responses import StreamingResponse
@@ -511,10 +512,11 @@ class StreamingMixin:
                     if attempt >= retry_attempts - 1:
                         raise
 
-                    delay_with_jitter = min(
-                        self.config.retry_base_delay_ms * (2**attempt),
+                    delay_with_jitter = jitter_delay_ms(
+                        self.config.retry_base_delay_ms,
                         self.config.retry_max_delay_ms,
-                    ) * (0.5 + random.random())
+                        attempt,
+                    )
                     logger.warning(
                         f"[{request_id}] Connection error to upstream API "
                         f"(attempt {attempt + 1}/{retry_attempts}): {e!r}; "
