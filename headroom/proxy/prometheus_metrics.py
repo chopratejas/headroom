@@ -108,6 +108,17 @@ class PrometheusMetrics:
         self.stage_timing_count: dict[tuple[str, str], int] = defaultdict(int)
         self.stage_timing_max: dict[tuple[str, str], float] = defaultdict(float)
 
+        # WS session lifecycle (Unit 3). Gauges are live counters updated
+        # by the Codex handler on register/deregister + attach_tasks/
+        # detach. Histograms record completed-session durations bucketed
+        # by termination cause so we can distinguish slow happy-path
+        # sessions from long client-hold followed by client_disconnect.
+        self.active_ws_sessions: int = 0
+        self.active_relay_tasks: int = 0
+        self.ws_session_duration_sum_ms: dict[str, float] = defaultdict(float)
+        self.ws_session_duration_count: dict[str, int] = defaultdict(int)
+        self.ws_session_duration_max_ms: dict[str, float] = defaultdict(float)
+
         # Aggregate waste signals
         self.waste_signals_total: dict[str, int] = defaultdict(int)
 
@@ -359,6 +370,47 @@ class PrometheusMetrics:
             self.cache_bust_count += 1
         self._get_otel_metrics().record_proxy_cache_bust(tokens_lost=tokens_lost)
 
+    # ------------------------------------------------------------------
+    # Unit 3: WS session lifecycle gauges / histogram
+    # ------------------------------------------------------------------
+
+    def inc_active_ws_sessions(self) -> None:
+        """Increment the live WS session gauge (called on register)."""
+        self.active_ws_sessions += 1
+
+    def dec_active_ws_sessions(self) -> None:
+        """Decrement the live WS session gauge (called on deregister)."""
+        self.active_ws_sessions = max(0, self.active_ws_sessions - 1)
+
+    def inc_active_relay_tasks(self, n: int = 1) -> None:
+        """Increment the live relay-task gauge (attach_tasks)."""
+        self.active_relay_tasks += n
+
+    def dec_active_relay_tasks(self, n: int = 1) -> None:
+        """Decrement the live relay-task gauge (deregister)."""
+        self.active_relay_tasks = max(0, self.active_relay_tasks - n)
+
+    def record_ws_session_duration(
+        self,
+        duration_ms: float,
+        cause: str = "unknown",
+    ) -> None:
+        """Record a completed WS session's duration, bucketed by cause.
+
+        Mirrors the ``stage_timing_*`` shape so ``/metrics`` exposes
+        sum/count/max per termination cause. Uses synchronous dict
+        updates (no ``_lock``) because Unit 3 callers run on the event
+        loop — matching the gauges above.
+        """
+        try:
+            ms_val = float(duration_ms)
+        except (TypeError, ValueError):
+            return
+        self.ws_session_duration_sum_ms[cause] += ms_val
+        self.ws_session_duration_count[cause] += 1
+        if ms_val > self.ws_session_duration_max_ms[cause]:
+            self.ws_session_duration_max_ms[cause] = ms_val
+
     async def record_rate_limited(self, *, provider: str | None = None, model: str | None = None):
         async with self._lock:
             self.requests_rate_limited += 1
@@ -608,6 +660,54 @@ class PrometheusMetrics:
                 for (path_label, stage), max_value in self.stage_timing_max.items():
                     lines.append(
                         f'headroom_stage_timing_ms_max{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(max_value, 2)}'
+                    )
+                lines.append("")
+
+            # Unit 3: WS session lifecycle gauges + duration histogram.
+            lines.extend(
+                [
+                    "# HELP headroom_active_ws_sessions Active Codex WebSocket sessions",
+                    "# TYPE headroom_active_ws_sessions gauge",
+                    f"headroom_active_ws_sessions {self.active_ws_sessions}",
+                    "",
+                    "# HELP headroom_active_relay_tasks Active Codex WS relay tasks",
+                    "# TYPE headroom_active_relay_tasks gauge",
+                    f"headroom_active_relay_tasks {self.active_relay_tasks}",
+                    "",
+                ]
+            )
+            if self.ws_session_duration_sum_ms:
+                lines.extend(
+                    [
+                        "# HELP headroom_ws_session_duration_ms_sum Sum of Codex WS session durations",
+                        "# TYPE headroom_ws_session_duration_ms_sum counter",
+                    ]
+                )
+                for cause, total in self.ws_session_duration_sum_ms.items():
+                    lines.append(
+                        f'headroom_ws_session_duration_ms_sum{{cause="{_escape_label_value(cause)}"}} {round(total, 2)}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_ws_session_duration_ms_count Count of completed Codex WS sessions",
+                        "# TYPE headroom_ws_session_duration_ms_count counter",
+                    ]
+                )
+                for cause, count in self.ws_session_duration_count.items():
+                    lines.append(
+                        f'headroom_ws_session_duration_ms_count{{cause="{_escape_label_value(cause)}"}} {count}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_ws_session_duration_ms_max Maximum Codex WS session duration",
+                        "# TYPE headroom_ws_session_duration_ms_max gauge",
+                    ]
+                )
+                for cause, max_value in self.ws_session_duration_max_ms.items():
+                    lines.append(
+                        f'headroom_ws_session_duration_ms_max{{cause="{_escape_label_value(cause)}"}} {round(max_value, 2)}'
                     )
                 lines.append("")
 

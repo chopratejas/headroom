@@ -128,6 +128,7 @@ from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
 from headroom.proxy.warmup import WarmupRegistry
+from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
 from headroom.subscription.codex_rate_limits import get_codex_rate_limit_state
 from headroom.subscription.copilot_quota import get_copilot_quota_tracker
@@ -372,6 +373,10 @@ class HeadroomProxy(
         # each preloaded heavy asset. Exposed as ``proxy.warmup`` and
         # serialized by the /debug/warmup route (Unit 5).
         self.warmup: WarmupRegistry = WarmupRegistry()
+        # Unit 3: live registry of Codex WS sessions. Populated by
+        # ``handle_openai_responses_ws`` on accept; drained in its
+        # outermost ``finally``. Consumed by ``/debug/ws-sessions``.
+        self.ws_sessions: WebSocketSessionRegistry = WebSocketSessionRegistry()
 
         # Backend for Anthropic API (direct, LiteLLM, or any-llm)
         # Supports: "anthropic" (direct), "bedrock", "vertex", "litellm-<provider>", or "anyllm"
