@@ -14,16 +14,18 @@ import logging
 import os
 import random
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
 
 if TYPE_CHECKING:
     from fastapi import Request, WebSocket
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import httpx
-
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -1230,6 +1232,12 @@ class OpenAIHandlerMixin:
             return
 
         request_id = await self._next_request_id()
+        session_id = uuid.uuid4().hex
+
+        # Stage-timer — captures per-stage durations for the structured
+        # log emitted on session close. Unit 2 instrumentation.
+        stage_timer = StageTimer()
+        session_started_at = time.perf_counter()
 
         # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)
@@ -1243,10 +1251,11 @@ class OpenAIHandlerMixin:
             client_subprotocols = [p.strip() for p in raw_protocol.split(",") if p.strip()]
 
         # Accept client connection with the requested subprotocol
-        if client_subprotocols:
-            await websocket.accept(subprotocol=client_subprotocols[0])
-        else:
-            await websocket.accept()
+        async with stage_timer.measure("accept"):
+            if client_subprotocols:
+                await websocket.accept(subprotocol=client_subprotocols[0])
+            else:
+                await websocket.accept()
 
         # Forward all client headers except hop-by-hop / per-connection headers.
         # These are WebSocket handshake mechanics that the `websockets` library
@@ -1313,7 +1322,8 @@ class OpenAIHandlerMixin:
 
         try:
             # Receive the first message from client (the response.create request)
-            first_msg_raw = await websocket.receive_text()
+            async with stage_timer.measure("first_client_frame"):
+                first_msg_raw = await websocket.receive_text()
 
             # --- Optional: compress the input in the first message ---
             body: dict[str, Any] = {}
@@ -1353,17 +1363,18 @@ class OpenAIHandlerMixin:
                         original_tokens = tokenizer.count_messages(messages)
 
                         context_limit = self.openai_provider.get_context_limit(model)
-                        result = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                lambda: self.openai_pipeline.apply(
-                                    messages=messages,
-                                    model=model,
-                                    model_limit=context_limit,
-                                    context=extract_user_query(messages),
-                                )
-                            ),
-                            timeout=COMPRESSION_TIMEOUT_SECONDS,
-                        )
+                        async with stage_timer.measure("compression"):
+                            result = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    lambda: self.openai_pipeline.apply(
+                                        messages=messages,
+                                        model=model,
+                                        model_limit=context_limit,
+                                        context=extract_user_query(messages),
+                                    )
+                                ),
+                                timeout=COMPRESSION_TIMEOUT_SECONDS,
+                            )
 
                         if result.messages != messages:
                             opt = result.messages
@@ -1437,12 +1448,13 @@ class OpenAIHandlerMixin:
                             ws_msgs.extend(converted_msgs)
 
                         try:
-                            memory_context = await asyncio.wait_for(
-                                self.memory_handler.search_and_format_context(
-                                    memory_user_id, ws_msgs
-                                ),
-                                timeout=RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS,
-                            )
+                            async with stage_timer.measure("memory_context"):
+                                memory_context = await asyncio.wait_for(
+                                    self.memory_handler.search_and_format_context(
+                                        memory_user_id, ws_msgs
+                                    ),
+                                    timeout=RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS,
+                                )
                         except TimeoutError:
                             memory_context = None
                             logger.info(
@@ -1528,6 +1540,9 @@ class OpenAIHandlerMixin:
             ws_connected = False
             ws_connect_attempts = max(1, getattr(self.config, "retry_max_attempts", 3))
             ws_last_err: Exception | None = None
+            _upstream_connect_started = time.perf_counter()
+            _upstream_connect_recorded = False
+            _upstream_first_event_started: float | None = None
 
             for ws_attempt in range(ws_connect_attempts):
                 try:
@@ -1546,6 +1561,13 @@ class OpenAIHandlerMixin:
                         ping_timeout=20,
                     ) as upstream:
                         ws_connected = True
+                        if not _upstream_connect_recorded:
+                            stage_timer.record(
+                                "upstream_connect",
+                                (time.perf_counter() - _upstream_connect_started) * 1000.0,
+                            )
+                            _upstream_connect_recorded = True
+                            _upstream_first_event_started = time.perf_counter()
                         await upstream.send(first_msg_raw)
 
                         async def _client_to_upstream() -> None:
@@ -1592,8 +1614,22 @@ class OpenAIHandlerMixin:
                                 pending_fcs.clear()
                                 resp_id = None
 
+                            # The retry-loop variable is safe to close over here:
+                            # ``_upstream_to_client`` is defined and awaited within
+                            # a single iteration and never escapes.
+                            _first_event_started_at = _upstream_first_event_started  # noqa: B023
+
                             try:
                                 async for msg in upstream:
+                                    if (
+                                        _first_event_started_at is not None
+                                        and "upstream_first_event" not in stage_timer
+                                    ):
+                                        stage_timer.record(
+                                            "upstream_first_event",
+                                            (time.perf_counter() - _first_event_started_at)
+                                            * 1000.0,
+                                        )
                                     if isinstance(msg, bytes):
                                         await websocket.send_bytes(msg)
                                         continue
@@ -1811,6 +1847,28 @@ class OpenAIHandlerMixin:
                 logger.error(f"[{request_id}] WS proxy error: {error_detail}")
             with contextlib.suppress(Exception):
                 await websocket.close(code=1011, reason=str(e)[:120])
+        finally:
+            # Unit 2: emit structured per-session stage timings.
+            stage_timer.record(
+                "total_session",
+                (time.perf_counter() - session_started_at) * 1000.0,
+            )
+            await emit_stage_timings_log(
+                path="openai_responses_ws",
+                request_id=request_id,
+                session_id=session_id,
+                stage_timer=stage_timer,
+                expected_stages=(
+                    "accept",
+                    "first_client_frame",
+                    "upstream_connect",
+                    "upstream_first_event",
+                    "memory_context",
+                    "compression",
+                    "total_session",
+                ),
+                metrics=getattr(self, "metrics", None),
+            )
 
     async def _ws_http_fallback(
         self,

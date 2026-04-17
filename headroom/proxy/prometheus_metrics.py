@@ -100,6 +100,14 @@ class PrometheusMetrics:
         self.transform_timing_count: dict[str, int] = defaultdict(int)
         self.transform_timing_max: dict[str, float] = defaultdict(float)
 
+        # Per-stage timing (Unit 2). Keyed by ``(path, stage)`` tuples so
+        # a single metric name can distinguish between, e.g.,
+        # ``openai_responses_ws`` ``upstream_connect`` and
+        # ``anthropic_messages`` ``upstream_connect``.
+        self.stage_timing_sum: dict[tuple[str, str], float] = defaultdict(float)
+        self.stage_timing_count: dict[tuple[str, str], int] = defaultdict(int)
+        self.stage_timing_max: dict[tuple[str, str], float] = defaultdict(float)
+
         # Aggregate waste signals
         self.waste_signals_total: dict[str, int] = defaultdict(int)
 
@@ -316,6 +324,33 @@ class PrometheusMetrics:
             cache_write_1h_tokens=cache_write_1h_tokens,
             uncached_input_tokens=uncached_input_tokens,
         )
+
+    async def record_stage_timings(
+        self,
+        path: str,
+        timings: dict[str, float],
+    ) -> None:
+        """Record per-stage timings as histogram-style observations.
+
+        ``path`` identifies the code path that emitted the timings (e.g.
+        ``openai_responses_ws`` or ``anthropic_messages``). ``timings``
+        maps stage names to millisecond durations. Mirrors the
+        ``transform_timing_*`` aggregation pattern so the ``/metrics``
+        endpoint exposes sum/count/max series per ``(path, stage)``.
+        """
+        if not timings:
+            return
+        async with self._lock:
+            for stage, ms in timings.items():
+                try:
+                    ms_val = float(ms)
+                except (TypeError, ValueError):
+                    continue
+                key = (path, stage)
+                self.stage_timing_sum[key] += ms_val
+                self.stage_timing_count[key] += 1
+                if ms_val > self.stage_timing_max[key]:
+                    self.stage_timing_max[key] = ms_val
 
     async def record_cache_bust(self, tokens_lost: int) -> None:
         """Record tokens that lost their cache discount due to compression."""
@@ -538,6 +573,41 @@ class PrometheusMetrics:
                 for name, max_value in self.transform_timing_max.items():
                     lines.append(
                         f'headroom_transform_timing_ms_max{{transform="{_escape_label_value(name)}"}} {round(max_value, 2)}'
+                    )
+                lines.append("")
+
+            if self.stage_timing_sum:
+                lines.extend(
+                    [
+                        "# HELP headroom_stage_timing_ms_sum Sum of per-stage handler timings in milliseconds",
+                        "# TYPE headroom_stage_timing_ms_sum counter",
+                    ]
+                )
+                for (path_label, stage), total in self.stage_timing_sum.items():
+                    lines.append(
+                        f'headroom_stage_timing_ms_sum{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(total, 2)}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_stage_timing_ms_count Count of per-stage handler timing samples",
+                        "# TYPE headroom_stage_timing_ms_count counter",
+                    ]
+                )
+                for (path_label, stage), count in self.stage_timing_count.items():
+                    lines.append(
+                        f'headroom_stage_timing_ms_count{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {count}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_stage_timing_ms_max Maximum per-stage handler timing in milliseconds",
+                        "# TYPE headroom_stage_timing_ms_max gauge",
+                    ]
+                )
+                for (path_label, stage), max_value in self.stage_timing_max.items():
+                    lines.append(
+                        f'headroom_stage_timing_ms_max{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(max_value, 2)}'
                     )
                 lines.append("")
 

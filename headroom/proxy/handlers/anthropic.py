@@ -11,9 +11,12 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -314,10 +317,46 @@ class AnthropicHandlerMixin:
 
         start_time = time.time()
         request_id = await self._next_request_id()
+        trace_session_id = uuid.uuid4().hex
+
+        # Unit 2: per-stage timings for the pre-upstream phase. The
+        # finalizer emits one structured log line + Prometheus
+        # observations even if the handler raises.
+        stage_timer = StageTimer()
+        pre_upstream_started_at = time.perf_counter()
+        _stage_timings_emitted = False
+
+        async def _emit_pre_upstream_stage_timings() -> None:
+            nonlocal _stage_timings_emitted
+            if _stage_timings_emitted:
+                return
+            _stage_timings_emitted = True
+            if "total_pre_upstream" not in stage_timer:
+                stage_timer.record(
+                    "total_pre_upstream",
+                    (time.perf_counter() - pre_upstream_started_at) * 1000.0,
+                )
+            await emit_stage_timings_log(
+                path="anthropic_messages",
+                request_id=request_id,
+                session_id=trace_session_id,
+                stage_timer=stage_timer,
+                expected_stages=(
+                    "read_request_json",
+                    "deep_copy",
+                    "compression_first_stage",
+                    "memory_context",
+                    "upstream_connect",
+                    "upstream_first_byte",
+                    "total_pre_upstream",
+                ),
+                metrics=getattr(self, "metrics", None),
+            )
 
         # Check request body size
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
+            await _emit_pre_upstream_stage_timings()
             return JSONResponse(
                 status_code=413,
                 content={
@@ -331,8 +370,10 @@ class AnthropicHandlerMixin:
 
         # Parse request
         try:
-            body = await _read_request_json(request)
+            async with stage_timer.measure("read_request_json"):
+                body = await _read_request_json(request)
         except (json.JSONDecodeError, ValueError) as e:
+            await _emit_pre_upstream_stage_timings()
             return JSONResponse(
                 status_code=400,
                 content={
@@ -345,7 +386,8 @@ class AnthropicHandlerMixin:
             )
         model = body.get("model", "unknown")
         messages = body.get("messages", [])
-        original_client_messages = copy.deepcopy(messages)
+        with stage_timer.measure("deep_copy"):
+            original_client_messages = copy.deepcopy(messages)
 
         # Validate message array size
         if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
@@ -601,19 +643,20 @@ class AnthropicHandlerMixin:
 
                     frozen_message_count = ttl_frozen
 
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            lambda: self.anthropic_pipeline.apply(
-                                messages=working_messages,
-                                model=model,
-                                model_limit=context_limit,
-                                context=extract_user_query(working_messages),
-                                frozen_message_count=frozen_message_count,
-                                biases=biases,
-                            )
-                        ),
-                        timeout=COMPRESSION_TIMEOUT_SECONDS,
-                    )
+                    async with stage_timer.measure("compression_first_stage"):
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                lambda: self.anthropic_pipeline.apply(
+                                    messages=working_messages,
+                                    model=model,
+                                    model_limit=context_limit,
+                                    context=extract_user_query(working_messages),
+                                    frozen_message_count=frozen_message_count,
+                                    biases=biases,
+                                )
+                            ),
+                            timeout=COMPRESSION_TIMEOUT_SECONDS,
+                        )
 
                     # Cache newly compressed messages (index-aligned diff)
                     if result.messages != working_messages:
@@ -628,19 +671,20 @@ class AnthropicHandlerMixin:
                     # original_tokens was set at line ~2183 from uncompressed messages.
                     optimized_tokens = result.tokens_after
                 elif not is_cache_mode(self.config.mode):
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            lambda: self.anthropic_pipeline.apply(
-                                messages=messages,
-                                model=model,
-                                model_limit=context_limit,
-                                context=extract_user_query(messages),
-                                frozen_message_count=frozen_message_count,
-                                biases=biases,
-                            )
-                        ),
-                        timeout=COMPRESSION_TIMEOUT_SECONDS,
-                    )
+                    async with stage_timer.measure("compression_first_stage"):
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                lambda: self.anthropic_pipeline.apply(
+                                    messages=messages,
+                                    model=model,
+                                    model_limit=context_limit,
+                                    context=extract_user_query(messages),
+                                    frozen_message_count=frozen_message_count,
+                                    biases=biases,
+                                )
+                            ),
+                            timeout=COMPRESSION_TIMEOUT_SECONDS,
+                        )
 
                     if result.messages != messages:
                         optimized_messages = result.messages
@@ -860,9 +904,10 @@ class AnthropicHandlerMixin:
             # Search and inject memory context
             if self.memory_handler.config.inject_context:
                 try:
-                    memory_context = await self.memory_handler.search_and_format_context(
-                        memory_user_id, optimized_messages
-                    )
+                    async with stage_timer.measure("memory_context"):
+                        memory_context = await self.memory_handler.search_and_format_context(
+                            memory_user_id, optimized_messages
+                        )
                     if memory_context:
                         if is_cache_mode(self.config.mode):
                             logger.info(
@@ -927,11 +972,19 @@ class AnthropicHandlerMixin:
             tools = self._sort_tools_deterministically(tools)
             body["tools"] = tools
 
+        # Unit 2: mark end of pre-upstream phase. Everything after this
+        # point is upstream I/O or post-response bookkeeping.
+        stage_timer.record(
+            "total_pre_upstream",
+            (time.perf_counter() - pre_upstream_started_at) * 1000.0,
+        )
+
         # Forward request - use Bedrock backend if configured, otherwise direct API
         if self.anthropic_backend is not None:
             # Route through Bedrock backend
             try:
                 if stream:
+                    await _emit_pre_upstream_stage_timings()
                     return await self._stream_response_bedrock(
                         body,
                         headers,
@@ -947,7 +1000,19 @@ class AnthropicHandlerMixin:
                         pipeline_timing=pipeline_timing,
                     )
                 else:
-                    backend_response = await self.anthropic_backend.send_message(body, headers)
+                    async with stage_timer.measure("upstream_connect"):
+                        backend_response = await self.anthropic_backend.send_message(
+                            body, headers
+                        )
+                    # Non-stream: first-byte and connect are effectively
+                    # the same horizon — ``send_message`` awaits until
+                    # the response body is fully buffered.
+                    if "upstream_first_byte" not in stage_timer and "upstream_connect" in stage_timer:
+                        stage_timer.record(
+                            "upstream_first_byte",
+                            stage_timer.summary()["upstream_connect"],
+                        )
+                    await _emit_pre_upstream_stage_timings()
 
                     if backend_response.error:
                         return JSONResponse(
@@ -1023,6 +1088,7 @@ class AnthropicHandlerMixin:
 
         try:
             if stream:
+                await _emit_pre_upstream_stage_timings()
                 return await self._stream_response(
                     url,
                     headers,
@@ -1042,7 +1108,14 @@ class AnthropicHandlerMixin:
                     original_messages=original_client_messages,
                 )
             else:
-                response = await self._retry_request("POST", url, headers, body)
+                async with stage_timer.measure("upstream_connect"):
+                    response = await self._retry_request("POST", url, headers, body)
+                if "upstream_first_byte" not in stage_timer and "upstream_connect" in stage_timer:
+                    stage_timer.record(
+                        "upstream_first_byte",
+                        stage_timer.summary()["upstream_connect"],
+                    )
+                await _emit_pre_upstream_stage_timings()
 
                 # Full diagnostic dump on upstream errors.
                 # Writes pre/post compression messages, tools, and error
@@ -1493,6 +1566,10 @@ class AnthropicHandlerMixin:
                     },
                 },
             )
+        finally:
+            # Unit 2: always emit pre-upstream stage timings exactly
+            # once per request, even on early/error paths.
+            await _emit_pre_upstream_stage_timings()
 
     async def handle_anthropic_batch_create(
         self,
