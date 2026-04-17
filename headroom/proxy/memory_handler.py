@@ -196,6 +196,20 @@ class MemoryHandler:
                 "Subsequent requests will retry."
             )
             return
+        except asyncio.CancelledError:
+            # External cancellation (shutdown / task cancelled).
+            # CancelledError is BaseException — the TimeoutError branch
+            # above does NOT catch it, and caller ``except Exception``
+            # blocks don't either, so it propagates unconditionally.
+            # Reset state so any later retry starts clean, then re-raise:
+            # cancellation is a signal, not an error to swallow.
+            self._backend = None
+            self._initialized = False
+            logger.info(
+                "Memory: backend initialization cancelled "
+                f"(backend={self.config.backend})"
+            )
+            raise
 
     async def _init_backend_locked(self) -> None:
         """Actual backend-init body. Must be called with ``_init_lock`` held."""
