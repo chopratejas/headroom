@@ -339,6 +339,63 @@ class TestSubscriptionTrackerPollLoop:
 
         mock_client.fetch.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_poll_loop_does_not_leak_event_wait_tasks(self, tmp_path):
+        """The poll loop must not accumulate idle Event.wait waiters.
+
+        Regression for the ``asyncio.shield(event.wait())`` pattern:
+        ``shield`` prevents the inner wait from being cancelled when
+        ``wait_for`` times out, leaking one Task per poll interval.
+        Observed as the "aged proxy degradation" in 2026-04-17 runtime
+        analysis — over hours the accumulated idle waiters bog down the
+        event-loop scheduler.
+        """
+        import asyncio
+
+        from headroom.subscription.tracker import SubscriptionTracker
+
+        mock_client = MagicMock()
+        mock_client.fetch = AsyncMock(return_value=None)
+
+        tracker = SubscriptionTracker(
+            poll_interval_s=0.05,  # short so many iterations fit in the test window
+            active_window_s=60,
+            persist_path=tmp_path / "state.json",
+            client=mock_client,
+        )
+
+        def _count_event_wait_tasks() -> int:
+            return sum(
+                1
+                for t in asyncio.all_tasks()
+                if (t.get_coro().__qualname__ if t.get_coro() else "") == "Event.wait"
+            )
+
+        baseline = _count_event_wait_tasks()
+        await tracker.start()
+        try:
+            # Let the loop run through ~6 iterations. Each iteration would
+            # previously leak one Event.wait waiter.
+            await asyncio.sleep(0.3)
+            peak = _count_event_wait_tasks()
+        finally:
+            await tracker.stop()
+
+        # After stop the loop task has exited; anything above baseline + 1
+        # (the single live wait that was in-flight before stop set the event)
+        # indicates leaked waiters.
+        await asyncio.sleep(0.05)  # let stop()'s awaited tasks settle
+        residual = _count_event_wait_tasks()
+
+        # Peak growth during polling should be at most one (the one currently
+        # awaiting inside the loop); anything more is a leak.
+        assert peak - baseline <= 1, (
+            f"poll loop leaked Event.wait waiters: baseline={baseline} peak={peak}"
+        )
+        assert residual <= baseline, (
+            f"poll loop left residual Event.wait waiters: baseline={baseline} residual={residual}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Anomaly detection

@@ -278,3 +278,54 @@ class TestCopilotQuotaSnapshot:
         assert d["copilot_plan"] == "business"
         assert "chat" in d["categories"]
         assert d["categories"]["chat"]["entitlement"] == 50
+
+
+# ---------------------------------------------------------------------------
+# Poll-loop task-leak regression
+# ---------------------------------------------------------------------------
+
+
+class TestCopilotQuotaPollLoopLeak:
+    @pytest.mark.asyncio
+    async def test_poll_loop_does_not_leak_event_wait_tasks(self, monkeypatch):
+        """Regression for the ``asyncio.shield(event.wait())`` pattern.
+
+        Matches the equivalent guard in ``tests/test_subscription_tracker.py``:
+        every poll interval the loop previously leaked one Event.wait
+        waiter because ``asyncio.shield`` prevented ``wait_for`` from
+        cancelling the inner wait on timeout.
+        """
+        import asyncio
+
+        from headroom.subscription.copilot_quota import _CopilotQuotaTracker
+
+        # No token configured → _maybe_poll returns immediately each cycle.
+        for var in ("GITHUB_COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+
+        tracker = _CopilotQuotaTracker(poll_interval_s=0.05)
+
+        def _count_event_wait() -> int:
+            return sum(
+                1
+                for t in asyncio.all_tasks()
+                if (t.get_coro().__qualname__ if t.get_coro() else "") == "Event.wait"
+            )
+
+        baseline = _count_event_wait()
+        await tracker.start()
+        try:
+            await asyncio.sleep(0.3)  # ~6 poll cycles
+            peak = _count_event_wait()
+        finally:
+            await tracker.stop()
+
+        await asyncio.sleep(0.05)
+        residual = _count_event_wait()
+
+        assert peak - baseline <= 1, (
+            f"CopilotQuotaTracker leaked Event.wait: baseline={baseline} peak={peak}"
+        )
+        assert residual <= baseline, (
+            f"CopilotQuotaTracker left residual Event.wait: baseline={baseline} residual={residual}"
+        )

@@ -274,8 +274,12 @@ class _CopilotQuotaTracker(QuotaTracker):
             except Exception as exc:
                 logger.warning("Copilot quota poll error: %s", exc)
             try:
+                # NOTE: do NOT wrap in asyncio.shield() — shield prevents the
+                # inner Event.wait() from being cancelled when wait_for times
+                # out, leaking one Task per poll interval. See the matching
+                # note in headroom/subscription/tracker.py:_poll_loop.
                 await asyncio.wait_for(
-                    asyncio.shield(self._stop_event.wait()),
+                    self._stop_event.wait(),
                     timeout=self._poll_interval_s,
                 )
                 break  # stop event was set
