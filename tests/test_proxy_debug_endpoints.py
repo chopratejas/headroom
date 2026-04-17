@@ -95,6 +95,27 @@ def test_is_loopback_host_rejects_external_hosts():
     assert is_loopback_host("8.8.8.8") is False
 
 
+def test_is_loopback_host_accepts_ipv6_mapped_ipv4_loopback():
+    # On Linux dual-stack sockets with IPV6_V6ONLY=0, an IPv4 loopback
+    # connection arrives as ``::ffff:127.0.0.1``. The guard must treat
+    # this as loopback or /debug/* silently 404s when the proxy binds
+    # to ``::`` / ``0.0.0.0``.
+    assert is_loopback_host("::ffff:127.0.0.1") is True
+
+
+def test_is_loopback_host_rejects_ipv6_mapped_external_ipv4():
+    assert is_loopback_host("::ffff:10.0.0.1") is False
+
+
+def test_is_loopback_host_rejects_non_loopback_ipv6():
+    assert is_loopback_host("2001:db8::1") is False
+
+
+def test_is_loopback_host_rejects_malformed_input():
+    assert is_loopback_host("not-an-ip") is False
+    assert is_loopback_host("") is False
+
+
 def test_require_loopback_raises_404_for_external_client():
     class _FakeClient:
         host = "10.0.0.1"

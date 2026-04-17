@@ -18,6 +18,8 @@ middleware) because:
   would be disproportionate.
 """
 
+import ipaddress
+
 try:
     from fastapi import HTTPException, Request
 except ImportError:  # pragma: no cover - fastapi is a hard dep in practice
@@ -32,21 +34,35 @@ __all__ = [
 ]
 
 
-# Accepted loopback hostnames. ``None`` covers ``TestClient`` which does
-# not populate ``request.client`` by default; we treat that as loopback
-# because it means the call did not originate from a real socket.
+# Legacy canonical loopback literal set. Retained for backwards
+# compatibility with callers/tests that still import it; the real check
+# now goes through :func:`ipaddress.ip_address(...).is_loopback` so we
+# also accept IPv6-mapped IPv4 (``::ffff:127.0.0.1``) and other valid
+# loopback literals on dual-stack sockets.
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 def is_loopback_host(host: str | None) -> bool:
     """Return True if ``host`` represents a loopback interface.
 
-    ``None`` is treated as loopback — this covers ``TestClient``
-    requests where FastAPI does not populate ``request.client``.
+    ``None`` is treated as loopback — this covers ``TestClient`` /
+    UDS-style requests where FastAPI does not populate
+    ``request.client``.
+
+    ``"localhost"`` is special-cased as a string since it is not a
+    valid IP literal. Every other host is parsed with
+    :func:`ipaddress.ip_address`; this accepts IPv6-mapped IPv4
+    (``::ffff:127.0.0.1``) which Linux dual-stack sockets emit by
+    default. Malformed input returns ``False``.
     """
     if host is None:
         return True
-    return host in LOOPBACK_HOSTS
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def require_loopback(request: Request) -> None:  # type: ignore[valid-type]
