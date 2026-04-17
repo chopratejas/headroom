@@ -654,6 +654,23 @@ class HeadroomProxy(
             f"http2={'ENABLED' if self.config.http2 else 'DISABLED'}"
         )
 
+        # Unit 4 pre-upstream concurrency announcement. Report the resolved
+        # value (auto-detected vs. explicit) so operators can correlate
+        # ``pre_upstream_wait_ms`` log lines with the configured cap.
+        if self.anthropic_pre_upstream_sem is None:
+            logger.info(
+                "Anthropic pre-upstream concurrency: unbounded "
+                "(explicitly disabled)"
+            )
+        else:
+            _explicit = self.config.anthropic_pre_upstream_concurrency
+            _origin = "auto-detected" if _explicit is None else "explicit"
+            logger.info(
+                "Anthropic pre-upstream concurrency: %d (%s)",
+                self.anthropic_pre_upstream_concurrency,
+                _origin,
+            )
+
         # Smart routing status
         if self.config.smart_routing:
             logger.info("Smart Routing: ENABLED (intelligent content detection)")
@@ -1305,12 +1322,6 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     from headroom.proxy.debug_introspection import (
         collect_tasks as _collect_tasks,
     )
-    from headroom.proxy.debug_introspection import (
-        collect_warmup as _collect_warmup,
-    )
-    from headroom.proxy.debug_introspection import (
-        collect_ws_sessions as _collect_ws_sessions,
-    )
     from headroom.proxy.loopback_guard import require_loopback as _require_loopback
 
     @app.get("/debug/tasks", dependencies=[Depends(_require_loopback)])
@@ -1321,12 +1332,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     @app.get("/debug/ws-sessions", dependencies=[Depends(_require_loopback)])
     async def debug_ws_sessions():
         ws_registry = getattr(proxy, "ws_sessions", None)
-        return JSONResponse(status_code=200, content=_collect_ws_sessions(ws_registry))
+        snapshot = ws_registry.snapshot() if ws_registry is not None else []
+        return JSONResponse(status_code=200, content=snapshot)
 
     @app.get("/debug/warmup", dependencies=[Depends(_require_loopback)])
     async def debug_warmup():
         warmup_registry = getattr(proxy, "warmup", None)
-        return JSONResponse(status_code=200, content=_collect_warmup(warmup_registry))
+        payload = warmup_registry.to_dict() if warmup_registry is not None else {}
+        return JSONResponse(status_code=200, content=payload)
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard():

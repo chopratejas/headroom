@@ -48,22 +48,13 @@ class RequestLog:
     response_content: str | None = None
     error: str | None = None
 
-    # Per-stage timings (Unit 2 — Codex WS + Anthropic HTTP paths)
-    # Populated from ``StageTimer.summary()``. Keys are stage names
-    # (e.g. ``accept``, ``upstream_connect``, ``memory_context``);
-    # values are durations in milliseconds. Absent when the handler did
-    # not thread a timer through (backward-compatible default).
-    stage_timings: dict[str, float] | None = None
-
-    # Session id — a UUID generated at WS accept / HTTP request start,
-    # paired with ``request_id`` so multi-turn sessions can be
-    # correlated. Optional for backward compatibility.
-    session_id: str | None = None
-
-    # Path key under which stage timings were recorded (e.g.
-    # ``openai_responses_ws`` or ``anthropic_messages``). Used by the
-    # Prometheus histogram series.
-    stage_timings_path: str | None = None
+    # NOTE (Unit 2 follow-up): stage timings and session_id were briefly
+    # added here but are now emitted exclusively through
+    # ``emit_stage_timings_log`` (structured log line) and Prometheus.
+    # They were never populated on ``RequestLog`` instances, so the
+    # fields were removed to avoid confusing readers who expect
+    # them to be set. If a JSONL consumer needs them, have the consumer
+    # merge ``stage_timings`` log lines by ``request_id``.
 
 
 @dataclass
