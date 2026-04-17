@@ -14,8 +14,6 @@ from fastapi.testclient import TestClient
 
 from headroom.proxy.debug_introspection import (
     collect_tasks,
-    collect_warmup,
-    collect_ws_sessions,
 )
 from headroom.proxy.loopback_guard import (
     LOOPBACK_HOSTS,
@@ -147,16 +145,18 @@ def test_require_loopback_accepts_loopback_client():
 # ---------------------------------------------------------------------------
 
 
-def test_collect_warmup_handles_none_registry():
-    assert collect_warmup(None) == {}
+def test_warmup_registry_to_dict_returns_registry_shape():
+    """Serializer equivalent of the old collect_warmup helper.
 
-
-def test_collect_warmup_returns_registry_shape():
+    The helper was inlined at the /debug/warmup route handler in server.py
+    (``registry.to_dict() if registry else {}``); this test preserves
+    coverage of the registry's own serializer contract.
+    """
     registry = WarmupRegistry()
     registry.kompress.mark_loaded(handle=object(), source_status="enabled")
     registry.memory_backend.mark_error("boom")
 
-    payload = collect_warmup(registry)
+    payload = registry.to_dict()
 
     assert payload["kompress"]["status"] == "loaded"
     assert payload["memory_backend"]["status"] == "error"
@@ -165,11 +165,8 @@ def test_collect_warmup_returns_registry_shape():
     assert "handle" not in payload["kompress"]
 
 
-def test_collect_ws_sessions_handles_none_registry():
-    assert collect_ws_sessions(None) == []
-
-
-def test_collect_ws_sessions_returns_snapshot():
+def test_ws_session_registry_snapshot_returns_registered_entries():
+    """Serializer equivalent of the old collect_ws_sessions helper."""
     reg = WebSocketSessionRegistry()
     handle = WSSessionHandle(
         session_id="sess-debug-1",
@@ -179,7 +176,7 @@ def test_collect_ws_sessions_returns_snapshot():
     )
     reg.register(handle)
 
-    payload = collect_ws_sessions(reg)
+    payload = reg.snapshot()
     assert len(payload) == 1
     assert payload[0]["session_id"] == "sess-debug-1"
     assert payload[0]["request_id"] == "req-debug-1"

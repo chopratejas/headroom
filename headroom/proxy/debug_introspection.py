@@ -36,13 +36,10 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from headroom.proxy.warmup import WarmupRegistry
     from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 
 __all__ = [
     "collect_tasks",
-    "collect_ws_sessions",
-    "collect_warmup",
 ]
 
 
@@ -162,19 +159,3 @@ def collect_tasks(
 
     entries.sort(key=_sort_key)
     return entries
-
-
-def collect_ws_sessions(
-    registry: WebSocketSessionRegistry | None,
-) -> list[dict[str, Any]]:
-    """Return the registry snapshot, or an empty list if no registry."""
-    if registry is None:
-        return []
-    return registry.snapshot()
-
-
-def collect_warmup(registry: WarmupRegistry | None) -> dict[str, Any]:
-    """Return the warmup registry dict, or an empty dict if none."""
-    if registry is None:
-        return {}
-    return registry.to_dict()
