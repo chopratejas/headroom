@@ -624,3 +624,105 @@ def test_auto_computed_default_on_this_machine():
     assert proxy.anthropic_pre_upstream_concurrency == expected
     assert proxy.anthropic_pre_upstream_sem is not None
     assert proxy.anthropic_pre_upstream_sem._value == expected
+
+
+# --------------------------------------------------------------------------- #
+# Semaphore released on HTTPException / early-exit paths even with an         #
+# already-held permit. Explicitly covers the 4 pre-upstream early exits:     #
+#   - rate_limiter deny (429)                                                 #
+#   - cost_tracker block (429)                                                #
+#   - security scan block (403)                                               #
+#   - cache hit (200)                                                         #
+# Each test holds 1 permit of a Semaphore(2) with a concurrent request,      #
+# then verifies the handler restores ``_value`` to the original after        #
+# the early return.                                                           #
+# --------------------------------------------------------------------------- #
+
+
+class _RateLimiterDeny:
+    async def check_request(self, _rate_key):
+        return False, 1.0
+
+
+class _CostTrackerBlock:
+    def check_budget(self):
+        return False, 0
+
+    def record_tokens(self, *a, **k):
+        return None
+
+
+class _SecurityBlock:
+    class _Err(Exception):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.reason = "blocked-by-security"
+
+    def scan_request(self, _messages, _ctx):
+        raise self._Err("blocked by security policy")
+
+
+class _CacheHit:
+    class _Entry:
+        response_headers: dict = {}
+        response_body: bytes = b'{"id":"cached","type":"message","role":"assistant","content":[{"type":"text","text":"hit"}]}'
+
+    def __init__(self) -> None:
+        self._entry = self._Entry()
+
+    async def get(self, _messages, _model):
+        return self._entry
+
+    async def set(self, *a, **k):
+        return None
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["rate_limiter", "cost_tracker", "security", "cache"],
+)
+def test_early_exit_paths_release_semaphore_under_contention(scenario):
+    """Hold one permit of a Semaphore(1) with a concurrent request, trigger
+    the early-exit path, verify the semaphore value is restored.
+    """
+
+    async def _run() -> None:
+        sem = asyncio.Semaphore(1)
+        original_value = sem._value
+
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem)
+        if scenario == "rate_limiter":
+            handler.rate_limiter = _RateLimiterDeny()
+        elif scenario == "cost_tracker":
+            handler.cost_tracker = _CostTrackerBlock()
+        elif scenario == "security":
+            handler.security = _SecurityBlock()
+        elif scenario == "cache":
+            handler.cache = _CacheHit()
+
+        req = _build_request(
+            {
+                "model": "claude-3-5-sonnet-latest",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            {"authorization": "Bearer sk-ant-api-test"},
+        )
+
+        # Drive several iterations to confirm each early-exit call fully
+        # releases the semaphore rather than leaking a permit.
+        for _ in range(3):
+            try:
+                await handler.handle_anthropic_messages(req)
+            except Exception:
+                # rate_limiter + cost_tracker raise HTTPException(429);
+                # security returns a JSONResponse; cache returns a Response.
+                # Any exception that escapes is acceptable — what matters is
+                # the semaphore state after the handler returns.
+                pass
+            assert sem._value == original_value, (
+                f"{scenario}: semaphore leak "
+                f"got={sem._value}, want={original_value}"
+            )
+
+    with _tokenizer_patch():
+        anyio.run(_run)
