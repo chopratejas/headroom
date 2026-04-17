@@ -251,7 +251,10 @@ class _CopilotQuotaTracker(QuotaTracker):
             try:
                 await asyncio.wait_for(self._task, timeout=5.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+                # Mirror SubscriptionTracker.stop(): on timeout or outer
+                # cancellation, cancel the underlying poll task. Without
+                # this, a wedged poll task would leak past ``stop()``.
+                self._task.cancel()
 
     # ------------------------------------------------------------------
     # State
