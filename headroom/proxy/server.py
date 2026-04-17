@@ -45,7 +45,7 @@ import httpx
 
 try:
     import uvicorn
-    from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
+    from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
@@ -1299,6 +1299,34 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def health():
         payload = _health_payload(include_config=True)
         return JSONResponse(status_code=200, content=payload)
+
+    # Loopback-only debug introspection (Unit 5). A remote IP gets 404 —
+    # debug endpoints are invisible to external scanners.
+    from headroom.proxy.debug_introspection import (
+        collect_tasks as _collect_tasks,
+    )
+    from headroom.proxy.debug_introspection import (
+        collect_warmup as _collect_warmup,
+    )
+    from headroom.proxy.debug_introspection import (
+        collect_ws_sessions as _collect_ws_sessions,
+    )
+    from headroom.proxy.loopback_guard import require_loopback as _require_loopback
+
+    @app.get("/debug/tasks", dependencies=[Depends(_require_loopback)])
+    async def debug_tasks():
+        ws_registry = getattr(proxy, "ws_sessions", None)
+        return JSONResponse(status_code=200, content=_collect_tasks(ws_registry))
+
+    @app.get("/debug/ws-sessions", dependencies=[Depends(_require_loopback)])
+    async def debug_ws_sessions():
+        ws_registry = getattr(proxy, "ws_sessions", None)
+        return JSONResponse(status_code=200, content=_collect_ws_sessions(ws_registry))
+
+    @app.get("/debug/warmup", dependencies=[Depends(_require_loopback)])
+    async def debug_warmup():
+        warmup_registry = getattr(proxy, "warmup", None)
+        return JSONResponse(status_code=200, content=_collect_warmup(warmup_registry))
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard():
