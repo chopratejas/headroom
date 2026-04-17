@@ -127,6 +127,7 @@ from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
+from headroom.proxy.warmup import WarmupRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
 from headroom.subscription.codex_rate_limits import get_codex_rate_limit_state
 from headroom.subscription.copilot_quota import get_copilot_quota_tracker
@@ -365,6 +366,12 @@ class HeadroomProxy(
 
         # HTTP client
         self.http_client: httpx.AsyncClient | None = None
+
+        # Shared cold-start warmup registry (populated by startup()).
+        # Holds typed slots with loaded / loading / null / error status for
+        # each preloaded heavy asset. Exposed as ``proxy.warmup`` and
+        # serialized by the /debug/warmup route (Unit 5).
+        self.warmup: WarmupRegistry = WarmupRegistry()
 
         # Backend for Anthropic API (direct, LiteLLM, or any-llm)
         # Supports: "anthropic" (direct), "bedrock", "vertex", "litellm-<provider>", or "anyllm"
@@ -625,16 +632,42 @@ class HeadroomProxy(
             logger.info("Smart Routing: DISABLED (legacy sequential mode)")
 
         # Eagerly load ALL compressors, parsers, and detectors at startup
-        # This eliminates cold-start latency spikes on first requests
+        # This eliminates cold-start latency spikes on first requests.
+        # Iterate BOTH pipelines (Anthropic + OpenAI) and dedupe transforms
+        # by id() so shared-transform instances never load twice. The
+        # resulting status dict is merged into ``self.warmup`` so /debug/warmup
+        # (Unit 5) and /readyz have a single source of truth.
         self._kompress_status = "not installed"
         eager_status: dict[str, str] = {}
 
         if self.config.optimize:
             logger.info("Pre-loading compressors and parsers...")
-            for transform in self.anthropic_pipeline.transforms:
-                if hasattr(transform, "eager_load_compressors"):
-                    eager_status = transform.eager_load_compressors()
-                    break
+            seen_transform_ids: set[int] = set()
+            pipelines = (self.anthropic_pipeline, self.openai_pipeline)
+            for pipeline in pipelines:
+                for transform in pipeline.transforms:
+                    if id(transform) in seen_transform_ids:
+                        continue
+                    seen_transform_ids.add(id(transform))
+                    if not hasattr(transform, "eager_load_compressors"):
+                        continue
+                    try:
+                        transform_status = transform.eager_load_compressors()
+                    except Exception as exc:
+                        logger.warning(
+                            "Eager preload failed for %s: %s",
+                            type(transform).__name__,
+                            exc,
+                        )
+                        continue
+                    if not isinstance(transform_status, dict):
+                        continue
+                    # Merge: later writers win only if the key wasn't set.
+                    # Preload a transform ONCE — if another pipeline also has
+                    # ``eager_load_compressors`` it contributes only new keys.
+                    for key, value in transform_status.items():
+                        eager_status.setdefault(key, value)
+                    self.warmup.merge_transform_status(transform_status)
 
         # Update internal status from eager loading results
         if eager_status.get("kompress") == "enabled":
@@ -665,8 +698,35 @@ class HeadroomProxy(
             logger.info("Magika: ENABLED (ML content detection)")
 
         if self.memory_handler:
-            await self.memory_handler.ensure_initialized()
+            self.warmup.memory_backend.mark_loading()
+            try:
+                await self.memory_handler.ensure_initialized()
+            except Exception as exc:  # pragma: no cover - defensive
+                self.warmup.memory_backend.mark_error(str(exc))
+                logger.warning(
+                    "Memory: backend initialization failed (startup continues): %s", exc
+                )
             memory_status = self.memory_handler.health_status()
+            if memory_status.get("initialized"):
+                self.warmup.memory_backend.mark_loaded(
+                    handle=self.memory_handler,
+                    backend=memory_status.get("backend"),
+                )
+                # Force one embed call so the ONNX graph is compiled now,
+                # not lazily during the first request. Best-effort — any
+                # failure is swallowed inside warmup_embedder.
+                self.warmup.memory_embedder.mark_loading()
+                warmed = await self.memory_handler.warmup_embedder()
+                if warmed:
+                    self.warmup.memory_embedder.mark_loaded()
+                else:
+                    # Not an error — e.g. qdrant-neo4j has no embedder slot
+                    # we can reach, or the backend simply exposes no handle.
+                    self.warmup.memory_embedder.mark_null()
+            else:
+                if self.warmup.memory_backend.status != "error":
+                    self.warmup.memory_backend.mark_null()
+                self.warmup.memory_embedder.mark_null()
             logger.info(
                 "Memory: ENABLED "
                 f"(backend={memory_status['backend']}, initialized={memory_status['initialized']})"
