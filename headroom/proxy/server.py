@@ -378,6 +378,30 @@ class HeadroomProxy(
         # outermost ``finally``. Consumed by ``/debug/ws-sessions``.
         self.ws_sessions: WebSocketSessionRegistry = WebSocketSessionRegistry()
 
+        # Unit 4: bounded pre-upstream concurrency for the Anthropic HTTP
+        # path. Caps how many ``handle_anthropic_messages`` calls may be
+        # running deep-copy / first-stage compression / memory-context
+        # lookup / upstream connect concurrently. ``/livez``, ``/readyz``,
+        # ``/health``, ``/metrics``, ``/stats``, and the Codex WS path are
+        # intentionally NOT gated by this semaphore.
+        #
+        # A value of ``0`` or negative disables the semaphore (unbounded
+        # mode); this is useful for the Unit 6 counter-factual where we
+        # deliberately reproduce the original starvation. The default is
+        # ``max(2, min(8, os.cpu_count() or 4))``.
+        _pre_upstream_cfg = config.anthropic_pre_upstream_concurrency
+        if _pre_upstream_cfg is None:
+            _pre_upstream_resolved = max(2, min(8, os.cpu_count() or 4))
+        else:
+            _pre_upstream_resolved = _pre_upstream_cfg
+        self.anthropic_pre_upstream_concurrency: int = _pre_upstream_resolved
+        if _pre_upstream_resolved > 0:
+            self.anthropic_pre_upstream_sem: asyncio.Semaphore | None = (
+                asyncio.Semaphore(_pre_upstream_resolved)
+            )
+        else:
+            self.anthropic_pre_upstream_sem = None
+
         # Backend for Anthropic API (direct, LiteLLM, or any-llm)
         # Supports: "anthropic" (direct), "bedrock", "vertex", "litellm-<provider>", or "anyllm"
         self.anthropic_backend: Backend | None = None

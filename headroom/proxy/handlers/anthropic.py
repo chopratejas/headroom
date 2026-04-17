@@ -326,8 +326,50 @@ class AnthropicHandlerMixin:
         pre_upstream_started_at = time.perf_counter()
         _stage_timings_emitted = False
 
+        # Unit 4: bounded pre-upstream concurrency. When the proxy is
+        # configured with a semaphore, acquire it before reading the
+        # request body so a replay storm cannot starve ``/livez``, new
+        # Codex WS opens, or the HTTP thread pool. The release happens
+        # BEFORE we start streaming response bytes back to the client —
+        # the semaphore must not be held for the whole response
+        # lifetime. ``_release_pre_upstream_sem`` is idempotent and
+        # called on every exit path (early 4xx return, upstream error,
+        # exception, and just before each streaming handoff).
+        pre_upstream_sem = getattr(self, "anthropic_pre_upstream_sem", None)
+        _pre_upstream_sem_acquired = False
+
+        def _release_pre_upstream_sem() -> None:
+            nonlocal _pre_upstream_sem_acquired
+            if _pre_upstream_sem_acquired and pre_upstream_sem is not None:
+                _pre_upstream_sem_acquired = False
+                pre_upstream_sem.release()
+
+        if pre_upstream_sem is not None:
+            _wait_started_at = time.perf_counter()
+            await pre_upstream_sem.acquire()
+            _pre_upstream_sem_acquired = True
+            _wait_ms = (time.perf_counter() - _wait_started_at) * 1000.0
+            stage_timer.record("pre_upstream_wait", _wait_ms)
+            if _wait_ms > 100.0:
+                logger.info(
+                    "[%s] pre_upstream_wait_ms=%.2f session_id=%s "
+                    "(anthropic pre-upstream semaphore contention)",
+                    request_id,
+                    _wait_ms,
+                    trace_session_id,
+                )
+        else:
+            stage_timer.record("pre_upstream_wait", 0.0)
+
         async def _emit_pre_upstream_stage_timings() -> None:
             nonlocal _stage_timings_emitted
+            # Always release the Unit 4 pre-upstream semaphore when we
+            # hand off to streaming / return a response / hit an error.
+            # Doing it here (rather than only at explicit handoff sites)
+            # guarantees release on every exit path already covered by
+            # stage-timings emission, including early 4xx returns and
+            # upstream errors.
+            _release_pre_upstream_sem()
             if _stage_timings_emitted:
                 return
             _stage_timings_emitted = True
@@ -342,6 +384,7 @@ class AnthropicHandlerMixin:
                 session_id=trace_session_id,
                 stage_timer=stage_timer,
                 expected_stages=(
+                    "pre_upstream_wait",
                     "read_request_json",
                     "deep_copy",
                     "compression_first_stage",
@@ -391,6 +434,7 @@ class AnthropicHandlerMixin:
 
         # Validate message array size
         if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
+            await _emit_pre_upstream_stage_timings()
             return JSONResponse(
                 status_code=400,
                 content={
@@ -442,6 +486,10 @@ class AnthropicHandlerMixin:
             allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
             if not allowed:
                 await self.metrics.record_rate_limited(provider="anthropic")
+                # Unit 4: release the pre-upstream semaphore before we
+                # bail out of the handler via HTTPException — FastAPI's
+                # exception handler will NOT run our ``finally``.
+                await _emit_pre_upstream_stage_timings()
                 raise HTTPException(
                     status_code=429,
                     detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
@@ -452,6 +500,9 @@ class AnthropicHandlerMixin:
         if self.cost_tracker:
             allowed, remaining = self.cost_tracker.check_budget()
             if not allowed:
+                # Unit 4: release the pre-upstream semaphore before we
+                # bail out of the handler via HTTPException.
+                await _emit_pre_upstream_stage_timings()
                 raise HTTPException(
                     status_code=429,
                     detail=f"Budget exceeded for {self.config.budget_period} period",
@@ -488,6 +539,9 @@ class AnthropicHandlerMixin:
                 response_headers.pop("content-encoding", None)
                 response_headers.pop("content-length", None)
 
+                # Unit 4: release the pre-upstream semaphore on cache
+                # hit — no upstream call will happen.
+                await _emit_pre_upstream_stage_timings()
                 return Response(
                     content=cached.response_body,
                     headers=response_headers,
@@ -515,6 +569,9 @@ class AnthropicHandlerMixin:
                 if hasattr(e, "reason"):
                     from fastapi.responses import JSONResponse as _JSONResp
 
+                    # Unit 4: release the pre-upstream semaphore on
+                    # security block — no upstream call will happen.
+                    await _emit_pre_upstream_stage_timings()
                     return _JSONResp(
                         status_code=403,
                         content={
@@ -1075,6 +1132,8 @@ class AnthropicHandlerMixin:
                     )
             except Exception as e:
                 logger.error(f"[{request_id}] Bedrock backend error: {e}")
+                # Unit 4: release the pre-upstream semaphore on error.
+                await _emit_pre_upstream_stage_timings()
                 return JSONResponse(
                     status_code=500,
                     content={

@@ -59,6 +59,20 @@ from .main import main
     default=None,
     help="Upstream connection timeout in seconds (default: 10)",
 )
+@click.option(
+    "--anthropic-pre-upstream-concurrency",
+    type=int,
+    default=None,
+    envvar="HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY",
+    help=(
+        "Cap the number of Anthropic HTTP requests that may run pre-upstream work "
+        "(request parse / deep-copy / first compression stage / memory context / upstream connect) "
+        "concurrently. Prevents cold-start replay storms from starving /livez and new Codex WS opens. "
+        "Default: max(2, min(8, os.cpu_count() or 4)). "
+        "Set to 0 or negative to disable (unbounded). "
+        "Env: HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY."
+    ),
+)
 @click.option("--log-file", default=None, help="Path to JSONL log file")
 @click.option(
     "--budget",
@@ -197,6 +211,7 @@ def proxy(
     no_rate_limit: bool,
     retry_max_attempts: int | None,
     connect_timeout_seconds: int | None,
+    anthropic_pre_upstream_concurrency: int | None,
     log_file: str | None,
     budget: float | None,
     code_graph: bool,
@@ -323,6 +338,12 @@ def proxy(
         license_key=license_key,
         # Stateless mode: disable all filesystem writes
         stateless=is_stateless,
+        # Unit 4: bounded pre-upstream concurrency on the Anthropic HTTP
+        # path. ``None`` -> HeadroomProxy computes ``max(2, min(8,
+        # os.cpu_count() or 4))``; ``<= 0`` -> disabled (unbounded).
+        # Precedence: CLI > env > auto-compute (click's ``envvar``
+        # handles the env-var fallback).
+        anthropic_pre_upstream_concurrency=anthropic_pre_upstream_concurrency,
     )
 
     memory_status = "DISABLED"

@@ -227,3 +227,22 @@ class ProxyConfig:
 
     # Stateless mode — disable all filesystem writes for read-only / container deployments
     stateless: bool = False
+
+    # Unit 4: Bounded pre-upstream concurrency for Anthropic replay storms.
+    #
+    # Caps the number of simultaneous requests allowed to run the
+    # pre-upstream phase of ``handle_anthropic_messages`` (request JSON
+    # read → deep-copy → first compression stage → memory-context lookup
+    # → first upstream connect). Prevents cold-start replay storms from
+    # monopolising the event loop / thread pool and starving ``/livez``,
+    # ``/readyz``, and new Codex WS opens. Compression stays on.
+    #
+    # ``None`` (default) -> auto-compute ``max(2, min(8, os.cpu_count() or 4))``.
+    # ``0`` or negative  -> disables the semaphore (unbounded); useful for
+    # the Unit 6 counter-factual and for deliberately reproducing the
+    # original starvation. Any positive integer is honored verbatim.
+    #
+    # CLI: ``--anthropic-pre-upstream-concurrency``.
+    # Env: ``HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY``.
+    # Precedence: CLI > env > auto-compute.
+    anthropic_pre_upstream_concurrency: int | None = None
