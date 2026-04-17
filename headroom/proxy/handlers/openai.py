@@ -1940,8 +1940,19 @@ class OpenAIHandlerMixin:
                             # (e.g. server shutdown).
                             for t in done:
                                 exc = None
-                                with contextlib.suppress(Exception):
-                                    exc = t.exception()
+                                # Cancelled tasks raise CancelledError from
+                                # .exception(); surface it explicitly so the
+                                # downstream ``isinstance(exc, CancelledError)``
+                                # branches actually run. For any other
+                                # unexpected state (``InvalidStateError`` if
+                                # the task somehow isn't done — shouldn't
+                                # happen post-gather but defensive), we
+                                # suppress and leave ``exc`` as ``None``.
+                                if t.cancelled():
+                                    exc = asyncio.CancelledError()
+                                else:
+                                    with contextlib.suppress(asyncio.InvalidStateError):
+                                        exc = t.exception()
                                 task_name = t.get_name() or ""
                                 if t is client_task:
                                     if client_relay_error is not None:
