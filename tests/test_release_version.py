@@ -6,6 +6,7 @@ from headroom.release_version import (
     compute_release_version,
     find_latest_release_tag,
     normalize_release_tag,
+    parse_release_tag,
 )
 
 
@@ -14,7 +15,7 @@ def test_normalize_release_tag_preserves_three_part_tag() -> None:
 
 
 def test_normalize_release_tag_collapses_four_part_tag() -> None:
-    assert str(normalize_release_tag("v0.5.25.2")) == "0.5.27"
+    assert str(normalize_release_tag("v0.5.25.2")) == "0.5.25"
 
 
 def test_compute_patch_release_from_four_part_history() -> None:
@@ -24,8 +25,8 @@ def test_compute_patch_release_from_four_part_history() -> None:
         tags=["v0.5.20", "v0.5.25.1", "v0.5.25.2"],
     )
 
-    assert info.version == "0.5.28"
-    assert info.npm_version == "0.5.28"
+    assert info.version == "0.5.26"
+    assert info.npm_version == "0.5.26"
     assert info.previous_tag == "v0.5.25.2"
     assert info.bump == "patch"
 
@@ -81,3 +82,13 @@ def test_manual_version_override_rejects_legacy_four_part_version() -> None:
 
 def test_find_latest_release_tag_prefers_highest_normalized_version() -> None:
     assert find_latest_release_tag(["v0.5.25.2", "v0.5.27", "not-a-tag"]) == "v0.5.27"
+
+
+def test_find_latest_release_tag_prefers_higher_legacy_height_with_same_base() -> None:
+    assert find_latest_release_tag(["v0.5.25.2", "v0.5.25.3", "v0.5.25"]) == "v0.5.25.3"
+
+
+def test_parse_release_tag_preserves_legacy_height_for_sorting() -> None:
+    tag = parse_release_tag("v0.5.25.3")
+    assert str(tag.version) == "0.5.25"
+    assert tag.legacy_height == 3

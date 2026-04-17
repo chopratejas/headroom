@@ -63,27 +63,46 @@ class ReleaseVersionInfo:
         }
 
 
-def normalize_release_tag(tag: str) -> SemVer:
-    """Collapse historic 4-part release tags into a standard semver version."""
+@dataclass(frozen=True, order=True)
+class ReleaseTag:
+    """Parsed release tag metadata used for sorting and normalization."""
+
+    version: SemVer
+    legacy_height: int = -1
+    raw: str = ""
+
+
+def parse_release_tag(tag: str) -> ReleaseTag:
+    """Parse a release tag, preserving legacy fourth-component ordering."""
 
     match = RELEASE_TAG_RE.match(tag)
     if not match:
         raise ValueError(f"Invalid release tag: {tag}")
     major, minor, patch, extra = match.groups()
-    return SemVer(int(major), int(minor), int(patch) + int(extra or 0))
+    return ReleaseTag(
+        version=SemVer(int(major), int(minor), int(patch)),
+        legacy_height=int(extra) if extra is not None else -1,
+        raw=tag,
+    )
+
+
+def normalize_release_tag(tag: str) -> SemVer:
+    """Collapse historic 4-part release tags into their base semantic version."""
+
+    return parse_release_tag(tag).version
 
 
 def find_latest_release_tag(tags: Sequence[str]) -> str | None:
     """Return the latest release tag after normalizing legacy 4-part tags."""
 
-    candidates: list[tuple[SemVer, str]] = []
+    candidates: list[ReleaseTag] = []
     for tag in tags:
         if RELEASE_TAG_RE.match(tag):
-            candidates.append((normalize_release_tag(tag), tag))
+            candidates.append(parse_release_tag(tag))
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return candidates[0][1]
+    return candidates[0].raw
 
 
 def compute_release_version(

@@ -47,6 +47,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   detect-version:
     runs-on: ubuntu-latest
@@ -290,6 +294,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create v${{ needs.detect-version.outputs.version }} \
-            --title "Release v${{ needs.detect-version.outputs.version }}" \
-            --notes-file .changelog.md
+          TAG="v${{ needs.detect-version.outputs.version }}"
+          TITLE="Release v${{ needs.detect-version.outputs.version }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file .changelog.md
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file .changelog.md
+          fi
