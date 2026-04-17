@@ -2052,8 +2052,14 @@ class OpenAIHandlerMixin:
             # the registry entry. ``deregister`` is idempotent, so a
             # session that never registered is a no-op.
             if ws_sessions is not None and session_handle is not None:
-                released_tasks = len(session_handle.relay_tasks)
-                ws_sessions.deregister(session_id, cause=termination_cause)
+                # Use deregister_and_count so the handle pop and the
+                # relay-task count are read atomically inside the
+                # registry. Capturing ``len(session_handle.relay_tasks)``
+                # separately before ``deregister`` would risk drift if
+                # the registry's bookkeeping ever changes.
+                _deregistered, released_tasks = ws_sessions.deregister_and_count(
+                    session_id, cause=termination_cause
+                )
                 session_duration_ms = (
                     time.perf_counter() - session_started_at
                 ) * 1000.0

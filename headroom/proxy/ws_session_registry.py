@@ -138,16 +138,45 @@ class WebSocketSessionRegistry:
         Also clears the handle's ``relay_tasks`` list so the registry
         stops holding references to coroutine frames after the session
         ends.
+
+        The handle is returned with ``relay_tasks`` already cleared, but
+        the caller can still observe the number of tasks the registry
+        released via the ``released_tasks`` attribute set on the handle
+        before the clear. Prefer :meth:`deregister_and_count` for new
+        callers that need that number for Prometheus dec calls — it
+        couples the handle pop and the count read so they cannot drift.
         """
+        handle, _count = self._deregister_internal(session_id, cause)
+        return handle
+
+    def deregister_and_count(
+        self, session_id: str, cause: TerminationCause = "unknown"
+    ) -> tuple[WSSessionHandle | None, int]:
+        """Deregister and return (handle, released_task_count).
+
+        This is the preferred API for handlers that need to decrement a
+        Prometheus gauge by the number of relay tasks that were attached
+        to the session: capturing the count separately (via
+        ``len(handle.relay_tasks)`` before :meth:`deregister`) and then
+        calling :meth:`deregister` risks drift if the registry's
+        bookkeeping is ever changed. ``deregister_and_count`` returns
+        both atomically.
+
+        Returns ``(None, 0)`` when the session was not registered.
+        """
+        return self._deregister_internal(session_id, cause)
+
+    def _deregister_internal(
+        self, session_id: str, cause: TerminationCause
+    ) -> tuple[WSSessionHandle | None, int]:
         handle = self._sessions.pop(session_id, None)
         if handle is None:
-            return None
+            return None, 0
         handle.termination_cause = cause
-        self._active_relay_tasks = max(
-            0, self._active_relay_tasks - len(handle.relay_tasks)
-        )
+        released = len(handle.relay_tasks)
+        self._active_relay_tasks = max(0, self._active_relay_tasks - released)
         handle.relay_tasks.clear()
-        return handle
+        return handle, released
 
     def attach_tasks(self, session_id: str, tasks: Iterable[_TaskLike]) -> None:
         """Attach relay tasks to an existing session (merge, not replace).
