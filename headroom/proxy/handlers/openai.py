@@ -19,6 +19,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
+from headroom.proxy.ws_session_registry import (
+    WebSocketSessionRegistry,
+    WSSessionHandle,
+)
 
 if TYPE_CHECKING:
     from fastapi import Request, WebSocket
@@ -1248,6 +1252,15 @@ class OpenAIHandlerMixin:
         stage_timer = StageTimer()
         session_started_at = time.perf_counter()
 
+        # Unit 3: initialize registry variables *before* accept so the
+        # outermost ``finally`` can rely on them existing even if
+        # registration itself fails for some reason.
+        ws_sessions: WebSocketSessionRegistry | None = getattr(
+            self, "ws_sessions", None
+        )
+        session_handle: WSSessionHandle | None = None
+        termination_cause: str = "unknown"
+
         # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)
 
@@ -1265,6 +1278,31 @@ class OpenAIHandlerMixin:
                 await websocket.accept(subprotocol=client_subprotocols[0])
             else:
                 await websocket.accept()
+
+        # --- Unit 3: register the session as soon as accept succeeds ---
+        client_addr: str | None = None
+        client_info = getattr(websocket, "client", None)
+        if client_info is not None:
+            host = getattr(client_info, "host", None)
+            port = getattr(client_info, "port", None)
+            if host is not None and port is not None:
+                client_addr = f"{host}:{port}"
+            elif host is not None:
+                client_addr = str(host)
+        if ws_sessions is not None:
+            session_handle = WSSessionHandle(
+                session_id=session_id,
+                request_id=request_id,
+                client_addr=client_addr,
+                upstream_url=None,  # set below once upstream_url is computed
+            )
+            ws_sessions.register(session_handle)
+            metrics = getattr(self, "metrics", None)
+            if metrics is not None and hasattr(metrics, "inc_active_ws_sessions"):
+                try:
+                    metrics.inc_active_ws_sessions()
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
         # Forward all client headers except hop-by-hop / per-connection headers.
         # These are WebSocket handshake mechanics that the `websockets` library
@@ -1304,6 +1342,10 @@ class OpenAIHandlerMixin:
             base = self.OPENAI_API_URL
             ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
             upstream_url = f"{ws_base}/v1/responses"
+
+        # Unit 3: attach the resolved upstream URL to the session handle.
+        if session_handle is not None:
+            session_handle.upstream_url = upstream_url
 
         # Ensure Authorization header is present — fall back to OPENAI_API_KEY env var.
         # Safety net for clients that don't forward auth headers via WebSocket upgrade.
@@ -1579,13 +1621,39 @@ class OpenAIHandlerMixin:
                             _upstream_first_event_started = time.perf_counter()
                         await upstream.send(first_msg_raw)
 
+                        # Unit 3: flag the upstream side flips on seeing
+                        # ``response.completed`` so the outer cause
+                        # classifier can prefer it over the raw
+                        # "upstream iterator ended" default.
+                        response_completed_seen = False
+                        # Captures the first exception surfaced by the
+                        # inner relay ``except`` blocks so the outer
+                        # classifier can still tell ``upstream_error``
+                        # from ``upstream_disconnect`` / ``response_completed``
+                        # even though the halves swallow and log.
+                        upstream_relay_error: BaseException | None = None
+                        client_relay_error: BaseException | None = None
+
                         async def _client_to_upstream() -> None:
+                            nonlocal client_relay_error
                             try:
                                 while True:
                                     msg = await websocket.receive_text()
                                     await upstream.send(msg)
+                            except asyncio.CancelledError:
+                                # Explicit cancel from the outer
+                                # orchestrator — re-raise so
+                                # ``t.cancelled()`` and ``t.exception()``
+                                # behave correctly in the caller.
+                                raise
                             except Exception as relay_err:
+                                # Surface real errors to the classifier
+                                # without re-raising (existing fork
+                                # behavior: log and return so the
+                                # partner task can be cancelled
+                                # deterministically).
                                 if "WebSocketDisconnect" not in type(relay_err).__name__:
+                                    client_relay_error = relay_err
                                     logger.debug(
                                         f"[{request_id}] WS client→upstream relay ended: {relay_err}"
                                     )
@@ -1605,6 +1673,13 @@ class OpenAIHandlerMixin:
                             This prevents orphaned response.created events from confusing Codex.
                             """
                             from headroom.proxy.memory_handler import MEMORY_TOOL_NAMES
+
+                            # Unit 3: surface response.completed observation
+                            # to the outer scope so the termination-cause
+                            # classifier can prefer ``response_completed``
+                            # over ``upstream_disconnect``.
+                            nonlocal response_completed_seen
+                            nonlocal upstream_relay_error
 
                             memory_enabled = bool(self.memory_handler and memory_user_id)
 
@@ -1689,6 +1764,7 @@ class OpenAIHandlerMixin:
                                                 await websocket.send_text(buf)
                                             event_buffer.clear()
                                             _reset()
+                                            response_completed_seen = True
 
                                         continue
 
@@ -1703,6 +1779,7 @@ class OpenAIHandlerMixin:
                                                 pending_fcs.append(item)
 
                                         elif event_type == "response.completed":
+                                            response_completed_seen = True
                                             resp = event.get("response", {})
                                             resp_id = resp.get("id")
 
@@ -1770,8 +1847,15 @@ class OpenAIHandlerMixin:
                                     # --- Phase 2b: Pass-through mode ---
                                     await websocket.send_text(msg_str)
 
+                            except asyncio.CancelledError:
+                                raise
                             except Exception as relay_err:
                                 if "WebSocketDisconnect" not in type(relay_err).__name__:
+                                    # Capture for the outer classifier
+                                    # so ``upstream_error`` can be
+                                    # distinguished from a clean
+                                    # upstream disconnect.
+                                    upstream_relay_error = relay_err
                                     logger.debug(
                                         f"[{request_id}] WS upstream→client relay ended: {relay_err}"
                                     )
@@ -1779,14 +1863,115 @@ class OpenAIHandlerMixin:
                                 with contextlib.suppress(Exception):
                                     await websocket.close()
 
-                        await asyncio.gather(
+                        # --- Unit 3: deterministic relay-task cancellation ---
+                        # Spawn each half as a named task so we can:
+                        #   (a) attach them to the session registry for
+                        #       ``/debug/ws-sessions``,
+                        #   (b) cancel the survivor explicitly when the
+                        #       first one exits, and
+                        #   (c) classify the termination cause for the
+                        #       duration histogram.
+                        client_task = asyncio.create_task(
                             _client_to_upstream(),
-                            _upstream_to_client(),
-                            return_exceptions=True,
+                            name=f"codex-ws-c2u-{session_id}",
                         )
+                        upstream_task = asyncio.create_task(
+                            _upstream_to_client(),
+                            name=f"codex-ws-u2c-{session_id}",
+                        )
+                        relay_tasks = [client_task, upstream_task]
+                        if ws_sessions is not None:
+                            ws_sessions.attach_tasks(session_id, relay_tasks)
+                            metrics_for_tasks = getattr(self, "metrics", None)
+                            if metrics_for_tasks is not None and hasattr(
+                                metrics_for_tasks, "inc_active_relay_tasks"
+                            ):
+                                try:
+                                    metrics_for_tasks.inc_active_relay_tasks(
+                                        len(relay_tasks)
+                                    )
+                                except Exception:  # pragma: no cover - defensive
+                                    pass
+
+                        try:
+                            done, pending = await asyncio.wait(
+                                {client_task, upstream_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            # Cancel the survivor so we don't leak the
+                            # partner task. Suppress the CancelledError
+                            # we just raised ourselves — any *other*
+                            # exception from the cancelled task is
+                            # already logged inside its own try/except.
+                            for t in pending:
+                                t.cancel()
+                            if pending:
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await asyncio.gather(
+                                        *pending, return_exceptions=True
+                                    )
+
+                            # Classify termination cause from whichever
+                            # task completed first. ``CancelledError``
+                            # can show up on the "done" side if the
+                            # handler itself was cancelled from outside
+                            # (e.g. server shutdown).
+                            for t in done:
+                                exc = None
+                                with contextlib.suppress(Exception):
+                                    exc = t.exception()
+                                task_name = t.get_name() or ""
+                                if t is client_task:
+                                    if client_relay_error is not None:
+                                        termination_cause = "client_error"
+                                    elif exc is None:
+                                        termination_cause = "client_disconnect"
+                                    elif isinstance(exc, asyncio.CancelledError):
+                                        termination_cause = "client_disconnect"
+                                    else:
+                                        # Distinguish legitimate client
+                                        # disconnect exceptions from
+                                        # real errors: WebSocketDisconnect
+                                        # is a normal client exit.
+                                        if "WebSocketDisconnect" in type(exc).__name__:
+                                            termination_cause = "client_disconnect"
+                                        else:
+                                            termination_cause = "client_error"
+                                elif t is upstream_task:
+                                    if upstream_relay_error is not None:
+                                        termination_cause = "upstream_error"
+                                        logger.debug(
+                                            f"[{request_id}] WS relay {task_name} "
+                                            f"raised: {upstream_relay_error!r}"
+                                        )
+                                    elif exc is None:
+                                        termination_cause = (
+                                            "response_completed"
+                                            if response_completed_seen
+                                            else "upstream_disconnect"
+                                        )
+                                    elif isinstance(exc, asyncio.CancelledError):
+                                        termination_cause = "upstream_disconnect"
+                                    else:
+                                        termination_cause = "upstream_error"
+                                        logger.debug(
+                                            f"[{request_id}] WS relay {task_name} "
+                                            f"raised: {exc!r}"
+                                        )
+                        finally:
+                            # In case anything above raised before the
+                            # cancel-and-await loop ran.
+                            for t in relay_tasks:
+                                if not t.done():
+                                    t.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await asyncio.gather(
+                                    *relay_tasks, return_exceptions=True
+                                )
 
                         logger.info(
-                            f"[{request_id}] WS /v1/responses completed (tokens_saved={tokens_saved})"
+                            f"[{request_id}] WS /v1/responses completed "
+                            f"(tokens_saved={tokens_saved}, cause={termination_cause})"
                         )
                     break
                 except Exception as ws_err:
@@ -1840,7 +2025,14 @@ class OpenAIHandlerMixin:
                 )
 
         except Exception as e:
-            if "WebSocketDisconnect" not in type(e).__name__:
+            if "WebSocketDisconnect" in type(e).__name__:
+                # Unit 3: client dropped the socket before or during
+                # relay. The registry classifier may already have set
+                # ``client_disconnect`` via the relay task exit path;
+                # preserve that, otherwise set it here.
+                if termination_cause == "unknown":
+                    termination_cause = "client_disconnect"
+            else:
                 # Extract response body from websockets InvalidStatus for better debugging
                 error_detail = str(e)
                 if hasattr(e, "response"):
@@ -1854,6 +2046,8 @@ class OpenAIHandlerMixin:
                     except Exception:
                         pass
                 logger.error(f"[{request_id}] WS proxy error: {error_detail}")
+                if termination_cause == "unknown":
+                    termination_cause = "client_error"
             with contextlib.suppress(Exception):
                 await websocket.close(code=1011, reason=str(e)[:120])
         finally:
@@ -1862,6 +2056,29 @@ class OpenAIHandlerMixin:
                 "total_session",
                 (time.perf_counter() - session_started_at) * 1000.0,
             )
+            # Unit 3: deregister the session before (or independently
+            # of) the stage-timings log so a failure there cannot leak
+            # the registry entry. ``deregister`` is idempotent, so a
+            # session that never registered is a no-op.
+            if ws_sessions is not None and session_handle is not None:
+                released_tasks = len(session_handle.relay_tasks)
+                ws_sessions.deregister(session_id, cause=termination_cause)
+                session_duration_ms = (
+                    time.perf_counter() - session_started_at
+                ) * 1000.0
+                metrics_for_close = getattr(self, "metrics", None)
+                if metrics_for_close is not None:
+                    with contextlib.suppress(Exception):
+                        if hasattr(metrics_for_close, "dec_active_ws_sessions"):
+                            metrics_for_close.dec_active_ws_sessions()
+                        if released_tasks and hasattr(
+                            metrics_for_close, "dec_active_relay_tasks"
+                        ):
+                            metrics_for_close.dec_active_relay_tasks(released_tasks)
+                        if hasattr(metrics_for_close, "record_ws_session_duration"):
+                            metrics_for_close.record_ws_session_duration(
+                                session_duration_ms, termination_cause
+                            )
             await emit_stage_timings_log(
                 path="openai_responses_ws",
                 request_id=request_id,
