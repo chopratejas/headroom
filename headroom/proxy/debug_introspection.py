@@ -113,6 +113,8 @@ def _age_for_named_task(
 
 def collect_tasks(
     ws_registry: WebSocketSessionRegistry | None = None,
+    *,
+    with_stack_depth: bool = False,
 ) -> list[dict[str, Any]]:
     """Enumerate ``asyncio.all_tasks()`` for /debug/tasks.
 
@@ -121,6 +123,12 @@ def collect_tasks(
     and ``done``. Sorted by age descending with ``None`` ages sorted
     after known ages. System noise (``None`` tasks, tasks with no
     coroutine) is filtered out.
+
+    ``stack_depth`` is only computed when ``with_stack_depth=True``
+    because :meth:`asyncio.Task.get_stack` walks coroutine frames and
+    can noticeably stall the event loop during a storm with 50+ relay
+    tasks. The default returns ``stack_depth=None``; callers that need
+    it (a human debugging one snapshot) can pass ``with_stack_depth=True``.
     """
     try:
         tasks = asyncio.all_tasks()
@@ -145,7 +153,7 @@ def collect_tasks(
             "name": name,
             "coro_qualname": qualname,
             "age_seconds": age,
-            "stack_depth": _stack_depth(task),
+            "stack_depth": _stack_depth(task) if with_stack_depth else None,
             "done": bool(task.done()),
         }
         entries.append(entry)

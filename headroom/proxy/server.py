@@ -1325,9 +1325,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     from headroom.proxy.loopback_guard import require_loopback as _require_loopback
 
     @app.get("/debug/tasks", dependencies=[Depends(_require_loopback)])
-    async def debug_tasks():
+    async def debug_tasks(stack: bool = False):
+        """Enumerate running asyncio tasks.
+
+        Default is cheap — ``stack_depth`` is ``null`` in every entry so
+        a storm snapshot does not walk 50+ coroutine frames synchronously.
+        Pass ``?stack=true`` to compute ``stack_depth`` for each task
+        (useful for single-shot human debugging).
+        """
         ws_registry = getattr(proxy, "ws_sessions", None)
-        return JSONResponse(status_code=200, content=_collect_tasks(ws_registry))
+        return JSONResponse(
+            status_code=200,
+            content=_collect_tasks(ws_registry, with_stack_depth=stack),
+        )
 
     @app.get("/debug/ws-sessions", dependencies=[Depends(_require_loopback)])
     async def debug_ws_sessions():

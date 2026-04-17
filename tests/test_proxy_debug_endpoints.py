@@ -256,6 +256,37 @@ def test_debug_tasks_returns_json_array_for_loopback(client):
         assert "coro_qualname" in entry
 
 
+def test_debug_tasks_stack_depth_is_gated_behind_query(client):
+    """Default response must not compute stack_depth (P3 Fix 29 perf gate).
+
+    ``?stack=true`` opts into the synchronous ``Task.get_stack`` walk; the
+    default stays cheap so snapshotting during a reconnect storm does
+    not stall the event loop.
+    """
+    default = client.get("/debug/tasks")
+    assert default.status_code == 200
+    for entry in default.json():
+        assert entry["stack_depth"] is None, (
+            f"default /debug/tasks must not compute stack_depth; "
+            f"got {entry['stack_depth']!r} for {entry.get('name')!r}"
+        )
+
+    with_stack = client.get("/debug/tasks?stack=true")
+    assert with_stack.status_code == 200
+    entries = with_stack.json()
+    # At least one entry should have a computed depth (the TestClient
+    # itself runs under a task). Some entries may still be None if
+    # get_stack raised defensively — we only require that opting in
+    # produces at least one integer result.
+    integer_depths = [
+        e["stack_depth"] for e in entries if isinstance(e["stack_depth"], int)
+    ]
+    assert integer_depths, (
+        "expected at least one int stack_depth when ?stack=true; "
+        f"got entries={entries!r}"
+    )
+
+
 def test_debug_warmup_reports_registry_slots(client):
     response = client.get("/debug/warmup")
     assert response.status_code == 200
