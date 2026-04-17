@@ -149,6 +149,47 @@ async def test_ensure_initialized_timeout_leaves_handler_unready(
     assert STARTUP_INIT_TIMEOUT_SECONDS == 30.0
 
 
+@pytest.mark.asyncio
+async def test_ensure_initialized_timeout_nulls_partially_initialized_backend(
+    tmp_path, monkeypatch
+):
+    """If wait_for fires while _init_backend_locked has already set
+    ``self._backend`` but before ``self._initialized = True``, the timeout
+    handler must null ``_backend``. Otherwise callers doing
+    ``if self.memory_handler._backend:`` see a truthy-but-broken backend.
+    """
+
+    class SlowBackend:
+        def __init__(self, config):
+            self.config = config
+
+        async def _ensure_initialized(self) -> None:
+            # Hang long enough to blow the 0.01s timeout below.
+            await asyncio.sleep(5.0)
+
+        async def close(self) -> None:
+            pass
+
+    import headroom.memory.backends.local as local_mod
+
+    monkeypatch.setattr(local_mod, "LocalBackend", SlowBackend)
+
+    handler = MemoryHandler(
+        MemoryConfig(
+            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
+        )
+    )
+
+    with patch(
+        "headroom.proxy.memory_handler.STARTUP_INIT_TIMEOUT_SECONDS", 0.01
+    ):
+        await handler._ensure_initialized()
+
+    # Both must be consistent after timeout.
+    assert handler._initialized is False
+    assert handler._backend is None
+
+
 # -------------------------------------------------------------------
 # Real backend init (no monkeypatching) — integration smoke test
 # -------------------------------------------------------------------

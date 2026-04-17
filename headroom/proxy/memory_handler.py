@@ -183,6 +183,12 @@ class MemoryHandler:
             await asyncio.wait_for(_do_init(), timeout=STARTUP_INIT_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             # Fail-open: leave _initialized=False so subsequent calls retry.
+            # CRITICAL: also null the backend — _init_backend_locked may have
+            # already assigned ``self._backend`` before its own await raised /
+            # was cancelled by wait_for. Callers that do
+            # ``if self.memory_handler._backend:`` must not see a
+            # truthy-but-broken backend.
+            self._backend = None
             logger.error(
                 "Memory: backend initialization timed out after "
                 f"{STARTUP_INIT_TIMEOUT_SECONDS}s "
