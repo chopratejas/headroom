@@ -18,6 +18,8 @@ middleware) because:
   would be disproportionate.
 """
 
+from __future__ import annotations
+
 import ipaddress
 
 try:

@@ -36,7 +36,10 @@ logger = logging.getLogger("headroom.proxy")
 __all__ = ["StageTimer", "StageMeasurement", "emit_stage_timings_log"]
 
 
-class StageMeasurement(AbstractContextManager["StageMeasurement"], AbstractAsyncContextManager["StageMeasurement"]):
+class StageMeasurement(
+    AbstractContextManager["StageMeasurement"],
+    AbstractAsyncContextManager["StageMeasurement"],
+):
     """Context manager that measures a single named stage.
 
     Acts as both a synchronous (``with timer.measure(...):``) and an

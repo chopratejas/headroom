@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from headroom.proxy.helpers import jitter_delay_ms
 from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
 from headroom.proxy.ws_session_registry import (
+    TerminationCause,
     WebSocketSessionRegistry,
     WSSessionHandle,
 )
@@ -1258,7 +1259,7 @@ class OpenAIHandlerMixin:
             self, "ws_sessions", None
         )
         session_handle: WSSessionHandle | None = None
-        termination_cause: str = "unknown"
+        termination_cause: TerminationCause = "unknown"
 
         # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)

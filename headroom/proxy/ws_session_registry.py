@@ -34,7 +34,7 @@ import logging
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,15 @@ __all__ = [
 ]
 
 
-TerminationCause = str  # "client_disconnect" | "upstream_disconnect" | "upstream_error"
-# | "client_error" | "response_completed" | "unknown"
+TerminationCause = Literal[
+    "client_disconnect",
+    "upstream_disconnect",
+    "upstream_error",
+    "client_error",
+    "response_completed",
+    "client_timeout",
+    "unknown",
+]
 
 
 class _TaskLike(Protocol):
@@ -69,7 +76,7 @@ class WSSessionHandle:
     upstream_url: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
     last_activity_at: float = field(default_factory=time.perf_counter)
-    relay_tasks: list[Any] = field(default_factory=list)
+    relay_tasks: list[_TaskLike] = field(default_factory=list)
     termination_cause: TerminationCause | None = None
 
     def mark_activity(self) -> None:
@@ -87,9 +94,7 @@ class WSSessionHandle:
             "age_seconds": self.age_seconds(),
             "idle_seconds": max(0.0, time.perf_counter() - self.last_activity_at),
             "relay_task_count": len(self.relay_tasks),
-            "relay_task_names": [
-                getattr(t, "get_name", lambda: "")() for t in self.relay_tasks
-            ],
+            "relay_task_names": [t.get_name() for t in self.relay_tasks],
             "termination_cause": self.termination_cause,
         }
 
