@@ -121,7 +121,7 @@ jobs:
         shell: bash
 
       - name: Upload changelog via action
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: changelog
           path: /tmp/changelog-backup.md
@@ -131,7 +131,7 @@ jobs:
         run: python -m pip install build wheel && python -m build
 
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
