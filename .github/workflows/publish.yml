@@ -38,7 +38,7 @@ jobs:
             --outfile dist/headroom-sbom.cdx.json
 
       - name: Upload SBOM to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/headroom-sbom.cdx.json
 
