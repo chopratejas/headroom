@@ -190,6 +190,45 @@ async def test_ensure_initialized_timeout_nulls_partially_initialized_backend(
     assert handler._backend is None
 
 
+@pytest.mark.asyncio
+async def test_ensure_initialized_cancellation_propagates_and_resets_state(
+    tmp_path, monkeypatch
+):
+    """External cancellation of an in-flight ``_ensure_initialized`` must
+    propagate (CancelledError is BaseException — not a swallowable error)
+    and leave the handler in a clean state."""
+
+    class HangingBackend:
+        def __init__(self, config):
+            self.config = config
+
+        async def _ensure_initialized(self) -> None:
+            await asyncio.Event().wait()
+
+        async def close(self) -> None:
+            pass
+
+    import headroom.memory.backends.local as local_mod
+
+    monkeypatch.setattr(local_mod, "LocalBackend", HangingBackend)
+
+    handler = MemoryHandler(
+        MemoryConfig(
+            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
+        )
+    )
+
+    task = asyncio.create_task(handler._ensure_initialized())
+    # Give the task a tick to enter _init_backend_locked and assign _backend.
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert handler._initialized is False
+    assert handler._backend is None
+
+
 # -------------------------------------------------------------------
 # Real backend init (no monkeypatching) — integration smoke test
 # -------------------------------------------------------------------
