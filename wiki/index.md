@@ -413,6 +413,7 @@ Requires Python 3.10+.
 - **[Architecture](ARCHITECTURE.md)** — How the pipeline works under the hood
 - **[Benchmarks](benchmarks.md)** — Accuracy and latency data
 - **[Limitations](LIMITATIONS.md)** — When compression helps and when it doesn't
+- **[Filesystem Contract](filesystem-contract.md)** — Canonical config/workspace env vars and paths
 
 ---
 

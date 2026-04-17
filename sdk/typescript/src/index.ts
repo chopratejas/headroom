@@ -108,3 +108,33 @@ export type {
   SharedContextStats,
   SharedContextOptions,
 } from "./shared-context.js";
+
+// --- Filesystem contract (parity shell with headroom.paths) ---
+export {
+  HEADROOM_CONFIG_DIR_ENV,
+  HEADROOM_WORKSPACE_DIR_ENV,
+  HEADROOM_SAVINGS_PATH_ENV,
+  HEADROOM_TOIN_PATH_ENV,
+  HEADROOM_SUBSCRIPTION_STATE_PATH_ENV,
+  configDir,
+  workspaceDir,
+  savingsPath,
+  toinPath,
+  subscriptionStatePath,
+  memoryDbPath,
+  nativeMemoryDir,
+  licenseCachePath,
+  sessionStatsPath,
+  syncStatePath,
+  bridgeStatePath,
+  logDir,
+  proxyLogPath,
+  debug400Dir,
+  binDir,
+  rtkPath,
+  deployRoot,
+  beaconLockPath,
+  modelsConfigPath,
+  pluginConfigDir,
+  pluginWorkspaceDir,
+} from "./paths.js";

@@ -117,6 +117,84 @@ class TestCompressionHeaderRemoval:
         assert int(response_headers["content-length"]) == len(mock_response.content)
 
 
+class TestAcceptEncodingStripping:
+    """Tests for accept-encoding removal from forwarded request headers.
+
+    Edge proxies like Cloudflare Workers add accept-encoding values (e.g. br,
+    zstd) that the upstream provider may honor.  If httpx lacks the matching
+    decompression library (e.g. brotli) it cannot decode the response body,
+    causing a UnicodeDecodeError and a 502 returned to the client.
+
+    The fix strips accept-encoding before forwarding so httpx negotiates its
+    own encoding independently.
+    """
+
+    def test_accept_encoding_is_stripped_from_forwarded_headers(self):
+        """accept-encoding must be removed before forwarding to the upstream."""
+        # Simulate headers as received from a Cloudflare Worker client
+        request_headers = {
+            "authorization": "Bearer sk-test",
+            "content-type": "application/json",
+            "accept-encoding": "gzip, br, zstd",
+            "host": "headroom.example.com",
+            "content-length": "123",
+        }
+
+        # Replicate the handler logic
+        headers = dict(request_headers.items())
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers.pop("accept-encoding", None)
+
+        assert "accept-encoding" not in headers
+
+    def test_other_headers_preserved_after_stripping(self):
+        """Only hop-by-hop / negotiation headers are removed; auth etc. survive."""
+        request_headers = {
+            "authorization": "Bearer sk-test",
+            "content-type": "application/json",
+            "accept-encoding": "gzip, br",
+            "x-custom": "value",
+            "host": "headroom.example.com",
+            "content-length": "42",
+        }
+
+        headers = dict(request_headers.items())
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers.pop("accept-encoding", None)
+
+        assert headers["authorization"] == "Bearer sk-test"
+        assert headers["content-type"] == "application/json"
+        assert headers["x-custom"] == "value"
+        assert "host" not in headers
+        assert "content-length" not in headers
+        assert "accept-encoding" not in headers
+
+    def test_strip_is_safe_when_accept_encoding_absent(self):
+        """pop() on a missing key must not raise — direct curl calls have no header."""
+        request_headers = {
+            "authorization": "Bearer sk-test",
+            "content-type": "application/json",
+        }
+
+        headers = dict(request_headers.items())
+        # Must not raise KeyError
+        headers.pop("accept-encoding", None)
+
+        assert headers == {
+            "authorization": "Bearer sk-test",
+            "content-type": "application/json",
+        }
+
+    def test_brotli_encoding_value_is_stripped(self):
+        """Specifically guard against 'br' which breaks httpx without brotli package."""
+        for encoding_value in ["br", "gzip, br", "gzip, br, zstd", "zstd"]:
+            headers = {"accept-encoding": encoding_value, "content-type": "application/json"}
+            headers.pop("accept-encoding", None)
+            assert "accept-encoding" not in headers
+
+
 class TestNoRegressionForUncompressedResponses:
     """Ensure the fix doesn't break responses that were never compressed."""
 

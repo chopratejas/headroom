@@ -1,0 +1,283 @@
+name: Release
+
+# ─── Package Registry Configuration ────────────────────────────────────────────
+# Edit these constants to change package names, environments, and registries.
+# All values are referenced via ${{ env.VAR }} throughout the workflow.
+env:
+  # PyPI
+  PYPI_PACKAGE: headroom-ai
+  PYPI_ENVIRONMENT: pypi
+
+  # npm (npmjs.org)
+  NPM_REGISTRY_URL: https://registry.npmjs.org
+  NPM_SDK_PACKAGE: headroom-ai
+  NPM_OPENCLAW_PACKAGE: headroom-openclaw
+
+  # GitHub Package Registry
+  GITHUB_PACKAGES_REGISTRY_URL: https://npm.pkg.github.com
+
+  # ─── Safety Gates ──────────────────────────────────────────────────────────────
+  # Set to 'true' to skip a publish target (e.g., when tokens are not configured).
+  # In GitHub: repo Settings → Variables → Actions Variables → New repository variable.
+  # Locally via act: pass -e event.yml or set in .actrc.local (see .actrc.example).
+  PYPI_SKIP: "false"
+  NPM_SKIP: "false"
+  GITHUB_PKG_SKIP: "false"
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/publish.yml"
+      - "scripts/**"
+      - ".commitlintrc.json"
+      - ".actrc"
+      - ".actrc.local.example"
+      - ".env.act.example"
+      - ".github/act/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Manual version override"
+        required: false
+      dry_run:
+        description: "Skip publish"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      npm_version: ${{ steps.ver.outputs.npm_version }}
+      canonical: ${{ steps.ver.outputs.canonical }}
+      height: ${{ steps.ver.outputs.height }}
+      bump: ${{ steps.ver.outputs.bump }}
+      previous_tag: ${{ steps.ver.outputs.previous_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute semantic version from canonical + release history
+        id: ver
+        run: |
+          python headroom/release_version.py
+        env:
+          MANUAL_VER: ${{ github.event.inputs.version }}
+
+  build:
+    needs: [detect-version]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync version to package files
+        run: |
+          python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
+
+      - name: Run changelog generation
+        run: |
+          PREV_TAG="${{ needs.detect-version.outputs.previous_tag }}"
+          if [ -n "$PREV_TAG" ]; then
+            python scripts/changelog-gen.py \
+              --version ${{ needs.detect-version.outputs.version }} \
+              --since "$PREV_TAG"
+          else
+            python scripts/changelog-gen.py \
+              --version ${{ needs.detect-version.outputs.version }}
+          fi
+
+      - name: Verify changelog exists
+        run: |
+          pwd
+          ls -la .changelog.md
+          cat .changelog.md
+
+      - name: Upload changelog artifact
+        run: |
+          if [ -f .changelog.md ]; then
+            echo "File exists, uploading..."
+            ls -la .changelog.md
+            cp .changelog.md /tmp/changelog-backup.md
+          else
+            echo "ERROR: .changelog.md does not exist!"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Upload changelog via action
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: /tmp/changelog-backup.md
+          if-no-files-found: error
+
+      - name: Build Python package
+        run: python -m pip install build wheel && python -m build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    needs: [build]
+    if: github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
+    environment: pypi  # NOTE: environment name must be a literal; update here if the GitHub environment name changes
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC trusted publishing
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish ${{ env.PYPI_PACKAGE }} to PyPI
+        id: pypi-publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        continue-on-error: true
+
+      - name: PyPI publish notice
+        if: steps.pypi-publish.outcome == 'failure'
+        run: |
+          echo "::notice::PyPI publish skipped — OIDC trusted publisher not configured for this repo. See: https://pypi.org/trusted-publishers/ — Set PYPI_SKIP=true in repo Variables to suppress this notice."
+
+  publish-npm:
+    needs: [build]
+    if: github.event.inputs.dry_run != 'true' && vars.NPM_SKIP != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: ${{ env.NPM_REGISTRY_URL }}
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish ${{ env.NPM_SDK_PACKAGE }} (TypeScript SDK) to npmjs.org
+        id: npm-sdk-publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd sdk/typescript
+          npm install
+          npm run build
+          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version
+          npm publish --access public
+        continue-on-error: true
+
+      - name: Publish ${{ env.NPM_OPENCLAW_PACKAGE }} to npmjs.org
+        id: npm-openclaw-publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd plugins/openclaw
+          npm install
+          npm run build
+          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version
+          npm publish --access public
+        continue-on-error: true
+
+      - name: npm publish notice
+        if: steps.npm-sdk-publish.outcome == 'failure' || steps.npm-openclaw-publish.outcome == 'failure'
+        run: |
+          echo "::notice::One or more npm publishes failed. Set NPM_SKIP=true in repo Variables to skip both npm publishes if tokens are not configured."
+
+  publish-github-packages:
+    needs: [build]
+    if: github.event.inputs.dry_run != 'true' && vars.GITHUB_PKG_SKIP != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js for GitHub Package Registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: ${{ env.GITHUB_PACKAGES_REGISTRY_URL }}
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish ${{ env.NPM_OPENCLAW_PACKAGE }} to GitHub Package Registry
+        id: gpr-publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd plugins/openclaw
+          npm install
+          npm run build
+          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version
+          npm publish --access public --registry ${{ env.GITHUB_PACKAGES_REGISTRY_URL }}
+        continue-on-error: true
+
+      - name: GPR publish notice
+        if: steps.gpr-publish.outcome == 'failure'
+        run: |
+          echo "::notice::GitHub Package Registry publish failed. Check GITHUB_TOKEN permissions and registry configuration. Set GITHUB_PKG_SKIP=true to skip."
+
+  create-release:
+    needs: [detect-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download changelog artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: changelog
+          path: /tmp
+
+      - name: Show changelog
+        run: |
+          ls -la /tmp/changelog-backup.md
+          cp /tmp/changelog-backup.md .changelog.md
+          cat .changelog.md
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.detect-version.outputs.version }}"
+          TITLE="Release v${{ needs.detect-version.outputs.version }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file .changelog.md
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file .changelog.md
+          fi

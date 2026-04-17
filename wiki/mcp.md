@@ -102,7 +102,12 @@ Returns:
   - proxy (request count, cache hits, cost saved — if proxy is running)
 ```
 
-Sub-agent stats are aggregated via a shared stats file (`~/.headroom/session_stats.jsonl`). Each MCP server instance (main session and sub-agents) writes events there, and `headroom_stats` reads across all of them.
+Sub-agent stats are aggregated via a shared stats file at
+`${HEADROOM_WORKSPACE_DIR}/session_stats.jsonl` (default
+`~/.headroom/session_stats.jsonl` — see the
+[Filesystem Contract](filesystem-contract.md)). Each MCP server instance
+(main session and sub-agents) writes events there, and `headroom_stats`
+reads across all of them.
 
 ## Architecture
 
@@ -222,4 +227,4 @@ headroom proxy  # In another terminal
 
 ### Sub-agent stats not showing
 
-Sub-agent stats appear in `headroom_stats` only after sub-agents have run compressions. The shared stats file is at `~/.headroom/session_stats.jsonl`.
+Sub-agent stats appear in `headroom_stats` only after sub-agents have run compressions. The shared stats file is at `${HEADROOM_WORKSPACE_DIR}/session_stats.jsonl` (defaults to `~/.headroom/session_stats.jsonl`).

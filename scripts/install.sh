@@ -137,6 +137,10 @@ append_common_container_args() {
   ref+=(-w /workspace)
   ref+=(--env "HOME=${HEADROOM_CONTAINER_HOME}")
   ref+=(--env "PYTHONUNBUFFERED=1")
+  # Canonical Headroom filesystem contract (issue #175) — forward into the
+  # container so the proxy resolves state/config to the bind-mounted path.
+  ref+=(--env "HEADROOM_WORKSPACE_DIR=${HEADROOM_CONTAINER_HOME}/.headroom")
+  ref+=(--env "HEADROOM_CONFIG_DIR=${HEADROOM_CONTAINER_HOME}/.headroom/config")
   ref+=(-v "${PWD}:/workspace")
   ref+=(-v "${HEADROOM_HOST_HOME}/.headroom:${HEADROOM_CONTAINER_HOME}/.headroom")
   ref+=(-v "${HEADROOM_HOST_HOME}/.claude:${HEADROOM_CONTAINER_HOME}/.claude")
@@ -300,6 +304,9 @@ append_persistent_container_args() {
   ref+=(--workdir "${HEADROOM_CONTAINER_HOME}")
   ref+=(--env "HOME=${HEADROOM_CONTAINER_HOME}")
   ref+=(--env "PYTHONUNBUFFERED=1")
+  # Canonical Headroom filesystem contract (issue #175).
+  ref+=(--env "HEADROOM_WORKSPACE_DIR=${HEADROOM_CONTAINER_HOME}/.headroom")
+  ref+=(--env "HEADROOM_CONFIG_DIR=${HEADROOM_CONTAINER_HOME}/.headroom/config")
   ref+=(-v "${HEADROOM_HOST_HOME}/.headroom:${HEADROOM_CONTAINER_HOME}/.headroom")
   ref+=(-v "${HEADROOM_HOST_HOME}/.claude:${HEADROOM_CONTAINER_HOME}/.claude")
   ref+=(-v "${HEADROOM_HOST_HOME}/.codex:${HEADROOM_CONTAINER_HOME}/.codex")

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Iterable
-from pathlib import Path
 
 import click
+
+from headroom import paths as _paths
 
 from .models import (
     ConfigScope,
@@ -192,9 +193,7 @@ def build_manifest(
     if not telemetry_enabled:
         proxy_args.append("--no-telemetry")
     if memory_enabled:
-        proxy_args.extend(
-            ["--memory", "--memory-db-path", str(Path.home() / ".headroom" / "memory.db")]
-        )
+        proxy_args.extend(["--memory", "--memory-db-path", str(_paths.memory_db_path())])
     if anyllm_provider:
         proxy_args.extend(["--anyllm-provider", anyllm_provider])
     if region:
@@ -216,7 +215,7 @@ def build_manifest(
         region=region,
         proxy_mode=proxy_mode,
         memory_enabled=memory_enabled,
-        memory_db_path=str(Path.home() / ".headroom" / "memory.db"),
+        memory_db_path=str(_paths.memory_db_path()),
         telemetry_enabled=telemetry_enabled,
         image=image,
         service_name=f"headroom-{normalized_profile}",

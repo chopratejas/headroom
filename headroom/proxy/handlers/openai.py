@@ -15,7 +15,6 @@ import os
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from headroom.proxy.helpers import jitter_delay_ms
@@ -229,6 +228,10 @@ class OpenAIHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # Strip accept-encoding so httpx negotiates its own encoding.
+        # Cloudflare Workers forward "br, zstd" which OpenAI may honor;
+        # if httpx lacks brotli support the response body is undecipherable → 502.
+        headers.pop("accept-encoding", None)
         tags = self._extract_tags(headers)
 
         # Memory: Get user ID when memory is enabled
@@ -607,7 +610,9 @@ class OpenAIHandlerMixin:
                     )
 
                     try:
-                        debug_dir = Path.home() / ".headroom" / "logs" / "debug_400"
+                        from headroom import paths as _hr_paths
+
+                        debug_dir = _hr_paths.debug_400_dir()
                         debug_dir.mkdir(parents=True, exist_ok=True)
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         debug_file = debug_dir / f"{ts}_{request_id}.json"
@@ -899,6 +904,10 @@ class OpenAIHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # Strip accept-encoding so httpx negotiates its own encoding.
+        # Cloudflare Workers forward "br, zstd" which OpenAI may honor;
+        # if httpx lacks brotli support the response body is undecipherable → 502.
+        headers.pop("accept-encoding", None)
         tags = self._extract_tags(headers)
 
         # Memory: Get user ID when memory is enabled
@@ -2459,6 +2468,7 @@ class OpenAIHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        headers.pop("accept-encoding", None)
 
         body = await request.body()
 

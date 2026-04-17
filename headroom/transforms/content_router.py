@@ -1297,7 +1297,37 @@ class ContentRouter(Transform):
         return status
 
     def _get_kompress(self) -> Any:
-        """Get KompressCompressor (lazy load). Downloads from HuggingFace on first use."""
+        """Get KompressCompressor (lazy load). Downloads from HuggingFace on first use.
+
+        Respects runtime kompress_model kwarg:
+        - None: use default (chopratejas/kompress-base) — cached on self
+        - "disabled": return None (skip ML compression entirely)
+        - any model ID string: create compressor with that model
+          (model weights are cached at module level in kompress_compressor.py,
+          so repeated calls with the same model_id are cheap)
+        """
+        model_id = getattr(self, "_runtime_kompress_model", None)
+
+        # Explicitly disabled — no ML compression
+        if model_id == "disabled":
+            return None
+
+        # Custom model — don't touch self._kompress (that's the default cache)
+        if model_id:
+            try:
+                from .kompress_compressor import (
+                    KompressCompressor,
+                    KompressConfig,
+                    is_kompress_available,
+                )
+
+                if is_kompress_available():
+                    return KompressCompressor(config=KompressConfig(model_id=model_id))
+            except ImportError:
+                pass
+            return None
+
+        # Default path — exactly as before, cached on self
         if self._kompress is None:
             try:
                 from .kompress_compressor import KompressCompressor, is_kompress_available
@@ -1458,8 +1488,9 @@ class ContentRouter(Transform):
         protect_analysis = kwargs.get(
             "protect_analysis_context", self.config.protect_analysis_context
         )
-        # Store target_ratio on self for access by _route_and_compress_block
+        # Store runtime options on self for access by _route_and_compress_block
         self._runtime_target_ratio: float | None = kwargs.get("target_ratio")
+        self._runtime_kompress_model: str | None = kwargs.get("kompress_model")
 
         tokens_before = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
         context = kwargs.get("context", "")

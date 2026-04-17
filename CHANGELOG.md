@@ -5,6 +5,20 @@ All notable changes to Headroom will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Canonical filesystem contract** (issue #175) — new `HEADROOM_CONFIG_DIR`
+  (default `~/.headroom/config`, read-mostly) and `HEADROOM_WORKSPACE_DIR`
+  (default `~/.headroom`, read-write state) env vars recognized by the Python
+  proxy/CLI and the npm SDK. Additive; all existing per-resource env vars
+  (`HEADROOM_SAVINGS_PATH`, `HEADROOM_TOIN_PATH`,
+  `HEADROOM_SUBSCRIPTION_STATE_PATH`, `HEADROOM_MODEL_LIMITS`) continue to
+  work with identical semantics. Docker install scripts and
+  `docker-compose.native.yml` forward the new vars into containers so
+  savings, logs, and telemetry resolve to the bind-mounted `.headroom` path.
+  See [`wiki/filesystem-contract.md`](wiki/filesystem-contract.md).
+
 ## [0.5.22] - 2026-04-11
 
 ### Added

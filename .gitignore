@@ -8,6 +8,10 @@ scripts/*
 !scripts/repro_codex_replay.py
 !scripts/fixtures/
 !scripts/fixtures/*.json
+!scripts/version-sync.py
+!scripts/changelog-gen.py
+!scripts/verify-versions.py
+!scripts/tests/
 
 # Swift SDK (separate repo)
 swift/
@@ -79,6 +83,7 @@ pytest_cache/
 # Environments
 .env
 .env.*
+!.env.act.example
 .venv
 env/
 venv/
@@ -197,7 +202,14 @@ CLAUDE.md
 .vitals/
 
 # Superpowers working files (plans, specs, brainstorming)
-docs/superpowers/
+# docs/spec/           (lives in git - git-versioned living specification)
 
 # Managed platform (separate private repo)
 headroom-managed/
+
+# Local act testing (never commit test tokens)
+/.env.act
+.actrc.local
+
+# Release metadata artifact
+.releaseetadata

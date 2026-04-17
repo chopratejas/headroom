@@ -13,7 +13,6 @@ import os
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
@@ -1213,7 +1212,9 @@ class AnthropicHandlerMixin:
 
                         # Dump full request details to debug file
                         try:
-                            debug_dir = Path.home() / ".headroom" / "logs" / "debug_400"
+                            from headroom import paths as _hr_paths
+
+                            debug_dir = _hr_paths.debug_400_dir()
                             debug_dir.mkdir(parents=True, exist_ok=True)
                             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                             debug_file = debug_dir / f"{ts}_{request_id}.json"
@@ -1653,6 +1654,7 @@ class AnthropicHandlerMixin:
             # deep-copy) would otherwise leak the pre-upstream semaphore
             # permanently. The emit function is idempotent.
             await _finalize_pre_upstream()
+
 
     async def handle_anthropic_batch_create(
         self,

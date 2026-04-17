@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from headroom import paths as _paths
+
 if TYPE_CHECKING:
     from headroom.proxy.server import HeadroomProxy
 
@@ -37,8 +39,8 @@ logger = logging.getLogger("headroom.telemetry.reporter")
 # Grace period: if the cloud API is unreachable, use cached license for up to 7 days
 GRACE_PERIOD_SECONDS = 7 * 24 * 3600  # 7 days
 
-# Default cache location
-LICENSE_CACHE_PATH = Path.home() / ".headroom" / "license_cache.json"
+# Default cache location (workspace bucket, respects HEADROOM_WORKSPACE_DIR).
+LICENSE_CACHE_PATH = _paths.license_cache_path()
 
 
 @dataclass

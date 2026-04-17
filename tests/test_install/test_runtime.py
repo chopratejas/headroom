@@ -41,6 +41,10 @@ def test_build_runtime_command_for_docker_includes_deployment_env(
     assert "HEADROOM_DEPLOYMENT_PRESET=persistent-docker" in joined
     assert "127.0.0.1:8787:8787" in joined
     assert "ghcr.io/chopratejas/headroom:latest" in command
+    # Canonical Headroom filesystem contract (issue #175) forwarded into
+    # the container.
+    assert "HEADROOM_WORKSPACE_DIR=/tmp/headroom-home/.headroom" in command
+    assert "HEADROOM_CONFIG_DIR=/tmp/headroom-home/.headroom/config" in command
 
 
 def test_build_runtime_command_for_docker_matches_wrapper_parity(

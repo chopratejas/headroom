@@ -136,6 +136,11 @@ function Get-SharedDockerArgs {
     $args.Add("HOME=$ContainerHome")
     $args.Add('--env')
     $args.Add('PYTHONUNBUFFERED=1')
+    # Canonical Headroom filesystem contract (issue #175).
+    $args.Add('--env')
+    $args.Add("HEADROOM_WORKSPACE_DIR=$ContainerHome/.headroom")
+    $args.Add('--env')
+    $args.Add("HEADROOM_CONFIG_DIR=$ContainerHome/.headroom/config")
     $args.Add('--volume')
     $args.Add("${PWD}:/workspace")
     $args.Add('--volume')
@@ -325,6 +330,11 @@ function Get-PersistentDockerArgs {
     $args.Add("HOME=$ContainerHome")
     $args.Add('--env')
     $args.Add('PYTHONUNBUFFERED=1')
+    # Canonical Headroom filesystem contract (issue #175).
+    $args.Add('--env')
+    $args.Add("HEADROOM_WORKSPACE_DIR=$ContainerHome/.headroom")
+    $args.Add('--env')
+    $args.Add("HEADROOM_CONFIG_DIR=$ContainerHome/.headroom/config")
     $args.Add('--volume')
     $args.Add((Join-Path $HostHome '.headroom') + ":$ContainerHome/.headroom")
     $args.Add('--volume')

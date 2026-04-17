@@ -146,6 +146,13 @@ docker compose -f docker/docker-compose.native.yml up -d proxy
 
 That keeps `localhost:8787` stable and restarts the proxy automatically.
 
+> **Note:** `HEADROOM_WORKSPACE` (the host-side bind-mount source used
+> by the compose file) is **not** the same variable as
+> `HEADROOM_WORKSPACE_DIR` (the canonical Headroom state root inside
+> the container). Both are retained; the compose file sets the latter
+> automatically. See [Filesystem Contract](filesystem-contract.md) for
+> the full bucket model.
+
 ## Related guides
 
 - [CLI Reference](cli.md)

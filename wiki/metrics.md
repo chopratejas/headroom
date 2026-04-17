@@ -50,8 +50,12 @@ curl http://localhost:8787/stats
 
 `/stats` keeps the existing live/session fields, including `savings_history`,
 for backward compatibility. The new `persistent_savings` block is durable local
-proxy compression history stored by default at `~/.headroom/proxy_savings.json`.
-Use `HEADROOM_SAVINGS_PATH` to override the file location.
+proxy compression history stored by default at
+`${HEADROOM_WORKSPACE_DIR}/proxy_savings.json` (i.e.
+`~/.headroom/proxy_savings.json` when `HEADROOM_WORKSPACE_DIR` is unset).
+Use `HEADROOM_SAVINGS_PATH` to override the file location directly, or
+set `HEADROOM_WORKSPACE_DIR` to relocate the entire state root. See the
+[Filesystem Contract](filesystem-contract.md) for details.
 
 For Anthropic-style providers that return cache-write TTL buckets, `/stats`
 also surfaces observed cache TTL usage under `prefix_cache`:

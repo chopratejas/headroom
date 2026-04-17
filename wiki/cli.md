@@ -319,7 +319,9 @@ headroom perf --raw
 | `--hours` | `168.0` | Time window in hours |
 | `--raw` | off | Print raw PERF records instead of the summarized report |
 
-The command reads `~/.headroom/logs/proxy.log`.
+The command reads `${HEADROOM_WORKSPACE_DIR}/logs/proxy.log` (defaults
+to `~/.headroom/logs/proxy.log` — see the
+[Filesystem Contract](filesystem-contract.md)).
 
 ## `headroom evals`
 
@@ -629,7 +631,10 @@ headroom install apply --preset persistent-docker --scope user
 | `--no-telemetry` | off | Disable anonymous telemetry |
 | `--image` | `ghcr.io/chopratejas/headroom:latest` | Docker image for Docker-backed installs |
 
-`apply` stores a manifest under `~/.headroom/deploy/<profile>/manifest.json`, applies managed tool configuration, starts the chosen runtime, and waits for `readyz`.
+`apply` stores a manifest under
+`${HEADROOM_WORKSPACE_DIR}/deploy/<profile>/manifest.json` (default
+`~/.headroom/deploy/<profile>/manifest.json`), applies managed tool
+configuration, starts the chosen runtime, and waits for `readyz`.
 
 Docker-native host wrappers expose a narrower `headroom install` subset for `persistent-docker` only: `apply`, `status`, `start`, `stop`, `restart`, and `remove`. Those wrapper flows preserve the same port and manifest behavior, but they intentionally reject `persistent-service`, `persistent-task`, and provider mutation flags like `--scope`, `--providers`, and `--target`.
 

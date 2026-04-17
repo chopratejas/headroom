@@ -101,6 +101,11 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
         f"HOME={container_home}",
         "--env",
         "PYTHONUNBUFFERED=1",
+        # Canonical Headroom filesystem contract (issue #175).
+        "--env",
+        f"HEADROOM_WORKSPACE_DIR={container_home}/.headroom",
+        "--env",
+        f"HEADROOM_CONFIG_DIR={container_home}/.headroom/config",
         "--volume",
         f"{_mount_source(home, '.headroom')}:{container_home}/.headroom",
         "--volume",

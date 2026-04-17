@@ -74,7 +74,16 @@ Claude Code                  Codex CLI                  Gemini CLI
 
 ### Project-Scoped Database
 
-Memory is stored per-project at `{cwd}/.headroom/memory.db`. Each project has its own memory — no cross-project contamination. Override with `--memory-db-path` for a custom location.
+Memory is stored per-project at `{cwd}/.headroom/memory.db`. Each
+project has its own memory — no cross-project contamination. Override
+with `--memory-db-path` for a custom location.
+
+> **Filesystem contract note.** Project-scoped memory paths resolve
+> relative to the current working directory and **do not** obey the
+> canonical `HEADROOM_WORKSPACE_DIR` env var. This preserves the
+> project-memory isolation invariant. Users who want a single central
+> memory store should pass `--memory-db-path` explicitly. See the
+> [Filesystem Contract](filesystem-contract.md) for the rationale.
 
 ### User Identity
 

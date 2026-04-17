@@ -41,6 +41,8 @@ The wrapper keeps Headroom inside Docker and mounts host state back into the con
 
 Port `8787` stays the default, so `http://localhost:8787` works the same way as a native install.
 
+Published releases also push versioned GHCR tags such as `ghcr.io/chopratejas/headroom:0.5.26`, and those images are built with the same synced package version used for the matching PyPI and npm release.
+
 ## How the wrapper behaves
 
 ### Native Headroom commands
@@ -131,6 +133,25 @@ docker compose -f docker/docker-compose.native.yml up -d proxy
 ```
 
 This remains a supported persistent-Docker path when you want the proxy managed explicitly through Compose instead of the installed wrapper.
+
+#### `HEADROOM_WORKSPACE` vs `HEADROOM_WORKSPACE_DIR`
+
+These are two different variables — both are set by the compose file,
+and both are retained for backward compatibility:
+
+- **`HEADROOM_WORKSPACE`** (host-side) is the directory the compose file
+  bind-mounts into the container as `/workspace`. It behaves like CWD
+  in a native (non-Docker) run.
+- **`HEADROOM_WORKSPACE_DIR`** (inside-the-container) is the canonical
+  Headroom state root — part of the [filesystem contract][fs]
+  introduced in issue #175. The compose file sets it to
+  `/tmp/headroom-home/.headroom` so the proxy resolves savings, logs,
+  TOIN, and memory under the bind-mounted `${HOME}/.headroom`.
+
+You do not need to set `HEADROOM_WORKSPACE_DIR` manually when using the
+shipped compose file — it is already in the `environment:` block.
+
+[fs]: filesystem-contract.md
 
 ### macOS / Linux
 

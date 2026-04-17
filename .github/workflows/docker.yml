@@ -2,6 +2,10 @@ name: Docker
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into the image contents and exact image tag"
+        required: false
   release:
     types: [published]
 
@@ -41,6 +45,29 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Determine image version
+        id: version
+        env:
+          MANUAL_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${MANUAL_VERSION#v}"
+          if [ -z "$version" ] && [ -n "$RELEASE_TAG" ]; then
+            version="${RELEASE_TAG#v}"
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.version.outputs.version != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync versioned files for image build
+        if: steps.version.outputs.version != ''
+        run: |
+          python scripts/version-sync.py --version ${{ steps.version.outputs.version }}
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
@@ -62,6 +89,7 @@ jobs:
           tags: |
             type=ref,event=branch,suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=ref,event=pr,suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != '' }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{version}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{major}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}

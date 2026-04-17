@@ -1,8 +1,10 @@
 name: Publish to PyPI
 
+# DEPRECATED: This workflow is superseded by release.yml.
+# Only used for manual PyPI publishing now.
+# Manual trigger only — release.yml handles automated publishing.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 jobs:
   publish:

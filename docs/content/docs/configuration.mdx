@@ -249,8 +249,25 @@ headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.4
 | `HEADROOM_MODEL_LIMITS` | Custom model config (JSON string or file path) | -- |
 | `HEADROOM_BASE_URL` | Base URL of the Headroom proxy (TypeScript SDK) | `http://localhost:8787` |
 | `HEADROOM_API_KEY` | API key for Headroom Cloud authentication | -- |
-| `HEADROOM_SAVINGS_PATH` | Override persistent savings file location | `~/.headroom/proxy_savings.json` |
+| `HEADROOM_CONFIG_DIR` | Canonical config (read-mostly) root. Derives `models.json` and per-plugin config paths when set. | `~/.headroom/config` |
+| `HEADROOM_WORKSPACE_DIR` | Canonical workspace (read-write state) root. Derives savings, memory DB, logs, TOIN, subscription state, and more when set. | `~/.headroom` |
+| `HEADROOM_SAVINGS_PATH` | Override persistent savings file location. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
+| `HEADROOM_TOIN_PATH` | Override TOIN telemetry file location. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
+| `HEADROOM_SUBSCRIPTION_STATE_PATH` | Override subscription tracker state file. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
 | `HEADROOM_TELEMETRY` | Set to `off` to disable anonymous telemetry | `on` |
+
+### Filesystem Contract
+
+Headroom resolves every on-disk resource through a two-root model
+(`HEADROOM_CONFIG_DIR` + `HEADROOM_WORKSPACE_DIR`) with additive
+precedence rules: explicit argument > per-resource env var > derived
+from canonical root > default. Every legacy env var continues to work
+unchanged.
+
+See the **[Filesystem Contract](https://github.com/chopratejas/headroom/blob/main/wiki/filesystem-contract.md)**
+page for the full bucket table, plugin-author guidance, and the Docker
+naming overlap note (`HEADROOM_WORKSPACE` is *not* the same as
+`HEADROOM_WORKSPACE_DIR`).
 
 ## Custom Model Configuration
 
@@ -280,12 +297,17 @@ Configure context limits and pricing for new or custom models:
 }
 ```
 
-Save as `~/.headroom/models.json`, or set `HEADROOM_MODEL_LIMITS` to a JSON string or file path.
+Save as `${HEADROOM_CONFIG_DIR}/models.json` (defaults to
+`~/.headroom/config/models.json`), or set `HEADROOM_MODEL_LIMITS` to a
+JSON string or file path. Installs that still have
+`~/.headroom/models.json` (the legacy location) continue to work.
 
 Settings are resolved in this order (later overrides earlier):
 
 1. Built-in defaults
-2. `~/.headroom/models.json` config file
+2. `${HEADROOM_CONFIG_DIR}/models.json` (new canonical location); falls
+   back to `~/.headroom/models.json` (legacy) when the canonical file
+   is absent
 3. `HEADROOM_MODEL_LIMITS` environment variable
 4. SDK constructor arguments
 

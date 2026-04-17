@@ -535,6 +535,7 @@ Python 3.10+
 | [Learn](docs/content/docs/failure-learning.mdx) | Plugin-based failure learning (Claude, Codex, Gemini, extensible) |
 | [Installation](docs/content/docs/installation.mdx) | pip, npm, Docker install methods |
 | [Configuration](docs/content/docs/configuration.mdx) | All options |
+| [Filesystem Contract](wiki/filesystem-contract.md) | `HEADROOM_CONFIG_DIR` / `HEADROOM_WORKSPACE_DIR` and per-resource path overrides |
 
 ---
 

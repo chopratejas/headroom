@@ -10,8 +10,10 @@ import platform
 import shutil
 from pathlib import Path
 
+from headroom import paths as _paths
+
 RTK_VERSION = "v0.28.2"
-RTK_BIN_DIR = Path.home() / ".headroom" / "bin"
+RTK_BIN_DIR = _paths.bin_dir()
 _RTK_NAME = "rtk.exe" if platform.system() == "Windows" else "rtk"
 RTK_BIN_PATH = RTK_BIN_DIR / _RTK_NAME
 

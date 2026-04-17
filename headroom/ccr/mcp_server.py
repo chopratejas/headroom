@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from headroom import paths as _paths
+
 # fcntl is Unix-only; on Windows we skip file locking (stats are best-effort).
 # Keep the module typed as Any so Windows mypy runs don't try to resolve Unix-only attrs.
 fcntl: Any = None
@@ -168,8 +170,9 @@ MCP_SESSION_TTL = 3600
 
 # Shared stats file: all MCP instances (main + sub-agents) append here.
 # headroom_stats aggregates across all instances within the session window.
-SHARED_STATS_DIR = Path.home() / ".headroom"
-SHARED_STATS_FILE = SHARED_STATS_DIR / "session_stats.jsonl"
+# Respects HEADROOM_WORKSPACE_DIR.
+SHARED_STATS_DIR = _paths.workspace_dir()
+SHARED_STATS_FILE = _paths.session_stats_path()
 SESSION_WINDOW_SECONDS = 7200  # 2 hours — events older than this are pruned
 
 
@@ -726,7 +729,6 @@ class HeadroomMCPServer:
     async def _handle_read(self, arguments: dict[str, Any]) -> list[TextContent]:
         """Handle headroom_read tool call — file read with session caching."""
         import hashlib
-        from pathlib import Path
 
         file_path = arguments.get("file_path", "")
         fresh = arguments.get("fresh", False)

@@ -271,6 +271,27 @@ Some settings can be configured via environment variables:
 | `HEADROOM_STORE_URL` | Database URL | temp directory |
 | `HEADROOM_DEFAULT_MODE` | Default mode | `optimize` |
 | `HEADROOM_MODEL_LIMITS` | Custom model config (JSON string or file path) | - |
+| `HEADROOM_CONFIG_DIR` | Canonical config (read-mostly) root. Derives `models.json` and per-plugin config paths when set. | `~/.headroom/config` |
+| `HEADROOM_WORKSPACE_DIR` | Canonical workspace (read-write state) root. Derives savings ledger, memory DB, logs, TOIN, subscription state, and more when set. | `~/.headroom` |
+| `HEADROOM_SAVINGS_PATH` | Full path to the proxy savings JSON ledger. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
+| `HEADROOM_TOIN_PATH` | Full path to the TOIN telemetry JSON file. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
+| `HEADROOM_SUBSCRIPTION_STATE_PATH` | Full path to the subscription tracker state. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
+
+## Filesystem Contract
+
+Headroom resolves every on-disk resource through a two-root model:
+
+- `HEADROOM_CONFIG_DIR` (default `~/.headroom/config`) — read-mostly
+  configuration
+- `HEADROOM_WORKSPACE_DIR` (default `~/.headroom`) — read-write state
+
+Precedence for each resource is: explicit argument > per-resource env
+var > derived from canonical root > default. Every legacy env var
+continues to work unchanged.
+
+See **[Filesystem Contract](filesystem-contract.md)** for the full
+bucket table, plugin-author guidance, and the Docker naming overlap
+note (`HEADROOM_WORKSPACE` is *not* the same as `HEADROOM_WORKSPACE_DIR`).
 
 ---
 
@@ -285,7 +306,9 @@ Configure context limits and pricing for new or custom models. Useful when:
 
 Settings are resolved in this order (later overrides earlier):
 1. Built-in defaults
-2. `~/.headroom/models.json` config file
+2. `${HEADROOM_CONFIG_DIR}/models.json` (defaults to
+   `~/.headroom/config/models.json`); falls back to the legacy location
+   `~/.headroom/models.json` when the canonical file is absent
 3. `HEADROOM_MODEL_LIMITS` environment variable
 4. SDK constructor arguments
 

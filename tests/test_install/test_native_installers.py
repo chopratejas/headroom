@@ -379,6 +379,10 @@ def test_bash_native_installer_supports_persistent_docker_lifecycle(tmp_path: Pa
             call for call in docker_calls if call[:2] == ["run", "-d"] and "--name" in call
         )
         assert "/tmp/headroom-home/.headroom/memory.db" in install_call
+        # Canonical filesystem contract env vars (issue #175) forwarded into
+        # the container so the proxy resolves state/config to the bind mount.
+        assert "HEADROOM_WORKSPACE_DIR=/tmp/headroom-home/.headroom" in install_call
+        assert "HEADROOM_CONFIG_DIR=/tmp/headroom-home/.headroom/config" in install_call
 
         status_result = _run(
             [str(wrapper), "install", "status", "--profile", "smoke"],
@@ -627,6 +631,9 @@ def test_powershell_native_installer_supports_persistent_docker_lifecycle(tmp_pa
             call for call in docker_calls if call[:2] == ["run", "-d"] and "--name" in call
         )
         assert "/tmp/headroom-home/.headroom/memory.db" in install_call
+        # Canonical filesystem contract env vars (issue #175).
+        assert "HEADROOM_WORKSPACE_DIR=/tmp/headroom-home/.headroom" in install_call
+        assert "HEADROOM_CONFIG_DIR=/tmp/headroom-home/.headroom/config" in install_call
 
         status_result = _run(
             [

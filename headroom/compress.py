@@ -117,8 +117,10 @@ class CompressConfig:
 
     # Model variant
     kompress_model: str | None = None
-    """Kompress model variant. None = default ModernBERT. Future: 'finance'
-    for number-preserving compression on financial documents."""
+    """Kompress model ID. None = default (chopratejas/kompress-base).
+    Set to a HuggingFace model ID for domain-specific compression.
+    Set to 'disabled' to skip ML compression entirely
+    (only SmartCrusher + CacheAligner will run)."""
 
 
 @dataclass
@@ -220,6 +222,7 @@ def compress(
             target_ratio=cfg.target_ratio,
             protect_recent=cfg.protect_recent,
             protect_analysis_context=cfg.protect_analysis_context,
+            kompress_model=cfg.kompress_model,
         )
 
         tokens_before = result.tokens_before
