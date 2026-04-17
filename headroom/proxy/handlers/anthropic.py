@@ -361,14 +361,19 @@ class AnthropicHandlerMixin:
         else:
             stage_timer.record("pre_upstream_wait", 0.0)
 
-        async def _emit_pre_upstream_stage_timings() -> None:
+        async def _finalize_pre_upstream() -> None:
+            """Release the pre-upstream semaphore and emit stage-timing metrics.
+
+            Idempotent: safe to call multiple times. The PRIMARY action is
+            releasing the Unit 4 pre-upstream semaphore via
+            ``_release_pre_upstream_sem()`` (itself idempotent); emitting
+            stage timings is secondary bookkeeping guarded by
+            ``_stage_timings_emitted``. Doing both here (rather than only
+            at explicit handoff sites) guarantees semaphore release on
+            every exit path — early 4xx returns, security blocks, cache
+            hits, upstream errors, streaming handoff.
+            """
             nonlocal _stage_timings_emitted
-            # Always release the Unit 4 pre-upstream semaphore when we
-            # hand off to streaming / return a response / hit an error.
-            # Doing it here (rather than only at explicit handoff sites)
-            # guarantees release on every exit path already covered by
-            # stage-timings emission, including early 4xx returns and
-            # upstream errors.
             _release_pre_upstream_sem()
             if _stage_timings_emitted:
                 return
@@ -400,7 +405,7 @@ class AnthropicHandlerMixin:
             # Check request body size
             content_length = request.headers.get("content-length")
             if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
-                await _emit_pre_upstream_stage_timings()
+                await _finalize_pre_upstream()
                 return JSONResponse(
                     status_code=413,
                     content={
@@ -417,7 +422,7 @@ class AnthropicHandlerMixin:
                 async with stage_timer.measure("read_request_json"):
                     body = await _read_request_json(request)
             except (json.JSONDecodeError, ValueError) as e:
-                await _emit_pre_upstream_stage_timings()
+                await _finalize_pre_upstream()
                 return JSONResponse(
                     status_code=400,
                     content={
@@ -435,7 +440,7 @@ class AnthropicHandlerMixin:
 
             # Validate message array size
             if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
-                await _emit_pre_upstream_stage_timings()
+                await _finalize_pre_upstream()
                 return JSONResponse(
                     status_code=400,
                     content={
@@ -492,7 +497,7 @@ class AnthropicHandlerMixin:
                     # Unit 4: release the pre-upstream semaphore before we
                     # bail out of the handler via HTTPException — FastAPI's
                     # exception handler will NOT run our ``finally``.
-                    await _emit_pre_upstream_stage_timings()
+                    await _finalize_pre_upstream()
                     raise HTTPException(
                         status_code=429,
                         detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
@@ -505,7 +510,7 @@ class AnthropicHandlerMixin:
                 if not allowed:
                     # Unit 4: release the pre-upstream semaphore before we
                     # bail out of the handler via HTTPException.
-                    await _emit_pre_upstream_stage_timings()
+                    await _finalize_pre_upstream()
                     raise HTTPException(
                         status_code=429,
                         detail=f"Budget exceeded for {self.config.budget_period} period",
@@ -544,7 +549,7 @@ class AnthropicHandlerMixin:
 
                     # Unit 4: release the pre-upstream semaphore on cache
                     # hit — no upstream call will happen.
-                    await _emit_pre_upstream_stage_timings()
+                    await _finalize_pre_upstream()
                     return Response(
                         content=cached.response_body,
                         headers=response_headers,
@@ -574,7 +579,7 @@ class AnthropicHandlerMixin:
 
                         # Unit 4: release the pre-upstream semaphore on
                         # security block — no upstream call will happen.
-                        await _emit_pre_upstream_stage_timings()
+                        await _finalize_pre_upstream()
                         return _JSONResp(
                             status_code=403,
                             content={
@@ -1044,7 +1049,7 @@ class AnthropicHandlerMixin:
                 # Route through Bedrock backend
                 try:
                     if stream:
-                        await _emit_pre_upstream_stage_timings()
+                        await _finalize_pre_upstream()
                         return await self._stream_response_bedrock(
                             body,
                             headers,
@@ -1072,7 +1077,7 @@ class AnthropicHandlerMixin:
                                 "upstream_first_byte",
                                 stage_timer.summary()["upstream_connect"],
                             )
-                        await _emit_pre_upstream_stage_timings()
+                        await _finalize_pre_upstream()
 
                         if backend_response.error:
                             return JSONResponse(
@@ -1136,7 +1141,7 @@ class AnthropicHandlerMixin:
                 except Exception as e:
                     logger.error(f"[{request_id}] Bedrock backend error: {e}")
                     # Unit 4: release the pre-upstream semaphore on error.
-                    await _emit_pre_upstream_stage_timings()
+                    await _finalize_pre_upstream()
                     return JSONResponse(
                         status_code=500,
                         content={
@@ -1150,7 +1155,7 @@ class AnthropicHandlerMixin:
 
             try:
                 if stream:
-                    await _emit_pre_upstream_stage_timings()
+                    await _finalize_pre_upstream()
                     return await self._stream_response(
                         url,
                         headers,
@@ -1177,7 +1182,7 @@ class AnthropicHandlerMixin:
                             "upstream_first_byte",
                             stage_timer.summary()["upstream_connect"],
                         )
-                    await _emit_pre_upstream_stage_timings()
+                    await _finalize_pre_upstream()
 
                     # Full diagnostic dump on upstream errors.
                     # Writes pre/post compression messages, tools, and error
@@ -1631,7 +1636,7 @@ class AnthropicHandlerMixin:
             finally:
                 # Unit 2: always emit pre-upstream stage timings exactly
                 # once per request, even on early/error paths.
-                await _emit_pre_upstream_stage_timings()
+                await _finalize_pre_upstream()
         finally:
             # Unit 4: defense-in-depth. The inner try/finally above
             # already calls this on every normal exit path, but an
@@ -1639,7 +1644,7 @@ class AnthropicHandlerMixin:
             # inner try (e.g. AttributeError in a transform, OOM in a
             # deep-copy) would otherwise leak the pre-upstream semaphore
             # permanently. The emit function is idempotent.
-            await _emit_pre_upstream_stage_timings()
+            await _finalize_pre_upstream()
 
     async def handle_anthropic_batch_create(
         self,
