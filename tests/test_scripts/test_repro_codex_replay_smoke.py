@@ -90,6 +90,7 @@ class _ServerThread:
             log_level="warning",
             loop="asyncio",
             lifespan="on",
+            ws="websockets-sansio",
         )
         self.server = uvicorn.Server(config)
         self.port = port
