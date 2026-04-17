@@ -29,6 +29,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from headroom import paths as _paths
 from headroom.subscription.base import QuotaTracker
 from headroom.subscription.client import SubscriptionClient
 from headroom.subscription.models import (
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL_S = 10
 _DEFAULT_ACTIVE_WINDOW_S = 60
-_PERSIST_FILE_ENV = "HEADROOM_SUBSCRIPTION_STATE_PATH"
+_PERSIST_FILE_ENV = _paths.HEADROOM_SUBSCRIPTION_STATE_PATH_ENV
 _DEFAULT_PERSIST_DIR = ".headroom"
 _DEFAULT_PERSIST_FILE = "subscription_state.json"
 
@@ -58,10 +59,7 @@ _CACHE_MISS_RATIO_THRESHOLD = 0.10
 
 
 def _get_persist_path() -> Path:
-    env = os.environ.get(_PERSIST_FILE_ENV, "").strip()
-    if env:
-        return Path(env)
-    return Path.home() / _DEFAULT_PERSIST_DIR / _DEFAULT_PERSIST_FILE
+    return _paths.subscription_state_path()
 
 
 class SubscriptionTracker(QuotaTracker):

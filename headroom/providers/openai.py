@@ -13,8 +13,9 @@ import os
 import warnings
 from datetime import date
 from functools import lru_cache
-from pathlib import Path
 from typing import Any, cast
+
+from headroom import paths as _paths
 
 from .base import Provider, TokenCounter
 
@@ -165,8 +166,13 @@ def _load_custom_model_config() -> dict[str, Any]:
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Failed to load HEADROOM_MODEL_LIMITS: {e}")
 
-    # Check config file
-    config_file = Path.home() / ".headroom" / "models.json"
+    # Check config file. Prefer the canonical config-dir location, then fall
+    # back to the legacy workspace-root location for backward compatibility.
+    config_file = _paths.models_config_path()
+    if not config_file.exists():
+        legacy_models = _paths.workspace_dir() / "models.json"
+        if legacy_models.exists():
+            config_file = legacy_models
     if config_file.exists():
         try:
             with open(config_file) as f:
@@ -380,7 +386,7 @@ class OpenAIProvider(Provider):
 
         # Handle pricing (can be tuple or list from JSON)
         for model, pricing in custom_config["pricing"].items():
-            if isinstance(pricing, (list, tuple)) and len(pricing) >= 2:
+            if isinstance(pricing, list | tuple) and len(pricing) >= 2:
                 self._pricing[model] = (float(pricing[0]), float(pricing[1]))
 
         # Explicit overrides take precedence

@@ -114,8 +114,10 @@ class MemoryHandler:
         if self.config.native_memory_dir:
             self._native_memory_dir = Path(self.config.native_memory_dir)
         else:
-            # Default: ~/.headroom/memories
-            self._native_memory_dir = Path.home() / ".headroom" / "memories"
+            # Default: workspace memories directory (respects HEADROOM_WORKSPACE_DIR)
+            from headroom import paths as _paths
+
+            self._native_memory_dir = _paths.native_memory_dir()
 
         # Create directory if it doesn't exist
         self._native_memory_dir.mkdir(parents=True, exist_ok=True)

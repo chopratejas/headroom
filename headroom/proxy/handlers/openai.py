@@ -14,7 +14,6 @@ import logging
 import os
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -584,7 +583,9 @@ class OpenAIHandlerMixin:
                     )
 
                     try:
-                        debug_dir = Path.home() / ".headroom" / "logs" / "debug_400"
+                        from headroom import paths as _hr_paths
+
+                        debug_dir = _hr_paths.debug_400_dir()
                         debug_dir.mkdir(parents=True, exist_ok=True)
                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                         debug_file = debug_dir / f"{ts}_{request_id}.json"

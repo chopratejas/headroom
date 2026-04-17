@@ -50,7 +50,6 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
 from .models import FieldSemantics, ToolSignature
@@ -69,19 +68,23 @@ def get_default_toin_storage_path() -> str:
     """Get the default TOIN storage path.
 
     Checks for the HEADROOM_TOIN_PATH environment variable first.
-    Falls back to ~/.headroom/toin.json if not set or empty.
+    Falls back to ``${HEADROOM_WORKSPACE_DIR}/toin.json`` (which defaults
+    to ``~/.headroom/toin.json``) when unset.
 
     Returns:
         The path string for TOIN storage.
     """
-    # Check environment variable first
+    # Preserve legacy behavior: when HEADROOM_TOIN_PATH is set we return the
+    # raw string exactly as the user supplied it (no tilde expansion, no
+    # path-separator normalization). This matches what existing tests and
+    # users have relied on since the env var was introduced.
     env_path = os.environ.get(TOIN_PATH_ENV_VAR, "").strip()
     if env_path:
         return env_path
 
-    # Fall back to default path in user's home directory
-    home = Path.home()
-    return str(home / DEFAULT_TOIN_DIR / DEFAULT_TOIN_FILE)
+    from headroom import paths as _paths
+
+    return str(_paths.toin_path())
 
 
 # LOW FIX #22: Define callback types for metrics/monitoring hooks

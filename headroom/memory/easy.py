@@ -105,10 +105,12 @@ class Memory:
 
         # Config for local backend
         if db_path is None:
-            # Default to ~/.headroom/memory.db
-            default_dir = Path.home() / ".headroom"
-            default_dir.mkdir(parents=True, exist_ok=True)
-            db_path = default_dir / "memory.db"
+            # Default: workspace memory.db (respects HEADROOM_WORKSPACE_DIR)
+            from headroom import paths as _paths
+
+            default_db = _paths.memory_db_path()
+            default_db.parent.mkdir(parents=True, exist_ok=True)
+            db_path = default_db
         self._db_path = Path(db_path)
 
         # Config for qdrant-neo4j backend

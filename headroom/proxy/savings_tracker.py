@@ -19,9 +19,11 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from headroom import paths as _paths
+
 logger = logging.getLogger(__name__)
 
-HEADROOM_SAVINGS_PATH_ENV_VAR = "HEADROOM_SAVINGS_PATH"
+HEADROOM_SAVINGS_PATH_ENV_VAR = _paths.HEADROOM_SAVINGS_PATH_ENV
 DEFAULT_SAVINGS_DIR = ".headroom"
 DEFAULT_SAVINGS_FILE = "proxy_savings.json"
 SCHEMA_VERSION = 2
@@ -53,10 +55,13 @@ def _get_litellm_module() -> Any | None:
 
 def get_default_savings_storage_path() -> str:
     """Return the configured savings storage path."""
+    # Preserve legacy behavior: when HEADROOM_SAVINGS_PATH is set we return
+    # the raw string exactly as supplied (no tilde expansion, no
+    # path-separator normalization) to match prior behavior and existing tests.
     env_path = os.environ.get(HEADROOM_SAVINGS_PATH_ENV_VAR, "").strip()
     if env_path:
         return env_path
-    return str(Path.home() / DEFAULT_SAVINGS_DIR / DEFAULT_SAVINGS_FILE)
+    return str(_paths.savings_path())
 
 
 def _utc_now() -> datetime:
@@ -225,7 +230,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         compression_savings_usd = _coerce_float(entry.get("compression_savings_usd"))
         total_input_tokens = _coerce_int(entry.get("total_input_tokens"))
         total_input_cost_usd = _coerce_float(entry.get("total_input_cost_usd"))
-    elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+    elif isinstance(entry, list | tuple) and len(entry) >= 2:
         timestamp = _parse_timestamp(entry[0])
         total_tokens_saved = _coerce_int(entry[1])
         if len(entry) >= 3:

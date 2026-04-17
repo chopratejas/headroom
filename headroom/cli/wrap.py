@@ -68,7 +68,9 @@ def _check_proxy(port: int) -> bool:
 
 def _get_log_path() -> Path:
     """Get path for proxy log file."""
-    log_dir = Path.home() / ".headroom" / "logs"
+    from headroom import paths as _paths
+
+    log_dir = _paths.log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / "proxy.log"
 

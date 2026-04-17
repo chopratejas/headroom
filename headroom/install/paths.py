@@ -8,6 +8,8 @@ from pathlib import Path
 
 import click
 
+from headroom import paths as _paths
+
 _PROFILE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -22,7 +24,7 @@ def validate_profile_name(profile: str) -> str:
 def deploy_root() -> Path:
     """Return the root directory for deployment state."""
 
-    return Path.home() / ".headroom" / "deploy"
+    return _paths.deploy_root()
 
 
 def profile_root(profile: str) -> Path:

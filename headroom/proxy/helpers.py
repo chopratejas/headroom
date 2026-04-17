@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from headroom import paths as _paths
+
 if TYPE_CHECKING:
     from fastapi import Request
 
@@ -52,8 +54,12 @@ def _get_image_compressor():
     return _image_compressor if _image_compressor else None
 
 
-# Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis
-_HEADROOM_LOG_DIR = Path.home() / ".headroom" / "logs"
+# Always-on file logging to the workspace logs directory for `headroom perf` analysis.
+# Resolved lazily so HEADROOM_WORKSPACE_DIR env-var changes are honored.
+
+
+def _headroom_log_dir() -> Path:
+    return _paths.log_dir()
 
 
 def _setup_file_logging() -> None:
@@ -66,8 +72,9 @@ def _setup_file_logging() -> None:
     from logging.handlers import RotatingFileHandler
 
     try:
-        _HEADROOM_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_path = _HEADROOM_LOG_DIR / "proxy.log"
+        log_dir = _headroom_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "proxy.log"
         handler = RotatingFileHandler(
             log_path,
             maxBytes=10 * 1024 * 1024,  # 10 MB
@@ -101,8 +108,10 @@ def _get_rtk_stats() -> dict[str, Any] | None:
 
     rtk_bin = shutil.which("rtk")
     if not rtk_bin:
-        # Check headroom-managed install
-        rtk_managed = Path.home() / ".headroom" / "bin" / "rtk"
+        # Check headroom-managed install. Preserve the historical Unix-name
+        # behavior here (bin_dir()/"rtk") rather than switching to
+        # paths.rtk_path() which would become rtk.exe on Windows.
+        rtk_managed = _paths.bin_dir() / "rtk"
         if rtk_managed.exists():
             rtk_bin = str(rtk_managed)
         else:

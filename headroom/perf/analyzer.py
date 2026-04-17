@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+
+from headroom import paths as _paths
 
 log = logging.getLogger(__name__)
 
-LOG_DIR = Path.home() / ".headroom" / "logs"
+LOG_DIR = _paths.log_dir()
 
 # Matches: 2026-03-07 13:38:31,009 - headroom.proxy - INFO - [hr_...] PERF model=... ...
 _PERF_RE = re.compile(

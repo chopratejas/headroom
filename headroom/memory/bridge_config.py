@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from headroom import paths as _paths
+
 
 class MarkdownFormat(Enum):
     """Supported markdown memory formats."""
@@ -47,9 +49,7 @@ class BridgeConfig:
     heading_importance_map: dict[int, float] = field(
         default_factory=lambda: {1: 0.9, 2: 0.8, 3: 0.7, 4: 0.6, 5: 0.5, 6: 0.4}
     )
-    sync_state_path: Path = field(
-        default_factory=lambda: Path.home() / ".headroom" / "bridge_state.json"
-    )
+    sync_state_path: Path = field(default_factory=_paths.bridge_state_path)
     auto_import_on_startup: bool = False
     export_path: Path | None = None
     export_format: MarkdownFormat = MarkdownFormat.GENERIC

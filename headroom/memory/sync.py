@@ -30,10 +30,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from headroom import paths as _paths
+
 logger = logging.getLogger("headroom.memory.sync")
 
-# State file for fast no-op detection
-_DEFAULT_STATE_PATH = Path.home() / ".headroom" / "sync_state.json"
+# State file for fast no-op detection (workspace bucket, respects
+# HEADROOM_WORKSPACE_DIR). Resolved at import time, matching prior behavior.
+_DEFAULT_STATE_PATH = _paths.sync_state_path()
 
 
 # ---------------------------------------------------------------------------
