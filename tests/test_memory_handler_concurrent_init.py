@@ -53,9 +53,7 @@ async def test_concurrent_ensure_initialized_runs_init_once(tmp_path, monkeypatc
     monkeypatch.setattr(local_mod, "LocalBackend", FakeLocalBackend)
 
     handler = MemoryHandler(
-        MemoryConfig(
-            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
-        )
+        MemoryConfig(enabled=True, backend="local", db_path=str(tmp_path / "mem.db"))
     )
 
     async def caller() -> None:
@@ -88,9 +86,7 @@ async def test_ensure_initialized_noop_when_disabled(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ensure_initialized_timeout_leaves_handler_unready(
-    tmp_path, monkeypatch
-):
+async def test_ensure_initialized_timeout_leaves_handler_unready(tmp_path, monkeypatch):
     class HangingBackend:
         def __init__(self, config):
             self.config = config
@@ -107,9 +103,7 @@ async def test_ensure_initialized_timeout_leaves_handler_unready(
     monkeypatch.setattr(local_mod, "LocalBackend", HangingBackend)
 
     handler = MemoryHandler(
-        MemoryConfig(
-            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
-        )
+        MemoryConfig(enabled=True, backend="local", db_path=str(tmp_path / "mem.db"))
     )
 
     # Attach a handler directly to the module logger — caplog has trouble
@@ -129,9 +123,7 @@ async def test_ensure_initialized_timeout_leaves_handler_unready(
     mem_logger.setLevel(_logging.DEBUG)
     try:
         # Shrink the module-level timeout to keep the test fast.
-        with patch(
-            "headroom.proxy.memory_handler.STARTUP_INIT_TIMEOUT_SECONDS", 0.1
-        ):
+        with patch("headroom.proxy.memory_handler.STARTUP_INIT_TIMEOUT_SECONDS", 0.1):
             await handler._ensure_initialized()
     finally:
         mem_logger.removeHandler(handler_log)
@@ -141,8 +133,7 @@ async def test_ensure_initialized_timeout_leaves_handler_unready(
     assert handler._initialized is False
     found_timeout_log = any("timed out" in rec.getMessage().lower() for rec in captured)
     assert found_timeout_log, (
-        "expected 'timed out' log record; "
-        f"got: {[(r.levelname, r.getMessage()) for r in captured]}"
+        f"expected 'timed out' log record; got: {[(r.levelname, r.getMessage()) for r in captured]}"
     )
 
     # Confirm the default constant is unchanged (sanity).
@@ -175,14 +166,10 @@ async def test_ensure_initialized_timeout_nulls_partially_initialized_backend(
     monkeypatch.setattr(local_mod, "LocalBackend", SlowBackend)
 
     handler = MemoryHandler(
-        MemoryConfig(
-            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
-        )
+        MemoryConfig(enabled=True, backend="local", db_path=str(tmp_path / "mem.db"))
     )
 
-    with patch(
-        "headroom.proxy.memory_handler.STARTUP_INIT_TIMEOUT_SECONDS", 0.01
-    ):
+    with patch("headroom.proxy.memory_handler.STARTUP_INIT_TIMEOUT_SECONDS", 0.01):
         await handler._ensure_initialized()
 
     # Both must be consistent after timeout.
@@ -191,9 +178,7 @@ async def test_ensure_initialized_timeout_nulls_partially_initialized_backend(
 
 
 @pytest.mark.asyncio
-async def test_ensure_initialized_cancellation_propagates_and_resets_state(
-    tmp_path, monkeypatch
-):
+async def test_ensure_initialized_cancellation_propagates_and_resets_state(tmp_path, monkeypatch):
     """External cancellation of an in-flight ``_ensure_initialized`` must
     propagate (CancelledError is BaseException — not a swallowable error)
     and leave the handler in a clean state."""
@@ -213,9 +198,7 @@ async def test_ensure_initialized_cancellation_propagates_and_resets_state(
     monkeypatch.setattr(local_mod, "LocalBackend", HangingBackend)
 
     handler = MemoryHandler(
-        MemoryConfig(
-            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
-        )
+        MemoryConfig(enabled=True, backend="local", db_path=str(tmp_path / "mem.db"))
     )
 
     task = asyncio.create_task(handler._ensure_initialized())

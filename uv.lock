@@ -1401,6 +1401,7 @@ dev = [
     { name = "sentence-transformers" },
     { name = "sqlite-vec" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 evals = [
     { name = "anthropic" },
@@ -1572,6 +1573,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "uvicorn", marker = "extra == 'proxy'", specifier = ">=0.23.0" },
     { name = "watchdog", marker = "extra == 'proxy'", specifier = ">=4.0.0" },
+    { name = "websockets", marker = "extra == 'dev'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'proxy'", specifier = ">=13.0" },
     { name = "zstandard", marker = "extra == 'proxy'", specifier = ">=0.20.0" },
 ]

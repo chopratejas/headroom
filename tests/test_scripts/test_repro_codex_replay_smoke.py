@@ -49,6 +49,7 @@ def _restore_real_websockets_module() -> Iterator[None]:
         if mod is not None:
             sys.modules[name] = mod
 
+
 # Make sure `scripts/` is importable when running via pytest from repo root.
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT / "scripts"

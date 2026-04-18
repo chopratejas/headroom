@@ -103,7 +103,7 @@ def _age_for_named_task(
         return None
     for prefix in _CODEX_WS_RELAY_PREFIXES:
         if task_name.startswith(prefix):
-            session_id = task_name[len(prefix):]
+            session_id = task_name[len(prefix) :]
             handle = ws_registry.get(session_id)
             if handle is None:
                 return None

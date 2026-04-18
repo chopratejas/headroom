@@ -40,9 +40,7 @@ class _DummyMetrics:
 
     def inc_active_ws_sessions(self) -> None:
         self.active_ws_sessions += 1
-        self.active_ws_sessions_max = max(
-            self.active_ws_sessions_max, self.active_ws_sessions
-        )
+        self.active_ws_sessions_max = max(self.active_ws_sessions_max, self.active_ws_sessions)
 
     def dec_active_ws_sessions(self) -> None:
         self.active_ws_sessions = max(0, self.active_ws_sessions - 1)

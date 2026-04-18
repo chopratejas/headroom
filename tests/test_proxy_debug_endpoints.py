@@ -278,12 +278,9 @@ def test_debug_tasks_stack_depth_is_gated_behind_query(client):
     # itself runs under a task). Some entries may still be None if
     # get_stack raised defensively — we only require that opting in
     # produces at least one integer result.
-    integer_depths = [
-        e["stack_depth"] for e in entries if isinstance(e["stack_depth"], int)
-    ]
+    integer_depths = [e["stack_depth"] for e in entries if isinstance(e["stack_depth"], int)]
     assert integer_depths, (
-        "expected at least one int stack_depth when ?stack=true; "
-        f"got entries={entries!r}"
+        f"expected at least one int stack_depth when ?stack=true; got entries={entries!r}"
     )
 
 

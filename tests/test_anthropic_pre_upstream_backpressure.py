@@ -317,9 +317,7 @@ def test_n_plus_one_contention_only_waiter_has_nonzero_wait(stage_log_capture):
         sem = asyncio.Semaphore(2)
         # Each request hogs the semaphore for ~150 ms. With concurrency=2,
         # 3 concurrent requests mean exactly one waits ~150 ms.
-        handler = _DummyAnthropicHandler(
-            anthropic_pre_upstream_sem=sem, upstream_delay_s=0.15
-        )
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem, upstream_delay_s=0.15)
         reqs = [
             _build_request(
                 {
@@ -355,9 +353,7 @@ def test_n_plus_one_contention_only_waiter_has_nonzero_wait(stage_log_capture):
 def test_concurrency_one_serializes_requests():
     async def _run() -> float:
         sem = asyncio.Semaphore(1)
-        handler = _DummyAnthropicHandler(
-            anthropic_pre_upstream_sem=sem, upstream_delay_s=0.10
-        )
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem, upstream_delay_s=0.10)
         reqs = [
             _build_request(
                 {
@@ -402,9 +398,7 @@ def test_unbounded_mode_requests_run_concurrently():
     """With concurrency=0 (sem disabled), two slow requests overlap."""
 
     async def _run() -> float:
-        handler = _DummyAnthropicHandler(
-            anthropic_pre_upstream_sem=None, upstream_delay_s=0.10
-        )
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=None, upstream_delay_s=0.10)
         reqs = [
             _build_request(
                 {
@@ -435,9 +429,7 @@ def test_exception_inside_critical_section_releases_semaphore():
     async def _run() -> None:
         sem = asyncio.Semaphore(2)
         baseline = sem._value
-        handler = _DummyAnthropicHandler(
-            anthropic_pre_upstream_sem=sem, raise_during_critical=True
-        )
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem, raise_during_critical=True)
         # Drive several cycles to ensure we don't leak on any path.
         for i in range(5):
             req = _build_request(
@@ -606,9 +598,7 @@ def test_env_var_sets_pre_upstream_concurrency():
 
 def test_cli_flag_overrides_env_var():
     env = {"HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY": "4"}
-    config = _run_cli_capture(
-        ["--anthropic-pre-upstream-concurrency", "7"], env=env
-    )
+    config = _run_cli_capture(["--anthropic-pre-upstream-concurrency", "7"], env=env)
     assert config.anthropic_pre_upstream_concurrency == 7
 
 
@@ -735,13 +725,10 @@ def test_early_exit_paths_release_semaphore_under_contention(scenario):
                 )
             else:
                 # security returns a JSONResponse; cache returns a Response.
-                assert raised is None, (
-                    f"{scenario}: unexpected exception {raised!r}"
-                )
+                assert raised is None, f"{scenario}: unexpected exception {raised!r}"
                 assert result is not None
             assert sem._value == original_value, (
-                f"{scenario}: semaphore leak "
-                f"got={sem._value}, want={original_value}"
+                f"{scenario}: semaphore leak got={sem._value}, want={original_value}"
             )
 
     with _tokenizer_patch():

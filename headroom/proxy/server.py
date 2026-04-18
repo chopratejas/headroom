@@ -396,8 +396,8 @@ class HeadroomProxy(
             _pre_upstream_resolved = _pre_upstream_cfg
         self.anthropic_pre_upstream_concurrency: int = _pre_upstream_resolved
         if _pre_upstream_resolved > 0:
-            self.anthropic_pre_upstream_sem: asyncio.Semaphore | None = (
-                asyncio.Semaphore(_pre_upstream_resolved)
+            self.anthropic_pre_upstream_sem: asyncio.Semaphore | None = asyncio.Semaphore(
+                _pre_upstream_resolved
             )
         else:
             self.anthropic_pre_upstream_sem = None
@@ -658,10 +658,7 @@ class HeadroomProxy(
         # value (auto-detected vs. explicit) so operators can correlate
         # ``pre_upstream_wait_ms`` log lines with the configured cap.
         if self.anthropic_pre_upstream_sem is None:
-            logger.info(
-                "Anthropic pre-upstream concurrency: unbounded "
-                "(explicitly disabled)"
-            )
+            logger.info("Anthropic pre-upstream concurrency: unbounded (explicitly disabled)")
         else:
             _explicit = self.config.anthropic_pre_upstream_concurrency
             _origin = "auto-detected" if _explicit is None else "explicit"
@@ -749,9 +746,7 @@ class HeadroomProxy(
                 await self.memory_handler.ensure_initialized()
             except Exception as exc:  # pragma: no cover - defensive
                 self.warmup.memory_backend.mark_error(str(exc))
-                logger.warning(
-                    "Memory: backend initialization failed (startup continues): %s", exc
-                )
+                logger.warning("Memory: backend initialization failed (startup continues): %s", exc)
             memory_status = self.memory_handler.health_status()
             if memory_status.get("initialized"):
                 self.warmup.memory_backend.mark_loaded(

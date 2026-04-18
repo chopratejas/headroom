@@ -1264,9 +1264,7 @@ class OpenAIHandlerMixin:
         # Unit 3: initialize registry variables *before* accept so the
         # outermost ``finally`` can rely on them existing even if
         # registration itself fails for some reason.
-        ws_sessions: WebSocketSessionRegistry | None = getattr(
-            self, "ws_sessions", None
-        )
+        ws_sessions: WebSocketSessionRegistry | None = getattr(self, "ws_sessions", None)
         session_handle: WSSessionHandle | None = None
         termination_cause: TerminationCause = "unknown"
 
@@ -1414,7 +1412,9 @@ class OpenAIHandlerMixin:
                 body = json.loads(first_msg_raw)
                 tokens_saved = 0
                 ws_request_body = body.get("response", body)
-                input_data = ws_request_body.get("input") if isinstance(ws_request_body, dict) else None
+                input_data = (
+                    ws_request_body.get("input") if isinstance(ws_request_body, dict) else None
+                )
 
                 should_compress = (
                     self.config.optimize
@@ -1919,9 +1919,7 @@ class OpenAIHandlerMixin:
                                 metrics_for_tasks, "inc_active_relay_tasks"
                             ):
                                 try:
-                                    metrics_for_tasks.inc_active_relay_tasks(
-                                        len(relay_tasks)
-                                    )
+                                    metrics_for_tasks.inc_active_relay_tasks(len(relay_tasks))
                                 except Exception:  # pragma: no cover - defensive
                                     pass
 
@@ -1939,9 +1937,7 @@ class OpenAIHandlerMixin:
                                 t.cancel()
                             if pending:
                                 with contextlib.suppress(asyncio.CancelledError):
-                                    await asyncio.gather(
-                                        *pending, return_exceptions=True
-                                    )
+                                    await asyncio.gather(*pending, return_exceptions=True)
 
                             # Classify termination cause from whichever
                             # task completed first. ``CancelledError``
@@ -1998,8 +1994,7 @@ class OpenAIHandlerMixin:
                                     else:
                                         termination_cause = "upstream_error"
                                         logger.debug(
-                                            f"[{request_id}] WS relay {task_name} "
-                                            f"raised: {exc!r}"
+                                            f"[{request_id}] WS relay {task_name} raised: {exc!r}"
                                         )
                         finally:
                             # In case anything above raised before the
@@ -2008,9 +2003,7 @@ class OpenAIHandlerMixin:
                                 if not t.done():
                                     t.cancel()
                             with contextlib.suppress(asyncio.CancelledError):
-                                await asyncio.gather(
-                                    *relay_tasks, return_exceptions=True
-                                )
+                                await asyncio.gather(*relay_tasks, return_exceptions=True)
 
                         logger.info(
                             f"[{request_id}] WS /v1/responses completed "
@@ -2113,17 +2106,13 @@ class OpenAIHandlerMixin:
                 _deregistered, released_tasks = ws_sessions.deregister_and_count(
                     session_id, cause=termination_cause
                 )
-                session_duration_ms = (
-                    time.perf_counter() - session_started_at
-                ) * 1000.0
+                session_duration_ms = (time.perf_counter() - session_started_at) * 1000.0
                 metrics_for_close = getattr(self, "metrics", None)
                 if metrics_for_close is not None:
                     with contextlib.suppress(Exception):
                         if hasattr(metrics_for_close, "dec_active_ws_sessions"):
                             metrics_for_close.dec_active_ws_sessions()
-                        if released_tasks and hasattr(
-                            metrics_for_close, "dec_active_relay_tasks"
-                        ):
+                        if released_tasks and hasattr(metrics_for_close, "dec_active_relay_tasks"):
                             metrics_for_close.dec_active_relay_tasks(released_tasks)
                         if hasattr(metrics_for_close, "record_ws_session_duration"):
                             metrics_for_close.record_ws_session_duration(

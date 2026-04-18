@@ -322,9 +322,7 @@ async def _anthropic_client(
             # so this script stays dependency-free of the proxy package.
             _base_ms = 250
             _max_ms = 5000
-            _delay_ms = min(_base_ms * (2 ** (attempt - 1)), _max_ms) * (
-                0.5 + random.random()
-            )
+            _delay_ms = min(_base_ms * (2 ** (attempt - 1)), _max_ms) * (0.5 + random.random())
             await asyncio.sleep(_delay_ms / 1000.0)
 
 
@@ -515,9 +513,7 @@ def format_summary(result: dict[str, Any]) -> str:
         lines.append("Warmup:         skipped")
     else:
         lines.append(
-            "Warmup:         success={success} elapsed_ms={elapsed_ms} note={note}".format(
-                **warm
-            )
+            "Warmup:         success={success} elapsed_ms={elapsed_ms} note={note}".format(**warm)
         )
     storm = result.get("storm", {})
     lines.append(

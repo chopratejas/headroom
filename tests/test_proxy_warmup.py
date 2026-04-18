@@ -209,9 +209,7 @@ async def test_startup_memory_embedder_warmup_encodes_once(tmp_path, monkeypatch
     # Swap in a hand-rolled MemoryHandler whose backend exposes a mock
     # embedder. We don't want real ONNX here — just a spy.
     handler = MemoryHandler(
-        MemoryConfig(
-            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
-        )
+        MemoryConfig(enabled=True, backend="local", db_path=str(tmp_path / "mem.db"))
     )
     handler._initialized = True
 
@@ -257,9 +255,7 @@ async def test_startup_memory_backend_error_surfaced_and_health_degraded(tmp_pat
     proxy = HeadroomProxy(config)
 
     handler = MemoryHandler(
-        MemoryConfig(
-            enabled=True, backend="local", db_path=str(tmp_path / "mem.db")
-        )
+        MemoryConfig(enabled=True, backend="local", db_path=str(tmp_path / "mem.db"))
     )
 
     async def _boom() -> None:

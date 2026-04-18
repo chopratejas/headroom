@@ -36,6 +36,7 @@ COMPRESSION_TIMEOUT_SECONDS = 30
 # Maximum compression cache sessions (prevents unbounded memory growth)
 MAX_COMPRESSION_CACHE_SESSIONS = 500
 
+
 def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
     """Exponential backoff with 50-150% jitter.
 

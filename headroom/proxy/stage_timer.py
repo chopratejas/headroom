@@ -180,14 +180,11 @@ async def emit_stage_timings_log(
         logger.info(f"[{request_id}] STAGE_TIMINGS {payload}")
     except (TypeError, ValueError):
         logger.info(
-            f"[{request_id}] STAGE_TIMINGS path={path} session_id={session_id} "
-            f"stages={padded!r}"
+            f"[{request_id}] STAGE_TIMINGS path={path} session_id={session_id} stages={padded!r}"
         )
 
     if metrics is not None and hasattr(metrics, "record_stage_timings"):
         try:
             await metrics.record_stage_timings(path, summary)
         except Exception as metric_err:  # pragma: no cover - defensive
-            logger.debug(
-                f"[{request_id}] record_stage_timings failed for {path}: {metric_err}"
-            )
+            logger.debug(f"[{request_id}] record_stage_timings failed for {path}: {metric_err}")

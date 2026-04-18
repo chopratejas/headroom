@@ -476,7 +476,9 @@ class AnthropicHandlerMixin:
 
             # Subscription tracker: notify on OAuth requests (not API-key requests)
             _auth_header = headers.get("authorization", "")
-            if _auth_header.startswith("Bearer ") and not _auth_header.startswith("Bearer sk-ant-api"):
+            if _auth_header.startswith("Bearer ") and not _auth_header.startswith(
+                "Bearer sk-ant-api"
+            ):
                 from headroom.subscription.tracker import (
                     get_subscription_tracker as _get_sub_tracker,
                 )
@@ -1071,7 +1073,10 @@ class AnthropicHandlerMixin:
                         # Non-stream: first-byte and connect are effectively
                         # the same horizon — ``send_message`` awaits until
                         # the response body is fully buffered.
-                        if "upstream_first_byte" not in stage_timer and "upstream_connect" in stage_timer:
+                        if (
+                            "upstream_first_byte" not in stage_timer
+                            and "upstream_connect" in stage_timer
+                        ):
                             stage_timer.record(
                                 "upstream_first_byte",
                                 stage_timer.summary()["upstream_connect"],
@@ -1176,7 +1181,10 @@ class AnthropicHandlerMixin:
                 else:
                     async with stage_timer.measure("upstream_connect"):
                         response = await self._retry_request("POST", url, headers, body)
-                    if "upstream_first_byte" not in stage_timer and "upstream_connect" in stage_timer:
+                    if (
+                        "upstream_first_byte" not in stage_timer
+                        and "upstream_connect" in stage_timer
+                    ):
                         stage_timer.record(
                             "upstream_first_byte",
                             stage_timer.summary()["upstream_connect"],
@@ -1280,7 +1288,9 @@ class AnthropicHandlerMixin:
                         and response.status_code == 200
                         and self.ccr_response_handler.has_ccr_tool_calls(resp_json, "anthropic")
                     ):
-                        logger.info(f"[{request_id}] CCR: Detected retrieval tool call, handling...")
+                        logger.info(
+                            f"[{request_id}] CCR: Detected retrieval tool call, handling..."
+                        )
 
                         # Create API call function for continuation
                         # Use a fresh client to avoid potential decompression state issues
@@ -1308,7 +1318,9 @@ class AnthropicHandlerMixin:
                             }
 
                             # Reuse main client for CCR continuations (connection pooling)
-                            logger.info(f"CCR: Making continuation request with {len(msgs)} messages")
+                            logger.info(
+                                f"CCR: Making continuation request with {len(msgs)} messages"
+                            )
                             assert self.http_client is not None, "HTTP client not initialized"
                             try:
                                 cont_response = await self.http_client.post(
@@ -1382,7 +1394,9 @@ class AnthropicHandlerMixin:
                         and response.status_code == 200
                         and self.memory_handler.has_memory_tool_calls(resp_json, "anthropic")
                     ):
-                        logger.info(f"[{request_id}] Memory: Detected memory tool call, handling...")
+                        logger.info(
+                            f"[{request_id}] Memory: Detected memory tool call, handling..."
+                        )
 
                         try:
                             # Execute memory tool calls
@@ -1401,7 +1415,10 @@ class AnthropicHandlerMixin:
                                     "content": tool_results,
                                 }
 
-                                continuation_messages = optimized_messages + [assistant_msg, user_msg]
+                                continuation_messages = optimized_messages + [
+                                    assistant_msg,
+                                    user_msg,
+                                ]
 
                                 # Make continuation API call
                                 continuation_body = {**body, "messages": continuation_messages}
@@ -1437,7 +1454,9 @@ class AnthropicHandlerMixin:
                         output_tokens = usage.get("output_tokens", 0)
                         cr_tokens = usage.get("cache_read_input_tokens", 0)
                         cw_tokens = usage.get("cache_creation_input_tokens", 0)
-                        cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(usage)
+                        cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(
+                            usage
+                        )
                         uncached_input_tokens = usage.get("input_tokens", 0)
 
                     # Track cache bust: tokens that lost their cache discount due to compression.
@@ -1546,7 +1565,9 @@ class AnthropicHandlerMixin:
                                 cache_hit=cache_hit,
                                 transforms_applied=transforms_applied,
                                 waste_signals=waste_signals_dict,
-                                request_messages=messages if self.config.log_full_messages else None,
+                                request_messages=messages
+                                if self.config.log_full_messages
+                                else None,
                             )
                         )
 
@@ -1575,7 +1596,9 @@ class AnthropicHandlerMixin:
                     # Remove compression headers since httpx already decompressed the response
                     response_headers = dict(response.headers)
                     response_headers.pop("content-encoding", None)
-                    response_headers.pop("content-length", None)  # Length changed after decompression
+                    response_headers.pop(
+                        "content-length", None
+                    )  # Length changed after decompression
 
                     # Inject Headroom compression metrics (for SaaS metering)
                     response_headers["x-headroom-tokens-before"] = str(original_tokens)
@@ -1604,7 +1627,9 @@ class AnthropicHandlerMixin:
                                 headers=response_headers,
                             )
                         except Exception as sec_err:
-                            logger.warning(f"[{request_id}] Security response scan error: {sec_err}")
+                            logger.warning(
+                                f"[{request_id}] Security response scan error: {sec_err}"
+                            )
 
                     return Response(
                         content=response.content,
@@ -1654,7 +1679,6 @@ class AnthropicHandlerMixin:
             # deep-copy) would otherwise leak the pre-upstream semaphore
             # permanently. The emit function is idempotent.
             await _finalize_pre_upstream()
-
 
     async def handle_anthropic_batch_create(
         self,

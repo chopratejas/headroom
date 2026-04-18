@@ -207,10 +207,7 @@ class MemoryHandler:
             # cancellation is a signal, not an error to swallow.
             self._backend = None
             self._initialized = False
-            logger.info(
-                "Memory: backend initialization cancelled "
-                f"(backend={self.config.backend})"
-            )
+            logger.info(f"Memory: backend initialization cancelled (backend={self.config.backend})")
             raise
 
     async def _init_backend_locked(self) -> None:
