@@ -24,6 +24,9 @@ class TestStreamingRatelimitHeaderForwarding:
         """Create a HeadroomProxy with mocked internals for unit testing."""
         proxy = object.__new__(HeadroomProxy)
         proxy.http_client = MagicMock(spec=httpx.AsyncClient)
+        proxy.metrics = MagicMock()
+        proxy.metrics.record_request = AsyncMock(return_value=None)
+        proxy.metrics.record_failed = AsyncMock(return_value=None)
         proxy.cost_tracker = MagicMock()
         proxy.cost_tracker.estimate_cost.return_value = 0.001
         proxy.cost_tracker.record_request.return_value = None
@@ -40,6 +43,10 @@ class TestStreamingRatelimitHeaderForwarding:
         proxy._config = MagicMock()
         proxy._config.memory_enabled = False
         proxy._config.ccr_inject_tool = False
+        proxy._config.retry_max_attempts = 3
+        proxy._config.retry_base_delay_ms = 0
+        proxy._config.retry_max_delay_ms = 0
+        proxy.config = proxy._config
         proxy._parse_sse_usage_from_buffer = MagicMock(return_value=None)
         proxy.memory_handler = None
         return proxy
@@ -241,3 +248,48 @@ class TestStreamingRatelimitHeaderForwarding:
         error_data = json.loads(raw.split("data: ")[1].strip())
         assert error_data["error"]["type"] == "connection_error"
         assert "Connection refused" in error_data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_connect_timeout_retries_before_returning_stream(self):
+        """Transient connect timeouts should retry before failing the stream."""
+        proxy = self._create_mock_proxy()
+        mock_response = self._create_mock_upstream_response()
+
+        mock_request = MagicMock()
+        proxy.http_client.build_request = MagicMock(return_value=mock_request)
+        attempts = {"count": 0}
+
+        async def flaky_send(*args, **kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise httpx.ConnectTimeout("timed out")
+            return mock_response
+
+        proxy.http_client.send = AsyncMock(side_effect=flaky_send)
+
+        result = await proxy._stream_response(
+            url="https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": "sk-test"},
+            body={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 100,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            request_id="test-retry",
+            original_tokens=10,
+            optimized_tokens=10,
+            tokens_saved=0,
+            transforms_applied=[],
+            tags={},
+            optimization_latency=0.0,
+        )
+
+        chunks = []
+        async for chunk in result.body_iterator:
+            chunks.append(chunk)
+
+        assert attempts["count"] == 2
+        assert chunks

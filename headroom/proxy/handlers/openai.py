@@ -13,15 +13,38 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from headroom.proxy.helpers import jitter_delay_ms
+from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
+from headroom.proxy.ws_session_registry import (
+    TerminationCause,
+    WebSocketSessionRegistry,
+    WSSessionHandle,
+)
 
 if TYPE_CHECKING:
     from fastapi import Request, WebSocket
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+import httpx
 
 logger = logging.getLogger("headroom.proxy")
+
+
+# Interactive Responses turns are latency-sensitive. Fail open quickly rather
+# than holding the session hostage on memory lookup.
+RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS = 2.0
+
+# Cap the wait for the first client frame after the WS handshake completes.
+# A zombie or malicious client that accepts the upgrade but never sends the
+# first response.create frame would otherwise hold a slot indefinitely and
+# starve the session registry. 60 s is generous for real clients (Codex
+# typically sends the first frame within a few hundred milliseconds of the
+# accept) but short enough to bound the damage from a hung peer.
+WS_FIRST_FRAME_TIMEOUT_SECONDS = 60.0
 
 
 def _decode_openai_bearer_payload(headers: dict[str, str]) -> dict[str, Any] | None:
@@ -979,9 +1002,19 @@ class OpenAIHandlerMixin:
             try:
                 # Inject memory context into instructions (Responses API system prompt)
                 if self.memory_handler.config.inject_context:
-                    memory_context = await self.memory_handler.search_and_format_context(
-                        memory_user_id, optimized_messages
-                    )
+                    try:
+                        memory_context = await asyncio.wait_for(
+                            self.memory_handler.search_and_format_context(
+                                memory_user_id, optimized_messages
+                            ),
+                            timeout=RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        memory_context = None
+                        logger.info(
+                            f"[{request_id}] Memory context lookup exceeded "
+                            f"{RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS:.1f}s; continuing without it"
+                        )
                     if memory_context:
                         existing_instructions = body.get("instructions") or ""
                         if existing_instructions:
@@ -1221,6 +1254,19 @@ class OpenAIHandlerMixin:
             return
 
         request_id = await self._next_request_id()
+        session_id = uuid.uuid4().hex
+
+        # Stage-timer — captures per-stage durations for the structured
+        # log emitted on session close. Unit 2 instrumentation.
+        stage_timer = StageTimer()
+        session_started_at = time.perf_counter()
+
+        # Unit 3: initialize registry variables *before* accept so the
+        # outermost ``finally`` can rely on them existing even if
+        # registration itself fails for some reason.
+        ws_sessions: WebSocketSessionRegistry | None = getattr(self, "ws_sessions", None)
+        session_handle: WSSessionHandle | None = None
+        termination_cause: TerminationCause = "unknown"
 
         # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)
@@ -1234,10 +1280,36 @@ class OpenAIHandlerMixin:
             client_subprotocols = [p.strip() for p in raw_protocol.split(",") if p.strip()]
 
         # Accept client connection with the requested subprotocol
-        if client_subprotocols:
-            await websocket.accept(subprotocol=client_subprotocols[0])
-        else:
-            await websocket.accept()
+        async with stage_timer.measure("accept"):
+            if client_subprotocols:
+                await websocket.accept(subprotocol=client_subprotocols[0])
+            else:
+                await websocket.accept()
+
+        # --- Unit 3: register the session as soon as accept succeeds ---
+        client_addr: str | None = None
+        client_info = getattr(websocket, "client", None)
+        if client_info is not None:
+            host = getattr(client_info, "host", None)
+            port = getattr(client_info, "port", None)
+            if host is not None and port is not None:
+                client_addr = f"{host}:{port}"
+            elif host is not None:
+                client_addr = str(host)
+        if ws_sessions is not None:
+            session_handle = WSSessionHandle(
+                session_id=session_id,
+                request_id=request_id,
+                client_addr=client_addr,
+                upstream_url=None,  # set below once upstream_url is computed
+            )
+            ws_sessions.register(session_handle)
+            metrics = getattr(self, "metrics", None)
+            if metrics is not None and hasattr(metrics, "inc_active_ws_sessions"):
+                try:
+                    metrics.inc_active_ws_sessions()
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
         # Forward all client headers except hop-by-hop / per-connection headers.
         # These are WebSocket handshake mechanics that the `websockets` library
@@ -1278,6 +1350,10 @@ class OpenAIHandlerMixin:
             ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
             upstream_url = f"{ws_base}/v1/responses"
 
+        # Unit 3: attach the resolved upstream URL to the session handle.
+        if session_handle is not None:
+            session_handle.upstream_url = upstream_url
+
         # Ensure Authorization header is present — fall back to OPENAI_API_KEY env var.
         # Safety net for clients that don't forward auth headers via WebSocket upgrade.
         if "authorization" not in _lower_headers:
@@ -1303,21 +1379,52 @@ class OpenAIHandlerMixin:
         )
 
         try:
-            # Receive the first message from client (the response.create request)
-            first_msg_raw = await websocket.receive_text()
+            # Receive the first message from client (the response.create request).
+            # Bound the wait with WS_FIRST_FRAME_TIMEOUT_SECONDS so a zombie
+            # client that opens the WS but never sends a frame cannot hold a
+            # session slot indefinitely. The StageTimer measurement still
+            # captures the elapsed time up to the timeout so operators can
+            # see the slow-client pattern in the stage-timings log.
+            try:
+                async with stage_timer.measure("first_client_frame"):
+                    first_msg_raw = await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=WS_FIRST_FRAME_TIMEOUT_SECONDS,
+                    )
+            except asyncio.TimeoutError:
+                logger.info(
+                    f"[{request_id}] WS first-frame timeout after "
+                    f"{WS_FIRST_FRAME_TIMEOUT_SECONDS:.0f}s; closing session "
+                    f"{session_id} (no client data)"
+                )
+                termination_cause = "client_timeout"
+                with contextlib.suppress(Exception):
+                    # 1001 (going away): server is cleanly terminating a slow
+                    # client, not an internal error.
+                    await websocket.close(code=1001, reason="first-frame timeout")
+                # Exit the outer try so the session-lifecycle ``finally`` runs
+                # deregister / metrics / stage-timings emission as usual.
+                return
 
             # --- Optional: compress the input in the first message ---
             body: dict[str, Any] = {}
             try:
                 body = json.loads(first_msg_raw)
-                input_data = body.get("input")
                 tokens_saved = 0
+                ws_request_body = body.get("response", body)
+                input_data = (
+                    ws_request_body.get("input") if isinstance(ws_request_body, dict) else None
+                )
 
                 should_compress = (
                     self.config.optimize
                     and isinstance(input_data, list)
                     and len(input_data) > 1
-                    and not body.get("previous_response_id")
+                    and not (
+                        ws_request_body.get("previous_response_id")
+                        if isinstance(ws_request_body, dict)
+                        else None
+                    )
                 )
                 if should_compress:
                     try:
@@ -1326,11 +1433,11 @@ class OpenAIHandlerMixin:
                             responses_items_to_messages,
                         )
 
-                        model = body.get("model", "gpt-4o")
+                        model = ws_request_body.get("model", "gpt-4o")
                         converted, preserved = responses_items_to_messages(input_data)
 
                         messages: list[dict[str, Any]] = []
-                        instructions = body.get("instructions")
+                        instructions = ws_request_body.get("instructions")
                         if instructions:
                             messages.append({"role": "system", "content": instructions})
                         messages.extend(converted)
@@ -1339,25 +1446,26 @@ class OpenAIHandlerMixin:
                         original_tokens = tokenizer.count_messages(messages)
 
                         context_limit = self.openai_provider.get_context_limit(model)
-                        result = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                lambda: self.openai_pipeline.apply(
-                                    messages=messages,
-                                    model=model,
-                                    model_limit=context_limit,
-                                    context=extract_user_query(messages),
-                                )
-                            ),
-                            timeout=COMPRESSION_TIMEOUT_SECONDS,
-                        )
+                        async with stage_timer.measure("compression"):
+                            result = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    lambda: self.openai_pipeline.apply(
+                                        messages=messages,
+                                        model=model,
+                                        model_limit=context_limit,
+                                        context=extract_user_query(messages),
+                                    )
+                                ),
+                                timeout=COMPRESSION_TIMEOUT_SECONDS,
+                            )
 
                         if result.messages != messages:
                             opt = result.messages
                             if instructions and opt and opt[0].get("role") == "system":
-                                body["instructions"] = opt[0]["content"]
+                                ws_request_body["instructions"] = opt[0]["content"]
                                 opt = opt[1:]
                             if result.tokens_after <= original_tokens:
-                                body["input"] = messages_to_responses_items(
+                                ws_request_body["input"] = messages_to_responses_items(
                                     opt, input_data, preserved
                                 )
                             else:
@@ -1366,6 +1474,10 @@ class OpenAIHandlerMixin:
                                     f"({original_tokens} -> {result.tokens_after}), reverting"
                                 )
                             tokens_saved = max(0, original_tokens - result.tokens_after)
+                            if "response" in body and isinstance(body["response"], dict):
+                                body["response"] = ws_request_body
+                            else:
+                                body = ws_request_body
                             first_msg_raw = json.dumps(body)
                             logger.info(
                                 f"[{request_id}] WS /v1/responses compressed: "
@@ -1418,9 +1530,21 @@ class OpenAIHandlerMixin:
                             converted_msgs, _ = responses_items_to_messages(ws_input)
                             ws_msgs.extend(converted_msgs)
 
-                        memory_context = await self.memory_handler.search_and_format_context(
-                            memory_user_id, ws_msgs
-                        )
+                        try:
+                            async with stage_timer.measure("memory_context"):
+                                memory_context = await asyncio.wait_for(
+                                    self.memory_handler.search_and_format_context(
+                                        memory_user_id, ws_msgs
+                                    ),
+                                    timeout=RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS,
+                                )
+                        except asyncio.TimeoutError:
+                            memory_context = None
+                            logger.info(
+                                f"[{request_id}] WS Memory: Context lookup exceeded "
+                                f"{RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS:.1f}s; "
+                                f"continuing without it"
+                            )
                         if memory_context:
                             existing = ws_response_body.get("instructions") or ""
                             if existing:
@@ -1497,220 +1621,421 @@ class OpenAIHandlerMixin:
             use_ssl: bool | None = True if upstream_url.startswith("wss://") else None
 
             ws_connected = False
-            try:
-                async with websockets.connect(
-                    upstream_url,
-                    additional_headers=upstream_headers,
-                    subprotocols=(
-                        [websockets.Subprotocol(p) for p in client_subprotocols]
-                        if client_subprotocols and hasattr(websockets, "Subprotocol")
-                        else client_subprotocols or None
-                    ),
-                    ssl=use_ssl,
-                ) as upstream:
-                    ws_connected = True
-                    # Send (potentially compressed) first message
-                    await upstream.send(first_msg_raw)
+            ws_connect_attempts = max(1, getattr(self.config, "retry_max_attempts", 3))
+            ws_last_err: Exception | None = None
+            _upstream_connect_started = time.perf_counter()
+            _upstream_connect_recorded = False
+            _upstream_first_event_started: float | None = None
 
-                    # Bidirectional relay with memory tool interception
-                    async def _client_to_upstream() -> None:
-                        try:
-                            while True:
-                                msg = await websocket.receive_text()
-                                await upstream.send(msg)
-                        except Exception as relay_err:
-                            if "WebSocketDisconnect" not in type(relay_err).__name__:
-                                logger.debug(
-                                    f"[{request_id}] WS client→upstream relay ended: {relay_err}"
-                                )
-                            with contextlib.suppress(Exception):
-                                await upstream.close()
+            for ws_attempt in range(ws_connect_attempts):
+                try:
+                    async with websockets.connect(
+                        upstream_url,
+                        additional_headers=upstream_headers,
+                        subprotocols=(
+                            [websockets.Subprotocol(p) for p in client_subprotocols]
+                            if client_subprotocols and hasattr(websockets, "Subprotocol")
+                            else client_subprotocols or None
+                        ),
+                        ssl=use_ssl,
+                        open_timeout=max(30, self.config.connect_timeout_seconds * 3),
+                        close_timeout=10,
+                        ping_interval=20,
+                        ping_timeout=20,
+                    ) as upstream:
+                        ws_connected = True
+                        if not _upstream_connect_recorded:
+                            stage_timer.record(
+                                "upstream_connect",
+                                (time.perf_counter() - _upstream_connect_started) * 1000.0,
+                            )
+                            _upstream_connect_recorded = True
+                            _upstream_first_event_started = time.perf_counter()
+                        await upstream.send(first_msg_raw)
 
-                    async def _upstream_to_client() -> None:
-                        """Relay upstream→client with transparent memory tool handling.
+                        # Unit 3: flag the upstream side flips on seeing
+                        # ``response.completed`` so the outer cause
+                        # classifier can prefer it over the raw
+                        # "upstream iterator ended" default.
+                        response_completed_seen = False
+                        # Captures the first exception surfaced by the
+                        # inner relay ``except`` blocks so the outer
+                        # classifier can still tell ``upstream_error``
+                        # from ``upstream_disconnect`` / ``response_completed``
+                        # even though the halves swallow and log.
+                        upstream_relay_error: BaseException | None = None
+                        client_relay_error: BaseException | None = None
 
-                        Uses a buffer-then-decide approach:
-                        1. Buffer events until first output item arrives
-                        2. If first output is a memory tool → suppress entire response,
-                           execute tools silently, send continuation upstream
-                        3. If first output is non-memory → flush buffer, stream normally
-                        4. Continuation response events are relayed to Codex seamlessly
+                        async def _client_to_upstream() -> None:
+                            nonlocal client_relay_error
+                            try:
+                                while True:
+                                    msg = await websocket.receive_text()
+                                    await upstream.send(msg)
+                            except asyncio.CancelledError:
+                                # Explicit cancel from the outer
+                                # orchestrator — re-raise so
+                                # ``t.cancelled()`` and ``t.exception()``
+                                # behave correctly in the caller.
+                                raise
+                            except Exception as relay_err:
+                                # Surface real errors to the classifier
+                                # without re-raising (existing fork
+                                # behavior: log and return so the
+                                # partner task can be cancelled
+                                # deterministically).
+                                if "WebSocketDisconnect" not in type(relay_err).__name__:
+                                    client_relay_error = relay_err
+                                    logger.debug(
+                                        f"[{request_id}] WS client→upstream relay ended: {relay_err}"
+                                    )
+                                with contextlib.suppress(Exception):
+                                    await upstream.close()
 
-                        This prevents orphaned response.created events from confusing Codex.
-                        """
-                        from headroom.proxy.memory_handler import MEMORY_TOOL_NAMES
+                        async def _upstream_to_client() -> None:
+                            """Relay upstream→client with transparent memory tool handling.
 
-                        memory_enabled = bool(self.memory_handler and memory_user_id)
+                            Uses a buffer-then-decide approach:
+                            1. Buffer events until first output item arrives
+                            2. If first output is a memory tool → suppress entire response,
+                               execute tools silently, send continuation upstream
+                            3. If first output is non-memory → flush buffer, stream normally
+                            4. Continuation response events are relayed to Codex seamlessly
 
-                        # Per-response state (reset after each response.completed)
-                        event_buffer: list[str] = []
-                        decided = False
-                        suppress_response = False
-                        pending_fcs: list[dict[str, Any]] = []
-                        resp_id: str | None = None
+                            This prevents orphaned response.created events from confusing Codex.
+                            """
+                            from headroom.proxy.memory_handler import MEMORY_TOOL_NAMES
 
-                        def _reset() -> None:
-                            nonlocal decided, suppress_response, resp_id
-                            event_buffer.clear()
+                            # Unit 3: surface response.completed observation
+                            # to the outer scope so the termination-cause
+                            # classifier can prefer ``response_completed``
+                            # over ``upstream_disconnect``.
+                            nonlocal response_completed_seen
+                            nonlocal upstream_relay_error
+
+                            memory_enabled = bool(self.memory_handler and memory_user_id)
+
+                            # Per-response state (reset after each response.completed)
+                            event_buffer: list[str] = []
                             decided = False
                             suppress_response = False
-                            pending_fcs.clear()
-                            resp_id = None
+                            pending_fcs: list[dict[str, Any]] = []
+                            resp_id: str | None = None
 
-                        try:
-                            async for msg in upstream:
-                                if isinstance(msg, bytes):
-                                    await websocket.send_bytes(msg)
-                                    continue
-                                msg_str = msg if isinstance(msg, str) else str(msg)
+                            def _reset() -> None:
+                                nonlocal decided, suppress_response, resp_id
+                                event_buffer.clear()
+                                decided = False
+                                suppress_response = False
+                                pending_fcs.clear()
+                                resp_id = None
 
-                                if not memory_enabled:
-                                    await websocket.send_text(msg_str)
-                                    continue
+                            # The retry-loop variable is safe to close over here:
+                            # ``_upstream_to_client`` is defined and awaited within
+                            # a single iteration and never escapes.
+                            _first_event_started_at = _upstream_first_event_started  # noqa: B023
 
-                                # Parse event
-                                try:
-                                    event = json.loads(msg_str)
-                                except (json.JSONDecodeError, TypeError):
-                                    await websocket.send_text(msg_str)
-                                    continue
+                            try:
+                                async for msg in upstream:
+                                    if (
+                                        _first_event_started_at is not None
+                                        and "upstream_first_event" not in stage_timer
+                                    ):
+                                        stage_timer.record(
+                                            "upstream_first_event",
+                                            (time.perf_counter() - _first_event_started_at)
+                                            * 1000.0,
+                                        )
+                                    if isinstance(msg, bytes):
+                                        await websocket.send_bytes(msg)
+                                        continue
+                                    msg_str = msg if isinstance(msg, str) else str(msg)
 
-                                event_type = event.get("type", "")
+                                    if not memory_enabled:
+                                        await websocket.send_text(msg_str)
+                                        continue
 
-                                # --- Phase 1: Buffer until first output item ---
-                                if not decided:
-                                    event_buffer.append(msg_str)
+                                    # Parse event
+                                    try:
+                                        event = json.loads(msg_str)
+                                    except (json.JSONDecodeError, TypeError):
+                                        await websocket.send_text(msg_str)
+                                        continue
 
-                                    if event_type == "response.output_item.added":
-                                        item = event.get("item", {})
-                                        if (
-                                            item.get("type") == "function_call"
-                                            and item.get("name") in MEMORY_TOOL_NAMES
-                                        ):
-                                            # Memory tool first → suppress entire response
-                                            suppress_response = True
-                                            decided = True
-                                            event_buffer.clear()
-                                            logger.info(
-                                                f"[{request_id}] WS Memory: Detected "
-                                                f"{item.get('name')} — suppressing response"
-                                            )
-                                        else:
-                                            # Non-memory first → flush buffer, pass through
+                                    event_type = event.get("type", "")
+
+                                    # --- Phase 1: Buffer until first output item ---
+                                    if not decided:
+                                        event_buffer.append(msg_str)
+
+                                        if event_type == "response.output_item.added":
+                                            item = event.get("item", {})
+                                            if (
+                                                item.get("type") == "function_call"
+                                                and item.get("name") in MEMORY_TOOL_NAMES
+                                            ):
+                                                # Memory tool first → suppress entire response
+                                                suppress_response = True
+                                                decided = True
+                                                event_buffer.clear()
+                                                logger.info(
+                                                    f"[{request_id}] WS Memory: Detected "
+                                                    f"{item.get('name')} — suppressing response"
+                                                )
+                                            else:
+                                                # Non-memory first → flush buffer, pass through
+                                                decided = True
+                                                for buf in event_buffer:
+                                                    await websocket.send_text(buf)
+                                                event_buffer.clear()
+
+                                        elif event_type == "response.completed":
+                                            # No output items at all — flush
                                             decided = True
                                             for buf in event_buffer:
                                                 await websocket.send_text(buf)
                                             event_buffer.clear()
+                                            _reset()
+                                            response_completed_seen = True
 
-                                    elif event_type == "response.completed":
-                                        # No output items at all — flush
-                                        decided = True
-                                        for buf in event_buffer:
-                                            await websocket.send_text(buf)
-                                        event_buffer.clear()
-                                        _reset()
+                                        continue
 
-                                    continue
+                                    # --- Phase 2a: Suppress mode (memory response) ---
+                                    if suppress_response:
+                                        if event_type == "response.output_item.done":
+                                            item = event.get("item", {})
+                                            if (
+                                                item.get("type") == "function_call"
+                                                and item.get("name") in MEMORY_TOOL_NAMES
+                                            ):
+                                                pending_fcs.append(item)
 
-                                # --- Phase 2a: Suppress mode (memory response) ---
-                                if suppress_response:
-                                    if event_type == "response.output_item.done":
-                                        item = event.get("item", {})
-                                        if (
-                                            item.get("type") == "function_call"
-                                            and item.get("name") in MEMORY_TOOL_NAMES
-                                        ):
-                                            pending_fcs.append(item)
+                                        elif event_type == "response.completed":
+                                            response_completed_seen = True
+                                            resp = event.get("response", {})
+                                            resp_id = resp.get("id")
 
-                                    elif event_type == "response.completed":
-                                        resp = event.get("response", {})
-                                        resp_id = resp.get("id")
-
-                                        if pending_fcs:
-                                            logger.info(
-                                                f"[{request_id}] WS Memory: Executing "
-                                                f"{len(pending_fcs)} tool(s) transparently"
-                                            )
-
-                                            # Execute memory tool calls
-                                            tool_outputs: list[dict[str, Any]] = []
-                                            for fc in pending_fcs:
-                                                call_id = fc.get("call_id", fc.get("id", ""))
-                                                fc_name = fc.get("name", "")
-                                                args_str = fc.get("arguments", "{}")
-                                                try:
-                                                    fc_args = json.loads(args_str)
-                                                except json.JSONDecodeError:
-                                                    fc_args = {}
-
-                                                await self.memory_handler._ensure_initialized()
-                                                if self.memory_handler._backend:
-                                                    result = await self.memory_handler._execute_memory_tool(
-                                                        fc_name, fc_args, memory_user_id, "openai"
-                                                    )
-                                                else:
-                                                    result = json.dumps(
-                                                        {"error": "backend not ready"}
-                                                    )
-
-                                                tool_outputs.append(
-                                                    {
-                                                        "type": "function_call_output",
-                                                        "call_id": call_id,
-                                                        "output": result,
-                                                    }
-                                                )
+                                            if pending_fcs:
                                                 logger.info(
-                                                    f"[{request_id}] WS Memory: Executed "
-                                                    f"{fc_name} for user {memory_user_id}"
+                                                    f"[{request_id}] WS Memory: Executing "
+                                                    f"{len(pending_fcs)} tool(s) transparently"
                                                 )
 
-                                            # Send continuation upstream
-                                            cont: dict[str, Any] = {
-                                                "type": "response.create",
-                                                "response": {"input": tool_outputs},
-                                            }
-                                            if resp_id:
-                                                cont["response"]["previous_response_id"] = resp_id
-                                            await upstream.send(json.dumps(cont))
-                                            logger.info(
-                                                f"[{request_id}] WS Memory: Sent continuation "
-                                                f"with {len(tool_outputs)} result(s)"
-                                            )
+                                                # Execute memory tool calls
+                                                tool_outputs: list[dict[str, Any]] = []
+                                                for fc in pending_fcs:
+                                                    call_id = fc.get("call_id", fc.get("id", ""))
+                                                    fc_name = fc.get("name", "")
+                                                    args_str = fc.get("arguments", "{}")
+                                                    try:
+                                                        fc_args = json.loads(args_str)
+                                                    except json.JSONDecodeError:
+                                                        fc_args = {}
 
-                                        _reset()
-                                    # All events suppressed in this mode
-                                    continue
+                                                    await self.memory_handler._ensure_initialized()
+                                                    if self.memory_handler._backend:
+                                                        result = await self.memory_handler._execute_memory_tool(
+                                                            fc_name,
+                                                            fc_args,
+                                                            memory_user_id,
+                                                            "openai",
+                                                        )
+                                                    else:
+                                                        result = json.dumps(
+                                                            {"error": "backend not ready"}
+                                                        )
 
-                                # --- Phase 2b: Pass-through mode ---
-                                await websocket.send_text(msg_str)
+                                                    tool_outputs.append(
+                                                        {
+                                                            "type": "function_call_output",
+                                                            "call_id": call_id,
+                                                            "output": result,
+                                                        }
+                                                    )
+                                                    logger.info(
+                                                        f"[{request_id}] WS Memory: Executed "
+                                                        f"{fc_name} for user {memory_user_id}"
+                                                    )
 
-                        except Exception as relay_err:
-                            if "WebSocketDisconnect" not in type(relay_err).__name__:
-                                logger.debug(
-                                    f"[{request_id}] WS upstream→client relay ended: {relay_err}"
-                                )
+                                                # Send continuation upstream
+                                                cont: dict[str, Any] = {
+                                                    "type": "response.create",
+                                                    "response": {"input": tool_outputs},
+                                                }
+                                                if resp_id:
+                                                    cont["response"]["previous_response_id"] = (
+                                                        resp_id
+                                                    )
+                                                await upstream.send(json.dumps(cont))
+                                                logger.info(
+                                                    f"[{request_id}] WS Memory: Sent continuation "
+                                                    f"with {len(tool_outputs)} result(s)"
+                                                )
+
+                                            _reset()
+                                        # All events suppressed in this mode
+                                        continue
+
+                                    # --- Phase 2b: Pass-through mode ---
+                                    await websocket.send_text(msg_str)
+
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as relay_err:
+                                if "WebSocketDisconnect" not in type(relay_err).__name__:
+                                    # Capture for the outer classifier
+                                    # so ``upstream_error`` can be
+                                    # distinguished from a clean
+                                    # upstream disconnect.
+                                    upstream_relay_error = relay_err
+                                    logger.debug(
+                                        f"[{request_id}] WS upstream→client relay ended: {relay_err}"
+                                    )
+                            finally:
+                                with contextlib.suppress(Exception):
+                                    await websocket.close()
+
+                        # --- Unit 3: deterministic relay-task cancellation ---
+                        # Spawn each half as a named task so we can:
+                        #   (a) attach them to the session registry for
+                        #       ``/debug/ws-sessions``,
+                        #   (b) cancel the survivor explicitly when the
+                        #       first one exits, and
+                        #   (c) classify the termination cause for the
+                        #       duration histogram.
+                        client_task = asyncio.create_task(
+                            _client_to_upstream(),
+                            name=f"codex-ws-c2u-{session_id}",
+                        )
+                        upstream_task = asyncio.create_task(
+                            _upstream_to_client(),
+                            name=f"codex-ws-u2c-{session_id}",
+                        )
+                        relay_tasks = [client_task, upstream_task]
+                        if ws_sessions is not None:
+                            ws_sessions.attach_tasks(session_id, relay_tasks)
+                            metrics_for_tasks = getattr(self, "metrics", None)
+                            if metrics_for_tasks is not None and hasattr(
+                                metrics_for_tasks, "inc_active_relay_tasks"
+                            ):
+                                try:
+                                    metrics_for_tasks.inc_active_relay_tasks(len(relay_tasks))
+                                except Exception:  # pragma: no cover - defensive
+                                    pass
+
+                        try:
+                            done, pending = await asyncio.wait(
+                                {client_task, upstream_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            # Cancel the survivor so we don't leak the
+                            # partner task. Suppress the CancelledError
+                            # we just raised ourselves — any *other*
+                            # exception from the cancelled task is
+                            # already logged inside its own try/except.
+                            for t in pending:
+                                t.cancel()
+                            if pending:
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await asyncio.gather(*pending, return_exceptions=True)
+
+                            # Classify termination cause from whichever
+                            # task completed first. ``CancelledError``
+                            # can show up on the "done" side if the
+                            # handler itself was cancelled from outside
+                            # (e.g. server shutdown).
+                            for t in done:
+                                exc = None
+                                # Cancelled tasks raise CancelledError from
+                                # .exception(); surface it explicitly so the
+                                # downstream ``isinstance(exc, CancelledError)``
+                                # branches actually run. For any other
+                                # unexpected state (``InvalidStateError`` if
+                                # the task somehow isn't done — shouldn't
+                                # happen post-gather but defensive), we
+                                # suppress and leave ``exc`` as ``None``.
+                                if t.cancelled():
+                                    exc = asyncio.CancelledError()
+                                else:
+                                    with contextlib.suppress(asyncio.InvalidStateError):
+                                        exc = t.exception()
+                                task_name = t.get_name() or ""
+                                if t is client_task:
+                                    if client_relay_error is not None:
+                                        termination_cause = "client_error"
+                                    elif exc is None:
+                                        termination_cause = "client_disconnect"
+                                    elif isinstance(exc, asyncio.CancelledError):
+                                        termination_cause = "client_disconnect"
+                                    else:
+                                        # Distinguish legitimate client
+                                        # disconnect exceptions from
+                                        # real errors: WebSocketDisconnect
+                                        # is a normal client exit.
+                                        if "WebSocketDisconnect" in type(exc).__name__:
+                                            termination_cause = "client_disconnect"
+                                        else:
+                                            termination_cause = "client_error"
+                                elif t is upstream_task:
+                                    if upstream_relay_error is not None:
+                                        termination_cause = "upstream_error"
+                                        logger.debug(
+                                            f"[{request_id}] WS relay {task_name} "
+                                            f"raised: {upstream_relay_error!r}"
+                                        )
+                                    elif exc is None:
+                                        termination_cause = (
+                                            "response_completed"
+                                            if response_completed_seen
+                                            else "upstream_disconnect"
+                                        )
+                                    elif isinstance(exc, asyncio.CancelledError):
+                                        termination_cause = "upstream_disconnect"
+                                    else:
+                                        termination_cause = "upstream_error"
+                                        logger.debug(
+                                            f"[{request_id}] WS relay {task_name} raised: {exc!r}"
+                                        )
                         finally:
-                            with contextlib.suppress(Exception):
-                                await websocket.close()
+                            # In case anything above raised before the
+                            # cancel-and-await loop ran.
+                            for t in relay_tasks:
+                                if not t.done():
+                                    t.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await asyncio.gather(*relay_tasks, return_exceptions=True)
 
-                    await asyncio.gather(
-                        _client_to_upstream(),
-                        _upstream_to_client(),
-                        return_exceptions=True,
+                        logger.info(
+                            f"[{request_id}] WS /v1/responses completed "
+                            f"(tokens_saved={tokens_saved}, cause={termination_cause})"
+                        )
+                    break
+                except Exception as ws_err:
+                    if ws_connected:
+                        # WS was established but broke mid-stream — re-raise
+                        raise
+
+                    ws_last_err = ws_err
+                    if ws_attempt >= ws_connect_attempts - 1:
+                        break
+
+                    delay_with_jitter = jitter_delay_ms(
+                        self.config.retry_base_delay_ms,
+                        self.config.retry_max_delay_ms,
+                        ws_attempt,
                     )
-
-                    logger.info(
-                        f"[{request_id}] WS /v1/responses completed (tokens_saved={tokens_saved})"
+                    logger.warning(
+                        f"[{request_id}] WS upstream connect failed "
+                        f"(attempt {ws_attempt + 1}/{ws_connect_attempts}): {ws_err}; "
+                        f"retrying in {delay_with_jitter:.0f}ms"
                     )
+                    await asyncio.sleep(delay_with_jitter / 1000)
 
-            except Exception as ws_err:
-                if ws_connected:
-                    # WS was established but broke mid-stream — re-raise
-                    raise
+            if not ws_connected:
                 # WS upgrade failed (HTTP 500 from OpenAI is common).
                 # Fall back to HTTP POST streaming and relay SSE events
                 # back over the client WebSocket transparently.
+                ws_err = ws_last_err or RuntimeError("unknown websocket connect failure")
                 _ws_detail = str(ws_err)
                 if hasattr(ws_err, "response"):
                     resp_body = getattr(getattr(ws_err, "response", None), "body", b"")
@@ -1737,7 +2062,14 @@ class OpenAIHandlerMixin:
                 )
 
         except Exception as e:
-            if "WebSocketDisconnect" not in type(e).__name__:
+            if "WebSocketDisconnect" in type(e).__name__:
+                # Unit 3: client dropped the socket before or during
+                # relay. The registry classifier may already have set
+                # ``client_disconnect`` via the relay task exit path;
+                # preserve that, otherwise set it here.
+                if termination_cause == "unknown":
+                    termination_cause = "client_disconnect"
+            else:
                 # Extract response body from websockets InvalidStatus for better debugging
                 error_detail = str(e)
                 if hasattr(e, "response"):
@@ -1751,8 +2083,57 @@ class OpenAIHandlerMixin:
                     except Exception:
                         pass
                 logger.error(f"[{request_id}] WS proxy error: {error_detail}")
+                if termination_cause == "unknown":
+                    termination_cause = "client_error"
             with contextlib.suppress(Exception):
                 await websocket.close(code=1011, reason=str(e)[:120])
+        finally:
+            # Unit 2: emit structured per-session stage timings.
+            stage_timer.record(
+                "total_session",
+                (time.perf_counter() - session_started_at) * 1000.0,
+            )
+            # Unit 3: deregister the session before (or independently
+            # of) the stage-timings log so a failure there cannot leak
+            # the registry entry. ``deregister`` is idempotent, so a
+            # session that never registered is a no-op.
+            if ws_sessions is not None and session_handle is not None:
+                # Use deregister_and_count so the handle pop and the
+                # relay-task count are read atomically inside the
+                # registry. Capturing ``len(session_handle.relay_tasks)``
+                # separately before ``deregister`` would risk drift if
+                # the registry's bookkeeping ever changes.
+                _deregistered, released_tasks = ws_sessions.deregister_and_count(
+                    session_id, cause=termination_cause
+                )
+                session_duration_ms = (time.perf_counter() - session_started_at) * 1000.0
+                metrics_for_close = getattr(self, "metrics", None)
+                if metrics_for_close is not None:
+                    with contextlib.suppress(Exception):
+                        if hasattr(metrics_for_close, "dec_active_ws_sessions"):
+                            metrics_for_close.dec_active_ws_sessions()
+                        if released_tasks and hasattr(metrics_for_close, "dec_active_relay_tasks"):
+                            metrics_for_close.dec_active_relay_tasks(released_tasks)
+                        if hasattr(metrics_for_close, "record_ws_session_duration"):
+                            metrics_for_close.record_ws_session_duration(
+                                session_duration_ms, termination_cause
+                            )
+            await emit_stage_timings_log(
+                path="openai_responses_ws",
+                request_id=request_id,
+                session_id=session_id,
+                stage_timer=stage_timer,
+                expected_stages=(
+                    "accept",
+                    "first_client_frame",
+                    "upstream_connect",
+                    "upstream_first_event",
+                    "memory_context",
+                    "compression",
+                    "total_session",
+                ),
+                metrics=getattr(self, "metrics", None),
+            )
 
     async def _ws_http_fallback(
         self,
@@ -1785,11 +2166,22 @@ class OpenAIHandlerMixin:
         except (json.JSONDecodeError, TypeError):
             parsed = body
 
-        # Unwrap the response.create envelope if present
-        if isinstance(parsed.get("response"), dict):
-            http_body = parsed["response"]
+        # Normalize WebSocket response.create payload into the HTTP request body.
+        # Codex may send either:
+        # 1. {"type":"response.create","response":{...}}
+        # 2. {"type":"response.create", ...response fields...}
+        if isinstance(parsed, dict) and isinstance(parsed.get("response"), dict):
+            http_body = dict(parsed["response"])
+        elif isinstance(parsed, dict):
+            http_body = dict(parsed)
+            if http_body.get("type") == "response.create":
+                http_body.pop("type", None)
         else:
-            http_body = parsed
+            http_body = body if isinstance(body, dict) else {}
+
+        # Some clients include response-ish metadata that the HTTP endpoint rejects.
+        if http_body.get("type") in {"response.create", "response"}:
+            http_body.pop("type", None)
 
         # Ensure streaming is enabled so we get SSE events
         http_body["stream"] = True
@@ -1802,62 +2194,81 @@ class OpenAIHandlerMixin:
         logger.debug(f"[{request_id}] WS→HTTP fallback POST to {http_url}")
 
         try:
-            async with self.http_client.stream(
-                "POST",
-                http_url,
-                headers=http_headers,
-                json=http_body,
-                timeout=120.0,
-            ) as response:
-                if response.status_code != 200:
-                    error_body = b""
-                    async for chunk in response.aiter_bytes():
-                        error_body += chunk
-                        if len(error_body) > 2000:
-                            break
-                    error_text = error_body.decode("utf-8", errors="replace")
-                    logger.error(
-                        f"[{request_id}] WS→HTTP fallback got {response.status_code}: "
-                        f"{error_text[:500]}"
+            retry_attempts = max(1, getattr(self.config, "retry_max_attempts", 3))
+            for http_attempt in range(retry_attempts):
+                try:
+                    async with self.http_client.stream(
+                        "POST",
+                        http_url,
+                        headers=http_headers,
+                        json=http_body,
+                        timeout=120.0,
+                    ) as response:
+                        if response.status_code != 200:
+                            error_body = b""
+                            async for chunk in response.aiter_bytes():
+                                error_body += chunk
+                                if len(error_body) > 2000:
+                                    break
+                            error_text = error_body.decode("utf-8", errors="replace")
+                            logger.error(
+                                f"[{request_id}] WS→HTTP fallback got {response.status_code}: "
+                                f"{error_text[:500]}"
+                            )
+                            # Send error as WS message so client sees it
+                            error_event = {
+                                "type": "error",
+                                "error": {
+                                    "type": "server_error",
+                                    "message": f"Upstream returned {response.status_code}",
+                                },
+                            }
+                            await websocket.send_text(json.dumps(error_event))
+                            return
+
+                        # Relay SSE events as WS text messages
+                        buffer = ""
+                        async for chunk in response.aiter_text():
+                            buffer += chunk
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                if line.startswith("data: "):
+                                    data = line[6:]
+                                    if data == "[DONE]":
+                                        continue
+                                    try:
+                                        await websocket.send_text(data)
+                                    except Exception:
+                                        return
+                                elif line.startswith("event: "):
+                                    # SSE event type — skip, the data line contains the type
+                                    continue
+
+                        # Flush any remaining data in buffer
+                        for line in buffer.strip().splitlines():
+                            line = line.strip()
+                            if line.startswith("data: ") and line[6:] != "[DONE]":
+                                with contextlib.suppress(Exception):
+                                    await websocket.send_text(line[6:])
+                        return
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as http_err:
+                    if http_attempt >= retry_attempts - 1:
+                        raise
+
+                    delay_with_jitter = jitter_delay_ms(
+                        self.config.retry_base_delay_ms,
+                        self.config.retry_max_delay_ms,
+                        http_attempt,
                     )
-                    # Send error as WS message so client sees it
-                    error_event = {
-                        "type": "error",
-                        "error": {
-                            "type": "server_error",
-                            "message": f"Upstream returned {response.status_code}",
-                        },
-                    }
-                    await websocket.send_text(json.dumps(error_event))
-                    return
-
-                # Relay SSE events as WS text messages
-                buffer = ""
-                async for chunk in response.aiter_text():
-                    buffer += chunk
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                continue
-                            try:
-                                await websocket.send_text(data)
-                            except Exception:
-                                return
-                        elif line.startswith("event: "):
-                            # SSE event type — skip, the data line contains the type
-                            continue
-
-                # Flush any remaining data in buffer
-                for line in buffer.strip().splitlines():
-                    line = line.strip()
-                    if line.startswith("data: ") and line[6:] != "[DONE]":
-                        with contextlib.suppress(Exception):
-                            await websocket.send_text(line[6:])
+                    logger.warning(
+                        f"[{request_id}] WS→HTTP fallback connect failed "
+                        f"(attempt {http_attempt + 1}/{retry_attempts}): {http_err}; "
+                        f"retrying in {delay_with_jitter:.0f}ms"
+                    )
+                    await asyncio.sleep(delay_with_jitter / 1000)
 
         except Exception as http_err:
             logger.error(f"[{request_id}] WS→HTTP fallback failed: {http_err}")

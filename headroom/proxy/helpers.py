@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,17 @@ COMPRESSION_TIMEOUT_SECONDS = 30
 
 # Maximum compression cache sessions (prevents unbounded memory growth)
 MAX_COMPRESSION_CACHE_SESSIONS = 500
+
+
+def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
+    """Exponential backoff with 50-150% jitter.
+
+    Returns ``min(base_ms * 2**attempt, max_ms) * (0.5 + random())`` — the
+    canonical formula used across proxy retry loops. Extracted so every
+    retry site shares one implementation.
+    """
+    return min(base_ms * (2**attempt), max_ms) * (0.5 + random.random())
+
 
 # Image compression (lazy-loaded to avoid heavy dependencies at startup)
 _image_compressor = None

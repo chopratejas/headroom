@@ -49,6 +49,12 @@ NATIVE_MEMORY_BETA_HEADER = "context-management-2025-06-27"
 # Native memory tool type
 NATIVE_MEMORY_TOOL_TYPE = "memory_20250818"
 
+# Maximum time to wait for a single backend initialization (one-shot).
+# Applies to MemoryHandler._ensure_initialized. On timeout, _initialized
+# stays False so that subsequent requests retry instead of deadlocking.
+# See wiki/plans/2026-04-17-fix-codex-proxy-resilience-plan.md "Risks" row 7.
+STARTUP_INIT_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass
 class MemoryConfig:
@@ -101,6 +107,11 @@ class MemoryHandler:
         self.agent_type = agent_type
         self._backend: LocalBackend | Any = None
         self._initialized = False
+        # Async singleflight guard for backend init. Ensures concurrent first
+        # callers land on one init (double-checked pattern inside
+        # _ensure_initialized). Not used by the legacy sync _initialized flag
+        # on its own because that flag isn't atomic across await points.
+        self._init_lock: asyncio.Lock | None = None
         self._memory_tools: list[dict[str, Any]] | None = None
         # Native memory tool directory
         self._native_memory_dir: Path | None = None
@@ -108,6 +119,16 @@ class MemoryHandler:
             self._init_native_memory_dir()
         # Memory Bridge
         self._bridge: Any = None  # MemoryBridge, lazy imported
+
+    def _get_init_lock(self) -> asyncio.Lock:
+        """Lazily create the init lock bound to the running event loop.
+
+        Avoids ``DeprecationWarning: There is no current event loop`` when
+        ``MemoryHandler`` is constructed before the loop is set up.
+        """
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        return self._init_lock
 
     def _init_native_memory_dir(self) -> None:
         """Initialize native memory directory."""
@@ -134,13 +155,63 @@ class MemoryHandler:
         return {}
 
     async def _ensure_initialized(self) -> None:
-        """Lazy initialization of memory backend."""
+        """Lazy initialization of memory backend.
+
+        Singleflight via ``self._init_lock`` with double-checked pattern:
+        concurrent first callers await the same load rather than triggering
+        N parallel backend inits. Wrapped in ``asyncio.wait_for`` with a
+        configurable timeout (``STARTUP_INIT_TIMEOUT_SECONDS``); on timeout
+        ``self._initialized`` stays ``False`` so a later request can retry
+        (fail-open contract — no exception propagates to request handlers).
+        """
+        # Fast path: already initialized, no lock contention.
         if self._initialized:
             return
 
         if not self.config.enabled:
             return
 
+        lock = self._get_init_lock()
+
+        async def _do_init() -> None:
+            async with lock:
+                # Double-check after acquiring the lock — another task may
+                # have completed the init while we were waiting.
+                if self._initialized:
+                    return
+                await self._init_backend_locked()
+
+        try:
+            await asyncio.wait_for(_do_init(), timeout=STARTUP_INIT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            # Fail-open: leave _initialized=False so subsequent calls retry.
+            # CRITICAL: also null the backend — _init_backend_locked may have
+            # already assigned ``self._backend`` before its own await raised /
+            # was cancelled by wait_for. Callers that do
+            # ``if self.memory_handler._backend:`` must not see a
+            # truthy-but-broken backend.
+            self._backend = None
+            logger.error(
+                "Memory: backend initialization timed out after "
+                f"{STARTUP_INIT_TIMEOUT_SECONDS}s "
+                f"(backend={self.config.backend}). "
+                "Subsequent requests will retry."
+            )
+            return
+        except asyncio.CancelledError:
+            # External cancellation (shutdown / task cancelled).
+            # CancelledError is BaseException — the TimeoutError branch
+            # above does NOT catch it, and caller ``except Exception``
+            # blocks don't either, so it propagates unconditionally.
+            # Reset state so any later retry starts clean, then re-raise:
+            # cancellation is a signal, not an error to swallow.
+            self._backend = None
+            self._initialized = False
+            logger.info(f"Memory: backend initialization cancelled (backend={self.config.backend})")
+            raise
+
+    async def _init_backend_locked(self) -> None:
+        """Actual backend-init body. Must be called with ``_init_lock`` held."""
         if self.config.backend == "local":
             from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 
@@ -1599,6 +1670,37 @@ To SAVE: create /memories/<topic>.txt "content"
     async def ensure_initialized(self) -> None:
         """Initialize the configured backend so readiness checks can be accurate."""
         await self._ensure_initialized()
+
+    async def warmup_embedder(self) -> bool:
+        """Force one warm-up embed call so the ONNX graph is compiled now.
+
+        Returns ``True`` if the embedder was exercised successfully,
+        ``False`` otherwise. Best-effort — all errors are swallowed and
+        logged, never raised, so startup cannot be blocked by embedder
+        cold-start failures.
+
+        Only meaningful for the ``local`` backend (the ONNX/sentence
+        embedder warm-up is what we want to preempt). Qdrant/Neo4j is a
+        no-op because Mem0 handles its own embedder lifecycle upstream.
+        """
+        if not self._initialized or self._backend is None:
+            return False
+
+        try:
+            hm = getattr(self._backend, "_hierarchical_memory", None)
+            if hm is None:
+                return False
+            embedder = getattr(hm, "_embedder", None) or getattr(hm, "embedder", None)
+            if embedder is None:
+                return False
+            if not hasattr(embedder, "embed"):
+                return False
+            await embedder.embed("warmup")
+            logger.info("Memory: embedder warm-up encode complete")
+            return True
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Memory: embedder warm-up failed (non-fatal): {exc}")
+            return False
 
     def health_status(self) -> dict[str, Any]:
         """Return a lightweight health snapshot for readiness endpoints."""

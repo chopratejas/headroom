@@ -219,8 +219,13 @@ class SubscriptionTracker(QuotaTracker):
             except Exception as exc:
                 logger.warning("Subscription tracker poll error: %s", exc)
             try:
+                # NOTE: do NOT wrap in asyncio.shield() — shield prevents the
+                # inner Event.wait() from being cancelled when wait_for times
+                # out, leaking one Task per poll interval. Over hours the
+                # accumulated idle waiters bog down the event loop scheduler
+                # (observed as the "aged proxy degradation" in 2026-04-17).
                 await asyncio.wait_for(
-                    asyncio.shield(self._stop_event.wait()),
+                    self._stop_event.wait(),
                     timeout=self._poll_interval_s,
                 )
                 break  # stop event was set

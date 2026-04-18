@@ -11,8 +11,11 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from headroom.proxy.stage_timer import StageTimer, emit_stage_timings_log
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -313,632 +316,854 @@ class AnthropicHandlerMixin:
 
         start_time = time.time()
         request_id = await self._next_request_id()
+        trace_session_id = uuid.uuid4().hex
 
-        # Check request body size
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
-            return JSONResponse(
-                status_code=413,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "request_too_large",
-                        "message": f"Request body too large. Maximum size is {MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB",
-                    },
-                },
+        # Unit 2: per-stage timings for the pre-upstream phase. The
+        # finalizer emits one structured log line + Prometheus
+        # observations even if the handler raises.
+        stage_timer = StageTimer()
+        pre_upstream_started_at = time.perf_counter()
+        _stage_timings_emitted = False
+
+        # Unit 4: bounded pre-upstream concurrency. When the proxy is
+        # configured with a semaphore, acquire it before reading the
+        # request body so a replay storm cannot starve ``/livez``, new
+        # Codex WS opens, or the HTTP thread pool. The release happens
+        # BEFORE we start streaming response bytes back to the client —
+        # the semaphore must not be held for the whole response
+        # lifetime. ``_release_pre_upstream_sem`` is idempotent and
+        # called on every exit path (early 4xx return, upstream error,
+        # exception, and just before each streaming handoff).
+        pre_upstream_sem = getattr(self, "anthropic_pre_upstream_sem", None)
+        _pre_upstream_sem_acquired = False
+
+        def _release_pre_upstream_sem() -> None:
+            nonlocal _pre_upstream_sem_acquired
+            if _pre_upstream_sem_acquired and pre_upstream_sem is not None:
+                _pre_upstream_sem_acquired = False
+                pre_upstream_sem.release()
+
+        if pre_upstream_sem is not None:
+            _wait_started_at = time.perf_counter()
+            await pre_upstream_sem.acquire()
+            _pre_upstream_sem_acquired = True
+            _wait_ms = (time.perf_counter() - _wait_started_at) * 1000.0
+            stage_timer.record("pre_upstream_wait", _wait_ms)
+            if _wait_ms > 100.0:
+                logger.info(
+                    "[%s] pre_upstream_wait_ms=%.2f session_id=%s "
+                    "(anthropic pre-upstream semaphore contention)",
+                    request_id,
+                    _wait_ms,
+                    trace_session_id,
+                )
+        else:
+            stage_timer.record("pre_upstream_wait", 0.0)
+
+        async def _finalize_pre_upstream() -> None:
+            """Release the pre-upstream semaphore and emit stage-timing metrics.
+
+            Idempotent: safe to call multiple times. The PRIMARY action is
+            releasing the Unit 4 pre-upstream semaphore via
+            ``_release_pre_upstream_sem()`` (itself idempotent); emitting
+            stage timings is secondary bookkeeping guarded by
+            ``_stage_timings_emitted``. Doing both here (rather than only
+            at explicit handoff sites) guarantees semaphore release on
+            every exit path — early 4xx returns, security blocks, cache
+            hits, upstream errors, streaming handoff.
+            """
+            nonlocal _stage_timings_emitted
+            _release_pre_upstream_sem()
+            if _stage_timings_emitted:
+                return
+            _stage_timings_emitted = True
+            if "total_pre_upstream" not in stage_timer:
+                stage_timer.record(
+                    "total_pre_upstream",
+                    (time.perf_counter() - pre_upstream_started_at) * 1000.0,
+                )
+            await emit_stage_timings_log(
+                path="anthropic_messages",
+                request_id=request_id,
+                session_id=trace_session_id,
+                stage_timer=stage_timer,
+                expected_stages=(
+                    "pre_upstream_wait",
+                    "read_request_json",
+                    "deep_copy",
+                    "compression_first_stage",
+                    "memory_context",
+                    "upstream_connect",
+                    "upstream_first_byte",
+                    "total_pre_upstream",
+                ),
+                metrics=getattr(self, "metrics", None),
             )
 
-        # Parse request
         try:
-            body = await _read_request_json(request)
-        except (json.JSONDecodeError, ValueError) as e:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "message": f"Invalid request body: {e!s}",
+            # Check request body size
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
+                await _finalize_pre_upstream()
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "request_too_large",
+                            "message": f"Request body too large. Maximum size is {MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB",
+                        },
                     },
-                },
-            )
-        model = body.get("model", "unknown")
-        messages = body.get("messages", [])
-        original_client_messages = copy.deepcopy(messages)
-
-        # Validate message array size
-        if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "message": f"Message array too large ({len(messages)} messages). "
-                        f"Maximum is {MAX_MESSAGE_ARRAY_LENGTH}.",
-                    },
-                },
-            )
-
-        stream = body.get("stream", False)
-
-        # Bypass: skip ALL compression, TOIN learning, and CCR injection
-        # when the caller explicitly opts out via header.
-        # Prevents Headroom from corrupting sub-agent API calls
-        # (e.g., Claude Code sub-agents that inherit ANTHROPIC_BASE_URL).
-        _bypass = (
-            request.headers.get("x-headroom-bypass", "").lower() == "true"
-            or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
-        )
-        if _bypass:
-            logger.info(f"[{request_id}] Bypass: skipping compression (header)")
-
-        # NOTE: Upstream temporarily disabled broad image compression due to
-        # token-counting inaccuracies. We only compress the latest non-frozen
-        # user turn later in this handler to preserve Anthropic prefix caching.
-        # Extract headers and tags
-        headers = dict(request.headers.items())
-        headers.pop("host", None)
-        headers.pop("content-length", None)
-        # Strip accept-encoding so httpx negotiates its own encoding.
-        # Edge proxies (Cloudflare Workers, etc.) may forward "br, zstd" which
-        # the upstream can honor; if httpx lacks brotli support the response
-        # body is undecipherable → 502.
-        headers.pop("accept-encoding", None)
-        tags = self._extract_tags(headers)
-
-        # Subscription tracker: notify on OAuth requests (not API-key requests)
-        _auth_header = headers.get("authorization", "")
-        if _auth_header.startswith("Bearer ") and not _auth_header.startswith("Bearer sk-ant-api"):
-            from headroom.subscription.tracker import get_subscription_tracker as _get_sub_tracker
-
-            _sub_tracker = _get_sub_tracker()
-            if _sub_tracker is not None:
-                _sub_tracker.notify_active(_auth_header)
-
-        # Rate limiting
-        if self.rate_limiter:
-            api_key = headers.get("x-api-key", "")
-            client_ip = request.client.host if request.client else "unknown"
-            rate_key = f"{api_key[:16]}:{client_ip}" if api_key else client_ip
-            allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
-            if not allowed:
-                await self.metrics.record_rate_limited(provider="anthropic")
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
-                    headers={"Retry-After": str(int(wait_seconds) + 1)},
                 )
 
-        # Budget check
-        if self.cost_tracker:
-            allowed, remaining = self.cost_tracker.check_budget()
-            if not allowed:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Budget exceeded for {self.config.budget_period} period",
-                )
-
-        # Memory: Get user ID when memory is enabled (fallback to "default" for simple DevEx)
-        memory_user_id: str | None = None
-        if self.memory_handler:
-            memory_user_id = headers.get(
-                "x-headroom-user-id",
-                os.environ.get("USER", os.environ.get("USERNAME", "default")),
-            )
-
-        # Check cache (non-streaming only)
-        cache_hit = False
-        if self.cache and not stream:
-            cached = await self.cache.get(messages, model)
-            if cached:
-                cache_hit = True
-                optimization_latency = (time.time() - start_time) * 1000
-
-                await self.metrics.record_request(
-                    provider="anthropic",
-                    model=model,
-                    input_tokens=0,
-                    output_tokens=0,
-                    tokens_saved=0,  # Savings already counted when response was cached
-                    latency_ms=optimization_latency,
-                    cached=True,
-                )
-
-                # Remove compression headers from cached response
-                response_headers = dict(cached.response_headers)
-                response_headers.pop("content-encoding", None)
-                response_headers.pop("content-length", None)
-
-                return Response(
-                    content=cached.response_body,
-                    headers=response_headers,
-                    media_type="application/json",
-                )
-
-        # Count original tokens
-        tokenizer = get_tokenizer(model)
-        original_tokens = tokenizer.count_messages(messages)
-
-        # Enterprise Security: scan request before compression
-        _security_ctx = None
-        if self.security:
+            # Parse request
             try:
-                messages, _security_ctx = self.security.scan_request(
-                    messages,
-                    {
-                        "provider": "anthropic",
-                        "model": model,
-                        "request_id": str(request_id),
-                        "user_id": headers.get("x-api-key", "")[:16],
+                async with stage_timer.measure("read_request_json"):
+                    body = await _read_request_json(request)
+            except (json.JSONDecodeError, ValueError) as e:
+                await _finalize_pre_upstream()
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": f"Invalid request body: {e!s}",
+                        },
                     },
                 )
-            except Exception as e:
-                if hasattr(e, "reason"):
-                    from fastapi.responses import JSONResponse as _JSONResp
+            model = body.get("model", "unknown")
+            messages = body.get("messages", [])
+            with stage_timer.measure("deep_copy"):
+                original_client_messages = copy.deepcopy(messages)
 
-                    return _JSONResp(
-                        status_code=403,
-                        content={
-                            "type": "error",
-                            "error": {
-                                "type": "security_block",
-                                "message": str(e),
-                            },
+            # Validate message array size
+            if len(messages) > MAX_MESSAGE_ARRAY_LENGTH:
+                await _finalize_pre_upstream()
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": f"Message array too large ({len(messages)} messages). "
+                            f"Maximum is {MAX_MESSAGE_ARRAY_LENGTH}.",
+                        },
+                    },
+                )
+
+            stream = body.get("stream", False)
+
+            # Bypass: skip ALL compression, TOIN learning, and CCR injection
+            # when the caller explicitly opts out via header.
+            # Prevents Headroom from corrupting sub-agent API calls
+            # (e.g., Claude Code sub-agents that inherit ANTHROPIC_BASE_URL).
+            _bypass = (
+                request.headers.get("x-headroom-bypass", "").lower() == "true"
+                or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
+            )
+            if _bypass:
+                logger.info(f"[{request_id}] Bypass: skipping compression (header)")
+
+            # NOTE: Upstream temporarily disabled broad image compression due to
+            # token-counting inaccuracies. We only compress the latest non-frozen
+            # user turn later in this handler to preserve Anthropic prefix caching.
+            # Extract headers and tags
+            headers = dict(request.headers.items())
+            headers.pop("host", None)
+            headers.pop("content-length", None)
+            tags = self._extract_tags(headers)
+
+            # Subscription tracker: notify on OAuth requests (not API-key requests)
+            _auth_header = headers.get("authorization", "")
+            if _auth_header.startswith("Bearer ") and not _auth_header.startswith(
+                "Bearer sk-ant-api"
+            ):
+                from headroom.subscription.tracker import (
+                    get_subscription_tracker as _get_sub_tracker,
+                )
+
+                _sub_tracker = _get_sub_tracker()
+                if _sub_tracker is not None:
+                    _sub_tracker.notify_active(_auth_header)
+
+            # Rate limiting
+            if self.rate_limiter:
+                api_key = headers.get("x-api-key", "")
+                client_ip = request.client.host if request.client else "unknown"
+                rate_key = f"{api_key[:16]}:{client_ip}" if api_key else client_ip
+                allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
+                if not allowed:
+                    await self.metrics.record_rate_limited(provider="anthropic")
+                    # Unit 4: release the pre-upstream semaphore before we
+                    # bail out of the handler via HTTPException — FastAPI's
+                    # exception handler will NOT run our ``finally``.
+                    await _finalize_pre_upstream()
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
+                        headers={"Retry-After": str(int(wait_seconds) + 1)},
+                    )
+
+            # Budget check
+            if self.cost_tracker:
+                allowed, remaining = self.cost_tracker.check_budget()
+                if not allowed:
+                    # Unit 4: release the pre-upstream semaphore before we
+                    # bail out of the handler via HTTPException.
+                    await _finalize_pre_upstream()
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Budget exceeded for {self.config.budget_period} period",
+                    )
+
+            # Memory: Get user ID when memory is enabled (fallback to "default" for simple DevEx)
+            memory_user_id: str | None = None
+            if self.memory_handler:
+                memory_user_id = headers.get(
+                    "x-headroom-user-id",
+                    os.environ.get("USER", os.environ.get("USERNAME", "default")),
+                )
+
+            # Check cache (non-streaming only)
+            cache_hit = False
+            if self.cache and not stream:
+                cached = await self.cache.get(messages, model)
+                if cached:
+                    cache_hit = True
+                    optimization_latency = (time.time() - start_time) * 1000
+
+                    await self.metrics.record_request(
+                        provider="anthropic",
+                        model=model,
+                        input_tokens=0,
+                        output_tokens=0,
+                        tokens_saved=0,  # Savings already counted when response was cached
+                        latency_ms=optimization_latency,
+                        cached=True,
+                    )
+
+                    # Remove compression headers from cached response
+                    response_headers = dict(cached.response_headers)
+                    response_headers.pop("content-encoding", None)
+                    response_headers.pop("content-length", None)
+
+                    # Unit 4: release the pre-upstream semaphore on cache
+                    # hit — no upstream call will happen.
+                    await _finalize_pre_upstream()
+                    return Response(
+                        content=cached.response_body,
+                        headers=response_headers,
+                        media_type="application/json",
+                    )
+
+            # Count original tokens
+            tokenizer = get_tokenizer(model)
+            original_tokens = tokenizer.count_messages(messages)
+
+            # Enterprise Security: scan request before compression
+            _security_ctx = None
+            if self.security:
+                try:
+                    messages, _security_ctx = self.security.scan_request(
+                        messages,
+                        {
+                            "provider": "anthropic",
+                            "model": model,
+                            "request_id": str(request_id),
+                            "user_id": headers.get("x-api-key", "")[:16],
                         },
                     )
-                logger.warning(f"[{request_id}] Security scan error: {e}")
+                except Exception as e:
+                    if hasattr(e, "reason"):
+                        from fastapi.responses import JSONResponse as _JSONResp
 
-        # Hook: pre_compress — let hooks modify messages before compression
+                        # Unit 4: release the pre-upstream semaphore on
+                        # security block — no upstream call will happen.
+                        await _finalize_pre_upstream()
+                        return _JSONResp(
+                            status_code=403,
+                            content={
+                                "type": "error",
+                                "error": {
+                                    "type": "security_block",
+                                    "message": str(e),
+                                },
+                            },
+                        )
+                    logger.warning(f"[{request_id}] Security scan error: {e}")
 
-        if self.config.hooks and not is_cache_mode(self.config.mode):
-            from headroom.hooks import CompressContext
+            # Hook: pre_compress — let hooks modify messages before compression
 
-            _hook_ctx = CompressContext(
-                model=model,
-                user_query=extract_user_query(messages),
-                provider="anthropic",
-            )
-            try:
-                messages = self.config.hooks.pre_compress(messages, _hook_ctx)
-            except Exception as e:
-                logger.debug(f"[{request_id}] pre_compress hook error: {e}")
-        else:
-            _hook_ctx = None
+            if self.config.hooks and not is_cache_mode(self.config.mode):
+                from headroom.hooks import CompressContext
 
-        # Apply optimization
-        transforms_applied = []
-        pipeline_timing: dict[str, float] = {}
-        waste_signals_dict: dict[str, int] | None = None
-        optimized_messages = messages
-        optimized_tokens = original_tokens
+                _hook_ctx = CompressContext(
+                    model=model,
+                    user_query=extract_user_query(messages),
+                    provider="anthropic",
+                )
+                try:
+                    messages = self.config.hooks.pre_compress(messages, _hook_ctx)
+                except Exception as e:
+                    logger.debug(f"[{request_id}] pre_compress hook error: {e}")
+            else:
+                _hook_ctx = None
 
-        # Get prefix cache tracker for this session
-        session_id = self.session_tracker_store.compute_session_id(request, model, messages)
-        prefix_tracker = self.session_tracker_store.get_or_create(session_id, "anthropic")
-        frozen_message_count = prefix_tracker.get_frozen_message_count()
-        if is_cache_mode(self.config.mode):
-            frozen_message_count = self._strict_previous_turn_frozen_count(
-                original_client_messages,
-                frozen_message_count,
-            )
+            # Apply optimization
+            transforms_applied = []
+            pipeline_timing: dict[str, float] = {}
+            waste_signals_dict: dict[str, int] | None = None
+            optimized_messages = messages
+            optimized_tokens = original_tokens
 
-        # In cache mode, avoid rewriting any message body bytes. The latest user
-        # turn becomes historical on the next request, so even "latest turn only"
-        # rewrites can invalidate the next cache read when the client resends the
-        # original transcript.
-        if (
-            self.config.image_optimize
-            and messages
-            and not _bypass
-            and not is_cache_mode(self.config.mode)
-        ):
-            compressor = _get_image_compressor()
-            if compressor and compressor.has_images(messages):
-                messages = compressor.compress(messages, provider="anthropic")
-                if compressor.last_result:
-                    logger.info(
-                        f"Image compression: {compressor.last_result.technique.value} "
-                        f"({compressor.last_result.savings_percent:.0f}% saved, "
-                        f"{compressor.last_result.original_tokens} -> "
-                        f"{compressor.last_result.compressed_tokens} tokens)"
-                    )
-
-        _compression_failed = False
-        original_messages = messages  # Preserve for 400-retry fallback
-        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
-        if self.config.optimize and messages and not _bypass and _license_ok:
-            try:
-                from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
-
-                context_limit = self.anthropic_provider.get_context_limit(model)
-                result = None
-                biases = (
-                    self.config.hooks.compute_biases(messages, _hook_ctx)
-                    if self.config.hooks and _hook_ctx is not None
-                    else None
+            # Get prefix cache tracker for this session
+            session_id = self.session_tracker_store.compute_session_id(request, model, messages)
+            prefix_tracker = self.session_tracker_store.get_or_create(session_id, "anthropic")
+            frozen_message_count = prefix_tracker.get_frozen_message_count()
+            if is_cache_mode(self.config.mode):
+                frozen_message_count = self._strict_previous_turn_frozen_count(
+                    original_client_messages,
+                    frozen_message_count,
                 )
 
-                if is_token_mode(self.config.mode):
-                    comp_cache = self._get_compression_cache(session_id)
+            # In cache mode, avoid rewriting any message body bytes. The latest user
+            # turn becomes historical on the next request, so even "latest turn only"
+            # rewrites can invalidate the next cache read when the client resends the
+            # original transcript.
+            if (
+                self.config.image_optimize
+                and messages
+                and not _bypass
+                and not is_cache_mode(self.config.mode)
+            ):
+                compressor = _get_image_compressor()
+                if compressor and compressor.has_images(messages):
+                    messages = compressor.compress(messages, provider="anthropic")
+                    if compressor.last_result:
+                        logger.info(
+                            f"Image compression: {compressor.last_result.technique.value} "
+                            f"({compressor.last_result.savings_percent:.0f}% saved, "
+                            f"{compressor.last_result.original_tokens} -> "
+                            f"{compressor.last_result.compressed_tokens} tokens)"
+                        )
 
-                    # Zone 1: Swap cached compressed versions into working copy
-                    working_messages = comp_cache.apply_cached(messages)
+            _compression_failed = False
+            original_messages = messages  # Preserve for 400-retry fallback
+            _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+            if self.config.optimize and messages and not _bypass and _license_ok:
+                try:
+                    from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
 
-                    # Re-freeze boundary: consecutive stable messages from start
-                    # Safety: never freeze beyond provider-confirmed cached prefix.
-                    cache_frozen_count = comp_cache.compute_frozen_count(messages)
-                    frozen_message_count = min(frozen_message_count, cache_frozen_count)
-                    # Record all tool_results in the verified frozen prefix as stable
-                    comp_cache.mark_stable_from_messages(messages, frozen_message_count)
-
-                    # TTL-aware deferral: extend freeze to cover messages whose
-                    # first-time compression would bust the cache mid-TTL window.
-                    # This batches first-time compressions near the 5-min TTL
-                    # boundary, trading one big bust for many small ones.
-                    ttl_frozen = frozen_message_count
-                    from headroom.cache.compression_cache import (
-                        _extract_tool_result_content,
-                        _is_tool_result_message,
+                    context_limit = self.anthropic_provider.get_context_limit(model)
+                    result = None
+                    biases = (
+                        self.config.hooks.compute_biases(messages, _hook_ctx)
+                        if self.config.hooks and _hook_ctx is not None
+                        else None
                     )
 
-                    for idx in range(frozen_message_count, len(messages)):
-                        msg = messages[idx]
-                        if _is_tool_result_message(msg):
-                            tr_content = _extract_tool_result_content(msg)
-                            if tr_content is not None:
-                                h = comp_cache.content_hash(tr_content)
-                                # Already compressed or stable — keep going
-                                if h in comp_cache._cache or h in comp_cache._stable_hashes:
-                                    ttl_frozen = idx + 1
-                                elif comp_cache.should_defer_compression(h):
-                                    # New content within TTL — defer and freeze
-                                    comp_cache.mark_stable(h)
-                                    ttl_frozen = idx + 1
+                    if is_token_mode(self.config.mode):
+                        comp_cache = self._get_compression_cache(session_id)
+
+                        # Zone 1: Swap cached compressed versions into working copy
+                        working_messages = comp_cache.apply_cached(messages)
+
+                        # Re-freeze boundary: consecutive stable messages from start
+                        # Safety: never freeze beyond provider-confirmed cached prefix.
+                        cache_frozen_count = comp_cache.compute_frozen_count(messages)
+                        frozen_message_count = min(frozen_message_count, cache_frozen_count)
+                        # Record all tool_results in the verified frozen prefix as stable
+                        comp_cache.mark_stable_from_messages(messages, frozen_message_count)
+
+                        # TTL-aware deferral: extend freeze to cover messages whose
+                        # first-time compression would bust the cache mid-TTL window.
+                        # This batches first-time compressions near the 5-min TTL
+                        # boundary, trading one big bust for many small ones.
+                        ttl_frozen = frozen_message_count
+                        from headroom.cache.compression_cache import (
+                            _extract_tool_result_content,
+                            _is_tool_result_message,
+                        )
+
+                        for idx in range(frozen_message_count, len(messages)):
+                            msg = messages[idx]
+                            if _is_tool_result_message(msg):
+                                tr_content = _extract_tool_result_content(msg)
+                                if tr_content is not None:
+                                    h = comp_cache.content_hash(tr_content)
+                                    # Already compressed or stable — keep going
+                                    if h in comp_cache._cache or h in comp_cache._stable_hashes:
+                                        ttl_frozen = idx + 1
+                                    elif comp_cache.should_defer_compression(h):
+                                        # New content within TTL — defer and freeze
+                                        comp_cache.mark_stable(h)
+                                        ttl_frozen = idx + 1
+                                    else:
+                                        break  # TTL expired — compress this turn
                                 else:
-                                    break  # TTL expired — compress this turn
+                                    break
                             else:
-                                break
-                        else:
-                            # Non-tool_result messages are stable (user/assistant text)
-                            ttl_frozen = idx + 1
+                                # Non-tool_result messages are stable (user/assistant text)
+                                ttl_frozen = idx + 1
 
-                    frozen_message_count = ttl_frozen
+                        frozen_message_count = ttl_frozen
 
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            lambda: self.anthropic_pipeline.apply(
-                                messages=working_messages,
-                                model=model,
-                                model_limit=context_limit,
-                                context=extract_user_query(working_messages),
-                                frozen_message_count=frozen_message_count,
-                                biases=biases,
-                            )
-                        ),
-                        timeout=COMPRESSION_TIMEOUT_SECONDS,
-                    )
-
-                    # Cache newly compressed messages (index-aligned diff)
-                    if result.messages != working_messages:
-                        comp_cache.update_from_result(messages, result.messages)
-
-                    # Always use pipeline result — Zone 1 swaps are already applied
-                    optimized_messages = result.messages
-                    transforms_applied = result.transforms_applied
-                    pipeline_timing = result.timing
-                    # Keep original_tokens as the REAL original (pre-Zone-1-swap)
-                    # so tokens_saved captures both Zone 1 + Zone 2 savings.
-                    # original_tokens was set at line ~2183 from uncompressed messages.
-                    optimized_tokens = result.tokens_after
-                elif not is_cache_mode(self.config.mode):
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            lambda: self.anthropic_pipeline.apply(
-                                messages=messages,
-                                model=model,
-                                model_limit=context_limit,
-                                context=extract_user_query(messages),
-                                frozen_message_count=frozen_message_count,
-                                biases=biases,
-                            )
-                        ),
-                        timeout=COMPRESSION_TIMEOUT_SECONDS,
-                    )
-
-                    if result.messages != messages:
-                        optimized_messages = result.messages
-                        transforms_applied = result.transforms_applied
-                        pipeline_timing = result.timing
-                        original_tokens = result.tokens_before
-                        optimized_tokens = result.tokens_after
-                else:
-                    previous_original_messages = prefix_tracker.get_last_original_messages()
-                    previous_forwarded_messages = prefix_tracker.get_last_forwarded_messages()
-                    delta = self._extract_cache_stable_delta(
-                        original_client_messages,
-                        previous_original_messages,
-                        previous_forwarded_messages,
-                    )
-                    if delta is not None:
-                        stable_forwarded_prefix, delta_messages = delta
-                        if delta_messages:
+                        async with stage_timer.measure("compression_first_stage"):
                             result = await asyncio.wait_for(
                                 asyncio.to_thread(
                                     lambda: self.anthropic_pipeline.apply(
-                                        messages=delta_messages,
+                                        messages=working_messages,
                                         model=model,
                                         model_limit=context_limit,
-                                        context=extract_user_query(delta_messages),
-                                        frozen_message_count=0,
+                                        context=extract_user_query(working_messages),
+                                        frozen_message_count=frozen_message_count,
                                         biases=biases,
                                     )
                                 ),
                                 timeout=COMPRESSION_TIMEOUT_SECONDS,
                             )
-                            optimized_messages = stable_forwarded_prefix + result.messages
+
+                        # Cache newly compressed messages (index-aligned diff)
+                        if result.messages != working_messages:
+                            comp_cache.update_from_result(messages, result.messages)
+
+                        # Always use pipeline result — Zone 1 swaps are already applied
+                        optimized_messages = result.messages
+                        transforms_applied = result.transforms_applied
+                        pipeline_timing = result.timing
+                        # Keep original_tokens as the REAL original (pre-Zone-1-swap)
+                        # so tokens_saved captures both Zone 1 + Zone 2 savings.
+                        # original_tokens was set at line ~2183 from uncompressed messages.
+                        optimized_tokens = result.tokens_after
+                    elif not is_cache_mode(self.config.mode):
+                        async with stage_timer.measure("compression_first_stage"):
+                            result = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    lambda: self.anthropic_pipeline.apply(
+                                        messages=messages,
+                                        model=model,
+                                        model_limit=context_limit,
+                                        context=extract_user_query(messages),
+                                        frozen_message_count=frozen_message_count,
+                                        biases=biases,
+                                    )
+                                ),
+                                timeout=COMPRESSION_TIMEOUT_SECONDS,
+                            )
+
+                        if result.messages != messages:
+                            optimized_messages = result.messages
                             transforms_applied = result.transforms_applied
                             pipeline_timing = result.timing
-                            optimized_tokens = tokenizer.count_messages(optimized_messages)
-                        else:
-                            optimized_messages = stable_forwarded_prefix
-                            optimized_tokens = tokenizer.count_messages(optimized_messages)
+                            original_tokens = result.tokens_before
+                            optimized_tokens = result.tokens_after
                     else:
-                        # Conservative rule for cache mode:
-                        # only replay exact stable message-prefix extensions.
-                        # In-message append rewriting is deferred until we can
-                        # prove it is perfectly replayable across future turns.
-                        optimized_messages = messages
-                        optimized_tokens = original_tokens
-
-                if result and result.waste_signals:
-                    waste_signals_dict = result.waste_signals.to_dict()
-            except Exception as e:
-                logger.warning(f"Optimization failed: {e}")
-                # Flag compression failure for observability
-                _compression_failed = True
-
-        # Guard: if "optimization" inflated tokens, revert to originals.
-        # Skip in cache mode where prefix-stability may legitimately shift counts.
-        if optimized_tokens > original_tokens and not is_cache_mode(self.config.mode):
-            logger.warning(
-                f"[{request_id}] Optimization inflated tokens "
-                f"({original_tokens} -> {optimized_tokens}), reverting to original messages"
-            )
-            optimized_messages = original_messages
-            optimized_tokens = original_tokens
-            transforms_applied = []
-
-        tokens_saved = max(0, original_tokens - optimized_tokens)
-        optimization_latency = (time.time() - start_time) * 1000
-
-        # Hook: post_compress — let hooks observe compression results
-        if self.config.hooks and tokens_saved > 0:
-            from headroom.hooks import CompressEvent
-
-            try:
-                self.config.hooks.post_compress(
-                    CompressEvent(
-                        tokens_before=original_tokens,
-                        tokens_after=optimized_tokens,
-                        tokens_saved=tokens_saved,
-                        compression_ratio=tokens_saved / original_tokens
-                        if original_tokens > 0
-                        else 0,
-                        transforms_applied=transforms_applied,
-                        model=model,
-                        user_query=_hook_ctx.user_query if self.config.hooks else "",
-                        provider="anthropic",
-                    )
-                )
-            except Exception as e:
-                logger.debug(f"[{request_id}] post_compress hook error: {e}")
-
-        # CCR Tool Injection: Inject retrieval tool if compression occurred
-        tools = body.get("tools")
-        _original_tools = tools  # Preserve for diagnostic / future retry
-        if (
-            self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions
-        ) and not _bypass:
-            inject_system_instructions = self.config.ccr_inject_system_instructions
-            if inject_system_instructions and frozen_message_count > 0:
-                logger.info(
-                    f"[{request_id}] CCR: skipping system instruction injection "
-                    f"(frozen prefix={frozen_message_count}) to preserve cache"
-                )
-                inject_system_instructions = False
-            # Create fresh injector to avoid state leakage between requests
-            injector = CCRToolInjector(
-                provider="anthropic",
-                inject_tool=self.config.ccr_inject_tool,
-                inject_system_instructions=inject_system_instructions,
-            )
-            optimized_messages, tools, was_injected = injector.process_request(
-                optimized_messages, tools
-            )
-
-            if injector.has_compressed_content:
-                if was_injected:
-                    logger.debug(
-                        f"[{request_id}] CCR: Injected retrieval tool for hashes: {injector.detected_hashes}"
-                    )
-                else:
-                    logger.debug(
-                        f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
-                    )
-
-                # Track compression in context tracker for multi-turn awareness
-                if self.ccr_context_tracker:
-                    self._turn_counter += 1
-                    for hash_key in injector.detected_hashes:
-                        # Get compression metadata from store
-                        store = get_compression_store()
-                        entry = store.get_metadata(hash_key)
-                        if entry:
-                            self.ccr_context_tracker.track_compression(
-                                hash_key=hash_key,
-                                turn_number=self._turn_counter,
-                                tool_name=entry.get("tool_name"),
-                                original_count=entry.get("original_item_count", 0),
-                                compressed_count=entry.get("compressed_item_count", 0),
-                                query_context=entry.get("query_context", ""),
-                                sample_content=entry.get("compressed_content", "")[:500],
-                            )
-
-        # CCR Proactive Expansion: Check if current query needs expanded context
-        if self.ccr_context_tracker and self.config.ccr_proactive_expansion:
-            # Extract user query from messages
-            user_query = ""
-            for msg in reversed(messages):
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        user_query = content
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                user_query = block.get("text", "")
-                                break
-                    break
-
-            if user_query:
-                recommendations = self.ccr_context_tracker.analyze_query(
-                    user_query, self._turn_counter
-                )
-                if recommendations:
-                    expansions = self.ccr_context_tracker.execute_expansions(recommendations)
-                    if expansions:
-                        # Add expanded context to the system message or as additional context
-                        expansion_text = self.ccr_context_tracker.format_expansions_for_context(
-                            expansions
+                        previous_original_messages = prefix_tracker.get_last_original_messages()
+                        previous_forwarded_messages = prefix_tracker.get_last_forwarded_messages()
+                        delta = self._extract_cache_stable_delta(
+                            original_client_messages,
+                            previous_original_messages,
+                            previous_forwarded_messages,
                         )
-                        logger.info(
-                            f"[{request_id}] CCR: Proactively expanded {len(expansions)} context(s) "
-                            f"based on query relevance"
-                        )
-                        if is_cache_mode(self.config.mode):
-                            logger.info(
-                                f"[{request_id}] CCR: skipping proactive expansion append "
-                                "in cache mode to preserve next-turn prefix stability"
-                            )
-                        else:
-                            optimized_messages = (
-                                self._append_context_to_latest_non_frozen_user_turn(
-                                    optimized_messages,
-                                    expansion_text,
-                                    frozen_message_count=frozen_message_count,
+                        if delta is not None:
+                            stable_forwarded_prefix, delta_messages = delta
+                            if delta_messages:
+                                result = await asyncio.wait_for(
+                                    asyncio.to_thread(
+                                        lambda: self.anthropic_pipeline.apply(
+                                            messages=delta_messages,
+                                            model=model,
+                                            model_limit=context_limit,
+                                            context=extract_user_query(delta_messages),
+                                            frozen_message_count=0,
+                                            biases=biases,
+                                        )
+                                    ),
+                                    timeout=COMPRESSION_TIMEOUT_SECONDS,
                                 )
-                            )
-
-        # Traffic Learner: Extract patterns from inbound tool results
-        if self.traffic_learner:
-            try:
-                # Wire backend on first use (lazy init after memory handler is ready)
-                if (
-                    self.traffic_learner._backend is None
-                    and self.memory_handler
-                    and self.memory_handler.initialized
-                    and self.memory_handler.backend
-                ):
-                    self.traffic_learner.set_backend(self.memory_handler.backend)
-
-                # Extract tool results from messages and learn from them
-                tool_results = self.traffic_learner.extract_tool_results_from_messages(
-                    optimized_messages
-                )
-                for tr in tool_results[-5:]:  # Only recent results
-                    await self.traffic_learner.on_tool_result(
-                        tool_name=tr["tool_name"],
-                        tool_input=tr["input"],
-                        tool_output=tr["output"],
-                        is_error=tr["is_error"],
-                    )
-
-                # Also extract preference signals from user messages
-                await self.traffic_learner.on_messages(optimized_messages)
-            except Exception as e:
-                logger.debug(f"[{request_id}] Traffic learner: {e}")
-
-        # Memory: Inject context and tools
-        if self.memory_handler and memory_user_id:
-            # Search and inject memory context
-            if self.memory_handler.config.inject_context:
-                try:
-                    memory_context = await self.memory_handler.search_and_format_context(
-                        memory_user_id, optimized_messages
-                    )
-                    if memory_context:
-                        if is_cache_mode(self.config.mode):
-                            logger.info(
-                                f"[{request_id}] Memory: skipping context append in cache mode "
-                                "to preserve next-turn prefix stability"
-                            )
-                        elif frozen_message_count > 0:
-                            optimized_messages = (
-                                self._append_context_to_latest_non_frozen_user_turn(
-                                    optimized_messages,
-                                    memory_context,
-                                    frozen_message_count=frozen_message_count,
-                                )
-                            )
-                            logger.info(
-                                f"[{request_id}] Memory: Appended {len(memory_context)} chars "
-                                f"to latest non-frozen user turn (prefix cache-safe)"
-                            )
-                        else:
-                            optimized_messages = self._inject_system_context(
-                                optimized_messages, memory_context, body=body
-                            )
-                            logger.info(
-                                f"[{request_id}] Memory: Injected {len(memory_context)} chars of context"
-                            )
-                except Exception as e:
-                    logger.warning(f"[{request_id}] Memory: Context injection failed: {e}")
-
-            # Inject memory tools
-            if self.memory_handler.config.inject_tools:
-                tools, mem_tools_injected = self.memory_handler.inject_tools(tools, "anthropic")
-                if mem_tools_injected:
-                    tool_names = [
-                        t.get("name") or t.get("type", "")
-                        for t in tools
-                        if t.get("name", "").startswith("memory")
-                        or t.get("type", "").startswith("memory")
-                    ]
-                    logger.info(f"[{request_id}] Memory: Injected tools: {tool_names}")
-
-                    # Add beta headers for native memory tool
-                    beta_headers = self.memory_handler.get_beta_headers()
-                    if beta_headers:
-                        for key, value in beta_headers.items():
-                            # Merge with existing beta header if present
-                            existing = headers.get(key, "")
-                            if existing and value not in existing:
-                                headers[key] = f"{existing},{value}"
+                                optimized_messages = stable_forwarded_prefix + result.messages
+                                transforms_applied = result.transforms_applied
+                                pipeline_timing = result.timing
+                                optimized_tokens = tokenizer.count_messages(optimized_messages)
                             else:
-                                headers[key] = value
+                                optimized_messages = stable_forwarded_prefix
+                                optimized_tokens = tokenizer.count_messages(optimized_messages)
+                        else:
+                            # Conservative rule for cache mode:
+                            # only replay exact stable message-prefix extensions.
+                            # In-message append rewriting is deferred until we can
+                            # prove it is perfectly replayable across future turns.
+                            optimized_messages = messages
+                            optimized_tokens = original_tokens
+
+                    if result and result.waste_signals:
+                        waste_signals_dict = result.waste_signals.to_dict()
+                except Exception as e:
+                    logger.warning(f"Optimization failed: {e}")
+                    # Flag compression failure for observability
+                    _compression_failed = True
+
+            # Guard: if "optimization" inflated tokens, revert to originals.
+            # Skip in cache mode where prefix-stability may legitimately shift counts.
+            if optimized_tokens > original_tokens and not is_cache_mode(self.config.mode):
+                logger.warning(
+                    f"[{request_id}] Optimization inflated tokens "
+                    f"({original_tokens} -> {optimized_tokens}), reverting to original messages"
+                )
+                optimized_messages = original_messages
+                optimized_tokens = original_tokens
+                transforms_applied = []
+
+            tokens_saved = max(0, original_tokens - optimized_tokens)
+            optimization_latency = (time.time() - start_time) * 1000
+
+            # Hook: post_compress — let hooks observe compression results
+            if self.config.hooks and tokens_saved > 0:
+                from headroom.hooks import CompressEvent
+
+                try:
+                    self.config.hooks.post_compress(
+                        CompressEvent(
+                            tokens_before=original_tokens,
+                            tokens_after=optimized_tokens,
+                            tokens_saved=tokens_saved,
+                            compression_ratio=tokens_saved / original_tokens
+                            if original_tokens > 0
+                            else 0,
+                            transforms_applied=transforms_applied,
+                            model=model,
+                            user_query=_hook_ctx.user_query if self.config.hooks else "",
+                            provider="anthropic",
+                        )
+                    )
+                except Exception as e:
+                    logger.debug(f"[{request_id}] post_compress hook error: {e}")
+
+            # CCR Tool Injection: Inject retrieval tool if compression occurred
+            tools = body.get("tools")
+            _original_tools = tools  # Preserve for diagnostic / future retry
+            if (
+                self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions
+            ) and not _bypass:
+                inject_system_instructions = self.config.ccr_inject_system_instructions
+                if inject_system_instructions and frozen_message_count > 0:
+                    logger.info(
+                        f"[{request_id}] CCR: skipping system instruction injection "
+                        f"(frozen prefix={frozen_message_count}) to preserve cache"
+                    )
+                    inject_system_instructions = False
+                # Create fresh injector to avoid state leakage between requests
+                injector = CCRToolInjector(
+                    provider="anthropic",
+                    inject_tool=self.config.ccr_inject_tool,
+                    inject_system_instructions=inject_system_instructions,
+                )
+                optimized_messages, tools, was_injected = injector.process_request(
+                    optimized_messages, tools
+                )
+
+                if injector.has_compressed_content:
+                    if was_injected:
+                        logger.debug(
+                            f"[{request_id}] CCR: Injected retrieval tool for hashes: {injector.detected_hashes}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
+                        )
+
+                    # Track compression in context tracker for multi-turn awareness
+                    if self.ccr_context_tracker:
+                        self._turn_counter += 1
+                        for hash_key in injector.detected_hashes:
+                            # Get compression metadata from store
+                            store = get_compression_store()
+                            entry = store.get_metadata(hash_key)
+                            if entry:
+                                self.ccr_context_tracker.track_compression(
+                                    hash_key=hash_key,
+                                    turn_number=self._turn_counter,
+                                    tool_name=entry.get("tool_name"),
+                                    original_count=entry.get("original_item_count", 0),
+                                    compressed_count=entry.get("compressed_item_count", 0),
+                                    query_context=entry.get("query_context", ""),
+                                    sample_content=entry.get("compressed_content", "")[:500],
+                                )
+
+            # CCR Proactive Expansion: Check if current query needs expanded context
+            if self.ccr_context_tracker and self.config.ccr_proactive_expansion:
+                # Extract user query from messages
+                user_query = ""
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            user_query = content
+                        elif isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    user_query = block.get("text", "")
+                                    break
+                        break
+
+                if user_query:
+                    recommendations = self.ccr_context_tracker.analyze_query(
+                        user_query, self._turn_counter
+                    )
+                    if recommendations:
+                        expansions = self.ccr_context_tracker.execute_expansions(recommendations)
+                        if expansions:
+                            # Add expanded context to the system message or as additional context
+                            expansion_text = self.ccr_context_tracker.format_expansions_for_context(
+                                expansions
+                            )
                             logger.info(
-                                f"[{request_id}] Memory: Added beta header: {key}={headers[key]}"
+                                f"[{request_id}] CCR: Proactively expanded {len(expansions)} context(s) "
+                                f"based on query relevance"
+                            )
+                            if is_cache_mode(self.config.mode):
+                                logger.info(
+                                    f"[{request_id}] CCR: skipping proactive expansion append "
+                                    "in cache mode to preserve next-turn prefix stability"
+                                )
+                            else:
+                                optimized_messages = (
+                                    self._append_context_to_latest_non_frozen_user_turn(
+                                        optimized_messages,
+                                        expansion_text,
+                                        frozen_message_count=frozen_message_count,
+                                    )
+                                )
+
+            # Traffic Learner: Extract patterns from inbound tool results
+            if self.traffic_learner:
+                try:
+                    # Wire backend on first use (lazy init after memory handler is ready)
+                    if (
+                        self.traffic_learner._backend is None
+                        and self.memory_handler
+                        and self.memory_handler.initialized
+                        and self.memory_handler.backend
+                    ):
+                        self.traffic_learner.set_backend(self.memory_handler.backend)
+
+                    # Extract tool results from messages and learn from them
+                    tool_results = self.traffic_learner.extract_tool_results_from_messages(
+                        optimized_messages
+                    )
+                    for tr in tool_results[-5:]:  # Only recent results
+                        await self.traffic_learner.on_tool_result(
+                            tool_name=tr["tool_name"],
+                            tool_input=tr["input"],
+                            tool_output=tr["output"],
+                            is_error=tr["is_error"],
+                        )
+
+                    # Also extract preference signals from user messages
+                    await self.traffic_learner.on_messages(optimized_messages)
+                except Exception as e:
+                    logger.debug(f"[{request_id}] Traffic learner: {e}")
+
+            # Memory: Inject context and tools
+            if self.memory_handler and memory_user_id:
+                # Search and inject memory context
+                if self.memory_handler.config.inject_context:
+                    try:
+                        async with stage_timer.measure("memory_context"):
+                            memory_context = await self.memory_handler.search_and_format_context(
+                                memory_user_id, optimized_messages
+                            )
+                        if memory_context:
+                            if is_cache_mode(self.config.mode):
+                                logger.info(
+                                    f"[{request_id}] Memory: skipping context append in cache mode "
+                                    "to preserve next-turn prefix stability"
+                                )
+                            elif frozen_message_count > 0:
+                                optimized_messages = (
+                                    self._append_context_to_latest_non_frozen_user_turn(
+                                        optimized_messages,
+                                        memory_context,
+                                        frozen_message_count=frozen_message_count,
+                                    )
+                                )
+                                logger.info(
+                                    f"[{request_id}] Memory: Appended {len(memory_context)} chars "
+                                    f"to latest non-frozen user turn (prefix cache-safe)"
+                                )
+                            else:
+                                optimized_messages = self._inject_system_context(
+                                    optimized_messages, memory_context, body=body
+                                )
+                                logger.info(
+                                    f"[{request_id}] Memory: Injected {len(memory_context)} chars of context"
+                                )
+                    except Exception as e:
+                        logger.warning(f"[{request_id}] Memory: Context injection failed: {e}")
+
+                # Inject memory tools
+                if self.memory_handler.config.inject_tools:
+                    tools, mem_tools_injected = self.memory_handler.inject_tools(tools, "anthropic")
+                    if mem_tools_injected:
+                        tool_names = [
+                            t.get("name") or t.get("type", "")
+                            for t in tools
+                            if t.get("name", "").startswith("memory")
+                            or t.get("type", "").startswith("memory")
+                        ]
+                        logger.info(f"[{request_id}] Memory: Injected tools: {tool_names}")
+
+                        # Add beta headers for native memory tool
+                        beta_headers = self.memory_handler.get_beta_headers()
+                        if beta_headers:
+                            for key, value in beta_headers.items():
+                                # Merge with existing beta header if present
+                                existing = headers.get(key, "")
+                                if existing and value not in existing:
+                                    headers[key] = f"{existing},{value}"
+                                else:
+                                    headers[key] = value
+                                logger.info(
+                                    f"[{request_id}] Memory: Added beta header: {key}={headers[key]}"
+                                )
+
+            # Query Echo: disabled — hurts prefix caching in long conversations.
+            # The echo changes every turn, invalidating the cached prefix.
+            # To re-enable, uncomment and set query_echo_enabled on ProxyConfig.
+
+            # Update body
+            body["messages"] = optimized_messages
+            if tools is not None:
+                tools = self._sort_tools_deterministically(tools)
+                body["tools"] = tools
+
+            # Unit 2: mark end of pre-upstream phase. Everything after this
+            # point is upstream I/O or post-response bookkeeping.
+            stage_timer.record(
+                "total_pre_upstream",
+                (time.perf_counter() - pre_upstream_started_at) * 1000.0,
+            )
+
+            # Forward request - use Bedrock backend if configured, otherwise direct API
+            if self.anthropic_backend is not None:
+                # Route through Bedrock backend
+                try:
+                    if stream:
+                        await _finalize_pre_upstream()
+                        return await self._stream_response_bedrock(
+                            body,
+                            headers,
+                            "anthropic",
+                            model,
+                            request_id,
+                            original_tokens,
+                            optimized_tokens,
+                            tokens_saved,
+                            transforms_applied,
+                            tags,
+                            optimization_latency,
+                            pipeline_timing=pipeline_timing,
+                        )
+                    else:
+                        async with stage_timer.measure("upstream_connect"):
+                            backend_response = await self.anthropic_backend.send_message(
+                                body, headers
+                            )
+                        # Non-stream: first-byte and connect are effectively
+                        # the same horizon — ``send_message`` awaits until
+                        # the response body is fully buffered.
+                        if (
+                            "upstream_first_byte" not in stage_timer
+                            and "upstream_connect" in stage_timer
+                        ):
+                            stage_timer.record(
+                                "upstream_first_byte",
+                                stage_timer.summary()["upstream_connect"],
+                            )
+                        await _finalize_pre_upstream()
+
+                        if backend_response.error:
+                            return JSONResponse(
+                                status_code=backend_response.status_code,
+                                content=backend_response.body,
                             )
 
-        # Query Echo: disabled — hurts prefix caching in long conversations.
-        # The echo changes every turn, invalidating the cached prefix.
-        # To re-enable, uncomment and set query_echo_enabled on ProxyConfig.
+                        # Track metrics
+                        total_latency = (time.time() - start_time) * 1000
+                        usage = backend_response.body.get("usage", {})
+                        output_tokens = usage.get("output_tokens", 0)
 
-        # Update body
-        body["messages"] = optimized_messages
-        if tools is not None:
-            tools = self._sort_tools_deterministically(tools)
-            body["tools"] = tools
+                        _backend_name = (
+                            self.anthropic_backend.name if self.anthropic_backend else "anthropic"
+                        )
+                        await self.metrics.record_request(
+                            provider=_backend_name,
+                            model=model,
+                            input_tokens=optimized_tokens,
+                            output_tokens=output_tokens,
+                            tokens_saved=tokens_saved,
+                            latency_ms=total_latency,
+                            cached=False,
+                            overhead_ms=optimization_latency,
+                            pipeline_timing=pipeline_timing,
+                        )
 
-        # Forward request - use Bedrock backend if configured, otherwise direct API
-        if self.anthropic_backend is not None:
-            # Route through Bedrock backend
+                        if self.cost_tracker:
+                            self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
+
+                        # Log request
+                        if self.logger:
+                            self.logger.log(
+                                RequestLog(
+                                    request_id=request_id,
+                                    timestamp=datetime.now().isoformat(),
+                                    provider=_backend_name,
+                                    model=model,
+                                    input_tokens_original=original_tokens,
+                                    input_tokens_optimized=optimized_tokens,
+                                    output_tokens=output_tokens,
+                                    tokens_saved=tokens_saved,
+                                    savings_percent=(tokens_saved / original_tokens * 100)
+                                    if original_tokens > 0
+                                    else 0,
+                                    optimization_latency_ms=optimization_latency,
+                                    total_latency_ms=total_latency,
+                                    tags=tags,
+                                    cache_hit=False,
+                                    transforms_applied=transforms_applied,
+                                    request_messages=body.get("messages")
+                                    if self.config.log_full_messages
+                                    else None,
+                                )
+                            )
+
+                        return JSONResponse(
+                            status_code=backend_response.status_code,
+                            content=backend_response.body,
+                        )
+                except Exception as e:
+                    logger.error(f"[{request_id}] Bedrock backend error: {e}")
+                    # Unit 4: release the pre-upstream semaphore on error.
+                    await _finalize_pre_upstream()
+                    return JSONResponse(
+                        status_code=500,
+                        content={
+                            "type": "error",
+                            "error": {"type": "api_error", "message": str(e)},
+                        },
+                    )
+
+            # Direct Anthropic API
+            url = f"{self.ANTHROPIC_API_URL}/v1/messages"
+
             try:
                 if stream:
-                    return await self._stream_response_bedrock(
-                        body,
+                    await _finalize_pre_upstream()
+                    return await self._stream_response(
+                        url,
                         headers,
+                        body,
                         "anthropic",
                         model,
                         request_id,
@@ -948,39 +1173,376 @@ class AnthropicHandlerMixin:
                         transforms_applied,
                         tags,
                         optimization_latency,
+                        memory_user_id=memory_user_id,
                         pipeline_timing=pipeline_timing,
+                        prefix_tracker=prefix_tracker,
+                        original_messages=original_client_messages,
                     )
                 else:
-                    backend_response = await self.anthropic_backend.send_message(body, headers)
+                    async with stage_timer.measure("upstream_connect"):
+                        response = await self._retry_request("POST", url, headers, body)
+                    if (
+                        "upstream_first_byte" not in stage_timer
+                        and "upstream_connect" in stage_timer
+                    ):
+                        stage_timer.record(
+                            "upstream_first_byte",
+                            stage_timer.summary()["upstream_connect"],
+                        )
+                    await _finalize_pre_upstream()
 
-                    if backend_response.error:
-                        return JSONResponse(
-                            status_code=backend_response.status_code,
-                            content=backend_response.body,
+                    # Full diagnostic dump on upstream errors.
+                    # Writes pre/post compression messages, tools, and error
+                    # to ~/.headroom/logs/debug_400/ for offline analysis.
+                    if response.status_code >= 400:
+                        try:
+                            err_body = response.json()
+                            err_msg = err_body.get("error", {}).get("message", "")
+                            err_type = err_body.get("error", {}).get("type", "")
+                        except Exception:
+                            err_body = {"raw": response.text[:2000]}
+                            err_msg = str(response.text[:500])
+                            err_type = "parse_error"
+
+                        logger.warning(
+                            f"[{request_id}] UPSTREAM_ERROR "
+                            f"status={response.status_code} "
+                            f"error_type={err_type} "
+                            f"error_msg={err_msg!r} "
+                            f"model={model} "
+                            f"compressed={'yes' if transforms_applied else 'no'} "
+                            f"transforms={transforms_applied} "
+                            f"original_tokens={original_tokens} "
+                            f"optimized_tokens={optimized_tokens} "
+                            f"message_count={len(body.get('messages', []))} "
+                            f"stream={stream}"
                         )
 
-                    # Track metrics
-                    total_latency = (time.time() - start_time) * 1000
-                    usage = backend_response.body.get("usage", {})
-                    output_tokens = usage.get("output_tokens", 0)
+                        # Dump full request details to debug file
+                        try:
+                            from headroom import paths as _hr_paths
 
-                    _backend_name = (
-                        self.anthropic_backend.name if self.anthropic_backend else "anthropic"
+                            debug_dir = _hr_paths.debug_400_dir()
+                            debug_dir.mkdir(parents=True, exist_ok=True)
+                            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            debug_file = debug_dir / f"{ts}_{request_id}.json"
+
+                            # Sanitize headers (redact API keys)
+                            safe_headers = {}
+                            for k, v in headers.items():
+                                if k.lower() in ("x-api-key", "authorization"):
+                                    safe_headers[k] = v[:12] + "..." if v else ""
+                                else:
+                                    safe_headers[k] = v
+
+                            debug_payload = {
+                                "request_id": request_id,
+                                "timestamp": datetime.now().isoformat(),
+                                "status_code": response.status_code,
+                                "error_response": err_body,
+                                "model": model,
+                                "stream": stream,
+                                "headers": safe_headers,
+                                "compression": {
+                                    "was_compressed": bool(transforms_applied),
+                                    "transforms": transforms_applied,
+                                    "original_tokens": original_tokens,
+                                    "optimized_tokens": optimized_tokens,
+                                    "tokens_saved": tokens_saved,
+                                    "compression_failed": _compression_failed,
+                                },
+                                "tools_sent": body.get("tools"),
+                                "tool_count": len(body.get("tools") or []),
+                                "original_tool_count": len(_original_tools or []),
+                                "messages_sent": body.get("messages"),
+                                "message_count": len(body.get("messages", [])),
+                                "original_messages": (
+                                    original_messages
+                                    if original_messages is not body.get("messages")
+                                    else "__same_as_sent__"
+                                ),
+                                "original_message_count": len(original_messages),
+                                "system_prompt": body.get("system"),
+                            }
+
+                            with open(debug_file, "w") as f:
+                                json.dump(debug_payload, f, indent=2, default=str)
+
+                            logger.warning(f"[{request_id}] Full debug dump: {debug_file}")
+                        except Exception as dump_err:
+                            logger.error(f"[{request_id}] Failed to write debug dump: {dump_err}")
+
+                    # Parse response for CCR handling
+                    resp_json = None
+                    try:
+                        resp_json = response.json()
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.debug(
+                            f"[{request_id}] Failed to parse response JSON for CCR handling: {e}"
+                        )
+
+                    # CCR Response Handling: Handle headroom_retrieve tool calls automatically
+                    if (
+                        self.ccr_response_handler
+                        and resp_json
+                        and response.status_code == 200
+                        and self.ccr_response_handler.has_ccr_tool_calls(resp_json, "anthropic")
+                    ):
+                        logger.info(
+                            f"[{request_id}] CCR: Detected retrieval tool call, handling..."
+                        )
+
+                        # Create API call function for continuation
+                        # Use a fresh client to avoid potential decompression state issues
+                        async def api_call_fn(
+                            msgs: list[dict], tls: list[dict] | None
+                        ) -> dict[str, Any]:
+                            continuation_body = {
+                                **body,
+                                "messages": msgs,
+                            }
+                            if tls is not None:
+                                continuation_body["tools"] = tls
+
+                            # Use clean headers for continuation
+                            continuation_headers = {
+                                k: v
+                                for k, v in headers.items()
+                                if k.lower()
+                                not in (
+                                    "content-encoding",
+                                    "transfer-encoding",
+                                    "accept-encoding",
+                                    "content-length",
+                                )
+                            }
+
+                            # Reuse main client for CCR continuations (connection pooling)
+                            logger.info(
+                                f"CCR: Making continuation request with {len(msgs)} messages"
+                            )
+                            assert self.http_client is not None, "HTTP client not initialized"
+                            try:
+                                cont_response = await self.http_client.post(
+                                    url,
+                                    json=continuation_body,
+                                    headers=continuation_headers,
+                                    timeout=httpx.Timeout(120.0),  # Override timeout for CCR
+                                )
+                                logger.info(
+                                    f"CCR: Got response status={cont_response.status_code}, "
+                                    f"content-encoding={cont_response.headers.get('content-encoding')}"
+                                )
+                                result: dict[str, Any] = cont_response.json()
+                                logger.info("CCR: Parsed JSON successfully")
+                                return result
+                            except Exception as e:
+                                resp_headers: str | dict[str, str] = "N/A"
+                                try:
+                                    resp_headers = dict(cont_response.headers)
+                                except Exception:
+                                    pass
+                                logger.error(
+                                    f"CCR: API call failed: {e}, response headers: {resp_headers}"
+                                )
+                                raise
+
+                        # Handle CCR tool calls
+                        try:
+                            final_resp_json = await self.ccr_response_handler.handle_response(
+                                resp_json,
+                                optimized_messages,
+                                tools,
+                                api_call_fn,
+                                provider="anthropic",
+                            )
+                            # Update response content with final response
+                            resp_json = final_resp_json
+                            # Remove encoding headers since content is now uncompressed JSON
+                            ccr_response_headers = {
+                                k: v
+                                for k, v in response.headers.items()
+                                if k.lower() not in ("content-encoding", "content-length")
+                            }
+                            try:
+                                ccr_content = json.dumps(final_resp_json).encode()
+                            except (TypeError, ValueError) as json_err:
+                                logger.warning(
+                                    f"[{request_id}] CCR: JSON serialization failed: {json_err}"
+                                )
+                                ccr_content = json.dumps(resp_json).encode()
+                            response = httpx.Response(
+                                status_code=200,
+                                content=ccr_content,
+                                headers=ccr_response_headers,
+                            )
+                            logger.info(f"[{request_id}] CCR: Retrieval handled successfully")
+                        except Exception as e:
+                            import traceback
+
+                            logger.warning(
+                                f"[{request_id}] CCR: Response handling failed: {e}\n"
+                                f"Traceback: {traceback.format_exc()}"
+                            )
+                            # Continue with original response
+
+                    # Memory: Handle memory tool calls in response
+                    if (
+                        self.memory_handler
+                        and memory_user_id
+                        and resp_json
+                        and response.status_code == 200
+                        and self.memory_handler.has_memory_tool_calls(resp_json, "anthropic")
+                    ):
+                        logger.info(
+                            f"[{request_id}] Memory: Detected memory tool call, handling..."
+                        )
+
+                        try:
+                            # Execute memory tool calls
+                            tool_results = await self.memory_handler.handle_memory_tool_calls(
+                                resp_json, memory_user_id, "anthropic"
+                            )
+
+                            if tool_results:
+                                # Create continuation messages
+                                assistant_msg = {
+                                    "role": "assistant",
+                                    "content": resp_json.get("content", []),
+                                }
+                                user_msg = {
+                                    "role": "user",
+                                    "content": tool_results,
+                                }
+
+                                continuation_messages = optimized_messages + [
+                                    assistant_msg,
+                                    user_msg,
+                                ]
+
+                                # Make continuation API call
+                                continuation_body = {**body, "messages": continuation_messages}
+                                if tools:
+                                    continuation_body["tools"] = tools
+
+                                cont_response = await self._retry_request(
+                                    "POST", url, headers, continuation_body
+                                )
+
+                                # Update response with continuation
+                                resp_json = cont_response.json()
+                                response = cont_response
+                                logger.info(
+                                    f"[{request_id}] Memory: Tool calls handled, continuation complete"
+                                )
+
+                        except Exception as e:
+                            logger.warning(f"[{request_id}] Memory: Tool call handling failed: {e}")
+                            # Continue with original response
+
+                    total_latency = (time.time() - start_time) * 1000
+
+                    # Parse response for output token count and cache metrics
+                    output_tokens = 0
+                    cr_tokens = 0
+                    cw_tokens = 0
+                    cw_5m_tokens = 0
+                    cw_1h_tokens = 0
+                    uncached_input_tokens = 0
+                    if resp_json:
+                        usage = resp_json.get("usage", {})
+                        output_tokens = usage.get("output_tokens", 0)
+                        cr_tokens = usage.get("cache_read_input_tokens", 0)
+                        cw_tokens = usage.get("cache_creation_input_tokens", 0)
+                        cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(
+                            usage
+                        )
+                        uncached_input_tokens = usage.get("input_tokens", 0)
+
+                    # Track cache bust: tokens that lost their cache discount due to compression.
+                    # If we had X tokens cached last turn and only Y hit cache this turn,
+                    # then (X - Y) tokens were busted by our modifications.
+                    expected_cached = prefix_tracker._cached_token_count
+                    if expected_cached > 0 and tokens_saved > 0:
+                        bust_tokens = max(0, expected_cached - cr_tokens)
+                        if bust_tokens > 0:
+                            logger.info(
+                                f"[{request_id}] CACHE-BUST: "
+                                f"expected_cached={expected_cached:,} actual_read={cr_tokens:,} "
+                                f"tokens_lost={bust_tokens:,} tokens_saved={tokens_saved:,}"
+                            )
+                            await self.metrics.record_cache_bust(bust_tokens)
+
+                    # Update prefix cache tracker for next turn
+                    next_original_messages = copy.deepcopy(original_client_messages)
+                    next_forwarded_messages = copy.deepcopy(optimized_messages)
+                    assistant_message = self._assistant_message_from_response_json(resp_json)
+                    if assistant_message is not None:
+                        next_original_messages.append(copy.deepcopy(assistant_message))
+                        next_forwarded_messages.append(copy.deepcopy(assistant_message))
+                    prefix_tracker.update_from_response(
+                        cache_read_tokens=cr_tokens,
+                        cache_write_tokens=cw_tokens,
+                        messages=next_forwarded_messages,
+                        original_messages=next_original_messages,
                     )
+
+                    if self.cost_tracker:
+                        self.cost_tracker.record_tokens(
+                            model,
+                            tokens_saved,
+                            optimized_tokens,
+                            cache_read_tokens=cr_tokens,
+                            cache_write_tokens=cw_tokens,
+                            cache_write_5m_tokens=cw_5m_tokens,
+                            cache_write_1h_tokens=cw_1h_tokens,
+                            uncached_tokens=uncached_input_tokens,
+                        )
+
+                    # Cache response
+                    if self.cache and response.status_code == 200:
+                        await self.cache.set(
+                            messages,
+                            model,
+                            response.content,
+                            dict(response.headers),
+                            tokens_saved=tokens_saved,
+                        )
+
+                    # Record metrics — use optimized_tokens (what we sent), not API's
+                    # input_tokens which is just the non-cached portion with prompt caching
                     await self.metrics.record_request(
-                        provider=_backend_name,
+                        provider="anthropic",
                         model=model,
                         input_tokens=optimized_tokens,
                         output_tokens=output_tokens,
                         tokens_saved=tokens_saved,
                         latency_ms=total_latency,
-                        cached=False,
                         overhead_ms=optimization_latency,
                         pipeline_timing=pipeline_timing,
+                        waste_signals=waste_signals_dict,
+                        cache_read_tokens=cr_tokens,
+                        cache_write_tokens=cw_tokens,
+                        cache_write_5m_tokens=cw_5m_tokens,
+                        cache_write_1h_tokens=cw_1h_tokens,
+                        uncached_input_tokens=uncached_input_tokens,
                     )
 
-                    if self.cost_tracker:
-                        self.cost_tracker.record_tokens(model, tokens_saved, optimized_tokens)
+                    # Subscription tracker: update headroom contribution counters
+                    if _auth_header.startswith("Bearer ") and not _auth_header.startswith(
+                        "Bearer sk-ant-api"
+                    ):
+                        from headroom.subscription.tracker import (
+                            get_subscription_tracker as _get_sub_tracker,
+                        )
+
+                        _sub_tracker = _get_sub_tracker()
+                        if _sub_tracker is not None:
+                            _sub_tracker.update_contribution(
+                                tokens_submitted=optimized_tokens,
+                                tokens_saved_compression=tokens_saved,
+                                tokens_saved_cache_reads=cr_tokens,
+                            )
 
                     # Log request
                     if self.logger:
@@ -988,7 +1550,7 @@ class AnthropicHandlerMixin:
                             RequestLog(
                                 request_id=request_id,
                                 timestamp=datetime.now().isoformat(),
-                                provider=_backend_name,
+                                provider="anthropic",
                                 model=model,
                                 input_tokens_original=original_tokens,
                                 input_tokens_optimized=optimized_tokens,
@@ -1000,505 +1562,123 @@ class AnthropicHandlerMixin:
                                 optimization_latency_ms=optimization_latency,
                                 total_latency_ms=total_latency,
                                 tags=tags,
-                                cache_hit=False,
+                                cache_hit=cache_hit,
                                 transforms_applied=transforms_applied,
-                                request_messages=body.get("messages")
+                                waste_signals=waste_signals_dict,
+                                request_messages=messages
                                 if self.config.log_full_messages
                                 else None,
                             )
                         )
 
-                    return JSONResponse(
-                        status_code=backend_response.status_code,
-                        content=backend_response.body,
+                    # Structured perf log line for `headroom perf` analysis
+                    num_msgs = len(messages)
+                    resp_usage = resp_json.get("usage", {}) if resp_json else {}
+                    cr = resp_usage.get("cache_read_input_tokens", 0)
+                    cw = resp_usage.get("cache_creation_input_tokens", 0)
+                    chp = round(cr / (cr + cw) * 100) if (cr + cw) > 0 else 0
+                    timing_str = (
+                        " ".join(f"{k}={v:.0f}ms" for k, v in pipeline_timing.items())
+                        if pipeline_timing
+                        else ""
                     )
+                    logger.info(
+                        f"[{request_id}] PERF "
+                        f"model={model} msgs={num_msgs} "
+                        f"tok_before={original_tokens} tok_after={optimized_tokens} "
+                        f"tok_saved={tokens_saved} "
+                        f"cache_read={cr} cache_write={cw} cache_hit_pct={chp} "
+                        f"opt_ms={optimization_latency:.0f} "
+                        f"transforms={_summarize_transforms(transforms_applied)}"
+                        f"{' timing=' + timing_str if timing_str else ''}"
+                    )
+
+                    # Remove compression headers since httpx already decompressed the response
+                    response_headers = dict(response.headers)
+                    response_headers.pop("content-encoding", None)
+                    response_headers.pop(
+                        "content-length", None
+                    )  # Length changed after decompression
+
+                    # Inject Headroom compression metrics (for SaaS metering)
+                    response_headers["x-headroom-tokens-before"] = str(original_tokens)
+                    response_headers["x-headroom-tokens-after"] = str(optimized_tokens)
+                    response_headers["x-headroom-tokens-saved"] = str(tokens_saved)
+                    response_headers["x-headroom-model"] = model
+                    if transforms_applied:
+                        response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
+                    if cache_hit:
+                        response_headers["x-headroom-cached"] = "true"
+                    if _compression_failed:
+                        response_headers["x-headroom-compression-failed"] = "true"
+
+                    # Enterprise Security: scan response + de-anonymize
+                    if self.security and _security_ctx and resp_json:
+                        try:
+                            resp_json = self.security.scan_response(resp_json, _security_ctx)
+                            response = httpx.Response(
+                                status_code=200,
+                                content=json.dumps(resp_json).encode(),
+                                headers=response_headers,
+                            )
+                            return Response(
+                                content=response.content,
+                                status_code=response.status_code,
+                                headers=response_headers,
+                            )
+                        except Exception as sec_err:
+                            logger.warning(
+                                f"[{request_id}] Security response scan error: {sec_err}"
+                            )
+
+                    return Response(
+                        content=response.content,
+                        status_code=response.status_code,
+                        headers=response_headers,
+                    )
+
+            except HTTPException:
+                # FastAPI HTTPException carries its own status code, headers,
+                # and client-facing message (e.g. 429 with Retry-After, 413 for
+                # oversized bodies). Let FastAPI's own exception handler produce
+                # the response — swallowing it into the 502 catch-all below
+                # would regress rate-limit and budget responses to 502 with no
+                # Retry-After header. The outer finally still runs.
+                raise
             except Exception as e:
-                logger.error(f"[{request_id}] Bedrock backend error: {e}")
+                await self.metrics.record_failed(provider="anthropic")
+                # Log full error details internally for debugging
+                logger.error(f"[{request_id}] Request failed: {type(e).__name__}: {e}")
+
+                # Try fallback if enabled
+                if self.config.fallback_enabled and self.config.fallback_provider == "openai":
+                    logger.info(f"[{request_id}] Attempting fallback to OpenAI")
+                    # Convert to OpenAI format and retry
+                    # (simplified - would need message format conversion)
+
+                # Return sanitized error message to client (don't expose internal details)
                 return JSONResponse(
-                    status_code=500,
+                    status_code=502,
                     content={
                         "type": "error",
-                        "error": {"type": "api_error", "message": str(e)},
+                        "error": {
+                            "type": "api_error",
+                            "message": "An error occurred while processing your request. Please try again.",
+                        },
                     },
                 )
-
-        # Direct Anthropic API
-        url = f"{self.ANTHROPIC_API_URL}/v1/messages"
-
-        try:
-            if stream:
-                return await self._stream_response(
-                    url,
-                    headers,
-                    body,
-                    "anthropic",
-                    model,
-                    request_id,
-                    original_tokens,
-                    optimized_tokens,
-                    tokens_saved,
-                    transforms_applied,
-                    tags,
-                    optimization_latency,
-                    memory_user_id=memory_user_id,
-                    pipeline_timing=pipeline_timing,
-                    prefix_tracker=prefix_tracker,
-                    original_messages=original_client_messages,
-                )
-            else:
-                response = await self._retry_request("POST", url, headers, body)
-
-                # Full diagnostic dump on upstream errors.
-                # Writes pre/post compression messages, tools, and error
-                # to ~/.headroom/logs/debug_400/ for offline analysis.
-                if response.status_code >= 400:
-                    try:
-                        err_body = response.json()
-                        err_msg = err_body.get("error", {}).get("message", "")
-                        err_type = err_body.get("error", {}).get("type", "")
-                    except Exception:
-                        err_body = {"raw": response.text[:2000]}
-                        err_msg = str(response.text[:500])
-                        err_type = "parse_error"
-
-                    logger.warning(
-                        f"[{request_id}] UPSTREAM_ERROR "
-                        f"status={response.status_code} "
-                        f"error_type={err_type} "
-                        f"error_msg={err_msg!r} "
-                        f"model={model} "
-                        f"compressed={'yes' if transforms_applied else 'no'} "
-                        f"transforms={transforms_applied} "
-                        f"original_tokens={original_tokens} "
-                        f"optimized_tokens={optimized_tokens} "
-                        f"message_count={len(body.get('messages', []))} "
-                        f"stream={stream}"
-                    )
-
-                    # Dump full request details to debug file
-                    try:
-                        from headroom import paths as _hr_paths
-
-                        debug_dir = _hr_paths.debug_400_dir()
-                        debug_dir.mkdir(parents=True, exist_ok=True)
-                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        debug_file = debug_dir / f"{ts}_{request_id}.json"
-
-                        # Sanitize headers (redact API keys)
-                        safe_headers = {}
-                        for k, v in headers.items():
-                            if k.lower() in ("x-api-key", "authorization"):
-                                safe_headers[k] = v[:12] + "..." if v else ""
-                            else:
-                                safe_headers[k] = v
-
-                        debug_payload = {
-                            "request_id": request_id,
-                            "timestamp": datetime.now().isoformat(),
-                            "status_code": response.status_code,
-                            "error_response": err_body,
-                            "model": model,
-                            "stream": stream,
-                            "headers": safe_headers,
-                            "compression": {
-                                "was_compressed": bool(transforms_applied),
-                                "transforms": transforms_applied,
-                                "original_tokens": original_tokens,
-                                "optimized_tokens": optimized_tokens,
-                                "tokens_saved": tokens_saved,
-                                "compression_failed": _compression_failed,
-                            },
-                            "tools_sent": body.get("tools"),
-                            "tool_count": len(body.get("tools") or []),
-                            "original_tool_count": len(_original_tools or []),
-                            "messages_sent": body.get("messages"),
-                            "message_count": len(body.get("messages", [])),
-                            "original_messages": (
-                                original_messages
-                                if original_messages is not body.get("messages")
-                                else "__same_as_sent__"
-                            ),
-                            "original_message_count": len(original_messages),
-                            "system_prompt": body.get("system"),
-                        }
-
-                        with open(debug_file, "w") as f:
-                            json.dump(debug_payload, f, indent=2, default=str)
-
-                        logger.warning(f"[{request_id}] Full debug dump: {debug_file}")
-                    except Exception as dump_err:
-                        logger.error(f"[{request_id}] Failed to write debug dump: {dump_err}")
-
-                # Parse response for CCR handling
-                resp_json = None
-                try:
-                    resp_json = response.json()
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.debug(
-                        f"[{request_id}] Failed to parse response JSON for CCR handling: {e}"
-                    )
-
-                # CCR Response Handling: Handle headroom_retrieve tool calls automatically
-                if (
-                    self.ccr_response_handler
-                    and resp_json
-                    and response.status_code == 200
-                    and self.ccr_response_handler.has_ccr_tool_calls(resp_json, "anthropic")
-                ):
-                    logger.info(f"[{request_id}] CCR: Detected retrieval tool call, handling...")
-
-                    # Create API call function for continuation
-                    # Use a fresh client to avoid potential decompression state issues
-                    async def api_call_fn(
-                        msgs: list[dict], tls: list[dict] | None
-                    ) -> dict[str, Any]:
-                        continuation_body = {
-                            **body,
-                            "messages": msgs,
-                        }
-                        if tls is not None:
-                            continuation_body["tools"] = tls
-
-                        # Use clean headers for continuation
-                        continuation_headers = {
-                            k: v
-                            for k, v in headers.items()
-                            if k.lower()
-                            not in (
-                                "content-encoding",
-                                "transfer-encoding",
-                                "accept-encoding",
-                                "content-length",
-                            )
-                        }
-
-                        # Reuse main client for CCR continuations (connection pooling)
-                        logger.info(f"CCR: Making continuation request with {len(msgs)} messages")
-                        assert self.http_client is not None, "HTTP client not initialized"
-                        try:
-                            cont_response = await self.http_client.post(
-                                url,
-                                json=continuation_body,
-                                headers=continuation_headers,
-                                timeout=httpx.Timeout(120.0),  # Override timeout for CCR
-                            )
-                            logger.info(
-                                f"CCR: Got response status={cont_response.status_code}, "
-                                f"content-encoding={cont_response.headers.get('content-encoding')}"
-                            )
-                            result: dict[str, Any] = cont_response.json()
-                            logger.info("CCR: Parsed JSON successfully")
-                            return result
-                        except Exception as e:
-                            resp_headers: str | dict[str, str] = "N/A"
-                            try:
-                                resp_headers = dict(cont_response.headers)
-                            except Exception:
-                                pass
-                            logger.error(
-                                f"CCR: API call failed: {e}, response headers: {resp_headers}"
-                            )
-                            raise
-
-                    # Handle CCR tool calls
-                    try:
-                        final_resp_json = await self.ccr_response_handler.handle_response(
-                            resp_json,
-                            optimized_messages,
-                            tools,
-                            api_call_fn,
-                            provider="anthropic",
-                        )
-                        # Update response content with final response
-                        resp_json = final_resp_json
-                        # Remove encoding headers since content is now uncompressed JSON
-                        ccr_response_headers = {
-                            k: v
-                            for k, v in response.headers.items()
-                            if k.lower() not in ("content-encoding", "content-length")
-                        }
-                        try:
-                            ccr_content = json.dumps(final_resp_json).encode()
-                        except (TypeError, ValueError) as json_err:
-                            logger.warning(
-                                f"[{request_id}] CCR: JSON serialization failed: {json_err}"
-                            )
-                            ccr_content = json.dumps(resp_json).encode()
-                        response = httpx.Response(
-                            status_code=200,
-                            content=ccr_content,
-                            headers=ccr_response_headers,
-                        )
-                        logger.info(f"[{request_id}] CCR: Retrieval handled successfully")
-                    except Exception as e:
-                        import traceback
-
-                        logger.warning(
-                            f"[{request_id}] CCR: Response handling failed: {e}\n"
-                            f"Traceback: {traceback.format_exc()}"
-                        )
-                        # Continue with original response
-
-                # Memory: Handle memory tool calls in response
-                if (
-                    self.memory_handler
-                    and memory_user_id
-                    and resp_json
-                    and response.status_code == 200
-                    and self.memory_handler.has_memory_tool_calls(resp_json, "anthropic")
-                ):
-                    logger.info(f"[{request_id}] Memory: Detected memory tool call, handling...")
-
-                    try:
-                        # Execute memory tool calls
-                        tool_results = await self.memory_handler.handle_memory_tool_calls(
-                            resp_json, memory_user_id, "anthropic"
-                        )
-
-                        if tool_results:
-                            # Create continuation messages
-                            assistant_msg = {
-                                "role": "assistant",
-                                "content": resp_json.get("content", []),
-                            }
-                            user_msg = {
-                                "role": "user",
-                                "content": tool_results,
-                            }
-
-                            continuation_messages = optimized_messages + [assistant_msg, user_msg]
-
-                            # Make continuation API call
-                            continuation_body = {**body, "messages": continuation_messages}
-                            if tools:
-                                continuation_body["tools"] = tools
-
-                            cont_response = await self._retry_request(
-                                "POST", url, headers, continuation_body
-                            )
-
-                            # Update response with continuation
-                            resp_json = cont_response.json()
-                            response = cont_response
-                            logger.info(
-                                f"[{request_id}] Memory: Tool calls handled, continuation complete"
-                            )
-
-                    except Exception as e:
-                        logger.warning(f"[{request_id}] Memory: Tool call handling failed: {e}")
-                        # Continue with original response
-
-                total_latency = (time.time() - start_time) * 1000
-
-                # Parse response for output token count and cache metrics
-                output_tokens = 0
-                cr_tokens = 0
-                cw_tokens = 0
-                cw_5m_tokens = 0
-                cw_1h_tokens = 0
-                uncached_input_tokens = 0
-                if resp_json:
-                    usage = resp_json.get("usage", {})
-                    output_tokens = usage.get("output_tokens", 0)
-                    cr_tokens = usage.get("cache_read_input_tokens", 0)
-                    cw_tokens = usage.get("cache_creation_input_tokens", 0)
-                    cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(usage)
-                    uncached_input_tokens = usage.get("input_tokens", 0)
-
-                # Track cache bust: tokens that lost their cache discount due to compression.
-                # If we had X tokens cached last turn and only Y hit cache this turn,
-                # then (X - Y) tokens were busted by our modifications.
-                expected_cached = prefix_tracker._cached_token_count
-                if expected_cached > 0 and tokens_saved > 0:
-                    bust_tokens = max(0, expected_cached - cr_tokens)
-                    if bust_tokens > 0:
-                        logger.info(
-                            f"[{request_id}] CACHE-BUST: "
-                            f"expected_cached={expected_cached:,} actual_read={cr_tokens:,} "
-                            f"tokens_lost={bust_tokens:,} tokens_saved={tokens_saved:,}"
-                        )
-                        await self.metrics.record_cache_bust(bust_tokens)
-
-                # Update prefix cache tracker for next turn
-                next_original_messages = copy.deepcopy(original_client_messages)
-                next_forwarded_messages = copy.deepcopy(optimized_messages)
-                assistant_message = self._assistant_message_from_response_json(resp_json)
-                if assistant_message is not None:
-                    next_original_messages.append(copy.deepcopy(assistant_message))
-                    next_forwarded_messages.append(copy.deepcopy(assistant_message))
-                prefix_tracker.update_from_response(
-                    cache_read_tokens=cr_tokens,
-                    cache_write_tokens=cw_tokens,
-                    messages=next_forwarded_messages,
-                    original_messages=next_original_messages,
-                )
-
-                if self.cost_tracker:
-                    self.cost_tracker.record_tokens(
-                        model,
-                        tokens_saved,
-                        optimized_tokens,
-                        cache_read_tokens=cr_tokens,
-                        cache_write_tokens=cw_tokens,
-                        cache_write_5m_tokens=cw_5m_tokens,
-                        cache_write_1h_tokens=cw_1h_tokens,
-                        uncached_tokens=uncached_input_tokens,
-                    )
-
-                # Cache response
-                if self.cache and response.status_code == 200:
-                    await self.cache.set(
-                        messages,
-                        model,
-                        response.content,
-                        dict(response.headers),
-                        tokens_saved=tokens_saved,
-                    )
-
-                # Record metrics — use optimized_tokens (what we sent), not API's
-                # input_tokens which is just the non-cached portion with prompt caching
-                await self.metrics.record_request(
-                    provider="anthropic",
-                    model=model,
-                    input_tokens=optimized_tokens,
-                    output_tokens=output_tokens,
-                    tokens_saved=tokens_saved,
-                    latency_ms=total_latency,
-                    overhead_ms=optimization_latency,
-                    pipeline_timing=pipeline_timing,
-                    waste_signals=waste_signals_dict,
-                    cache_read_tokens=cr_tokens,
-                    cache_write_tokens=cw_tokens,
-                    cache_write_5m_tokens=cw_5m_tokens,
-                    cache_write_1h_tokens=cw_1h_tokens,
-                    uncached_input_tokens=uncached_input_tokens,
-                )
-
-                # Subscription tracker: update headroom contribution counters
-                if _auth_header.startswith("Bearer ") and not _auth_header.startswith(
-                    "Bearer sk-ant-api"
-                ):
-                    from headroom.subscription.tracker import (
-                        get_subscription_tracker as _get_sub_tracker,
-                    )
-
-                    _sub_tracker = _get_sub_tracker()
-                    if _sub_tracker is not None:
-                        _sub_tracker.update_contribution(
-                            tokens_submitted=optimized_tokens,
-                            tokens_saved_compression=tokens_saved,
-                            tokens_saved_cache_reads=cr_tokens,
-                        )
-
-                # Log request
-                if self.logger:
-                    self.logger.log(
-                        RequestLog(
-                            request_id=request_id,
-                            timestamp=datetime.now().isoformat(),
-                            provider="anthropic",
-                            model=model,
-                            input_tokens_original=original_tokens,
-                            input_tokens_optimized=optimized_tokens,
-                            output_tokens=output_tokens,
-                            tokens_saved=tokens_saved,
-                            savings_percent=(tokens_saved / original_tokens * 100)
-                            if original_tokens > 0
-                            else 0,
-                            optimization_latency_ms=optimization_latency,
-                            total_latency_ms=total_latency,
-                            tags=tags,
-                            cache_hit=cache_hit,
-                            transforms_applied=transforms_applied,
-                            waste_signals=waste_signals_dict,
-                            request_messages=messages if self.config.log_full_messages else None,
-                        )
-                    )
-
-                # Structured perf log line for `headroom perf` analysis
-                num_msgs = len(messages)
-                resp_usage = resp_json.get("usage", {}) if resp_json else {}
-                cr = resp_usage.get("cache_read_input_tokens", 0)
-                cw = resp_usage.get("cache_creation_input_tokens", 0)
-                chp = round(cr / (cr + cw) * 100) if (cr + cw) > 0 else 0
-                timing_str = (
-                    " ".join(f"{k}={v:.0f}ms" for k, v in pipeline_timing.items())
-                    if pipeline_timing
-                    else ""
-                )
-                logger.info(
-                    f"[{request_id}] PERF "
-                    f"model={model} msgs={num_msgs} "
-                    f"tok_before={original_tokens} tok_after={optimized_tokens} "
-                    f"tok_saved={tokens_saved} "
-                    f"cache_read={cr} cache_write={cw} cache_hit_pct={chp} "
-                    f"opt_ms={optimization_latency:.0f} "
-                    f"transforms={_summarize_transforms(transforms_applied)}"
-                    f"{' timing=' + timing_str if timing_str else ''}"
-                )
-
-                # Remove compression headers since httpx already decompressed the response
-                response_headers = dict(response.headers)
-                response_headers.pop("content-encoding", None)
-                response_headers.pop("content-length", None)  # Length changed after decompression
-
-                # Inject Headroom compression metrics (for SaaS metering)
-                response_headers["x-headroom-tokens-before"] = str(original_tokens)
-                response_headers["x-headroom-tokens-after"] = str(optimized_tokens)
-                response_headers["x-headroom-tokens-saved"] = str(tokens_saved)
-                response_headers["x-headroom-model"] = model
-                if transforms_applied:
-                    response_headers["x-headroom-transforms"] = ",".join(transforms_applied)
-                if cache_hit:
-                    response_headers["x-headroom-cached"] = "true"
-                if _compression_failed:
-                    response_headers["x-headroom-compression-failed"] = "true"
-
-                # Enterprise Security: scan response + de-anonymize
-                if self.security and _security_ctx and resp_json:
-                    try:
-                        resp_json = self.security.scan_response(resp_json, _security_ctx)
-                        response = httpx.Response(
-                            status_code=200,
-                            content=json.dumps(resp_json).encode(),
-                            headers=response_headers,
-                        )
-                        return Response(
-                            content=response.content,
-                            status_code=response.status_code,
-                            headers=response_headers,
-                        )
-                    except Exception as sec_err:
-                        logger.warning(f"[{request_id}] Security response scan error: {sec_err}")
-
-                return Response(
-                    content=response.content,
-                    status_code=response.status_code,
-                    headers=response_headers,
-                )
-
-        except Exception as e:
-            await self.metrics.record_failed(provider="anthropic")
-            # Log full error details internally for debugging
-            logger.error(f"[{request_id}] Request failed: {type(e).__name__}: {e}")
-
-            # Try fallback if enabled
-            if self.config.fallback_enabled and self.config.fallback_provider == "openai":
-                logger.info(f"[{request_id}] Attempting fallback to OpenAI")
-                # Convert to OpenAI format and retry
-                # (simplified - would need message format conversion)
-
-            # Return sanitized error message to client (don't expose internal details)
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": "An error occurred while processing your request. Please try again.",
-                    },
-                },
-            )
+            finally:
+                # Unit 2: always emit pre-upstream stage timings exactly
+                # once per request, even on early/error paths.
+                await _finalize_pre_upstream()
+        finally:
+            # Unit 4: defense-in-depth. The inner try/finally above
+            # already calls this on every normal exit path, but an
+            # unexpected exception between the semaphore acquire and the
+            # inner try (e.g. AttributeError in a transform, OOM in a
+            # deep-copy) would otherwise leak the pre-upstream semaphore
+            # permanently. The emit function is idempotent.
+            await _finalize_pre_upstream()
 
     async def handle_anthropic_batch_create(
         self,

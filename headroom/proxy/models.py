@@ -48,6 +48,14 @@ class RequestLog:
     response_content: str | None = None
     error: str | None = None
 
+    # NOTE (Unit 2 follow-up): stage timings and session_id were briefly
+    # added here but are now emitted exclusively through
+    # ``emit_stage_timings_log`` (structured log line) and Prometheus.
+    # They were never populated on ``RequestLog`` instances, so the
+    # fields were removed to avoid confusing readers who expect
+    # them to be set. If a JSONL consumer needs them, have the consumer
+    # merge ``stage_timings`` log lines by ``request_id``.
+
 
 @dataclass
 class CacheEntry:
@@ -210,3 +218,22 @@ class ProxyConfig:
 
     # Stateless mode — disable all filesystem writes for read-only / container deployments
     stateless: bool = False
+
+    # Unit 4: Bounded pre-upstream concurrency for Anthropic replay storms.
+    #
+    # Caps the number of simultaneous requests allowed to run the
+    # pre-upstream phase of ``handle_anthropic_messages`` (request JSON
+    # read → deep-copy → first compression stage → memory-context lookup
+    # → first upstream connect). Prevents cold-start replay storms from
+    # monopolising the event loop / thread pool and starving ``/livez``,
+    # ``/readyz``, and new Codex WS opens. Compression stays on.
+    #
+    # ``None`` (default) -> auto-compute ``max(2, min(8, os.cpu_count() or 4))``.
+    # ``0`` or negative  -> disables the semaphore (unbounded); useful for
+    # the Unit 6 counter-factual and for deliberately reproducing the
+    # original starvation. Any positive integer is honored verbatim.
+    #
+    # CLI: ``--anthropic-pre-upstream-concurrency``.
+    # Env: ``HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY``.
+    # Precedence: CLI > env > auto-compute.
+    anthropic_pre_upstream_concurrency: int | None = None

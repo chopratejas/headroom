@@ -251,7 +251,10 @@ class _CopilotQuotaTracker(QuotaTracker):
             try:
                 await asyncio.wait_for(self._task, timeout=5.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+                # Mirror SubscriptionTracker.stop(): on timeout or outer
+                # cancellation, cancel the underlying poll task. Without
+                # this, a wedged poll task would leak past ``stop()``.
+                self._task.cancel()
 
     # ------------------------------------------------------------------
     # State
@@ -274,8 +277,12 @@ class _CopilotQuotaTracker(QuotaTracker):
             except Exception as exc:
                 logger.warning("Copilot quota poll error: %s", exc)
             try:
+                # NOTE: do NOT wrap in asyncio.shield() — shield prevents the
+                # inner Event.wait() from being cancelled when wait_for times
+                # out, leaking one Task per poll interval. See the matching
+                # note in headroom/subscription/tracker.py:_poll_loop.
                 await asyncio.wait_for(
-                    asyncio.shield(self._stop_event.wait()),
+                    self._stop_event.wait(),
                     timeout=self._poll_interval_s,
                 )
                 break  # stop event was set

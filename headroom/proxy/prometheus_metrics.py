@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -100,6 +101,25 @@ class PrometheusMetrics:
         self.transform_timing_count: dict[str, int] = defaultdict(int)
         self.transform_timing_max: dict[str, float] = defaultdict(float)
 
+        # Per-stage timing (Unit 2). Keyed by ``(path, stage)`` tuples so
+        # a single metric name can distinguish between, e.g.,
+        # ``openai_responses_ws`` ``upstream_connect`` and
+        # ``anthropic_messages`` ``upstream_connect``.
+        self.stage_timing_sum: dict[tuple[str, str], float] = defaultdict(float)
+        self.stage_timing_count: dict[tuple[str, str], int] = defaultdict(int)
+        self.stage_timing_max: dict[tuple[str, str], float] = defaultdict(float)
+
+        # WS session lifecycle (Unit 3). Gauges are live counters updated
+        # by the Codex handler on register/deregister + attach_tasks/
+        # detach. Histograms record completed-session durations bucketed
+        # by termination cause so we can distinguish slow happy-path
+        # sessions from long client-hold followed by client_disconnect.
+        self.active_ws_sessions: int = 0
+        self.active_relay_tasks: int = 0
+        self.ws_session_duration_sum_ms: dict[str, float] = defaultdict(float)
+        self.ws_session_duration_count: dict[str, int] = defaultdict(int)
+        self.ws_session_duration_max_ms: dict[str, float] = defaultdict(float)
+
         # Aggregate waste signals
         self.waste_signals_total: dict[str, int] = defaultdict(int)
 
@@ -151,6 +171,13 @@ class PrometheusMetrics:
         )
 
         self._lock = asyncio.Lock()
+        # Tiny synchronous critical section for stage-timing triple updates
+        # (sum + count + max must move together for a consistent scrape).
+        # threading.Lock is cheaper than asyncio.Lock and does NOT contend
+        # with the async ``export()`` path — scrapes snapshot these dicts
+        # under this lock in a microsecond block, then build the metrics
+        # string without holding anything.
+        self._stage_timing_lock = threading.Lock()
         self._otel_metrics = otel_metrics
 
     def _get_otel_metrics(self) -> HeadroomOtelMetrics:
@@ -317,12 +344,89 @@ class PrometheusMetrics:
             uncached_input_tokens=uncached_input_tokens,
         )
 
+    async def record_stage_timings(
+        self,
+        path: str,
+        timings: dict[str, float],
+    ) -> None:
+        """Record per-stage timings as histogram-style observations.
+
+        ``path`` identifies the code path that emitted the timings (e.g.
+        ``openai_responses_ws`` or ``anthropic_messages``). ``timings``
+        maps stage names to millisecond durations. Mirrors the
+        ``transform_timing_*`` aggregation pattern so the ``/metrics``
+        endpoint exposes sum/count/max series per ``(path, stage)``.
+
+        Uses a tiny synchronous ``threading.Lock`` around the triple
+        update (sum + count + max) rather than the async
+        ``self._lock``: (1) the updates have no awaits, so there is no
+        async contention benefit, and (2) the async lock is also held
+        by ``export()`` during Prometheus scrapes — which does
+        string-building while holding it. Under N concurrent request
+        finalizations + an active scrape, callers would queue behind
+        the scrape's string-building.
+        """
+        if not timings:
+            return
+        with self._stage_timing_lock:
+            for stage, ms in timings.items():
+                try:
+                    ms_val = float(ms)
+                except (TypeError, ValueError):
+                    continue
+                key = (path, stage)
+                self.stage_timing_sum[key] += ms_val
+                self.stage_timing_count[key] += 1
+                if ms_val > self.stage_timing_max[key]:
+                    self.stage_timing_max[key] = ms_val
+
     async def record_cache_bust(self, tokens_lost: int) -> None:
         """Record tokens that lost their cache discount due to compression."""
         async with self._lock:
             self.cache_bust_tokens_lost += tokens_lost
             self.cache_bust_count += 1
         self._get_otel_metrics().record_proxy_cache_bust(tokens_lost=tokens_lost)
+
+    # ------------------------------------------------------------------
+    # Unit 3: WS session lifecycle gauges / histogram
+    # ------------------------------------------------------------------
+
+    def inc_active_ws_sessions(self) -> None:
+        """Increment the live WS session gauge (called on register)."""
+        self.active_ws_sessions += 1
+
+    def dec_active_ws_sessions(self) -> None:
+        """Decrement the live WS session gauge (called on deregister)."""
+        self.active_ws_sessions = max(0, self.active_ws_sessions - 1)
+
+    def inc_active_relay_tasks(self, n: int = 1) -> None:
+        """Increment the live relay-task gauge (attach_tasks)."""
+        self.active_relay_tasks += n
+
+    def dec_active_relay_tasks(self, n: int = 1) -> None:
+        """Decrement the live relay-task gauge (deregister)."""
+        self.active_relay_tasks = max(0, self.active_relay_tasks - n)
+
+    def record_ws_session_duration(
+        self,
+        duration_ms: float,
+        cause: str = "unknown",
+    ) -> None:
+        """Record a completed WS session's duration, bucketed by cause.
+
+        Mirrors the ``stage_timing_*`` shape so ``/metrics`` exposes
+        sum/count/max per termination cause. Uses synchronous dict
+        updates (no ``_lock``) because Unit 3 callers run on the event
+        loop — matching the gauges above.
+        """
+        try:
+            ms_val = float(duration_ms)
+        except (TypeError, ValueError):
+            return
+        self.ws_session_duration_sum_ms[cause] += ms_val
+        self.ws_session_duration_count[cause] += 1
+        if ms_val > self.ws_session_duration_max_ms[cause]:
+            self.ws_session_duration_max_ms[cause] = ms_val
 
     async def record_rate_limited(self, *, provider: str | None = None, model: str | None = None):
         async with self._lock:
@@ -336,6 +440,15 @@ class PrometheusMetrics:
 
     async def export(self) -> str:
         """Export metrics in Prometheus format."""
+        # Snapshot stage-timing dicts under the tiny synchronous lock so
+        # we don't race a concurrent ``record_stage_timings`` and observe
+        # an inconsistent (sum, count, max) triple. Freeze into plain
+        # dicts so the scrape's string-building below doesn't hold the
+        # stage-timing lock during I/O-ish work.
+        with self._stage_timing_lock:
+            stage_timing_sum_snapshot = dict(self.stage_timing_sum)
+            stage_timing_count_snapshot = dict(self.stage_timing_count)
+            stage_timing_max_snapshot = dict(self.stage_timing_max)
         async with self._lock:
             lines: list[str] = []
             _append_metric(
@@ -538,6 +651,89 @@ class PrometheusMetrics:
                 for name, max_value in self.transform_timing_max.items():
                     lines.append(
                         f'headroom_transform_timing_ms_max{{transform="{_escape_label_value(name)}"}} {round(max_value, 2)}'
+                    )
+                lines.append("")
+
+            if stage_timing_sum_snapshot:
+                lines.extend(
+                    [
+                        "# HELP headroom_stage_timing_ms_sum Sum of per-stage handler timings in milliseconds",
+                        "# TYPE headroom_stage_timing_ms_sum counter",
+                    ]
+                )
+                for (path_label, stage), total in stage_timing_sum_snapshot.items():
+                    lines.append(
+                        f'headroom_stage_timing_ms_sum{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(total, 2)}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_stage_timing_ms_count Count of per-stage handler timing samples",
+                        "# TYPE headroom_stage_timing_ms_count counter",
+                    ]
+                )
+                for (path_label, stage), count in stage_timing_count_snapshot.items():
+                    lines.append(
+                        f'headroom_stage_timing_ms_count{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {count}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_stage_timing_ms_max Maximum per-stage handler timing in milliseconds",
+                        "# TYPE headroom_stage_timing_ms_max gauge",
+                    ]
+                )
+                for (path_label, stage), max_value in stage_timing_max_snapshot.items():
+                    lines.append(
+                        f'headroom_stage_timing_ms_max{{path="{_escape_label_value(path_label)}",stage="{_escape_label_value(stage)}"}} {round(max_value, 2)}'
+                    )
+                lines.append("")
+
+            # Unit 3: WS session lifecycle gauges + duration histogram.
+            lines.extend(
+                [
+                    "# HELP headroom_active_ws_sessions Active Codex WebSocket sessions",
+                    "# TYPE headroom_active_ws_sessions gauge",
+                    f"headroom_active_ws_sessions {self.active_ws_sessions}",
+                    "",
+                    "# HELP headroom_active_relay_tasks Active Codex WS relay tasks",
+                    "# TYPE headroom_active_relay_tasks gauge",
+                    f"headroom_active_relay_tasks {self.active_relay_tasks}",
+                    "",
+                ]
+            )
+            if self.ws_session_duration_sum_ms:
+                lines.extend(
+                    [
+                        "# HELP headroom_ws_session_duration_ms_sum Sum of Codex WS session durations",
+                        "# TYPE headroom_ws_session_duration_ms_sum counter",
+                    ]
+                )
+                for cause, total in self.ws_session_duration_sum_ms.items():
+                    lines.append(
+                        f'headroom_ws_session_duration_ms_sum{{cause="{_escape_label_value(cause)}"}} {round(total, 2)}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_ws_session_duration_ms_count Count of completed Codex WS sessions",
+                        "# TYPE headroom_ws_session_duration_ms_count counter",
+                    ]
+                )
+                for cause, count in self.ws_session_duration_count.items():
+                    lines.append(
+                        f'headroom_ws_session_duration_ms_count{{cause="{_escape_label_value(cause)}"}} {count}'
+                    )
+                lines.extend(
+                    [
+                        "",
+                        "# HELP headroom_ws_session_duration_ms_max Maximum Codex WS session duration",
+                        "# TYPE headroom_ws_session_duration_ms_max gauge",
+                    ]
+                )
+                for cause, max_value in self.ws_session_duration_max_ms.items():
+                    lines.append(
+                        f'headroom_ws_session_duration_ms_max{{cause="{_escape_label_value(cause)}"}} {round(max_value, 2)}'
                     )
                 lines.append("")
 

@@ -1,9 +1,13 @@
-# Private scripts (contain credentials)
+# Private scripts (contain credentials). Allowlist checked-in helpers below.
 scripts/
 !scripts/
 scripts/*
 !scripts/install.sh
 !scripts/install.ps1
+!scripts/README.md
+!scripts/repro_codex_replay.py
+!scripts/fixtures/
+!scripts/fixtures/*.json
 !scripts/version-sync.py
 !scripts/changelog-gen.py
 !scripts/verify-versions.py
