@@ -1188,6 +1188,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # X-Headroom-Stack: SDK adapters (TS openai/anthropic/etc.) tag their
+    # requests so telemetry can segment by integration surface.
+    @app.middleware("http")
+    async def _record_headroom_stack(request, call_next):
+        if request.url.path.startswith("/v1/"):
+            stack = request.headers.get("x-headroom-stack")
+            if stack:
+                try:
+                    proxy.metrics.record_stack(stack)
+                except Exception:
+                    logger.debug("record_stack failed", exc_info=True)
+        return await call_next(request)
+
     # Health & Metrics
     @app.get("/livez")
     async def livez():
@@ -1356,6 +1369,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "failed": m.requests_failed,
                 "by_provider": dict(m.requests_by_provider),
                 "by_model": dict(m.requests_by_model),
+                "by_stack": dict(m.requests_by_stack),
             },
             "tokens": {
                 "input": m.tokens_input_total,

@@ -162,6 +162,10 @@ headroom_tokens_saved_total 5678900
 headroom_requests_by_provider{provider="anthropic"} 800
 headroom_requests_by_provider{provider="openai"} 434
 
+# HELP headroom_requests_by_stack Requests by Headroom integration stack
+headroom_requests_by_stack{stack="wrap_claude"} 612
+headroom_requests_by_stack{stack="adapter_ts_openai"} 48
+
 # HELP headroom_transform_timing_ms_sum Sum of transform timing in milliseconds
 headroom_transform_timing_ms_sum{transform="router"} 5123.7
 
@@ -236,6 +240,27 @@ Headroom has two separate systems:
 - `HEADROOM_OTEL_*` controls operational OTEL metric export.
 
 They are independent by design so you can disable the anonymous beacon while keeping OTEL metrics enabled, or vice versa.
+
+#### Beacon identity fields
+
+When the anonymous beacon is enabled, each report includes two identity fields
+so usage can be segmented by integration surface and deployment shape:
+
+- `headroom_stack` — how Headroom is invoked in this process. Values:
+  `proxy`, `wrap_<agent>` (e.g. `wrap_claude`, `wrap_codex`),
+  `adapter_<lang>_<provider>` (e.g. `adapter_ts_openai`), `mixed`
+  (multi-stack proxy with no dominant caller), or `unknown`. Overridable via
+  `HEADROOM_STACK`; `headroom wrap <tool>` sets it automatically.
+- `install_mode` — how the proxy is deployed. Values: `wrapped` (spawned by
+  `headroom wrap`), `persistent` (long-lived service on a fixed port),
+  `on_demand` (short-lived direct invocation), or `unknown`.
+- `requests_by_stack` — for proxies serving multiple integrations (e.g. a
+  persistent proxy hit by both `wrap_claude` and a TS adapter), a per-stack
+  request count dict mirroring the `headroom_requests_by_stack` counter.
+
+Clients tag requests with an `X-Headroom-Stack` header; the proxy's FastAPI
+middleware buckets these on `/v1/*`. Detection is best-effort — any failure
+falls back to `"unknown"` and never breaks the proxy.
 
 ### Langfuse
 

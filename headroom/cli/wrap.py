@@ -134,6 +134,7 @@ def _start_proxy(
     # Tell the proxy which agent is being wrapped (for traffic learning output)
     if agent_type != "unknown":
         proxy_env["HEADROOM_AGENT_TYPE"] = agent_type
+        proxy_env.setdefault("HEADROOM_STACK", f"wrap_{agent_type}")
 
     proc = subprocess.Popen(
         cmd,

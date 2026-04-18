@@ -44,7 +44,7 @@ export function withHeadroom<T extends GeminiModelLike>(
     // compress() auto-detects Gemini format
     const result = await compress(
       Array.isArray(contents) ? contents : [contents],
-      { ...options, model: modelName },
+      { stack: "adapter_ts_gemini", ...options, model: modelName },
     );
 
     const newParams = Array.isArray(params)
@@ -61,7 +61,7 @@ export function withHeadroom<T extends GeminiModelLike>(
 
         const result = await compress(
           Array.isArray(contents) ? contents : [contents],
-          { ...options, model: modelName },
+          { stack: "adapter_ts_gemini", ...options, model: modelName },
         );
 
         const newParams = Array.isArray(params)

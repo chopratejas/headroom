@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS proxy_telemetry_v2 (
     sdk text,
     backend text,
     session_minutes integer,
+    headroom_stack text,
+    install_mode text,
+    requests_by_stack jsonb,
 
     -- Effectiveness metrics
     tokens_saved bigint,

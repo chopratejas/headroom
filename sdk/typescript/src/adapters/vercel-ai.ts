@@ -54,7 +54,11 @@ export function headroomMiddleware(options: CompressOptions = {}) {
       const openaiMessages = vercelToOpenAI(prompt);
 
       // Compress via Headroom
-      const result = await compress(openaiMessages, { ...options, model });
+      const result = await compress(openaiMessages, {
+        stack: "adapter_ts_vercel_ai",
+        ...options,
+        model,
+      });
 
       if (!result.compressed) return params;
 
@@ -75,7 +79,10 @@ export async function compressVercelMessages(
   options: CompressOptions = {},
 ): Promise<CompressResult & { messages: VercelMessage[] }> {
   const openaiMessages = vercelToOpenAI(messages);
-  const result = await compress(openaiMessages, options);
+  const result = await compress(openaiMessages, {
+    stack: "adapter_ts_vercel_ai",
+    ...options,
+  });
   const vercelMessages = openAIToVercel(result.messages);
 
   return {

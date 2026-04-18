@@ -42,7 +42,11 @@ export function withHeadroom<T extends OpenAILike>(
     const messages: OpenAIMessage[] = params.messages;
     const model = options.model ?? params.model ?? "gpt-4o";
 
-    const result = await compress(messages, { ...options, model });
+    const result = await compress(messages, {
+      stack: "adapter_ts_openai",
+      ...options,
+      model,
+    });
 
     return originalCreate({
       ...params,

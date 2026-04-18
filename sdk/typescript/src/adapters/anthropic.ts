@@ -186,7 +186,11 @@ export function withHeadroom<T extends AnthropicLike>(
       options.model ?? params.model ?? "claude-sonnet-4-5-20250929";
 
     const openaiMessages = anthropicToOpenAI(messages);
-    const result = await compress(openaiMessages, { ...options, model });
+    const result = await compress(openaiMessages, {
+      stack: "adapter_ts_anthropic",
+      ...options,
+      model,
+    });
 
     const anthropicMessages = result.compressed
       ? openAIToAnthropic(result.messages)

@@ -201,6 +201,7 @@ export class HeadroomClient implements HeadroomClientInterface {
   private fallback: boolean;
   private retries: number;
   private config: HeadroomConfig | undefined;
+  private stack: string | undefined;
 
   /** @internal */ providerApiKey: string | undefined;
 
@@ -221,6 +222,7 @@ export class HeadroomClient implements HeadroomClientInterface {
     this.retries = options.retries ?? DEFAULT_RETRIES;
     this.providerApiKey = options.providerApiKey;
     this.config = options.config;
+    this.stack = options.stack;
 
     this.chat = { completions: new ChatCompletions(this) };
     this.messages = new Messages(this);
@@ -513,6 +515,9 @@ export class HeadroomClient implements HeadroomClientInterface {
         headers["Authorization"] = `Bearer ${this.apiKey}`;
       }
     }
+    if (this.stack && !headers["X-Headroom-Stack"]) {
+      headers["X-Headroom-Stack"] = this.stack;
+    }
 
     let response: Response;
     try {
@@ -557,6 +562,9 @@ export class HeadroomClient implements HeadroomClientInterface {
     };
     if (this.apiKey) {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
+    if (this.stack && !headers["X-Headroom-Stack"]) {
+      headers["X-Headroom-Stack"] = this.stack;
     }
 
     let response: Response;

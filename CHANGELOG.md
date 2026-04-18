@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Telemetry stack & install-mode identity fields** — anonymous beacon now
+  reports `headroom_stack` (how Headroom is invoked: `proxy`, `wrap_claude`,
+  `adapter_ts_openai`, ...) and `install_mode` (`wrapped` / `persistent` /
+  `on_demand`), plus `requests_by_stack` for proxies that serve multiple
+  integrations. Proxy exposes a `by_stack` bucket alongside `by_provider` /
+  `by_model` on `/stats`, a matching `headroom_requests_by_stack` Prometheus
+  counter, and an `X-Headroom-Stack` header honored by the FastAPI middleware.
+  `headroom wrap <tool>` sets `HEADROOM_STACK=wrap_<agent>`; the TS SDK and
+  all four adapters (`openai`, `anthropic`, `gemini`, `vercel-ai`) tag their
+  compress calls. Schema migration:
+  [`sql/upgrade_telemetry_stack_context.sql`](sql/upgrade_telemetry_stack_context.sql).
 - **Canonical filesystem contract** (issue #175) — new `HEADROOM_CONFIG_DIR`
   (default `~/.headroom/config`, read-mostly) and `HEADROOM_WORKSPACE_DIR`
   (default `~/.headroom`, read-write state) env vars recognized by the Python

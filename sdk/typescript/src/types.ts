@@ -67,6 +67,8 @@ export interface CompressOptions {
   tokenBudget?: number;
   /** Compression hooks for pre/post processing. */
   hooks?: CompressionHooks;
+  /** Integration slug sent as X-Headroom-Stack (e.g. "adapter_ts_openai"). */
+  stack?: string;
 }
 
 export interface CompressResult {
@@ -89,6 +91,8 @@ export interface HeadroomClientOptions {
   timeout?: number;
   fallback?: boolean;
   retries?: number;
+  /** Integration slug sent as X-Headroom-Stack on every request. */
+  stack?: string;
 }
 
 export interface HeadroomClientInterface {

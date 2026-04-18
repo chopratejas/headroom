@@ -19,6 +19,8 @@ import sys
 import time
 import uuid
 
+from headroom.telemetry.context import detect_install_mode, detect_stack
+
 logger = logging.getLogger(__name__)
 
 # Supabase endpoint for anonymous aggregate telemetry.
@@ -89,6 +91,8 @@ class TelemetryBeacon:
         self._session_id = uuid.uuid4().hex
         # Stable across restarts — anonymous machine fingerprint (SHA256 of hostname)
         self._instance_id = hashlib.sha256(platform.node().encode()).hexdigest()[:16]
+        # Deployment shape is determined once at startup (wrapped / persistent / on_demand)
+        self._install_mode = detect_install_mode(port)
 
     async def start(self) -> None:
         """Start the periodic beacon. Call from proxy startup."""
@@ -177,7 +181,16 @@ class TelemetryBeacon:
             "sdk": self._sdk,
             "backend": self._backend,
             "session_minutes": session_minutes,
+            "install_mode": self._install_mode,
+            "headroom_stack": detect_stack(stats),
         }
+
+        try:
+            by_stack = (stats.get("requests") or {}).get("by_stack") or {}
+            if by_stack:
+                payload["requests_by_stack"] = dict(by_stack)
+        except Exception:
+            logger.debug("Beacon: failed to extract requests_by_stack", exc_info=True)
 
         # --- Effectiveness metrics ---
         try:
