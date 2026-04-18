@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import Response, StreamingResponse
 
 
 import httpx
@@ -432,6 +432,116 @@ class StreamingMixin:
             except Exception as e:
                 logger.debug(f"[{request_id}] CCR Feedback recording failed: {e}")
 
+    async def _finalize_stream_response(
+        self,
+        *,
+        body: dict,
+        provider: str,
+        model: str,
+        request_id: str,
+        original_tokens: int,
+        optimized_tokens: int,
+        tokens_saved: int,
+        transforms_applied: list[str],
+        optimization_latency: float,
+        stream_state: dict[str, Any],
+        start_time: float,
+        pipeline_timing: dict[str, float] | None = None,
+        prefix_tracker: Any | None = None,
+        original_messages: list[dict] | None = None,
+        full_sse_data: str = "",
+        parsed_response: dict[str, Any] | None = None,
+    ) -> None:
+        from headroom.proxy.cost import _summarize_transforms
+
+        total_latency = (time.time() - start_time) * 1000
+        output_tokens = stream_state["output_tokens"]
+        if output_tokens is None:
+            output_tokens = stream_state["total_bytes"] // 40
+            logger.warning(
+                f"[{request_id}] Could not parse output_tokens from SSE, "
+                f"estimating {output_tokens} from {stream_state['total_bytes']} bytes"
+            )
+
+        cache_read_tokens = stream_state["cache_read_input_tokens"] or 0
+        cache_write_tokens = stream_state["cache_creation_input_tokens"] or 0
+        cache_write_5m_tokens = stream_state["cache_creation_ephemeral_5m_input_tokens"] or 0
+        cache_write_1h_tokens = stream_state["cache_creation_ephemeral_1h_input_tokens"] or 0
+        uncached_input_tokens = max(optimized_tokens - cache_read_tokens - cache_write_tokens, 0)
+
+        num_msgs = len(body.get("messages", []))
+        cache_hit_pct = (
+            round(cache_read_tokens / (cache_read_tokens + cache_write_tokens) * 100)
+            if (cache_read_tokens + cache_write_tokens) > 0
+            else 0
+        )
+        logger.info(
+            f"[{request_id}] PERF "
+            f"model={model} msgs={num_msgs} "
+            f"tok_before={original_tokens} tok_after={optimized_tokens} "
+            f"tok_saved={tokens_saved} "
+            f"cache_read={cache_read_tokens} cache_write={cache_write_tokens} "
+            f"cache_hit_pct={cache_hit_pct} "
+            f"opt_ms={optimization_latency:.0f} "
+            f"transforms={_summarize_transforms(transforms_applied)}"
+        )
+
+        if prefix_tracker is not None:
+            import copy as _copy
+
+            forwarded_messages = body.get("messages", [])
+            next_forwarded = _copy.deepcopy(forwarded_messages)
+            next_original = _copy.deepcopy(original_messages or forwarded_messages)
+
+            if full_sse_data and provider == "anthropic":
+                _parsed = (
+                    parsed_response
+                    if parsed_response is not None
+                    else self._parse_sse_to_response(full_sse_data, provider)
+                )
+                if _parsed:
+                    asst_msg = self._assistant_message_from_response_json(_parsed)
+                    if asst_msg is not None:
+                        next_forwarded.append(_copy.deepcopy(asst_msg))
+                        next_original.append(_copy.deepcopy(asst_msg))
+
+            prefix_tracker.update_from_response(
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                messages=next_forwarded,
+                original_messages=next_original,
+            )
+
+        if self.cost_tracker:
+            self.cost_tracker.record_tokens(
+                model,
+                tokens_saved,
+                optimized_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cache_write_5m_tokens=cache_write_5m_tokens,
+                cache_write_1h_tokens=cache_write_1h_tokens,
+                uncached_tokens=uncached_input_tokens,
+            )
+
+        if getattr(self, "metrics", None) is not None:
+            await self.metrics.record_request(
+                provider=provider,
+                model=model,
+                input_tokens=optimized_tokens,
+                output_tokens=output_tokens,
+                tokens_saved=tokens_saved,
+                latency_ms=total_latency,
+                overhead_ms=optimization_latency,
+                ttfb_ms=stream_state["ttfb_ms"] or total_latency,
+                pipeline_timing=pipeline_timing,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                cache_write_5m_tokens=cache_write_5m_tokens,
+                cache_write_1h_tokens=cache_write_1h_tokens,
+                uncached_input_tokens=uncached_input_tokens,
+            )
+
     async def _stream_response(
         self,
         url: str,
@@ -450,7 +560,7 @@ class StreamingMixin:
         pipeline_timing: dict[str, float] | None = None,
         prefix_tracker: Any | None = None,
         original_messages: list[dict] | None = None,
-    ) -> StreamingResponse:
+    ) -> Response | StreamingResponse:
         """Stream response with metrics tracking and memory tool handling.
 
         Parses SSE events to extract actual usage information from the API response
@@ -462,9 +572,8 @@ class StreamingMixin:
         3. Makes continuation requests until no memory tools remain
         4. Streams the final response to the client
         """
-        from fastapi.responses import StreamingResponse
+        from fastapi.responses import Response, StreamingResponse
 
-        from headroom.proxy.cost import _summarize_transforms
         from headroom.proxy.helpers import MAX_SSE_BUFFER_SIZE
 
         start_time = time.time()
@@ -510,6 +619,64 @@ class StreamingMixin:
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
 
             return StreamingResponse(_error_gen(), media_type="text/event-stream")
+
+        if upstream_response.status_code >= 400:
+            logger.warning(
+                "[%s] Forwarding upstream streaming error status=%s url=%s",
+                request_id,
+                upstream_response.status_code,
+                url,
+            )
+            response_headers = dict(upstream_response.headers)
+            response_headers.pop("content-length", None)
+            response_headers.pop("transfer-encoding", None)
+            response_headers.pop("connection", None)
+            response_headers.pop("content-encoding", None)
+
+            try:
+                error_content = await upstream_response.aread()
+            except Exception as read_error:
+                logger.warning(
+                    "[%s] Failed reading upstream error body status=%s url=%s error=%s",
+                    request_id,
+                    upstream_response.status_code,
+                    url,
+                    read_error,
+                )
+                error_content = json.dumps(
+                    {
+                        "error": {
+                            "message": "Failed to read upstream error response body",
+                            "details": str(read_error),
+                        }
+                    }
+                ).encode("utf-8")
+                response_headers["content-type"] = "application/json"
+            finally:
+                await upstream_response.aclose()
+
+            stream_state["total_bytes"] = len(error_content)
+            await self._finalize_stream_response(
+                body=body,
+                provider=provider,
+                model=model,
+                request_id=request_id,
+                original_tokens=original_tokens,
+                optimized_tokens=optimized_tokens,
+                tokens_saved=tokens_saved,
+                transforms_applied=transforms_applied,
+                optimization_latency=optimization_latency,
+                stream_state=stream_state,
+                start_time=start_time,
+                pipeline_timing=pipeline_timing,
+                prefix_tracker=prefix_tracker,
+                original_messages=original_messages,
+            )
+            return Response(
+                content=error_content,
+                status_code=upstream_response.status_code,
+                headers=response_headers,
+            )
 
         # Forward upstream ratelimit headers to the client
         forwarded_headers = {
@@ -662,102 +829,23 @@ class StreamingMixin:
                 }
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             finally:
-                # Record metrics after stream completes
-                total_latency = (time.time() - start_time) * 1000
-
-                # Use actual output tokens from API if available, otherwise estimate
-                output_tokens = stream_state["output_tokens"]
-                if output_tokens is None:
-                    # Fallback: estimate from bytes (but this is inaccurate for SSE)
-                    # Use a more conservative estimate - SSE overhead is ~10-20x
-                    output_tokens = stream_state["total_bytes"] // 40
-                    logger.debug(
-                        f"[{request_id}] No usage in stream, estimated {output_tokens} output tokens"
-                    )
-
-                # Use optimized_tokens for dashboard metrics (what we actually sent).
-                # API's input_tokens is the non-cached portion only, which is
-                # misleading for aggregation (often just 1 with prompt caching).
-                cache_read_tokens = stream_state["cache_read_input_tokens"]
-                cache_write_tokens = stream_state["cache_creation_input_tokens"]
-                cache_write_5m_tokens = stream_state["cache_creation_ephemeral_5m_input_tokens"]
-                cache_write_1h_tokens = stream_state["cache_creation_ephemeral_1h_input_tokens"]
-                uncached_input_tokens = stream_state.get("input_tokens") or 0
-
-                # Structured perf log line for `headroom perf` analysis
-                num_msgs = len(body.get("messages", []))
-                cache_hit_pct = (
-                    round(cache_read_tokens / (cache_read_tokens + cache_write_tokens) * 100)
-                    if (cache_read_tokens + cache_write_tokens) > 0
-                    else 0
-                )
-                logger.info(
-                    f"[{request_id}] PERF "
-                    f"model={model} msgs={num_msgs} "
-                    f"tok_before={original_tokens} tok_after={optimized_tokens} "
-                    f"tok_saved={tokens_saved} "
-                    f"cache_read={cache_read_tokens} cache_write={cache_write_tokens} "
-                    f"cache_hit_pct={cache_hit_pct} "
-                    f"opt_ms={optimization_latency:.0f} "
-                    f"transforms={_summarize_transforms(transforms_applied)}"
-                )
-
-                # Update prefix cache tracker for next turn (streaming path)
-                if prefix_tracker is not None:
-                    import copy as _copy
-
-                    forwarded_messages = body.get("messages", [])
-                    next_forwarded = _copy.deepcopy(forwarded_messages)
-                    next_original = _copy.deepcopy(original_messages or forwarded_messages)
-
-                    # Reconstruct assistant response from SSE data so the
-                    # prefix tracker accounts for it in the cached prefix
-                    if full_sse_data and provider == "anthropic":
-                        _parsed = (
-                            parsed_response
-                            if parsed_response is not None
-                            else self._parse_sse_to_response(full_sse_data, provider)
-                        )
-                        if _parsed:
-                            asst_msg = self._assistant_message_from_response_json(_parsed)
-                            if asst_msg is not None:
-                                next_forwarded.append(_copy.deepcopy(asst_msg))
-                                next_original.append(_copy.deepcopy(asst_msg))
-
-                    prefix_tracker.update_from_response(
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
-                        messages=next_forwarded,
-                        original_messages=next_original,
-                    )
-
-                if self.cost_tracker:
-                    self.cost_tracker.record_tokens(
-                        model,
-                        tokens_saved,
-                        optimized_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
-                        cache_write_5m_tokens=cache_write_5m_tokens,
-                        cache_write_1h_tokens=cache_write_1h_tokens,
-                        uncached_tokens=uncached_input_tokens,
-                    )
-
-                await self.metrics.record_request(
+                await self._finalize_stream_response(
+                    body=body,
                     provider=provider,
                     model=model,
-                    input_tokens=optimized_tokens,  # What we sent, not API's non-cached count
-                    output_tokens=output_tokens,
+                    request_id=request_id,
+                    original_tokens=original_tokens,
+                    optimized_tokens=optimized_tokens,
                     tokens_saved=tokens_saved,
-                    latency_ms=total_latency,
-                    overhead_ms=optimization_latency,
-                    ttfb_ms=stream_state["ttfb_ms"] or 0,
+                    transforms_applied=transforms_applied,
+                    optimization_latency=optimization_latency,
+                    stream_state=stream_state,
+                    start_time=start_time,
                     pipeline_timing=pipeline_timing,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                    cache_write_5m_tokens=cache_write_5m_tokens,
-                    cache_write_1h_tokens=cache_write_1h_tokens,
-                    uncached_input_tokens=uncached_input_tokens,
+                    prefix_tracker=prefix_tracker,
+                    original_messages=original_messages,
+                    full_sse_data=full_sse_data,
+                    parsed_response=parsed_response,
                 )
 
         return StreamingResponse(

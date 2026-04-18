@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+import headroom.proxy.handlers.streaming as streaming_module
 from headroom.proxy.server import HeadroomProxy
 
 
@@ -27,6 +28,8 @@ class TestStreamingRatelimitHeaderForwarding:
         proxy.cost_tracker = MagicMock()
         proxy.cost_tracker.estimate_cost.return_value = 0.001
         proxy.cost_tracker.record_request.return_value = None
+        proxy.metrics = MagicMock()
+        proxy.metrics.record_request = AsyncMock()
         proxy.stats = {
             "requests_total": 0,
             "requests_optimized": 0,
@@ -40,6 +43,7 @@ class TestStreamingRatelimitHeaderForwarding:
         proxy._config = MagicMock()
         proxy._config.memory_enabled = False
         proxy._config.ccr_inject_tool = False
+        proxy.config = proxy._config
         proxy._parse_sse_usage_from_buffer = MagicMock(return_value=None)
         proxy.memory_handler = None
         return proxy
@@ -68,6 +72,7 @@ class TestStreamingRatelimitHeaderForwarding:
         if extra_headers:
             headers.update(extra_headers)
         mock_response.headers = httpx.Headers(headers)
+        mock_response.status_code = 200
 
         # Simulate a simple SSE stream
         sse_data = (
@@ -197,6 +202,110 @@ class TestStreamingRatelimitHeaderForwarding:
         assert result.media_type == "text/event-stream"
         # No ratelimit headers to forward
         assert result.headers.get("anthropic-ratelimit-tokens-limit") is None
+
+    @pytest.mark.asyncio
+    async def test_upstream_http_error_preserves_status_body_and_metrics(self, monkeypatch):
+        """Upstream non-200 streaming responses should preserve status/body and metrics."""
+        proxy = self._create_mock_proxy()
+        mock_response = self._create_mock_upstream_response()
+        mock_response.status_code = 503
+        mock_response.headers = httpx.Headers(
+            {
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+                "content-length": "42",
+            }
+        )
+        mock_response.aread = AsyncMock(
+            return_value=b'{"error":{"message":"capacity exhausted"}}'
+        )
+        mock_response.aclose = AsyncMock()
+
+        mock_request = MagicMock()
+        proxy.http_client.build_request = MagicMock(return_value=mock_request)
+        proxy.http_client.send = AsyncMock(return_value=mock_response)
+        fake_logger = MagicMock()
+        monkeypatch.setattr(streaming_module, "logger", fake_logger)
+
+        result = await proxy._stream_response(
+            url="https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": "sk-test"},
+            body={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 100,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            request_id="test-http-error",
+            original_tokens=10,
+            optimized_tokens=10,
+            tokens_saved=0,
+            transforms_applied=[],
+            tags={},
+            optimization_latency=0.0,
+        )
+
+        assert result.status_code == 503
+        assert result.body == b'{"error":{"message":"capacity exhausted"}}'
+        assert result.headers.get("content-encoding") is None
+        fake_logger.warning.assert_any_call(
+            "[%s] Forwarding upstream streaming error status=%s url=%s",
+            "test-http-error",
+            503,
+            "https://api.anthropic.com/v1/messages",
+        )
+        proxy.metrics.record_request.assert_awaited_once()
+        proxy.cost_tracker.record_tokens.assert_called_once()
+        mock_response.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_upstream_http_error_closes_response_when_body_read_fails(self, monkeypatch):
+        """Reading a streaming error body should still close the upstream response."""
+        proxy = self._create_mock_proxy()
+        mock_response = self._create_mock_upstream_response()
+        mock_response.status_code = 502
+        mock_response.aread = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_response.aclose = AsyncMock()
+
+        mock_request = MagicMock()
+        proxy.http_client.build_request = MagicMock(return_value=mock_request)
+        proxy.http_client.send = AsyncMock(return_value=mock_response)
+        fake_logger = MagicMock()
+        monkeypatch.setattr(streaming_module, "logger", fake_logger)
+
+        result = await proxy._stream_response(
+            url="https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": "sk-test"},
+            body={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 100,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            request_id="test-http-error-read-fail",
+            original_tokens=10,
+            optimized_tokens=10,
+            tokens_saved=0,
+            transforms_applied=[],
+            tags={},
+            optimization_latency=0.0,
+        )
+
+        assert result.status_code == 502
+        assert result.headers.get("content-type") == "application/json"
+        assert b"Failed to read upstream error response body" in result.body
+        fake_logger.warning.assert_any_call(
+            "[%s] Failed reading upstream error body status=%s url=%s error=%s",
+            "test-http-error-read-fail",
+            502,
+            "https://api.anthropic.com/v1/messages",
+            mock_response.aread.side_effect,
+        )
+        mock_response.aclose.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_connect_error_returns_sse_error(self):

@@ -135,6 +135,24 @@ Anthropic API format. The proxy compresses messages, forwards to Anthropic, and 
 
 OpenAI API format. The proxy compresses messages, forwards to OpenAI, and returns the response.
 
+### `POST /v1/responses`
+
+OpenAI Responses API format. The proxy compresses `input` payloads where applicable, forwards the request, and returns the response.
+
+For Codex-compatible clients, the proxy also accepts these alias paths and routes them through the same handler:
+- `POST /v1/codex/responses`
+- `POST /backend-api/responses`
+- `POST /backend-api/codex/responses`
+
+Matching WebSocket and subpath aliases are also supported for Codex flows.
+
+### `POST /v1internal:streamGenerateContent`
+
+Google Cloud Code Assist / Antigravity compatibility endpoint used by Pi-style `google-gemini-cli` and `google-antigravity` providers.
+
+The proxy also accepts:
+- `POST /v1/v1internal:streamGenerateContent`
+
 ### `POST /v1/compress`
 
 Compression-only endpoint. Compresses messages without calling any LLM. Used by the TypeScript SDK.

@@ -1,9 +1,23 @@
+import base64
+import json
+
 import httpx
+import pytest
 from fastapi import WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from headroom.proxy.server import HeadroomProxy, ProxyConfig, create_app
+
+
+def _jwt(payload: dict) -> str:
+    header = {"alg": "none", "typ": "JWT"}
+
+    def encode(part: dict) -> str:
+        raw = json.dumps(part, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode(header)}.{encode(payload)}."
 
 
 def test_codex_responses_aliases_delegate_to_openai_handler(monkeypatch):
@@ -13,7 +27,11 @@ def test_codex_responses_aliases_delegate_to_openai_handler(monkeypatch):
     monkeypatch.setattr(HeadroomProxy, "handle_openai_responses", fake_handle)
 
     with TestClient(create_app(ProxyConfig())) as client:
-        for path in ("/backend-api/responses", "/backend-api/codex/responses"):
+        for path in (
+            "/v1/codex/responses",
+            "/backend-api/responses",
+            "/backend-api/codex/responses",
+        ):
             response = client.post(path, json={"model": "gpt-5.3-codex"})
             assert response.status_code == 200
             assert response.json() == {"ok": True, "path": path}
@@ -31,11 +49,19 @@ def test_codex_responses_websocket_aliases_delegate_to_openai_handler(monkeypatc
     monkeypatch.setattr(HeadroomProxy, "handle_openai_responses_ws", fake_handle_ws)
 
     with TestClient(create_app(ProxyConfig())) as client:
-        for path in ("/backend-api/responses", "/backend-api/codex/responses"):
+        for path in (
+            "/v1/codex/responses",
+            "/backend-api/responses",
+            "/backend-api/codex/responses",
+        ):
             with client.websocket_connect(path) as websocket:
                 assert websocket.receive_json() == {"ok": True, "path": path}
 
-    assert seen_paths == ["/backend-api/responses", "/backend-api/codex/responses"]
+    assert seen_paths == [
+        "/v1/codex/responses",
+        "/backend-api/responses",
+        "/backend-api/codex/responses",
+    ]
 
 
 def test_codex_responses_subpath_aliases_delegate_to_passthrough():
@@ -55,6 +81,10 @@ def test_codex_responses_subpath_aliases_delegate_to_passthrough():
         client.app.state.proxy.http_client = fake_http_client
         client.app.state.proxy.OPENAI_API_URL = "https://api.openai.test"
 
+        pi_response = client.post(
+            "/v1/codex/responses/compact?trace=0",
+            json={"model": "gpt-5.3-codex"},
+        )
         api_key_response = client.post(
             "/backend-api/responses/compact?trace=1",
             json={"model": "gpt-5.3-codex"},
@@ -65,9 +95,67 @@ def test_codex_responses_subpath_aliases_delegate_to_passthrough():
             json={"model": "gpt-5.3-codex"},
         )
 
+    assert pi_response.status_code == 200
     assert api_key_response.status_code == 200
     assert chatgpt_response.status_code == 200
     assert fake_http_client.calls == [
+        ("POST", "https://api.openai.test/v1/responses/compact?trace=0"),
         ("POST", "https://api.openai.test/v1/responses/compact?trace=1"),
         ("POST", "https://chatgpt.com/backend-api/codex/responses/compact?trace=2"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_url"),
+    [
+        (
+            "/v1/codex/responses/compact?trace=jwt",
+            "https://chatgpt.com/backend-api/codex/responses/compact?trace=jwt",
+        ),
+        (
+            "/v1/responses/compact?trace=jwt-old",
+            "https://chatgpt.com/backend-api/codex/responses/compact?trace=jwt-old",
+        ),
+    ],
+)
+def test_codex_responses_subpath_passthrough_derives_chatgpt_routing_from_jwt(
+    path, expected_url
+):
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+        async def request(self, method, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append((method, url, dict(kwargs.get("headers", {}))))
+            return httpx.Response(200, json={"method": method, "url": url})
+
+        async def aclose(self) -> None:
+            return None
+
+    token = _jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-from-jwt",
+            }
+        }
+    )
+
+    with TestClient(create_app(ProxyConfig())) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
+        client.app.state.proxy.OPENAI_API_URL = "https://api.openai.test"
+
+        response = client.post(
+            path,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"model": "gpt-5.4"},
+        )
+
+    assert response.status_code == 200
+    assert len(fake_http_client.calls) == 1
+
+    method, url, headers = fake_http_client.calls[0]
+    assert method == "POST"
+    assert url == expected_url
+    assert headers["authorization"] == f"Bearer {token}"
+    assert headers["ChatGPT-Account-ID"] == "acct-from-jwt"

@@ -42,6 +42,8 @@ def _decode_openai_bearer_payload(headers: dict[str, str]) -> dict[str, Any] | N
 
     payload = token.split(".", 2)[1]
     payload += "=" * (-len(payload) % 4)
+    # Intentionally no signature verification here: this is only a best-effort
+    # routing hint extractor. Upstream still performs the actual auth/authz checks.
     try:
         decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
         data = json.loads(decoded.decode("utf-8"))

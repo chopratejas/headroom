@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -17,9 +17,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("headroom.proxy")
 
+DEFAULT_CLOUDCODE_API_URL = "https://cloudcode-pa.googleapis.com"
+ANTIGRAVITY_DAILY_API_URL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+
 
 class GeminiHandlerMixin:
     """Mixin providing Gemini API handler methods for HeadroomProxy."""
+
+    def _is_cloudcode_antigravity_request(
+        self, body: dict[str, Any], headers: dict[str, str]
+    ) -> bool:
+        """Detect Pi/OpenClaw antigravity requests routed via Cloud Code Assist."""
+        user_agent = headers.get("user-agent", "").lower()
+        body_user_agent = str(body.get("userAgent", "")).lower()
+        return (
+            body.get("requestType") == "agent"
+            or body_user_agent == "antigravity"
+            or user_agent.startswith("antigravity/")
+        )
+
+    def _resolve_cloudcode_base_url(self, is_antigravity: bool) -> str:
+        """Resolve upstream base URL for Pi Cloud Code Assist / Antigravity traffic."""
+        if is_antigravity:
+            return ANTIGRAVITY_DAILY_API_URL
+        return getattr(self, "CLOUDCODE_API_URL", DEFAULT_CLOUDCODE_API_URL).rstrip("/")
 
     def _has_non_text_parts(self, content: dict) -> bool:
         """Check if a Gemini content entry has non-text parts.
@@ -446,6 +467,134 @@ class GeminiHandlerMixin:
                     }
                 },
             )
+
+    async def handle_google_cloudcode_stream(
+        self,
+        request: Request,
+    ) -> StreamingResponse | JSONResponse:
+        """Handle Pi/OpenClaw Google Cloud Code Assist and Antigravity streaming requests."""
+        from fastapi.responses import JSONResponse
+
+        from headroom.proxy.helpers import _read_request_json
+        from headroom.tokenizers import get_tokenizer
+        from headroom.utils import extract_user_query
+
+        start_time = time.time()
+        request_id = await self._next_request_id()
+
+        try:
+            body = await _read_request_json(request)
+        except (json.JSONDecodeError, ValueError) as e:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": f"Invalid request body: {e!s}",
+                        "code": 400,
+                    }
+                },
+            )
+
+        request_payload = body.get("request")
+        if not isinstance(request_payload, dict):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "message": "Invalid Cloud Code Assist request: missing request payload",
+                        "code": 400,
+                    }
+                },
+            )
+
+        model = body.get("model", "unknown")
+        contents = request_payload.get("contents", [])
+        headers = dict(request.headers.items())
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers.pop("accept-encoding", None)
+        tags = self._extract_tags(headers)
+        is_antigravity = self._is_cloudcode_antigravity_request(body, headers)
+
+        system_instruction = request_payload.get("systemInstruction")
+        optimization_system_instruction = None if is_antigravity else system_instruction
+        messages, preserved_indices = self._gemini_contents_to_messages(
+            contents if isinstance(contents, list) else [], optimization_system_instruction
+        )
+        preserved_contents = {
+            idx: contents[idx]
+            for idx in preserved_indices
+            if isinstance(contents, list) and idx < len(contents)
+        }
+
+        tokenizer = get_tokenizer(model)
+        original_tokens = tokenizer.count_messages(messages) if messages else 0
+        optimized_messages = messages
+        optimized_tokens = original_tokens
+        transforms_applied: list[str] = []
+
+        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
+        if self.config.optimize and messages and _license_ok:
+            try:
+                context_limit = self.openai_provider.get_context_limit(model)
+                result = self.openai_pipeline.apply(
+                    messages=messages,
+                    model=model,
+                    model_limit=context_limit,
+                    context=extract_user_query(messages),
+                )
+                if result.messages != messages:
+                    optimized_messages = result.messages
+                    transforms_applied = result.transforms_applied
+                    original_tokens = result.tokens_before
+                    optimized_tokens = result.tokens_after
+            except Exception as e:
+                logger.warning(f"[{request_id}] Cloud Code Assist optimization failed: {e}")
+
+        if optimized_tokens > original_tokens:
+            logger.warning(
+                f"[{request_id}] Cloud Code Assist optimization inflated tokens "
+                f"({original_tokens} -> {optimized_tokens}), reverting to original messages"
+            )
+            optimized_messages = messages
+            optimized_tokens = original_tokens
+            transforms_applied = []
+
+        if optimized_messages != messages:
+            optimized_contents, optimized_system = self._messages_to_gemini_contents(
+                optimized_messages
+            )
+            for orig_idx, original_content in preserved_contents.items():
+                if orig_idx < len(optimized_contents):
+                    optimized_contents[orig_idx] = original_content
+            request_payload["contents"] = optimized_contents
+            if not is_antigravity:
+                if optimized_system:
+                    request_payload["systemInstruction"] = optimized_system
+                elif "systemInstruction" in request_payload:
+                    del request_payload["systemInstruction"]
+
+        tokens_saved = original_tokens - optimized_tokens
+        optimization_latency = (time.time() - start_time) * 1000
+        base_url = self._resolve_cloudcode_base_url(is_antigravity)
+        stream_url = f"{base_url}/v1internal:streamGenerateContent"
+        if request.url.query:
+            stream_url = f"{stream_url}?{request.url.query}"
+
+        return await self._stream_response(
+            stream_url,
+            headers,
+            body,
+            "gemini",
+            model,
+            request_id,
+            original_tokens,
+            optimized_tokens,
+            tokens_saved,
+            transforms_applied,
+            tags,
+            optimization_latency,
+        )
 
     async def handle_gemini_stream_generate_content(
         self,
