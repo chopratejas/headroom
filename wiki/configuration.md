@@ -70,6 +70,34 @@ headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.4
 headroom proxy --help
 ```
 
+### Kompress backend selection
+
+Kompress (the model-based compressor) can run on two backends:
+
+- **ONNX Runtime** — lightweight (50MB), CPU-only by default. Installed
+  with `pip install headroom-ai[proxy]`.
+- **PyTorch** — heavier (800MB), supports GPU/MPS acceleration. Installed
+  with `pip install headroom-ai[ml]`. Auto-selects `cuda` on NVIDIA,
+  `mps` on Apple Silicon, else `cpu`.
+
+Control which backend Kompress uses via `HEADROOM_KOMPRESS_BACKEND`:
+
+| Value     | Behavior                                                                |
+|-----------|-------------------------------------------------------------------------|
+| `auto`    | Default. Prefer PyTorch when CUDA or Apple-Silicon MPS is available.    |
+| `onnx`    | Force ONNX Runtime regardless of available accelerators.                |
+| `pytorch` | Force PyTorch regardless of ONNX availability.                          |
+
+Example — force PyTorch on an NVIDIA box for maximum throughput:
+
+```bash
+export HEADROOM_KOMPRESS_BACKEND=pytorch
+headroom proxy ...
+```
+
+On a CPU-only machine, leave it at `auto` — ONNX is strictly faster
+there.
+
 ## Per-Request Overrides
 
 Override configuration for specific requests:

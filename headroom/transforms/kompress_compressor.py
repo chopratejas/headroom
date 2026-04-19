@@ -15,6 +15,8 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -226,18 +228,63 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
 def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[Any, Any, str]:
     """Load Kompress model, returns (model, tokenizer, backend).
 
-    Try ONNX first (lightweight), fall back to PyTorch.
-    Models are cached by model_id — multiple models can coexist.
+    Selection order:
+
+    1. ``HEADROOM_KOMPRESS_BACKEND=onnx|pytorch`` — explicit override.
+    2. ``auto`` (default): prefer PyTorch when CUDA or Apple-Silicon MPS is
+       available, else ONNX.
+    3. Falls back to whichever of ONNX / PyTorch imports successfully.
+
+    Models are cached by ``model_id`` — multiple models can coexist.
     """
     if model_id in _kompress_cache:
         return _kompress_cache[model_id]
 
-    # Prefer ONNX (50MB onnxruntime vs 800MB torch)
+    backend = os.environ.get("HEADROOM_KOMPRESS_BACKEND", "auto").lower()
+
+    # Explicit override — no fallback, let the error surface.
+    if backend == "onnx":
+        return _load_kompress_onnx(model_id)
+    if backend == "pytorch":
+        return _load_kompress_pytorch(model_id, device)
+
+    if backend != "auto":
+        logger.warning(
+            "Unknown HEADROOM_KOMPRESS_BACKEND=%r; falling back to auto-detect. "
+            "Valid values: auto, onnx, pytorch.",
+            backend,
+        )
+
+    # Auto: prefer PyTorch only when an accelerator is actually usable.
+    prefer_pytorch = False
+    if _is_pytorch_available():
+        try:
+            import torch
+
+            is_apple_silicon = (
+                platform.machine() == "arm64" and platform.system() == "Darwin"
+            )
+            prefer_pytorch = bool(
+                torch.cuda.is_available()
+                or (is_apple_silicon and torch.backends.mps.is_available())
+            )
+        except Exception:  # noqa: BLE001 — torch probe must never break loading
+            prefer_pytorch = False
+
+    if prefer_pytorch:
+        try:
+            return _load_kompress_pytorch(model_id, device)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Kompress PyTorch load failed, falling back to ONNX: %s", e
+            )
+
+    # Default / fallback: ONNX first (lightweight), then PyTorch.
     if _is_onnx_available():
         try:
             return _load_kompress_onnx(model_id)
-        except Exception as e:
-            logger.warning("ONNX load failed for %s, trying PyTorch: %s", model_id, e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Kompress ONNX load failed for %s, trying PyTorch: %s", model_id, e)
 
     if _is_pytorch_available():
         return _load_kompress_pytorch(model_id, device)
