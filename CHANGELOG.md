@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docker-compose.native.yml` forward the new vars into containers so
   savings, logs, and telemetry resolve to the bind-mounted `.headroom` path.
   See [`wiki/filesystem-contract.md`](wiki/filesystem-contract.md).
+- **Kompress backend selection** (issue #202) — new
+  `HEADROOM_KOMPRESS_BACKEND` env var (`auto` / `onnx` / `pytorch`). In
+  `auto` mode (default), Kompress now prefers the PyTorch backend when an
+  accelerator is available — NVIDIA CUDA, or Apple-Silicon MPS —
+  otherwise falls back to ONNX Runtime. Previously ONNX was preferred
+  unconditionally, leaving GPU-equipped users on a slower CPU-only path.
+  Set `HEADROOM_KOMPRESS_BACKEND=onnx` to opt out. See
+  [`wiki/configuration.md`](wiki/configuration.md).
 
 ## [0.5.22] - 2026-04-11
 
