@@ -117,7 +117,7 @@ Each publish job requires both `dry_run != 'true'` **and** the corresponding ski
 |----------|--------|
 | `PYPI_SKIP=true` | Skip PyPI publish |
 | `NPM_SKIP=true` | Skip both npm publishes |
-| `GITHUB_PKG_SKIP=true` | Skip GitHub Package Registry publish |
+| `GH_PACKAGES_SKIP=true` | Skip GitHub Package Registry publish |
 
 Set in: **GitHub repo → Settings → Variables → Actions Variables**.
 

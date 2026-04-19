@@ -22,7 +22,7 @@ env:
   # Locally via act: pass -e event.yml or set in .actrc.local (see .actrc.example).
   PYPI_SKIP: "false"
   NPM_SKIP: "false"
-  GITHUB_PKG_SKIP: "false"
+  GH_PACKAGES_SKIP: "false"
 
 on:
   push:
@@ -86,6 +86,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Sync version to package files
         run: |
           python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
@@ -130,11 +135,34 @@ jobs:
       - name: Build Python package
         run: python -m pip install build wheel && python -m build
 
+      - name: Build npm release packages
+        run: |
+          mkdir -p release-assets
+          cp dist/* release-assets/
+
+          cd sdk/typescript
+          npm install
+          npm run build
+          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version
+          npm pack --pack-destination ../../release-assets
+
+          cd ../../plugins/openclaw
+          npm install
+          npm run build
+          npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version
+          npm pack --pack-destination ../../release-assets
+
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+
+      - name: Upload release assets artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/
 
   publish-pypi:
     needs: [build]
@@ -161,7 +189,7 @@ jobs:
           echo "::notice::PyPI publish skipped — OIDC trusted publisher not configured for this repo. See: https://pypi.org/trusted-publishers/ — Set PYPI_SKIP=true in repo Variables to suppress this notice."
 
   publish-npm:
-    needs: [build]
+    needs: [detect-version, build]
     if: github.event.inputs.dry_run != 'true' && vars.NPM_SKIP != 'true'
     runs-on: ubuntu-latest
     steps:
@@ -211,8 +239,8 @@ jobs:
           echo "::notice::One or more npm publishes failed. Set NPM_SKIP=true in repo Variables to skip both npm publishes if tokens are not configured."
 
   publish-github-packages:
-    needs: [build]
-    if: github.event.inputs.dry_run != 'true' && vars.GITHUB_PKG_SKIP != 'true'
+    needs: [detect-version, build]
+    if: github.event.inputs.dry_run != 'true' && vars.GH_PACKAGES_SKIP != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -246,10 +274,23 @@ jobs:
       - name: GPR publish notice
         if: steps.gpr-publish.outcome == 'failure'
         run: |
-          echo "::notice::GitHub Package Registry publish failed. Check GITHUB_TOKEN permissions and registry configuration. Set GITHUB_PKG_SKIP=true to skip."
+          echo "::notice::GitHub Package Registry publish failed. Check GITHUB_TOKEN permissions and registry configuration. Set GH_PACKAGES_SKIP=true to skip."
+
+  publish-docker:
+    needs: [detect-version]
+    if: github.event.inputs.dry_run != 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ needs.detect-version.outputs.version }}
+      enable_ref_tags: false
 
   create-release:
-    needs: [detect-version, build]
+    needs: [detect-version, build, publish-docker]
+    if: github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -264,11 +305,21 @@ jobs:
           name: changelog
           path: /tmp
 
+      - name: Download release assets artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+
       - name: Show changelog
         run: |
           ls -la /tmp/changelog-backup.md
           cp /tmp/changelog-backup.md .changelog.md
           cat .changelog.md
+
+      - name: Show release assets
+        run: |
+          ls -la release-assets
 
       - name: Create GitHub Release
         env:
@@ -281,3 +332,4 @@ jobs:
           else
             gh release create "$TAG" --title "$TITLE" --notes-file .changelog.md
           fi
+          gh release upload "$TAG" release-assets/* --clobber

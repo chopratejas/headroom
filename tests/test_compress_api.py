@@ -63,6 +63,33 @@ class TestCompressFunction:
         assert result.tokens_after <= result.tokens_before
         assert len(result.messages) == 2
 
+    def test_compact_json_counts_tokens_not_whitespace(self):
+        """Compact JSON arrays should still compress under token thresholds."""
+        numbers = [42.0 + i * 0.1 for i in range(200)]
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Show metrics"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_metrics", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": json.dumps(numbers)},
+        ]
+
+        result = compress(messages, min_tokens_to_compress=250)
+
+        assert result.tokens_saved > 0
+        assert any(
+            transform.startswith("router:smart_crusher") for transform in result.transforms_applied
+        )
+
     def test_optimize_false_passthrough(self):
         """optimize=False returns messages unchanged."""
         messages = [{"role": "user", "content": "hello world " * 100}]

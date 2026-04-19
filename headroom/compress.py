@@ -121,7 +121,7 @@ class CompressConfig:
     own logic based on array dedup."""
 
     min_tokens_to_compress: int = 250
-    """Minimum token count (word count) for a message to be compressed.
+    """Minimum token count for a message to be compressed.
     Messages shorter than this are left unchanged. Default 250.
     Set lower for voice agents where turns are short."""
 

@@ -5,9 +5,9 @@ description: Automated release pipeline with semantic versioning, multi-package 
 
 ## Overview
 
-Headroom uses a unified GitHub Actions workflow (`.github/workflows/release.yml`) that automatically publishes all three packages, generates changelogs from conventional commits, and creates GitHub Releases.
+Headroom uses a unified GitHub Actions workflow (`.github/workflows/release.yml`) that automatically publishes all three packages, builds version-matched Docker images, generates changelogs from conventional commits, and creates GitHub Releases with package assets attached.
 
-Publishing a GitHub Release also triggers `.github/workflows/docker.yml`, which builds GHCR images tagged with the same semantic version and syncs the image contents to that exact release version before build.
+The release workflow also calls `.github/workflows/docker.yml` as a reusable workflow so GHCR images are published in the same release run with the exact same synced version as PyPI, npm, and GitHub release assets.
 
 ## Packages & Registries
 
@@ -96,8 +96,11 @@ Publishes both TypeScript packages to npmjs.org:
 ### publish-github-packages
 Publishes `plugins/openclaw/` to GitHub Package Registry (`npm.pkg.github.com`).
 
+### publish-docker
+Calls the reusable Docker workflow to publish GHCR images with the same semantic version and synced package metadata as the rest of the release.
+
 ### create-release
-Creates a GitHub Release with the generated changelog as release notes, tagged as `v{canonical}.{height}`.
+Creates or updates the GitHub Release, uploads the built Python distributions and npm tarballs as release assets, and publishes the generated changelog as release notes.
 
 ## Configuration
 
@@ -129,7 +132,7 @@ To skip a publish target, set the corresponding GitHub Actions variable:
 |----------|--------|
 | `PYPI_SKIP=true` | Skip PyPI publish |
 | `NPM_SKIP=true` | Skip both npm publishes |
-| `GITHUB_PKG_SKIP=true` | Skip GitHub Package Registry publish |
+| `GH_PACKAGES_SKIP=true` | Skip GitHub Package Registry publish |
 
 Set these in: **GitHub repo → Settings → Variables → Actions Variables → New repository variable**.
 
@@ -182,7 +185,7 @@ winget install actionlint
 ### Dry-run Test
 
 ```bash
-act -W .github/workflows/release.yml -e .github/act/dry-run.json
+act workflow_dispatch -W .github/workflows/release.yml -e .github/act/dry-run.json
 ```
 
 This runs the full workflow end-to-end with `dry_run=true`, skipping all publish steps.
@@ -190,10 +193,18 @@ This runs the full workflow end-to-end with `dry_run=true`, skipping all publish
 ### Test a Specific Commit Type
 
 ```bash
-act -W .github/workflows/release.yml -e .github/act/push-feat.json
+act push -W .github/workflows/release.yml -e .github/act/push-feat.json
 ```
 
 The `push-feat.json` event file simulates a `feat:` commit on `main`.
+
+### Validate the Release and Docker Workflows
+
+```bash
+bash scripts/validate-workflows.sh
+```
+
+This runs `actionlint` plus `act -n` against the release and Docker workflows using the checked-in `.github/act/*.json` event fixtures. CI runs the same script in the `workflow-validation` job so branch changes to release automation are validated before merge.
 
 ### Local Secrets
 
@@ -217,6 +228,8 @@ cp .env.act.example .env.act
 | `scripts/verify-versions.py` | Pre-release version alignment check |
 | `.github/act/dry-run.json` | `act` event file for dry-run testing |
 | `.github/act/push-feat.json` | `act` event file for feat commit testing |
+| `.github/act/docker-version.json` | `act` event file for Docker workflow validation |
+| `scripts/validate-workflows.sh` | Shared `actionlint` + `act -n` workflow validation script |
 | `.actrc` | Default `act` flags (Ubuntu runner, reuse, quiet) |
 | `.actrc.local.example` | Local `act` override template |
 

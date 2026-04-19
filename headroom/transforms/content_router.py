@@ -1674,7 +1674,7 @@ class ContentRouter(Transform):
                 route_counts["system_msg"] += 1
                 continue
 
-            if not content or len(content.split()) < min_tokens:
+            if not content or tokenizer.count_text(content) < min_tokens:
                 # Skip small content
                 result_slots[i] = message
                 route_counts["small"] += 1

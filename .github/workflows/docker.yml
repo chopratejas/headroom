@@ -1,6 +1,17 @@
 name: Docker
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to stamp into the image contents and exact image tag"
+        required: false
+        type: string
+      enable_ref_tags:
+        description: "Whether to emit branch/PR ref tags"
+        required: false
+        default: true
+        type: boolean
   workflow_dispatch:
     inputs:
       version:
@@ -48,7 +59,7 @@ jobs:
       - name: Determine image version
         id: version
         env:
-          MANUAL_VERSION: ${{ github.event.inputs.version }}
+          MANUAL_VERSION: ${{ inputs.version || github.event.inputs.version }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           version="${MANUAL_VERSION#v}"
@@ -87,8 +98,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch,suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
-            type=ref,event=pr,suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=ref,event=branch,enable=${{ inputs.enable_ref_tags }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=ref,event=pr,enable=${{ inputs.enable_ref_tags }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != '' }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{version}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
