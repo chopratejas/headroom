@@ -1,12 +1,10 @@
 """Tests for OAuth Bearer token routing and auth detection."""
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 from headroom.proxy.helpers import is_anthropic_auth
-from headroom.proxy.server import HeadroomProxy, ProxyConfig, create_app
-
+from headroom.proxy.server import ProxyConfig, create_app
 
 # ---------------------------------------------------------------------------
 # Unit tests: is_anthropic_auth
@@ -39,10 +37,15 @@ class TestIsAnthropicAuth:
 
     def test_anthropic_version_plus_bearer(self):
         """Claude Code sends both anthropic-version and Bearer token."""
-        assert is_anthropic_auth({
-            "anthropic-version": "2023-06-01",
-            "authorization": "Bearer 1a18a113-ab50-43c8",
-        }) is True
+        assert (
+            is_anthropic_auth(
+                {
+                    "anthropic-version": "2023-06-01",
+                    "authorization": "Bearer 1a18a113-ab50-43c8",
+                }
+            )
+            is True
+        )
 
     def test_empty_authorization(self):
         assert is_anthropic_auth({"authorization": ""}) is False

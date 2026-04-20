@@ -612,9 +612,10 @@ def _kill_proxy_by_pid(pid: int, port: int) -> bool:
         if not _check_proxy(port):
             return True
 
-    # SIGTERM didn't work — escalate to SIGKILL
+    # SIGTERM didn't work — escalate to SIGKILL (Unix) or terminate (Windows)
     try:
-        os.kill(pid, signal.SIGKILL)
+        _kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        os.kill(pid, _kill_signal)
     except (ProcessLookupError, PermissionError):
         pass
 

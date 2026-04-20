@@ -44,7 +44,8 @@ def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
     canonical formula used across proxy retry loops. Extracted so every
     retry site shares one implementation.
     """
-    return min(base_ms * (2**attempt), max_ms) * (0.5 + random.random())
+    capped: float = min(base_ms * (2**attempt), max_ms)
+    return capped * (0.5 + random.random())
 
 
 # Image compression (lazy-loaded to avoid heavy dependencies at startup)
