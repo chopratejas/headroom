@@ -179,7 +179,7 @@ jobs:
         run: |
           brew install bash
           python -m pip install --upgrade pip
-          pip install pytest
+          python -m pip install --retries 10 --timeout 60 pytest
 
       - name: Run native installer wrapper tests
         run: |

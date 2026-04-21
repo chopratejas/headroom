@@ -47,3 +47,9 @@ def test_create_release_runs_after_successful_build_even_if_other_publishes_fail
     )
     assert "always()" in content
     assert "needs.build.result == 'success'" in content
+
+
+def test_macos_native_wrapper_dependency_install_retries_pypi_downloads() -> None:
+    content = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "python -m pip install --retries 10 --timeout 60 pytest" in content
