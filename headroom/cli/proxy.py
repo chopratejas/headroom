@@ -75,6 +75,11 @@ from .main import main
 )
 @click.option("--log-file", default=None, help="Path to JSONL log file")
 @click.option(
+    "--log-messages",
+    is_flag=True,
+    help="Enable full message logging (request/response content stored for live feed)",
+)
+@click.option(
     "--budget",
     type=float,
     default=None,
@@ -218,6 +223,7 @@ def proxy(
     connect_timeout_seconds: int | None,
     anthropic_pre_upstream_concurrency: int | None,
     log_file: str | None,
+    log_messages: bool,
     budget: float | None,
     code_graph: bool,
     no_read_lifecycle: bool,
@@ -316,6 +322,8 @@ def proxy(
         if connect_timeout_seconds is not None
         else 10,
         log_file=None if is_stateless else log_file,
+        log_full_messages=log_messages
+        or os.environ.get("HEADROOM_LOG_MESSAGES", "").lower() in ("true", "1", "yes", "on"),
         budget_limit_usd=budget,
         # Code graph: live file watcher for incremental reindexing
         code_graph_watcher=code_graph,
