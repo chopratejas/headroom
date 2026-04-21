@@ -1350,16 +1350,82 @@
                 renderTransformations() {
                     const container = document.getElementById('feed-virtual-list');
                     if (!container) return;
-                    container.innerHTML = this.transformations.map(t => `
-                        <div class="transformation-card border-b border-border p-3">
-                            <div class="text-xs text-gray-500">
-                                ${(t.model || 'unknown').substring(0, 30)} · ${t.tokens_saved || 0} tokens saved
+
+                    const scrollTop = this.feedScrollY;
+                    const viewportHeight = (document.getElementById('feed-container')?.clientHeight || 600);
+
+                    const totalHeight = this.transformations.length * this.feedItemHeight;
+                    container.style.height = totalHeight + 'px';
+
+                    // Calculate visible range with buffer
+                    const startIdx = Math.max(0, Math.floor(scrollTop / this.feedItemHeight) - this.feedBuffer);
+                    const endIdx = Math.min(
+                        this.transformations.length,
+                        Math.ceil((scrollTop + viewportHeight) / this.feedItemHeight) + this.feedBuffer
+                    );
+
+                    const visible = this.transformations.slice(startIdx, endIdx);
+                    const offsetTop = startIdx * this.feedItemHeight;
+
+                    let html = `<div style="position: absolute; top: ${offsetTop}px; width: 100%;">`;
+                    html += visible.map((t, i) => this.renderTransformationCard(t, startIdx + i)).join('');
+                    html += '</div>';
+
+                    container.innerHTML = html;
+                },
+
+                renderTransformationCard(t, idx) {
+                    const msgs = (t.request_messages || []).map(m => m.content || '').join('');
+                    const response = t.response_content || '';
+                    const before = msgs.substring(0, 2000) + (msgs.length > 2000 ? '\n\n[truncated]' : '');
+                    const after = response.substring(0, 2000) + (response.length > 2000 ? '\n\n[truncated]' : '');
+
+                    const time = t.timestamp ? new Date(t.timestamp).toLocaleTimeString() : '--:--:--';
+                    const model = (t.model || 'unknown').replace(/^(anthropic\.|openai\.)/, '').substring(0, 25);
+                    const tokensSaved = t.tokens_saved || 0;
+                    const savingsPct = ((t.savings_percent || 0)).toFixed(0);
+
+                    return `
+                        <div class="transformation-card border-b border-border p-3" data-idx="${idx}" style="height: ${this.feedItemHeight}px; box-sizing: border-box;">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <span class="text-xs font-mono text-gray-400 truncate">${this.escapeHtml(model)}</span>
+                                    <span class="text-xs text-gray-600 shrink-0">·</span>
+                                    <span class="text-xs text-emerald-400 shrink-0">${tokensSaved} tok</span>
+                                    <span class="text-xs text-gray-600 shrink-0">(${savingsPct}%)</span>
+                                </div>
+                                <span class="text-xs text-gray-600 shrink-0">${time}</span>
                             </div>
-                            <div class="text-xs text-gray-600 mt-1 truncate">
-                                ${(t.request_messages || []).map(m => m.content || '').join(' ').substring(0, 100)}...
+                            <div class="grid grid-cols-2 gap-2" style="height: 115px;">
+                                <div class="rounded border border-red-900/30 overflow-hidden flex flex-col">
+                                    <div class="bg-[#1a0808] px-2 py-1 border-b border-red-900/30 shrink-0">
+                                        <span class="text-[10px] text-red-400 uppercase tracking-wide font-semibold">Before</span>
+                                    </div>
+                                    <div class="diff-before bg-[#120606] p-2 font-mono text-[11px] text-gray-300 overflow-auto flex-1"
+                                         >${this.escapeHtml(before)}</div>
+                                </div>
+                                <div class="rounded border border-emerald-900/30 overflow-hidden flex flex-col">
+                                    <div class="bg-[#081a08] px-2 py-1 border-b border-emerald-900/30 shrink-0">
+                                        <span class="text-[10px] text-emerald-400 uppercase tracking-wide font-semibold">After</span>
+                                    </div>
+                                    <div class="diff-after bg-[#0a120a] p-2 font-mono text-[11px] text-gray-300 overflow-auto flex-1"
+                                         >${this.escapeHtml(after)}</div>
+                                </div>
                             </div>
+                            ${(t.transforms_applied || []).length > 0 ? `
+                                <div class="flex flex-wrap gap-1 mt-1.5">
+                                    ${t.transforms_applied.slice(0, 4).map(tr => `<span class="text-[9px] px-1.5 py-0.5 bg-border rounded font-mono text-gray-500">${this.escapeHtml(tr)}</span>`).join('')}
+                                    ${t.transforms_applied.length > 4 ? `<span class="text-[9px] text-gray-600">+${t.transforms_applied.length - 4}</span>` : ''}
+                                </div>
+                            ` : ''}
                         </div>
-                    `).join('');
+                    `;
+                },
+
+                escapeHtml(str) {
+                    const div = document.createElement('div');
+                    div.textContent = str;
+                    return div.innerHTML;
                 },
 
                 // --- Formatting ---
