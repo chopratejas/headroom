@@ -87,7 +87,7 @@
             <div class="text-xs text-gray-500">
                 Updated <span x-text="lastUpdate"></span>
             </div>
-            <button id="feed-toggle"
+            <button x-show="log_full_messages" id="feed-toggle"
                     class="px-3 py-1.5 text-sm rounded-md border border-border bg-surface text-gray-300 hover:text-white transition-colors"
                     @click="feedOpen = !feedOpen"
                     :class="feedOpen ? 'bg-accent text-black' : ''">
@@ -1263,6 +1263,7 @@
                 feedScrollY: 0,
                 feedItemHeight: 160,
                 feedBuffer: 5,
+                log_full_messages: false,
 
                 async init() {
                     await this.fetchStats();
@@ -1294,6 +1295,7 @@
                         const health = await healthRes.json();
                         this.healthy = health.status === 'healthy';
                         this.version = health.version || '0.3.0';
+                        this.log_full_messages = this.stats.log_full_messages || false;
 
                         // Update history for sparklines
                         this.requestHistory.push(this.stats.requests?.total || 0);
@@ -1321,6 +1323,7 @@
                                 this.feedNewCount = newLen - prevLen;
                             }
                             this.transformations = data.transformations || [];
+                            this.log_full_messages = data.log_full_messages ?? this.log_full_messages;
                             this.renderTransformations();
                         }
                     } catch (e) {
@@ -1377,6 +1380,7 @@
                 renderTransformationCard(t, idx) {
                     const msgs = (t.request_messages || []).map(m => m.content || '').join('');
                     const response = t.response_content || '';
+                    const hasMessages = msgs.length > 0 || response.length > 0;
                     const before = msgs.substring(0, 2000) + (msgs.length > 2000 ? '\n\n[truncated]' : '');
                     const after = response.substring(0, 2000) + (response.length > 2000 ? '\n\n[truncated]' : '');
 
@@ -1384,6 +1388,10 @@
                     const model = (t.model || 'unknown').replace(/^(anthropic\.|openai\.)/, '').substring(0, 25);
                     const tokensSaved = t.tokens_saved || 0;
                     const savingsPct = ((t.savings_percent || 0)).toFixed(0);
+
+                    const emptyState = '<span class="text-gray-600 italic">Enable HEADROOM_LOG_MESSAGES=true to see content</span>';
+                    const beforeContent = hasMessages ? this.escapeHtml(before) : emptyState;
+                    const afterContent = hasMessages ? this.escapeHtml(after) : emptyState;
 
                     return `
                         <div class="transformation-card border-b border-border p-3" data-idx="${idx}" style="height: ${this.feedItemHeight}px; box-sizing: border-box;">
@@ -1402,14 +1410,14 @@
                                         <span class="text-[10px] text-red-400 uppercase tracking-wide font-semibold">Before</span>
                                     </div>
                                     <div class="diff-before bg-[#120606] p-2 font-mono text-[11px] text-gray-300 overflow-auto flex-1"
-                                         >${this.escapeHtml(before)}</div>
+                                         >${beforeContent}</div>
                                 </div>
                                 <div class="rounded border border-emerald-900/30 overflow-hidden flex flex-col">
                                     <div class="bg-[#081a08] px-2 py-1 border-b border-emerald-900/30 shrink-0">
                                         <span class="text-[10px] text-emerald-400 uppercase tracking-wide font-semibold">After</span>
                                     </div>
                                     <div class="diff-after bg-[#0a120a] p-2 font-mono text-[11px] text-gray-300 overflow-auto flex-1"
-                                         >${this.escapeHtml(after)}</div>
+                                         >${afterContent}</div>
                                 </div>
                             </div>
                             ${(t.transforms_applied || []).length > 0 ? `
