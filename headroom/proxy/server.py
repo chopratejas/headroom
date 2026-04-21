@@ -1623,6 +1623,34 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         return proxy.metrics.savings_tracker.history_response()
 
+    @app.get("/transformations/feed")
+    async def transformations_feed(limit: int = 20):
+        """Get recent message transformations for the live feed."""
+        if limit > 100:
+            limit = 100  # Cap at 100 for performance
+
+        transformations = []
+        if proxy and proxy.logger:
+            logs = proxy.logger.get_recent_with_messages(limit)
+            for log in logs:
+                transformations.append(
+                    {
+                        "request_id": log.get("request_id"),
+                        "timestamp": log.get("timestamp"),
+                        "provider": log.get("provider"),
+                        "model": log.get("model"),
+                        "input_tokens_original": log.get("input_tokens_original"),
+                        "input_tokens_optimized": log.get("input_tokens_optimized"),
+                        "tokens_saved": log.get("tokens_saved"),
+                        "savings_percent": log.get("savings_percent"),
+                        "transforms_applied": log.get("transforms_applied", []),
+                        "request_messages": log.get("request_messages"),
+                        "response_content": log.get("response_content"),
+                    }
+                )
+
+        return {"transformations": transformations}
+
     @app.get("/subscription-window")
     async def subscription_window():
         """Current Anthropic subscription window utilisation and Headroom contribution."""

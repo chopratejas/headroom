@@ -66,7 +66,7 @@ class RequestLogger:
                 pass  # Graceful degradation: memory-only logging continues
 
     def get_recent(self, n: int = 100) -> list[dict]:
-        """Get recent log entries."""
+        """Get recent log entries (without request_messages and response_content)."""
         # Convert deque to list for slicing (deque doesn't support slicing)
         entries = list(self._logs)[-n:]
         return [
@@ -77,6 +77,11 @@ class RequestLogger:
             }
             for e in entries
         ]
+
+    def get_recent_with_messages(self, n: int = 20) -> list[dict]:
+        """Get recent log entries including full request/response messages."""
+        entries = list(self._logs)[-n:]
+        return [asdict(e) for e in entries]
 
     def stats(self) -> dict:
         """Get logging statistics."""
