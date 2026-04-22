@@ -18,7 +18,7 @@ The release workflow also calls `.github/workflows/docker.yml` as a reusable wor
 | `headroom-openclaw` | TypeScript plugin | npmjs.org | `NPM_OPENCLAW_PACKAGE` |
 | `@{owner}/headroom-ai` | TypeScript SDK | GitHub Package Registry | — |
 | `@{owner}/headroom-openclaw` | TypeScript plugin | GitHub Package Registry | — |
-| `headroom-ai-{version}.tar.gz` / `headroom_ai-{version}-py3-none-any.whl` | Python release assets | GitHub Release (`{owner}/headroom`) | — |
+| `headroom-ai-{version}.tar.gz` / `headroom_ai-{version}-py3-none-any.whl` | Python package distributions | GitHub Release (`{owner}/headroom`) | — |
 | `headroom-ai-{version}.tgz` / `headroom-openclaw-{version}.tgz` | Node release assets | GitHub Release (`{owner}/headroom`) | — |
 | `ghcr.io/{owner}/headroom` | Docker image | GitHub Container Registry | — |
 
@@ -102,7 +102,7 @@ Publishes both Node packages to GitHub Package Registry (`npm.pkg.github.com`) u
 - `plugins/openclaw/` as `@{owner}/headroom-openclaw`
 
 ### GitHub release assets
-Uploads the built Python distributions and both npm tarballs to the GitHub Release created in the current repository. This is what makes fork-owned main-branch builds downloadable for local validation even when consumers are not pulling from PyPI or npmjs.org.
+Uploads the built Python distributions and both npm tarballs to the GitHub Release created in the current repository. GitHub Packages does not provide a PyPI-compatible package registry, so the workflow publishes Python wheels and sdists to GitHub as release assets while npm packages go to GitHub Package Registry and Docker images go to GHCR.
 
 ### publish-docker
 Calls the reusable Docker workflow to publish GHCR images with the same semantic version and synced package metadata as the rest of the release.
