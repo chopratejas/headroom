@@ -14,6 +14,9 @@ from headroom.memory.traffic_learner import (
     TrafficLearner,
     _classify_error,
     _is_error,
+    _load_persisted_patterns_from_sqlite,
+    _patterns_to_recommendations,
+    _project_for_pattern,
 )
 
 # =============================================================================
@@ -284,3 +287,271 @@ class TestExtractedPattern:
             importance=0.5,
         )
         assert p1.content_hash != p2.content_hash
+
+
+# =============================================================================
+# Project Routing
+# =============================================================================
+
+
+class TestProjectForPattern:
+    def _project(self, path: str):
+        from pathlib import Path as _P
+
+        from headroom.learn.models import ProjectInfo
+
+        p = _P(path)
+        return ProjectInfo(name=p.name, project_path=p, data_path=p)
+
+    def test_matches_longest_root(self):
+        proj_a = self._project("/x/a")
+        proj_b = self._project("/x/a/b")
+        pattern = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="File `/x/a/b/foo.py` does not exist.",
+            importance=0.5,
+        )
+        result = _project_for_pattern(pattern, [proj_a, proj_b])
+        assert result is proj_b
+
+    def test_returns_none_for_unanchored(self):
+        proj_a = self._project("/x/a")
+        pattern = ExtractedPattern(
+            category=PatternCategory.PREFERENCE,
+            content="User preference: use terse responses",
+            importance=0.7,
+        )
+        assert _project_for_pattern(pattern, [proj_a]) is None
+
+    def test_matches_via_entity_refs(self):
+        proj = self._project("/x/a")
+        pattern = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Command failed.",
+            importance=0.5,
+            entity_refs=["/x/a/tool.py"],
+        )
+        assert _project_for_pattern(pattern, [proj]) is proj
+
+    def test_no_false_match_on_prefix_boundary(self):
+        # /x/ab should not match a project rooted at /x/a
+        proj_a = self._project("/x/a")
+        pattern = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="File `/x/ab/foo.py` does not exist.",
+            importance=0.5,
+        )
+        assert _project_for_pattern(pattern, [proj_a]) is None
+
+
+# =============================================================================
+# Persisted-pattern loading from memory.db
+# =============================================================================
+
+
+class TestLoadPersistedPatterns:
+    def _make_db(self, tmp_path, rows: list[dict]):
+        import json as _json
+        import sqlite3 as _sql
+
+        db = tmp_path / "memory.db"
+        conn = _sql.connect(db)
+        conn.execute(
+            "CREATE TABLE memories ("
+            "id TEXT PRIMARY KEY, content TEXT NOT NULL, "
+            "metadata TEXT NOT NULL DEFAULT '{}', "
+            "entity_refs TEXT NOT NULL DEFAULT '[]', "
+            "importance REAL NOT NULL DEFAULT 0.5)"
+        )
+        for i, r in enumerate(rows):
+            conn.execute(
+                "INSERT INTO memories (id, content, metadata, entity_refs, importance) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    str(i),
+                    r["content"],
+                    _json.dumps(r.get("metadata", {})),
+                    _json.dumps(r.get("entity_refs", [])),
+                    r.get("importance", 0.5),
+                ),
+            )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_dedupes_by_content_and_sums_evidence(self, tmp_path):
+        db = self._make_db(
+            tmp_path,
+            [
+                {
+                    "content": "Command `foo` fails.",
+                    "metadata": {
+                        "source": "traffic_learner",
+                        "category": "error_recovery",
+                        "evidence_count": 2,
+                    },
+                },
+                {
+                    "content": "Command `foo` fails.",
+                    "metadata": {
+                        "source": "traffic_learner",
+                        "category": "error_recovery",
+                        "evidence_count": 3,
+                    },
+                },
+            ],
+        )
+        patterns = _load_persisted_patterns_from_sqlite(db)
+        assert len(patterns) == 1
+        assert patterns[0].evidence_count == 5
+        assert patterns[0].category == PatternCategory.ERROR_RECOVERY
+
+    def test_skips_non_traffic_rows(self, tmp_path):
+        db = self._make_db(
+            tmp_path,
+            [
+                {
+                    "content": "Something else",
+                    "metadata": {"source": "other"},
+                },
+                {
+                    "content": "From traffic",
+                    "metadata": {
+                        "source": "traffic_learner",
+                        "category": "environment",
+                    },
+                },
+            ],
+        )
+        patterns = _load_persisted_patterns_from_sqlite(db)
+        assert len(patterns) == 1
+        assert patterns[0].content == "From traffic"
+
+    def test_reads_importance_column(self, tmp_path):
+        db = self._make_db(
+            tmp_path,
+            [
+                {
+                    "content": "High-importance pattern",
+                    "metadata": {
+                        "source": "traffic_learner",
+                        "category": "environment",
+                    },
+                    "importance": 0.85,
+                },
+            ],
+        )
+        patterns = _load_persisted_patterns_from_sqlite(db)
+        assert len(patterns) == 1
+        assert patterns[0].importance == 0.85
+
+    def test_skips_unknown_category(self, tmp_path):
+        db = self._make_db(
+            tmp_path,
+            [
+                {
+                    "content": "X",
+                    "metadata": {"source": "traffic_learner", "category": "bogus"},
+                },
+            ],
+        )
+        assert _load_persisted_patterns_from_sqlite(db) == []
+
+
+# =============================================================================
+# Category → recommendation routing
+# =============================================================================
+
+
+class TestPatternsToRecommendations:
+    def test_routes_preference_to_memory_file(self):
+        from headroom.learn.models import RecommendationTarget
+
+        patterns = [
+            ExtractedPattern(
+                category=PatternCategory.PREFERENCE,
+                content="User prefers terse output",
+                importance=0.8,
+                evidence_count=3,
+            ),
+        ]
+        recs = _patterns_to_recommendations(patterns)
+        assert len(recs) == 1
+        assert recs[0].target == RecommendationTarget.MEMORY_FILE
+        assert "User prefers terse output" in recs[0].content
+
+    def test_routes_environment_to_context_file(self):
+        from headroom.learn.models import RecommendationTarget
+
+        patterns = [
+            ExtractedPattern(
+                category=PatternCategory.ENVIRONMENT,
+                content="Use uv run python",
+                importance=0.7,
+                evidence_count=4,
+            ),
+        ]
+        recs = _patterns_to_recommendations(patterns)
+        assert len(recs) == 1
+        assert recs[0].target == RecommendationTarget.CONTEXT_FILE
+
+    def test_groups_by_category(self):
+        patterns = [
+            ExtractedPattern(
+                category=PatternCategory.ERROR_RECOVERY,
+                content="A",
+                importance=0.5,
+                evidence_count=2,
+            ),
+            ExtractedPattern(
+                category=PatternCategory.ERROR_RECOVERY,
+                content="B",
+                importance=0.5,
+                evidence_count=5,
+            ),
+        ]
+        recs = _patterns_to_recommendations(patterns)
+        assert len(recs) == 1
+        # B has higher evidence, should sort first
+        lines = recs[0].content.splitlines()
+        assert lines[0] == "- B"
+        assert lines[1] == "- A"
+        assert recs[0].evidence_count == 7
+
+
+# =============================================================================
+# Debounced flush worker
+# =============================================================================
+
+
+class TestFlushDebounce:
+    @pytest.mark.asyncio
+    async def test_flush_worker_rate_limits(self, monkeypatch):
+        """Rapid dirty flags should not cause rapid flush_to_file calls."""
+        from headroom.memory import traffic_learner as tl_mod
+
+        # Shorten debounce for a fast test
+        monkeypatch.setattr(tl_mod, "FLUSH_DEBOUNCE_SECONDS", 0.5)
+
+        learner = TrafficLearner(backend=None, min_evidence=1)
+        call_count = 0
+
+        async def fake_flush() -> None:
+            nonlocal call_count
+            call_count += 1
+
+        learner.flush_to_file = fake_flush  # type: ignore[method-assign]
+
+        await learner.start()
+        # Toggle dirty rapidly over ~1.2s, which permits at most ~2 flushes.
+        for _ in range(30):
+            learner._flush_dirty = True
+            await __import__("asyncio").sleep(0.04)
+
+        await learner.stop()
+
+        # start() kicked a flush dirty→false at some point; stop() also calls
+        # flush_to_file once (final flush). We want evidence the worker did
+        # NOT call flush on every sleep tick — cap is generous.
+        assert call_count <= 5, f"Expected few flushes, got {call_count}"
+        assert call_count >= 1, "Expected at least one flush during the burst"

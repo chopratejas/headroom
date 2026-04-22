@@ -20,17 +20,30 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from headroom.learn.models import ProjectInfo
     from headroom.memory.backends.local import LocalBackend
 
 logger = logging.getLogger(__name__)
+
+# Minimum seconds between successive flush_to_file calls when driven by the
+# dirty-flag worker. Prevents CLAUDE.md thrash during bursty traffic while
+# still staying "near real-time" from the user's perspective.
+FLUSH_DEBOUNCE_SECONDS = 10.0
+
+# Absolute file-path heuristic for anchoring a pattern to a project root.
+# Matches POSIX paths (starts with /) and common Windows drive paths.
+_ABS_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[\w./\\\-]+")
 
 
 # =============================================================================
@@ -192,6 +205,16 @@ class TrafficLearner:
         self._save_task: asyncio.Task[None] | None = None
         self._stopping = False
 
+        # Dirty-flag debounced flush to CLAUDE.md / MEMORY.md. Set whenever
+        # a pattern is accumulated; checked by _flush_worker.
+        self._flush_dirty = False
+        self._last_flush_at = 0.0
+        self._flush_task: asyncio.Task[None] | None = None
+
+        # Cached project roots discovered via the learn plugin registry.
+        # Populated lazily in flush_to_file.
+        self._project_roots_cache: list[ProjectInfo] | None = None
+
     # =========================================================================
     # Public API
     # =========================================================================
@@ -201,16 +224,25 @@ class TrafficLearner:
         self._backend = backend
 
     async def start(self) -> None:
-        """Start the background save worker."""
+        """Start the background save worker and flush worker."""
         if self._save_task is None or self._save_task.done():
             self._save_task = asyncio.create_task(self._save_worker())
+        if self._flush_task is None or self._flush_task.done():
+            self._flush_task = asyncio.create_task(self._flush_worker())
 
     async def stop(self) -> None:
-        """Stop the background save worker, draining the queue first."""
+        """Stop the background workers, drain the save queue, final flush."""
+        self._stopping = True
+
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+
         # Drain any remaining patterns in the queue before cancelling
         if self._save_task and not self._save_task.done():
-            # Signal the worker to stop by putting a sentinel
-            self._stopping = True
             self._save_task.cancel()
             try:
                 await self._save_task
@@ -225,6 +257,7 @@ class TrafficLearner:
                     await self._backend.save_memory(
                         content=pattern.content,
                         user_id=self._user_id,
+                        importance=pattern.importance,
                         metadata={
                             "source": "traffic_learner",
                             "category": pattern.category.value,
@@ -236,80 +269,159 @@ class TrafficLearner:
             except Exception:
                 break
 
-        # Flush learned patterns to the agent-native .md file
+        # Final flush on shutdown — bypass debounce.
         await self.flush_to_file()
 
-    async def flush_to_file(self) -> None:
-        """Flush accumulated patterns to the agent-native context file.
+    async def _flush_worker(self) -> None:
+        """Background worker: call flush_to_file when dirty, rate-limited."""
+        while True:
+            try:
+                await asyncio.sleep(2.0)
+                if not self._flush_dirty:
+                    continue
+                if time.monotonic() - self._last_flush_at < FLUSH_DEBOUNCE_SECONDS:
+                    continue
+                # Reset before flushing so patterns accumulated during the
+                # flush still trigger a follow-up.
+                self._flush_dirty = False
+                self._last_flush_at = time.monotonic()
+                await self.flush_to_file()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Traffic learner flush worker iteration failed: %s", e)
 
-        Uses the learn plugin registry to find the correct writer for the
-        current agent_type (e.g., MEMORY.md for Claude, AGENTS.md for Codex).
+    async def flush_to_file(self) -> None:
+        """Flush patterns (persisted + in-memory) to agent-native context files.
+
+        Buckets patterns by project via longest-matching file path in content
+        or entity_refs, routes by category to CLAUDE.md vs MEMORY.md, and
+        delegates the actual write to the learn plugin writer.
+
+        Un-anchored patterns (no absolute path in content) are dropped in v1.
         """
-        patterns = self.get_learned_patterns()
-        if not patterns or self.agent_type == "unknown":
+        try:
+            from headroom.learn.registry import auto_detect_plugins, get_plugin
+        except Exception as e:
+            logger.debug("Traffic learner flush: learn package unavailable (%s)", e)
             return
 
+        # Resolve plugin: explicit agent_type wins, else first detected plugin.
         try:
-            from headroom.learn.models import ProjectInfo, Recommendation, RecommendationTarget
-            from headroom.learn.registry import get_plugin
-
-            plugin = get_plugin(self.agent_type)
-            writer = plugin.create_writer()
-
-            # Convert patterns to Recommendations
-            recommendations = []
-            for p in patterns:
-                recommendations.append(
-                    Recommendation(
-                        target=RecommendationTarget.CONTEXT_FILE,
-                        section="Learned Patterns (Live Traffic)",
-                        content=f"- {p.content}",
-                        confidence=p.importance,
-                        evidence_count=p.evidence_count,
-                    )
-                )
-
-            if not recommendations:
-                return
-
-            # Use cwd as project path — the proxy runs in the project directory
-            from pathlib import Path
-
-            project = ProjectInfo(
-                name=Path.cwd().name,
-                project_path=Path.cwd(),
-                data_path=Path.cwd(),
-            )
-
-            result = writer.write(recommendations, project, dry_run=False)
-            if result.files_written:
-                logger.info(
-                    "Traffic learner flushed %d patterns to %s",
-                    len(recommendations),
-                    ", ".join(str(f) for f in result.files_written),
-                )
+            if self.agent_type and self.agent_type != "unknown":
+                plugin = get_plugin(self.agent_type)
+            else:
+                detected = auto_detect_plugins()
+                if not detected:
+                    logger.debug("Traffic learner flush: no agent plugins detected")
+                    return
+                plugin = detected[0]
         except KeyError:
-            logger.debug("No learn plugin for agent_type=%s, skipping file flush", self.agent_type)
-        except Exception as e:
-            logger.warning("Traffic learner flush_to_file failed: %s", e)
+            logger.debug("No learn plugin for agent_type=%s", self.agent_type)
+            return
+
+        # Gather patterns: persisted rows + in-memory accumulator, deduped.
+        patterns = self._collect_all_patterns()
+        if not patterns:
+            return
+
+        # Evidence gate: at shutdown accept single-evidence rows; during live
+        # flushes require 2+ to suppress one-off noise.
+        min_evidence = 1 if self._stopping else 2
+        patterns = [p for p in patterns if p.evidence_count >= min_evidence]
+        if not patterns:
+            return
+
+        # Bucket patterns by project.
+        if self._project_roots_cache is None:
+            try:
+                self._project_roots_cache = plugin.discover_projects()
+            except Exception as e:
+                logger.warning("discover_projects failed: %s", e)
+                self._project_roots_cache = []
+
+        roots = self._project_roots_cache
+        if not roots:
+            logger.debug("Traffic learner flush: no projects discovered, skipping")
+            return
+
+        by_project: dict[Path, list[ExtractedPattern]] = {}
+        unanchored = 0
+        for p in patterns:
+            proj = _project_for_pattern(p, roots)
+            if proj is None:
+                unanchored += 1
+                continue
+            by_project.setdefault(proj.project_path, []).append(p)
+
+        if unanchored:
+            logger.debug("Traffic learner flush: dropped %d un-anchored pattern(s)", unanchored)
+
+        writer = plugin.create_writer()
+        project_by_path = {p.project_path: p for p in roots}
+
+        for project_path, proj_patterns in by_project.items():
+            project = project_by_path[project_path]
+            recommendations = _patterns_to_recommendations(proj_patterns)
+            if not recommendations:
+                continue
+            try:
+                result = writer.write(recommendations, project, dry_run=False)
+                if result.files_written:
+                    logger.info(
+                        "Traffic learner flushed %d pattern(s) to %s",
+                        len(proj_patterns),
+                        ", ".join(str(f) for f in result.files_written),
+                    )
+            except Exception as e:
+                logger.warning("Traffic learner write failed for %s: %s", project_path, e)
+
+    def _collect_all_patterns(self) -> list[ExtractedPattern]:
+        """Merge persisted (memory.db) + in-memory patterns, deduped by content.
+
+        Evidence counts are summed across duplicates.
+        """
+        by_hash: dict[str, ExtractedPattern] = {}
+
+        # Persisted rows from memory.db
+        db_path = _resolve_backend_db_path(self._backend)
+        if db_path is not None and db_path.exists():
+            try:
+                persisted = _load_persisted_patterns_from_sqlite(db_path)
+            except Exception as e:
+                logger.debug("Reading persisted traffic patterns failed: %s", e)
+                persisted = []
+            for p in persisted:
+                if p.content_hash in by_hash:
+                    by_hash[p.content_hash].evidence_count += p.evidence_count
+                else:
+                    by_hash[p.content_hash] = p
+
+        # In-memory accumulator (patterns not yet persisted)
+        for pattern, count in self._pattern_counts.values():
+            h = pattern.content_hash
+            if h in by_hash:
+                by_hash[h].evidence_count += count
+            else:
+                by_hash[h] = ExtractedPattern(
+                    category=pattern.category,
+                    content=pattern.content,
+                    importance=pattern.importance,
+                    evidence_count=count,
+                    entity_refs=list(pattern.entity_refs),
+                    metadata=dict(pattern.metadata),
+                    content_hash=pattern.content_hash,
+                )
+
+        return list(by_hash.values())
 
     def get_learned_patterns(self) -> list[ExtractedPattern]:
-        """Return all patterns that have been saved or met the evidence threshold.
+        """Return patterns from the in-memory accumulator.
 
-        Includes patterns still in the accumulator that haven't hit min_evidence
-        but have been seen at least once (for end-of-session flush).
+        Retained for backwards compatibility. Reads only the accumulator;
+        does not consult persisted rows. Use flush_to_file() for full data.
         """
-        patterns: list[ExtractedPattern] = []
-
-        # Patterns that met the threshold and were queued
-        # (already saved to DB, but also want them in the .md file)
-        # We track what was saved via _saved_hashes, but don't keep the content.
-        # So we collect from the accumulator — patterns still accumulating.
-        for pattern, count in self._pattern_counts.values():
-            if count >= 1:  # At shutdown, flush even single-evidence patterns
-                patterns.append(pattern)
-
-        return patterns
+        return [pattern for pattern, count in self._pattern_counts.values() if count >= 1]
 
     async def on_tool_result(
         self,
@@ -597,6 +709,7 @@ class TrafficLearner:
     async def _accumulate(self, pattern: ExtractedPattern) -> None:
         """Accumulate a pattern, saving when evidence threshold is met."""
         self._patterns_extracted += 1
+        self._flush_dirty = True
         h = pattern.content_hash
 
         # Already saved — skip
@@ -639,6 +752,7 @@ class TrafficLearner:
                 await self._backend.save_memory(
                     content=pattern.content,
                     user_id=self._user_id,
+                    importance=pattern.importance,
                     metadata={
                         "source": "traffic_learner",
                         "category": pattern.category.value,
@@ -712,3 +826,188 @@ class TrafficLearner:
                 )
 
         return results
+
+
+# =============================================================================
+# Module helpers: project routing, memory.db loading, recommendation build
+# =============================================================================
+
+# Category → file routing. Stable project facts go to CLAUDE.md; evolving
+# preferences and error recovery tips go to MEMORY.md (which the user's
+# auto-memory system already owns).
+_CATEGORY_TO_TARGET: dict[PatternCategory, str] = {
+    PatternCategory.ENVIRONMENT: "context_file",
+    PatternCategory.ARCHITECTURE: "context_file",
+    PatternCategory.PREFERENCE: "memory_file",
+    PatternCategory.ERROR_RECOVERY: "memory_file",
+}
+
+_CATEGORY_SECTION_TITLE: dict[PatternCategory, str] = {
+    PatternCategory.ENVIRONMENT: "Learned: environment",
+    PatternCategory.ARCHITECTURE: "Learned: architecture",
+    PatternCategory.PREFERENCE: "Learned: preference",
+    PatternCategory.ERROR_RECOVERY: "Learned: error recovery",
+}
+
+
+def _project_for_pattern(pattern: ExtractedPattern, roots: list[ProjectInfo]) -> ProjectInfo | None:
+    """Return the project whose root most specifically matches this pattern.
+
+    We look for absolute paths in the pattern's content and entity_refs, then
+    pick the longest project root that prefixes any of those paths. Returns
+    None if the pattern mentions no paths under a known project.
+    """
+    if not roots:
+        return None
+
+    # Collect candidate absolute paths from content and entity_refs
+    candidates: list[str] = []
+    for match in _ABS_PATH_RE.findall(pattern.content or ""):
+        candidates.append(match)
+    for ref in pattern.entity_refs or []:
+        if ref and (ref.startswith("/") or (len(ref) > 2 and ref[1] == ":")):
+            candidates.append(ref)
+
+    if not candidates:
+        return None
+
+    # Longest root first — most specific wins
+    roots_sorted = sorted(roots, key=lambda p: len(str(p.project_path)), reverse=True)
+
+    for cand in candidates:
+        for root in roots_sorted:
+            root_str = str(root.project_path).rstrip("/")
+            if not root_str:
+                continue
+            if (
+                cand == root_str
+                or cand.startswith(root_str + "/")
+                or cand.startswith(root_str + "\\")
+            ):
+                return root
+    return None
+
+
+def _resolve_backend_db_path(backend: Any) -> Path | None:
+    """Best-effort lookup of the SQLite path used by the memory backend.
+
+    Returns None if the backend is not a LocalBackend or its config is not
+    accessible (e.g. mem0 remote backend).
+    """
+    if backend is None:
+        return None
+    cfg = getattr(backend, "_config", None)
+    db_path = getattr(cfg, "db_path", None) if cfg is not None else None
+    if not db_path:
+        return None
+    return Path(db_path)
+
+
+def _load_persisted_patterns_from_sqlite(db_path: Path) -> list[ExtractedPattern]:
+    """Read traffic_learner rows from memory.db, dedupe, return patterns.
+
+    Uses a direct read-only SQLite connection — we don't go through the
+    backend's vector search because we want all rows, not semantically
+    similar ones, and the backend doesn't expose a "list by source" query.
+    """
+    uri = f"file:{db_path}?mode=ro"
+    patterns: dict[str, ExtractedPattern] = {}
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.OperationalError:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT content, metadata, entity_refs, importance "
+            "FROM memories "
+            'WHERE metadata LIKE \'%"source": "traffic_learner"%\''
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        conn.close()
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    for row in rows:
+        content = row["content"] or ""
+        if not content:
+            continue
+        try:
+            meta = json.loads(row["metadata"] or "{}")
+        except json.JSONDecodeError:
+            meta = {}
+        try:
+            entity_refs = json.loads(row["entity_refs"] or "[]") or []
+        except json.JSONDecodeError:
+            entity_refs = []
+
+        cat_str = meta.get("category", "")
+        try:
+            category = PatternCategory(cat_str)
+        except ValueError:
+            continue  # Skip rows whose category we don't recognize
+
+        evidence = int(meta.get("evidence_count", 1) or 1)
+        try:
+            importance = float(row["importance"]) if row["importance"] is not None else 0.5
+        except (TypeError, ValueError):
+            importance = 0.5
+
+        h = hashlib.sha256(content.encode()).hexdigest()[:16]
+        if h in patterns:
+            existing = patterns[h]
+            existing.evidence_count += evidence
+            if importance > existing.importance:
+                existing.importance = importance
+        else:
+            patterns[h] = ExtractedPattern(
+                category=category,
+                content=content,
+                importance=importance,
+                evidence_count=evidence,
+                entity_refs=list(entity_refs),
+                metadata=meta,
+                content_hash=h,
+            )
+
+    return list(patterns.values())
+
+
+def _patterns_to_recommendations(patterns: list[ExtractedPattern]) -> list:
+    """Group patterns by category into one Recommendation per category.
+
+    Returns a list of Recommendation objects ready for ContextWriter.write.
+    """
+    from headroom.learn.models import Recommendation, RecommendationTarget
+
+    by_category: dict[PatternCategory, list[ExtractedPattern]] = {}
+    for p in patterns:
+        by_category.setdefault(p.category, []).append(p)
+
+    recs: list[Recommendation] = []
+    for category, items in by_category.items():
+        target_str = _CATEGORY_TO_TARGET.get(category)
+        if target_str is None:
+            continue
+        target = (
+            RecommendationTarget.CONTEXT_FILE
+            if target_str == "context_file"
+            else RecommendationTarget.MEMORY_FILE
+        )
+        # Sort by evidence_count desc so the most-supported rules appear first.
+        items.sort(key=lambda p: p.evidence_count, reverse=True)
+        bullets = "\n".join(f"- {p.content}" for p in items)
+        recs.append(
+            Recommendation(
+                target=target,
+                section=_CATEGORY_SECTION_TITLE.get(category, f"Learned: {category.value}"),
+                content=bullets,
+                confidence=max((p.importance for p in items), default=0.5),
+                evidence_count=sum(p.evidence_count for p in items),
+            )
+        )
+    return recs
