@@ -32,7 +32,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from ..backends.base import Backend
@@ -1433,19 +1433,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         """Serve the Headroom dashboard UI."""
         return get_dashboard_html()
 
-    @app.get("/stats")
-    async def stats():
-        """Get comprehensive proxy statistics.
+    DASHBOARD_STATS_CACHE_TTL_SECONDS = 5.0
+    _stats_snapshot_lock = asyncio.Lock()
+    _stats_snapshot: dict[str, Any] = {"expires_at": 0.0, "value": None}
 
-        This is the main stats endpoint - it aggregates data from all subsystems:
-        - Request metrics (total, cached, failed, by model/provider)
-        - Token usage and savings
-        - Cost tracking
-        - Canonical persisted display_session metrics for downstream dashboards
-        - Compression (CCR) statistics
-        - Telemetry/TOIN (data flywheel) statistics
-        - Cache and rate limiter stats
-        """
+    async def _build_stats_payload() -> dict[str, Any]:
+        """Build the full `/stats` response payload."""
         m = proxy.metrics
 
         # Calculate average latency
@@ -1663,6 +1656,44 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "log_full_messages": proxy.config.log_full_messages if proxy else False,
             **get_quota_registry().get_all_stats(),
         }
+
+    async def _get_cached_stats_payload() -> dict[str, Any]:
+        """Return a short-TTL cached `/stats` snapshot for dashboard polling."""
+        now = time.monotonic()
+        cached_payload = cast(dict[str, Any] | None, _stats_snapshot.get("value"))
+        if cached_payload is not None and now < float(_stats_snapshot["expires_at"]):
+            return cached_payload
+
+        async with _stats_snapshot_lock:
+            now = time.monotonic()
+            cached_payload = cast(dict[str, Any] | None, _stats_snapshot.get("value"))
+            if cached_payload is not None and now < float(_stats_snapshot["expires_at"]):
+                return cached_payload
+
+            payload = await _build_stats_payload()
+            _stats_snapshot["value"] = payload
+            _stats_snapshot["expires_at"] = time.monotonic() + DASHBOARD_STATS_CACHE_TTL_SECONDS
+            return payload
+
+    @app.get("/stats")
+    async def stats(cached: bool = False):
+        """Get comprehensive proxy statistics.
+
+        This is the main stats endpoint - it aggregates data from all subsystems:
+        - Request metrics (total, cached, failed, by model/provider)
+        - Token usage and savings
+        - Cost tracking
+        - Canonical persisted display_session metrics for downstream dashboards
+        - Compression (CCR) statistics
+        - Telemetry/TOIN (data flywheel) statistics
+        - Cache and rate limiter stats
+
+        Use ``?cached=1`` for the dashboard fast path. That returns a short-TTL
+        snapshot to avoid rebuilding the full payload on every UI poll.
+        """
+        if cached:
+            return await _get_cached_stats_payload()
+        return await _build_stats_payload()
 
     @app.get("/stats-history")
     async def stats_history(

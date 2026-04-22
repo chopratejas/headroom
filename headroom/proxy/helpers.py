@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from headroom import paths as _paths
 
@@ -20,6 +22,14 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 logger = logging.getLogger("headroom.proxy")
+
+RTK_STATS_CACHE_TTL_SECONDS = 5.0
+_rtk_stats_cache_lock = threading.Lock()
+_rtk_stats_cache: dict[str, Any] = {
+    "expires_at": 0.0,
+    "has_value": False,
+    "value": None,
+}
 
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
@@ -114,11 +124,18 @@ def _get_rtk_stats() -> dict[str, Any] | None:
     """Get rtk (Rust Token Killer) savings stats if rtk is installed.
 
     Reads from rtk's tracking database via `rtk gain --format json`.
-    Returns None if rtk is not installed.
+    Results are memoized briefly so dashboard polling does not spawn a new
+    subprocess on every refresh.
     """
     import shutil
     import subprocess as _sp
 
+    now = time.monotonic()
+    with _rtk_stats_cache_lock:
+        if _rtk_stats_cache["has_value"] and now < float(_rtk_stats_cache["expires_at"]):
+            return cast(dict[str, Any] | None, _rtk_stats_cache["value"])
+
+    payload: dict[str, Any] | None
     rtk_bin = shutil.which("rtk")
     if not rtk_bin:
         # Check headroom-managed install. Preserve the historical Unix-name
@@ -128,7 +145,16 @@ def _get_rtk_stats() -> dict[str, Any] | None:
         if rtk_managed.exists():
             rtk_bin = str(rtk_managed)
         else:
-            return None
+            payload = None
+            with _rtk_stats_cache_lock:
+                _rtk_stats_cache.update(
+                    {
+                        "expires_at": time.monotonic() + RTK_STATS_CACHE_TTL_SECONDS,
+                        "has_value": True,
+                        "value": payload,
+                    }
+                )
+            return payload
 
     try:
         result = _sp.run(
@@ -140,21 +166,36 @@ def _get_rtk_stats() -> dict[str, Any] | None:
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
             summary = data.get("summary", {})
-            return {
+            payload = {
                 "installed": True,
                 "total_commands": summary.get("total_commands", 0),
                 "tokens_saved": summary.get("total_saved", 0),
                 "avg_savings_pct": summary.get("avg_savings_pct", 0.0),
             }
+        else:
+            payload = {
+                "installed": True,
+                "total_commands": 0,
+                "tokens_saved": 0,
+                "avg_savings_pct": 0.0,
+            }
     except Exception:
-        pass
+        payload = {
+            "installed": True,
+            "total_commands": 0,
+            "tokens_saved": 0,
+            "avg_savings_pct": 0.0,
+        }
 
-    return {
-        "installed": True,
-        "total_commands": 0,
-        "tokens_saved": 0,
-        "avg_savings_pct": 0.0,
-    }
+    with _rtk_stats_cache_lock:
+        _rtk_stats_cache.update(
+            {
+                "expires_at": time.monotonic() + RTK_STATS_CACHE_TTL_SECONDS,
+                "has_value": True,
+                "value": payload,
+            }
+        )
+    return payload
 
 
 def is_anthropic_auth(headers: dict[str, str]) -> bool:

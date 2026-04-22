@@ -55,12 +55,12 @@
             <div class="inline-flex rounded-lg border border-border bg-surface p-1">
                 <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
                         :class="viewMode === 'session' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
-                        @click="viewMode = 'session'">
+                        @click="setViewMode('session')">
                     Session
                 </button>
                 <button class="px-3 py-1.5 text-sm rounded-md transition-colors"
                         :class="viewMode === 'history' ? 'bg-accent text-black' : 'text-gray-400 hover:text-gray-200'"
-                        @click="viewMode = 'history'">
+                        @click="setViewMode('history')">
                     Historical
                 </button>
             </div>
@@ -89,7 +89,7 @@
             </div>
             <button x-show="log_full_messages" id="feed-toggle"
                     class="px-3 py-1.5 text-sm rounded-md border border-border bg-surface text-gray-300 hover:text-white transition-colors"
-                    @click="feedOpen = !feedOpen"
+                    @click="toggleFeed()"
                     :class="feedOpen ? 'bg-accent text-black' : ''">
                 Live Feed
             </button>
@@ -1256,6 +1256,11 @@
                 savingsHistory: [],
                 expandedRows: {},
                 pollInterval: null,
+                statsPollMs: 5000,
+                historyPollMs: 30000,
+                feedPollMs: 5000,
+                lastHistoryFetchMs: 0,
+                lastFeedFetchMs: 0,
                 feedOpen: false,
                 transformations: [],
                 feedScrolled_: false,
@@ -1267,31 +1272,55 @@
 
                 async init() {
                     await this.fetchStats();
-                    await this.fetchTransformations();
 
                     this.pollInterval = setInterval(() => {
-                        this.fetchStats();
-                        this.fetchTransformations();
-                    }, 3000);
+                        this.pollDashboard();
+                    }, this.statsPollMs);
 
                     // Keyboard shortcuts
                     document.addEventListener('keydown', (e) => {
                         if (e.key === 'r' || e.key === 'R') {
-                            this.fetchStats();
+                            this.pollDashboard(true);
                         }
                     });
                 },
 
+                async pollDashboard(force = false) {
+                    if (!force && document.hidden) return;
+
+                    await this.fetchStats();
+
+                    const now = Date.now();
+                    if (this.viewMode === 'history' && (force || now - this.lastHistoryFetchMs >= this.historyPollMs)) {
+                        await this.fetchHistoryStats();
+                    }
+                    if (this.feedOpen && (force || now - this.lastFeedFetchMs >= this.feedPollMs)) {
+                        await this.fetchTransformations();
+                    }
+                },
+
+                async setViewMode(mode) {
+                    this.viewMode = mode;
+                    if (mode === 'history') {
+                        await this.fetchHistoryStats();
+                    }
+                },
+
+                async toggleFeed() {
+                    this.feedOpen = !this.feedOpen;
+                    if (this.feedOpen) {
+                        await this.fetchTransformations();
+                    }
+                },
+
                 async fetchStats() {
                     try {
-                        const [statsRes, historyRes, healthRes] = await Promise.all([
-                            fetch('/stats'),
-                            fetch('/stats-history'),
+                        const [statsRes, healthRes] = await Promise.all([
+                            fetch('/stats?cached=1'),
                             fetch('/health')
                         ]);
 
                         this.stats = await statsRes.json();
-                        this.historyStats = await historyRes.json();
                         const health = await healthRes.json();
                         this.healthy = health.status === 'healthy';
                         this.version = health.version || '0.3.0';
@@ -1312,6 +1341,18 @@
                     }
                 },
 
+                async fetchHistoryStats() {
+                    try {
+                        const response = await fetch('/stats-history');
+                        if (response.ok) {
+                            this.historyStats = await response.json();
+                            this.lastHistoryFetchMs = Date.now();
+                        }
+                    } catch (e) {
+                        console.error('Failed to fetch history stats:', e);
+                    }
+                },
+
                 async fetchTransformations() {
                     try {
                         const prevLen = this.transformations.length;
@@ -1324,6 +1365,7 @@
                             }
                             this.transformations = data.transformations || [];
                             this.log_full_messages = data.log_full_messages ?? this.log_full_messages;
+                            this.lastFeedFetchMs = Date.now();
                             this.renderTransformations();
                         }
                     } catch (e) {

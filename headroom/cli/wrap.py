@@ -26,7 +26,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Fix Windows cp1252 encoding — box-drawing characters require UTF-8
 if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
@@ -40,6 +40,18 @@ from headroom.copilot_auth import DEFAULT_API_URL as COPILOT_API_URL
 from headroom.copilot_auth import has_oauth_auth, resolve_client_bearer_token
 
 from .main import main
+
+
+def _live_wrap_module() -> Any:
+    """Return the current live wrap module instance.
+
+    CLI tests sometimes reload `headroom.cli.wrap` while still invoking Click
+    command callbacks that were registered from an older module instance. By
+    resolving helper calls through `sys.modules[__name__]`, patched helpers on
+    the live module continue to affect those callbacks.
+    """
+
+    return cast(Any, sys.modules[__name__])
 
 
 def _print_telemetry_notice() -> None:
@@ -651,7 +663,8 @@ def _recover_persistent_proxy(port: int) -> bool:
     from headroom.install.runtime import start_detached_agent, start_persistent_docker, wait_ready
     from headroom.install.supervisors import start_supervisor
 
-    manifest = _find_persistent_manifest(port)
+    helpers = _live_wrap_module()
+    manifest = helpers._find_persistent_manifest(port)
     if manifest is None:
         return False
 
@@ -735,24 +748,30 @@ def _ensure_proxy(
     openai_api_url: str | None = None,
 ) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
+    helpers = _live_wrap_module()
     if not no_proxy:
-        manifest = _find_persistent_manifest(port)
+        manifest = helpers._find_persistent_manifest(port)
         if manifest is not None:
             from headroom.install.health import probe_ready
 
             if probe_ready(manifest.health_url):
                 click.echo(f"  Proxy already running on port {port}")
                 return None
-            if _recover_persistent_proxy(port):
+            if helpers._recover_persistent_proxy(port):
                 return None
-            raise click.ClickException(
-                f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
+            if helpers._check_proxy(port):
+                raise click.ClickException(
+                    f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
+                )
+            click.echo(
+                f"  Warning: persistent deployment '{manifest.profile}' on port {port} "
+                "is stale; starting a fresh proxy instead."
             )
 
-        if _check_proxy(port):
+        if helpers._check_proxy(port):
             # Proxy is running — check if it has the features we need
             needs_restart = False
-            running_config = _query_proxy_config(port)
+            running_config = helpers._query_proxy_config(port)
 
             if running_config is not None:
                 missing = []
@@ -776,7 +795,7 @@ def _ensure_proxy(
 
                     proxy_pid = running_config.get("pid")
                     if proxy_pid is not None:
-                        if not _kill_proxy_by_pid(int(proxy_pid), port):
+                        if not helpers._kill_proxy_by_pid(int(proxy_pid), port):
                             raise click.ClickException(
                                 f"Failed to stop existing proxy (PID {proxy_pid}) on port {port}. "
                                 "Stop it manually and retry."
@@ -799,16 +818,19 @@ def _ensure_proxy(
         # Start (or restart) the proxy with the requested flags
         click.echo(f"  Starting Headroom proxy on port {port}...")
         try:
-            proc = _start_proxy(
-                port,
-                learn=learn,
-                memory=memory,
-                agent_type=agent_type,
-                code_graph=code_graph,
-                backend=backend,
-                anyllm_provider=anyllm_provider,
-                region=region,
-                openai_api_url=openai_api_url,
+            proc = cast(
+                subprocess.Popen[Any],
+                helpers._start_proxy(
+                    port,
+                    learn=learn,
+                    memory=memory,
+                    agent_type=agent_type,
+                    code_graph=code_graph,
+                    backend=backend,
+                    anyllm_provider=anyllm_provider,
+                    region=region,
+                    openai_api_url=openai_api_url,
+                ),
             )
             click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
             return proc
@@ -816,7 +838,7 @@ def _ensure_proxy(
             click.echo(f"  Error: {e}")
             raise SystemExit(1) from e
     else:
-        if not _check_proxy(port):
+        if not helpers._check_proxy(port):
             click.echo(f"  Warning: No proxy detected on port {port}")
         return None
 
@@ -1234,9 +1256,11 @@ def claude(
         headroom wrap claude --code-graph        # With code graph intelligence
         headroom wrap claude --no-rtk           # Skip rtk (proxy only)
     """
+    helpers = _live_wrap_module()
+
     if prepare_only:
         if not no_rtk:
-            _prepare_wrap_rtk(verbose=verbose, label="Claude")
+            helpers._prepare_wrap_rtk(verbose=verbose, label="Claude")
         return
 
     claude_bin = shutil.which("claude")
@@ -1247,7 +1271,7 @@ def claude(
 
     # Setup rtk before launching (Claude-specific)
     proxy_holder: list[subprocess.Popen | None] = [None]
-    cleanup = _make_cleanup(proxy_holder, port)
+    cleanup = helpers._make_cleanup(proxy_holder, port)
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
@@ -1300,25 +1324,30 @@ def claude(
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
-        proxy_holder[0] = _ensure_proxy(
-            port, no_proxy, learn=learn, memory=memory, agent_type="claude", code_graph=code_graph
+        proxy_holder[0] = helpers._ensure_proxy(
+            port,
+            no_proxy,
+            learn=learn,
+            memory=memory,
+            agent_type="claude",
+            code_graph=code_graph,
         )
 
         if not no_rtk:
             click.echo("  Setting up rtk...")
-            _setup_rtk(verbose=verbose)
+            helpers._setup_rtk(verbose=verbose)
         elif verbose:
             click.echo("  Skipping rtk (--no-rtk)")
 
         if code_graph:
-            _setup_code_graph(verbose=verbose)
+            helpers._setup_code_graph(verbose=verbose)
 
         click.echo()
         click.echo("  Launching Claude Code (API routed through Headroom)...")
         click.echo(f"  ANTHROPIC_BASE_URL=http://127.0.0.1:{port}")
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
-        _print_telemetry_notice()
+        helpers._print_telemetry_notice()
         click.echo()
 
         env = os.environ.copy()

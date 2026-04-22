@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import click
 
-from headroom.cli.wrap import _ensure_proxy, _find_persistent_manifest, _recover_persistent_proxy
+import headroom.cli.wrap as wrap_cli
 
 
 class _Manifest:
@@ -15,8 +15,8 @@ class _Manifest:
 def test_ensure_proxy_recovers_matching_persistent_deployment(monkeypatch) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr("headroom.cli.wrap._check_proxy", lambda port: False)
-    monkeypatch.setattr("headroom.cli.wrap._find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: False)
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
     monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
     monkeypatch.setattr(
         "headroom.install.supervisors.start_supervisor",
@@ -26,13 +26,14 @@ def test_ensure_proxy_recovers_matching_persistent_deployment(monkeypatch) -> No
         "headroom.install.runtime.wait_ready", lambda manifest, timeout_seconds=45: True
     )
     monkeypatch.setattr(
-        "headroom.cli.wrap._start_proxy",
+        wrap_cli,
+        "_start_proxy",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("ephemeral proxy should not start")
         ),
     )
 
-    result = _ensure_proxy(8787, False)
+    result = wrap_cli._ensure_proxy(8787, False)
 
     assert result is None
     assert calls == ["start:default"]
@@ -41,8 +42,8 @@ def test_ensure_proxy_recovers_matching_persistent_deployment(monkeypatch) -> No
 def test_ensure_proxy_recovers_persistent_deployment_when_socket_is_bound(monkeypatch) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr("headroom.cli.wrap._check_proxy", lambda port: True)
-    monkeypatch.setattr("headroom.cli.wrap._find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
     monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
     monkeypatch.setattr(
         "headroom.install.supervisors.start_supervisor",
@@ -52,24 +53,39 @@ def test_ensure_proxy_recovers_persistent_deployment_when_socket_is_bound(monkey
         "headroom.install.runtime.wait_ready", lambda manifest, timeout_seconds=45: True
     )
 
-    result = _ensure_proxy(8787, False)
+    result = wrap_cli._ensure_proxy(8787, False)
 
     assert result is None
     assert calls == ["start:default"]
 
 
 def test_ensure_proxy_rejects_unhealthy_persistent_deployment(monkeypatch) -> None:
-    monkeypatch.setattr("headroom.cli.wrap._check_proxy", lambda port: True)
-    monkeypatch.setattr("headroom.cli.wrap._find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
     monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
-    monkeypatch.setattr("headroom.cli.wrap._recover_persistent_proxy", lambda port: False)
+    monkeypatch.setattr(wrap_cli, "_recover_persistent_proxy", lambda port: False)
 
     try:
-        _ensure_proxy(8787, False)
+        wrap_cli._ensure_proxy(8787, False)
     except click.ClickException as exc:
         assert "is not healthy" in str(exc)
     else:
         raise AssertionError("expected unhealthy persistent deployment to raise")
+
+
+def test_ensure_proxy_falls_back_when_persistent_manifest_is_stale(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: False)
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
+    monkeypatch.setattr(wrap_cli, "_recover_persistent_proxy", lambda port: False)
+    monkeypatch.setattr(wrap_cli, "_start_proxy", lambda *args, **kwargs: calls.append("start"))
+
+    result = wrap_cli._ensure_proxy(8787, False)
+
+    assert result is None
+    assert calls == ["start"]
 
 
 def test_find_persistent_manifest_prefers_default_profile(monkeypatch) -> None:
@@ -86,23 +102,23 @@ def test_find_persistent_manifest_prefers_default_profile(monkeypatch) -> None:
         lambda: [OtherManifest(), DefaultManifest()],
     )
 
-    manifest = _find_persistent_manifest(8787)
+    manifest = wrap_cli._find_persistent_manifest(8787)
 
     assert manifest.profile == "default"
 
 
 def test_recover_persistent_proxy_reuses_healthy_deployment(monkeypatch) -> None:
-    monkeypatch.setattr("headroom.cli.wrap._find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
     monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
 
-    assert _recover_persistent_proxy(8787) is True
+    assert wrap_cli._recover_persistent_proxy(8787) is True
 
 
 def test_recover_persistent_proxy_warns_for_task_deployment(monkeypatch) -> None:
     class TaskManifest(_Manifest):
         supervisor_kind = "task"
 
-    monkeypatch.setattr("headroom.cli.wrap._find_persistent_manifest", lambda port: TaskManifest())
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: TaskManifest())
     monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
 
-    assert _recover_persistent_proxy(8787) is False
+    assert wrap_cli._recover_persistent_proxy(8787) is False
