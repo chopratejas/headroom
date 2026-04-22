@@ -1,0 +1,829 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+import click
+import pytest
+from click.testing import CliRunner
+
+
+def _load_init_module(monkeypatch):
+    monkeypatch.delitem(sys.modules, "headroom.cli.init", raising=False)
+    monkeypatch.delitem(sys.modules, "headroom.cli.main", raising=False)
+    fake_main_module = types.ModuleType("headroom.cli.main")
+
+    @click.group()
+    def fake_main() -> None:
+        pass
+
+    fake_main_module.main = fake_main
+    monkeypatch.setitem(sys.modules, "headroom.cli.main", fake_main_module)
+    importlib.invalidate_caches()
+    init_cli = importlib.import_module("headroom.cli.init")
+    monkeypatch.delitem(sys.modules, "headroom.cli.init", raising=False)
+    return init_cli, fake_main
+
+
+def test_init_auto_detects_targets(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(init_cli, "detect_init_targets", lambda global_scope: ["claude", "codex"])
+    monkeypatch.setattr(init_cli, "_run_init_targets", lambda **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(fake_main, ["init", "-g"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["targets"] == ["claude", "codex"]
+    assert captured["global_scope"] is True
+
+
+def test_init_fails_when_auto_detection_empty(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+    monkeypatch.setattr(init_cli, "detect_init_targets", lambda global_scope: [])
+
+    result = runner.invoke(fake_main, ["init"])
+
+    assert result.exit_code != 0
+    assert "auto-detected" in result.output
+
+
+def test_init_copilot_requires_global(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+    monkeypatch.setattr(init_cli, "_ensure_runtime_manifest", lambda **kwargs: "init-local-test")
+
+    result = runner.invoke(fake_main, ["init", "copilot"])
+
+    assert result.exit_code != 0
+    assert "requires -g" in result.output
+
+
+def test_init_claude_local_writes_settings_and_installs_marketplace(
+    monkeypatch, tmp_path: Path
+) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    marketplace_calls: list[str] = []
+    monkeypatch.setattr(init_cli, "_ensure_runtime_manifest", lambda **kwargs: "init-local-demo")
+    monkeypatch.setattr(
+        init_cli,
+        "_install_claude_marketplace",
+        lambda scope: marketplace_calls.append(scope),
+    )
+
+    result = runner.invoke(fake_main, ["init", "claude"])
+
+    assert result.exit_code == 0, result.output
+    settings_path = tmp_path / ".claude" / "settings.local.json"
+    payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert payload["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787"
+    assert marketplace_calls == ["local"]
+    assert any(
+        "--profile init-local-demo" in hook["command"] and "init hook ensure" in hook["command"]
+        for entry in payload["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+    )
+
+
+def test_init_codex_merges_feature_flag_into_existing_table(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("[features]\nshell_tool = true\n", encoding="utf-8")
+
+    init_cli._init_codex(global_scope=False, profile="init-local-demo", port=9000)
+
+    content = config_path.read_text(encoding="utf-8")
+    assert 'base_url = "http://127.0.0.1:9000/v1"' in content
+    assert content.count("[features]") == 1
+    assert "codex_hooks = true" in content
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    assert "--profile init-local-demo" in hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "init hook ensure" in hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+
+
+def test_init_claude_uses_custom_port(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(init_cli, "_install_claude_marketplace", lambda scope: None)
+
+    init_cli._init_claude(global_scope=False, profile="init-local-demo", port=9011)
+
+    payload = json.loads((tmp_path / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert payload["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9011"
+
+
+def test_init_copilot_global_writes_hooks_and_env(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    captured_env: dict[str, str] = {}
+    monkeypatch.setattr(init_cli, "_copilot_config_path", lambda: tmp_path / "copilot-config.json")
+    monkeypatch.setattr(init_cli, "_apply_user_env", lambda values: captured_env.update(values))
+    monkeypatch.setattr(init_cli, "_install_copilot_marketplace", lambda: None)
+
+    init_cli._init_copilot(global_scope=True, profile="init-user", port=9005, backend="openai")
+
+    payload = json.loads((tmp_path / "copilot-config.json").read_text(encoding="utf-8"))
+    assert "SessionStart" in payload["hooks"]
+    assert "PreToolUse" in payload["hooks"]
+    assert "--profile init-user" in payload["hooks"]["SessionStart"][0]["command"]
+    assert captured_env == {
+        "COPILOT_PROVIDER_TYPE": "openai",
+        "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:9005/v1",
+        "COPILOT_PROVIDER_WIRE_API": "completions",
+    }
+
+
+def test_init_hook_ensure_prefers_local_profile(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    ensured: list[str] = []
+
+    def fake_load(profile: str):
+        return object() if profile == "init-repo-12345678" else None
+
+    monkeypatch.setattr(init_cli, "_local_profile", lambda cwd=None: "init-repo-12345678")
+    monkeypatch.setattr(init_cli, "load_manifest", fake_load)
+    monkeypatch.setattr(
+        init_cli, "_ensure_profile_running", lambda profile: ensured.append(profile)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(fake_main, ["init", "hook", "ensure"])
+
+    assert result.exit_code == 0, result.output
+    assert ensured == ["init-repo-12345678"]
+
+
+def test_init_openclaw_requires_global(monkeypatch) -> None:
+    _, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+
+    result = runner.invoke(fake_main, ["init", "openclaw"])
+
+    assert result.exit_code != 0
+    assert "requires -g" in result.output
+
+
+def test_init_openclaw_delegates_to_wrap(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(init_cli, "resolve_headroom_command", lambda: ["headroom"])
+    monkeypatch.setattr(
+        init_cli.subprocess,
+        "run",
+        lambda cmd: calls.append(cmd) or _Result(),
+    )
+
+    init_cli._init_openclaw(global_scope=True, port=9999)
+
+    assert calls == [["headroom", "wrap", "openclaw", "--proxy-port", "9999"]]
+
+
+def test_detect_init_targets_respects_scope(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(
+        init_cli.shutil,
+        "which",
+        lambda name: name if name in {"claude", "copilot", "codex", "openclaw"} else None,
+    )
+
+    assert init_cli.detect_init_targets(False) == ["claude", "codex"]
+    assert init_cli.detect_init_targets(True) == ["claude", "copilot", "codex", "openclaw"]
+
+
+def test_marketplace_source_prefers_env_override(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setenv("HEADROOM_MARKETPLACE_SOURCE", "custom/source")
+
+    assert init_cli._marketplace_source() == "custom/source"
+
+
+def test_run_checked_treats_existing_install_as_success(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+
+    class _Result:
+        returncode = 1
+        stderr = "plugin already exists"
+        stdout = ""
+
+    monkeypatch.setattr(init_cli.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    init_cli._run_checked(["claude", "plugin", "install"], action="claude plugin install")
+
+
+def test_command_string_and_matcher_on_windows(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(init_cli, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(init_cli.subprocess, "list2cmdline", lambda parts: "joined-command")
+
+    assert init_cli._command_string(["headroom", "init"]) == "joined-command"
+    assert init_cli._powershell_matcher() == "Bash|PowerShell"
+
+
+def test_json_file_handles_missing_empty_and_non_mapping(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    missing = tmp_path / "missing.json"
+    empty = tmp_path / "empty.json"
+    array_payload = tmp_path / "payload.json"
+    empty.write_text("   \n", encoding="utf-8")
+    array_payload.write_text('["value"]\n', encoding="utf-8")
+
+    assert init_cli._json_file(missing) == {}
+    assert init_cli._json_file(empty) == {}
+    assert init_cli._json_file(array_payload) == {}
+
+
+def test_ensure_claude_hooks_rewrites_existing_entries(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "env": {"KEEP": "1"},
+                "hooks": {
+                    "SessionStart": [
+                        "not-a-dict",
+                        {"hooks": "not-a-list"},
+                        {
+                            "matcher": "startup|resume",
+                            "hooks": [{"type": "command", "command": "echo keep-me"}],
+                        },
+                        {
+                            "matcher": "startup|resume",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "headroom init hook ensure --marker headroom-init-claude",
+                                }
+                            ],
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(init_cli, "_hook_command", lambda *parts: "headroom init hook ensure")
+
+    init_cli._ensure_claude_hooks(settings_path, "init-local-demo", 9001)
+
+    payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert payload["env"] == {"KEEP": "1", "ANTHROPIC_BASE_URL": "http://127.0.0.1:9001"}
+    session_entries = payload["hooks"]["SessionStart"]
+    assert session_entries[0] == "not-a-dict"
+    assert session_entries[1] == {"hooks": "not-a-list"}
+    assert session_entries[2]["hooks"][0]["command"] == "echo keep-me"
+    assert session_entries[-1]["hooks"][0]["command"].endswith("--marker headroom-init-claude")
+
+
+def test_ensure_copilot_hooks_replaces_existing_marker(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    config_path = tmp_path / "copilot.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"type": "command", "command": "echo keep"},
+                        {
+                            "type": "command",
+                            "command": "headroom init hook ensure --marker headroom-init-copilot",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(init_cli, "_hook_command", lambda *parts: "headroom init hook ensure")
+
+    init_cli._ensure_copilot_hooks(config_path, "init-user")
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    commands = [entry["command"] for entry in payload["hooks"]["SessionStart"]]
+    assert commands == ["echo keep", "headroom init hook ensure --marker headroom-init-copilot"]
+
+
+def test_replace_marker_block_replaces_existing_block(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    content = "before\n# start\nold\n# end\nafter\n"
+
+    replaced = init_cli._replace_marker_block(content, "# start", "# end", "# start\nnew\n# end")
+
+    assert replaced == "before\n\nafter\n\n# start\nnew\n# end\n"
+
+
+def test_ensure_codex_provider_replaces_existing_marker(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"prefix\n{init_cli._CODEX_PROVIDER_MARKER_START}\nold = true\n{init_cli._CODEX_PROVIDER_MARKER_END}\n",
+        encoding="utf-8",
+    )
+
+    init_cli._ensure_codex_provider(path, 9100)
+
+    content = path.read_text(encoding="utf-8")
+    assert content.count(init_cli._CODEX_PROVIDER_MARKER_START) == 1
+    assert 'base_url = "http://127.0.0.1:9100/v1"' in content
+    assert "old = true" not in content
+
+
+def test_ensure_codex_feature_flag_replaces_existing_marker(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"[features]\n{init_cli._CODEX_FEATURE_MARKER_START}\ncodex_hooks = false\n{init_cli._CODEX_FEATURE_MARKER_END}\n",
+        encoding="utf-8",
+    )
+
+    init_cli._ensure_codex_feature_flag(path)
+
+    content = path.read_text(encoding="utf-8")
+    assert content.count(init_cli._CODEX_FEATURE_MARKER_START) == 1
+    assert "codex_hooks = true" in content
+
+
+def test_ensure_codex_feature_flag_skips_duplicate_existing_setting(
+    monkeypatch, tmp_path: Path
+) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text("[features]\ncodex_hooks = true\nshell_tool = true\n", encoding="utf-8")
+
+    init_cli._ensure_codex_feature_flag(path)
+
+    content = path.read_text(encoding="utf-8")
+    assert content.count("codex_hooks = true") == 1
+    assert init_cli._CODEX_FEATURE_MARKER_START not in content
+
+
+def test_ensure_codex_feature_flag_creates_features_section_when_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text('model = "gpt-5"\n', encoding="utf-8")
+
+    init_cli._ensure_codex_feature_flag(path)
+
+    content = path.read_text(encoding="utf-8")
+    assert "[features]" in content
+    assert "codex_hooks = true" in content
+
+
+def test_manifest_changed_detects_differences(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    existing = SimpleNamespace(
+        port=8787,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory_enabled=False,
+    )
+
+    assert not init_cli._manifest_changed(
+        existing,
+        port=8787,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory=False,
+    )
+    assert init_cli._manifest_changed(
+        existing,
+        port=9000,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory=False,
+    )
+
+
+def test_ensure_runtime_manifest_merges_targets_and_stops_changed_runtime(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    existing = SimpleNamespace(
+        targets=["claude"],
+        mutations=["mutation"],
+        port=8787,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory_enabled=False,
+    )
+    saved: list[object] = []
+    stopped: list[object] = []
+    built = SimpleNamespace(supervisor_kind="", artifacts=[], mutations=[], targets=[])
+
+    monkeypatch.setattr(init_cli, "_runtime_profile", lambda global_scope, cwd=None: "init-user")
+    monkeypatch.setattr(init_cli, "load_manifest", lambda profile: existing)
+    monkeypatch.setattr(
+        init_cli,
+        "build_manifest",
+        lambda **kwargs: built.__dict__.update(kwargs) or built,
+    )
+    monkeypatch.setattr(init_cli, "save_manifest", lambda manifest: saved.append(manifest))
+    monkeypatch.setattr(init_cli, "stop_runtime", lambda manifest: stopped.append(manifest))
+
+    profile = init_cli._ensure_runtime_manifest(
+        global_scope=True,
+        targets=["codex"],
+        port=9001,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory=False,
+    )
+
+    assert profile == "init-user"
+    assert stopped == [existing]
+    assert saved == [built]
+    assert built.targets == ["claude", "codex"]
+    assert built.mutations == ["mutation"]
+    assert built.supervisor_kind == init_cli.SupervisorKind.NONE.value
+    assert built.artifacts == []
+
+
+def test_ensure_runtime_manifest_ignores_stop_runtime_errors(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    existing = SimpleNamespace(
+        targets=[],
+        mutations=[],
+        port=8787,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory_enabled=False,
+    )
+    saved: list[object] = []
+    built = SimpleNamespace(supervisor_kind="", artifacts=[], mutations=[], targets=[])
+
+    monkeypatch.setattr(init_cli, "_runtime_profile", lambda global_scope, cwd=None: "init-user")
+    monkeypatch.setattr(init_cli, "load_manifest", lambda profile: existing)
+    monkeypatch.setattr(
+        init_cli,
+        "build_manifest",
+        lambda **kwargs: built.__dict__.update(kwargs) or built,
+    )
+    monkeypatch.setattr(init_cli, "save_manifest", lambda manifest: saved.append(manifest))
+    monkeypatch.setattr(
+        init_cli, "stop_runtime", lambda manifest: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    init_cli._ensure_runtime_manifest(
+        global_scope=True,
+        targets=["claude"],
+        port=9001,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        memory=False,
+    )
+
+    assert saved == [built]
+
+
+def test_apply_user_env_routes_by_platform(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    manifest = SimpleNamespace(base_env={"OLD": "1"}, tool_envs={})
+    windows_calls: list[object] = []
+    unix_calls: list[object] = []
+    monkeypatch.setattr(init_cli, "_env_manifest", lambda values: manifest)
+    monkeypatch.setattr(
+        init_cli, "_apply_windows_env_scope", lambda value: windows_calls.append(value)
+    )
+    monkeypatch.setattr(init_cli, "_apply_unix_env_scope", lambda value: unix_calls.append(value))
+
+    monkeypatch.setattr(init_cli, "os", SimpleNamespace(name="nt"))
+    init_cli._apply_user_env({"COPILOT_PROVIDER_TYPE": "openai"})
+    monkeypatch.setattr(init_cli, "os", SimpleNamespace(name="posix"))
+    init_cli._apply_user_env({"COPILOT_PROVIDER_TYPE": "anthropic"})
+
+    assert manifest.base_env == {}
+    assert manifest.tool_envs == {"copilot": {"COPILOT_PROVIDER_TYPE": "anthropic"}}
+    assert windows_calls == [manifest]
+    assert unix_calls == [manifest]
+
+
+def test_resolve_copilot_env_supports_anthropic(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+
+    assert init_cli._resolve_copilot_env(9010, "anthropic") == {
+        "COPILOT_PROVIDER_TYPE": "anthropic",
+        "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:9010",
+    }
+
+
+def test_marketplace_source_prefers_repo_checkout(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.delenv("HEADROOM_MARKETPLACE_SOURCE", raising=False)
+
+    assert init_cli._marketplace_source() == str(Path(init_cli.__file__).resolve().parents[2])
+
+
+def test_run_checked_raises_on_failure(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+
+    class _Result:
+        returncode = 2
+        stderr = "bad stderr"
+        stdout = "bad stdout"
+
+    monkeypatch.setattr(init_cli.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    with pytest.raises(
+        click.ClickException, match="claude plugin install failed: bad stderr\nbad stdout"
+    ):
+        init_cli._run_checked(["claude", "plugin", "install"], action="claude plugin install")
+
+
+def test_install_claude_marketplace_errors_without_binary(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
+
+    with pytest.raises(click.ClickException, match="'claude' not found"):
+        init_cli._install_claude_marketplace("local")
+
+
+def test_install_claude_marketplace_runs_expected_commands(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    calls: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(init_cli, "_marketplace_source", lambda: "repo/source")
+    monkeypatch.setattr(
+        init_cli, "_run_checked", lambda command, action: calls.append((command, action))
+    )
+
+    init_cli._install_claude_marketplace("user")
+
+    assert calls == [
+        (["claude", "plugin", "marketplace", "add", "repo/source"], "claude marketplace add"),
+        (
+            ["claude", "plugin", "install", "headroom@headroom-marketplace", "--scope", "user"],
+            "claude plugin install",
+        ),
+    ]
+
+
+def test_install_copilot_marketplace_handles_missing_binary(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
+
+    with pytest.raises(click.ClickException, match="'copilot' not found"):
+        init_cli._install_copilot_marketplace()
+
+
+def test_install_copilot_marketplace_runs_expected_commands(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    calls: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: "copilot")
+    monkeypatch.setattr(init_cli, "_marketplace_source", lambda: "repo/source")
+    monkeypatch.setattr(
+        init_cli, "_run_checked", lambda command, action: calls.append((command, action))
+    )
+
+    init_cli._install_copilot_marketplace()
+
+    assert calls == [
+        (["copilot", "plugin", "marketplace", "add", "repo/source"], "copilot marketplace add"),
+        (
+            ["copilot", "plugin", "install", "headroom@headroom-marketplace"],
+            "copilot plugin install",
+        ),
+    ]
+
+
+def test_ensure_profile_running_covers_runtime_modes(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    docker_manifest = SimpleNamespace(
+        preset=init_cli.InstallPreset.PERSISTENT_DOCKER.value,
+        supervisor_kind=init_cli.SupervisorKind.NONE.value,
+        profile="docker-profile",
+    )
+    service_manifest = SimpleNamespace(
+        preset=init_cli.InstallPreset.PERSISTENT_TASK.value,
+        supervisor_kind=init_cli.SupervisorKind.SERVICE.value,
+        profile="service-profile",
+    )
+    task_manifest = SimpleNamespace(
+        preset=init_cli.InstallPreset.PERSISTENT_TASK.value,
+        supervisor_kind=init_cli.SupervisorKind.NONE.value,
+        profile="task-profile",
+    )
+    manifests = {
+        "docker-profile": docker_manifest,
+        "service-profile": service_manifest,
+        "task-profile": task_manifest,
+    }
+    docker_calls: list[object] = []
+    service_calls: list[object] = []
+    detached_calls: list[str] = []
+    wait_calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(init_cli, "load_manifest", lambda profile: manifests.get(profile))
+
+    def fake_wait_ready(manifest, timeout_seconds: int) -> bool:
+        wait_calls.append((manifest.profile, timeout_seconds))
+        return False
+
+    monkeypatch.setattr(init_cli, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(
+        init_cli, "start_persistent_docker", lambda manifest: docker_calls.append(manifest)
+    )
+    monkeypatch.setattr(
+        init_cli, "start_supervisor", lambda manifest: service_calls.append(manifest)
+    )
+    monkeypatch.setattr(
+        init_cli,
+        "start_detached_agent",
+        lambda profile: detached_calls.append(profile),
+    )
+
+    init_cli._ensure_profile_running("missing")
+    init_cli._ensure_profile_running("docker-profile")
+    init_cli._ensure_profile_running("service-profile")
+    init_cli._ensure_profile_running("task-profile")
+
+    assert docker_calls == [docker_manifest]
+    assert service_calls == [service_manifest]
+    assert detached_calls == ["task-profile"]
+    assert ("docker-profile", 1) in wait_calls
+    assert ("docker-profile", 45) in wait_calls
+
+
+def test_ensure_profile_running_returns_when_ready_or_on_exception(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    manifest = SimpleNamespace(
+        preset=init_cli.InstallPreset.PERSISTENT_TASK.value,
+        supervisor_kind=init_cli.SupervisorKind.NONE.value,
+        profile="task-profile",
+    )
+    detached_calls: list[str] = []
+    monkeypatch.setattr(init_cli, "load_manifest", lambda profile: manifest)
+    monkeypatch.setattr(init_cli, "wait_ready", lambda manifest, timeout_seconds: True)
+    monkeypatch.setattr(
+        init_cli,
+        "start_detached_agent",
+        lambda profile: detached_calls.append(profile),
+    )
+
+    init_cli._ensure_profile_running("task-profile")
+    assert detached_calls == []
+
+    monkeypatch.setattr(init_cli, "wait_ready", lambda manifest, timeout_seconds: False)
+    monkeypatch.setattr(
+        init_cli,
+        "start_detached_agent",
+        lambda profile: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    init_cli._ensure_profile_running("task-profile")
+
+
+def test_init_codex_windows_warns_about_upstream_hook_limitation(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    messages: list[str] = []
+    monkeypatch.setattr(init_cli, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(init_cli, "_codex_scope_path", lambda global_scope: Path("config.toml"))
+    monkeypatch.setattr(init_cli, "_codex_hooks_path", lambda global_scope: Path("hooks.json"))
+    monkeypatch.setattr(init_cli, "_ensure_codex_provider", lambda path, port: None)
+    monkeypatch.setattr(init_cli, "_ensure_codex_feature_flag", lambda path: None)
+    monkeypatch.setattr(init_cli, "_ensure_codex_hooks", lambda path, profile: None)
+    monkeypatch.setattr(init_cli.click, "echo", lambda message: messages.append(message))
+
+    init_cli._init_codex(global_scope=True, profile="init-user", port=9000)
+
+    assert any("disabled upstream on Windows" in message for message in messages)
+
+
+def test_init_openclaw_propagates_nonzero_exit(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+
+    class _Result:
+        returncode = 9
+
+    monkeypatch.setattr(init_cli, "resolve_headroom_command", lambda: ["headroom"])
+    monkeypatch.setattr(init_cli.subprocess, "run", lambda command: _Result())
+
+    with pytest.raises(SystemExit) as exc:
+        init_cli._init_openclaw(global_scope=True, port=9999)
+
+    assert exc.value.code == 9
+
+
+def test_run_init_targets_dispatches_supported_targets(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(init_cli, "_ensure_runtime_manifest", lambda **kwargs: "init-profile")
+    monkeypatch.setattr(
+        init_cli,
+        "_init_claude",
+        lambda **kwargs: calls.append(
+            ("claude", (kwargs["global_scope"], kwargs["profile"], kwargs["port"]))
+        ),
+    )
+    monkeypatch.setattr(
+        init_cli,
+        "_init_copilot",
+        lambda **kwargs: calls.append(
+            ("copilot", (kwargs["global_scope"], kwargs["profile"], kwargs["port"]))
+        ),
+    )
+    monkeypatch.setattr(
+        init_cli,
+        "_init_codex",
+        lambda **kwargs: calls.append(
+            ("codex", (kwargs["global_scope"], kwargs["profile"], kwargs["port"]))
+        ),
+    )
+    monkeypatch.setattr(
+        init_cli,
+        "_init_openclaw",
+        lambda **kwargs: calls.append(("openclaw", (kwargs["global_scope"], kwargs["port"]))),
+    )
+
+    init_cli._run_init_targets(
+        targets=["claude", "copilot", "codex", "openclaw"],
+        global_scope=True,
+        port=9000,
+        backend="openai",
+        anyllm_provider="provider",
+        region="us-east-1",
+        memory=True,
+    )
+
+    assert calls == [
+        ("claude", (True, "init-profile", 9000)),
+        ("copilot", (True, "init-profile", 9000)),
+        ("codex", (True, "init-profile", 9000)),
+        ("openclaw", (True, 9000)),
+    ]
+
+
+def test_init_subcommand_uses_group_options(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(init_cli, "_run_init_targets", lambda **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(
+        fake_main,
+        ["init", "-g", "--port", "9007", "--backend", "openai", "--memory", "claude"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "targets": ["claude"],
+        "global_scope": True,
+        "port": 9007,
+        "backend": "openai",
+        "anyllm_provider": None,
+        "region": None,
+        "memory": True,
+    }
+
+
+def test_init_hook_ensure_prefers_global_when_local_missing(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    ensured: list[str] = []
+    monkeypatch.setattr(init_cli, "_local_profile", lambda cwd=None: "init-repo-12345678")
+    monkeypatch.setattr(
+        init_cli,
+        "load_manifest",
+        lambda profile: object() if profile == init_cli._GLOBAL_PROFILE else None,
+    )
+    monkeypatch.setattr(
+        init_cli, "_ensure_profile_running", lambda profile: ensured.append(profile)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(fake_main, ["init", "hook", "ensure"])
+
+    assert result.exit_code == 0, result.output
+    assert ensured == [init_cli._GLOBAL_PROFILE]
+
+
+def test_init_hook_ensure_uses_explicit_profile(monkeypatch) -> None:
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    ensured: list[str] = []
+    monkeypatch.setattr(
+        init_cli, "_ensure_profile_running", lambda profile: ensured.append(profile)
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(fake_main, ["init", "hook", "ensure", "--profile", "init-explicit"])
+
+    assert result.exit_code == 0, result.output
+    assert ensured == ["init-explicit"]

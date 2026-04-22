@@ -1,4 +1,12 @@
 repos:
+  - repo: local
+    hooks:
+      - id: sync-plugin-versions
+        name: Sync plugin versions
+        entry: python scripts/sync-plugin-versions.py
+        language: system
+        pass_filenames: false
+        always_run: true
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.4
     hooks:

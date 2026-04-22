@@ -8,7 +8,10 @@ import json
 import re
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 
 def get_version_from_pyproject(root: Path) -> str:
@@ -56,6 +59,46 @@ def update_package_json(file_path: Path, version: str) -> None:
         f.write("\n")
 
 
+def update_plugin_manifest(file_path: Path, version: str) -> None:
+    """Update a plugin.json version field."""
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+    data["version"] = version
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def update_marketplace_manifest(file_path: Path, version: str) -> None:
+    """Update marketplace metadata and plugin entry versions."""
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        metadata["version"] = version
+    plugins = data.get("plugins")
+    if isinstance(plugins, list):
+        for plugin in plugins:
+            if isinstance(plugin, dict):
+                plugin["version"] = version
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def update_plugin_versions(root: Path, version: str) -> None:
+    """Update marketplace and plugin manifest versions."""
+    update_marketplace_manifest(root / ".claude-plugin" / "marketplace.json", version)
+    update_marketplace_manifest(root / ".github" / "plugin" / "marketplace.json", version)
+    update_plugin_manifest(
+        root / "plugins" / "headroom-agent-hooks" / ".claude-plugin" / "plugin.json", version
+    )
+    update_plugin_manifest(
+        root / "plugins" / "headroom-agent-hooks" / ".github" / "plugin" / "plugin.json",
+        version,
+    )
+
+
 def update_openclaw_package_json(file_path: Path, version: str, sdk_version: str) -> None:
     """Update openclaw package.json version and headroom-ai dependency range."""
     with open(file_path, encoding="utf-8") as f:
@@ -89,6 +132,7 @@ def write_release_metadata(root: Path, version: str) -> None:
             "pypi": version,
             "npm-sdk": version,
             "npm-openclaw": version,
+            "agent-hooks-plugin": version,
         },
     }
     metadata_path = root / ".releaseetadata"
@@ -112,6 +156,11 @@ def main() -> None:
         choices=["major", "minor", "patch"],
         help="Bump version from pyproject.toml",
     )
+    parser.add_argument(
+        "--plugin-manifests-only",
+        action="store_true",
+        help="Only update marketplace/plugin manifest versions",
+    )
     args = parser.parse_args()
 
     if args.version:
@@ -122,6 +171,11 @@ def main() -> None:
     else:
         version = get_version_from_pyproject(args.root)
 
+    if args.plugin_manifests_only:
+        update_plugin_versions(args.root, version)
+        print(f"Plugin versions synchronized to {version}")
+        return
+
     # Update all versioned files
     update_pyproject_version(args.root, version)
     update_version_py(args.root, version)
@@ -129,6 +183,7 @@ def main() -> None:
         args.root / "plugins" / "openclaw" / "package.json", version, version
     )
     update_package_json(args.root / "sdk" / "typescript" / "package.json", version)
+    update_plugin_versions(args.root, version)
     write_release_metadata(args.root, version)
 
     print(f"Version synchronized to {version}")

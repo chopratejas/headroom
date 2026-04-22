@@ -49,12 +49,12 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -v --tb=short
+          pytest -v --tb=short tests scripts/tests
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.11'
         run: |
-          pytest --cov=headroom --cov-report=xml --cov-report=term-missing
+          pytest tests scripts/tests --cov=headroom --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
@@ -145,6 +145,11 @@ jobs:
         run: |
           docker build -f e2e/wrap/Dockerfile -t headroom-wrap-e2e .
           docker run --rm headroom-wrap-e2e
+
+      - name: Run Docker-native init e2e
+        run: |
+          docker build -f e2e/init/Dockerfile -t headroom-init-e2e .
+          docker run --rm headroom-init-e2e
 
   windows-native-wrapper:
     runs-on: windows-latest

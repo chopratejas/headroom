@@ -37,6 +37,7 @@ def _register_commands() -> None:
     """Register all subcommand groups."""
     from . import (
         evals,  # noqa: F401
+        init,  # noqa: F401
         install,  # noqa: F401
         learn,  # noqa: F401
         mcp,  # noqa: F401

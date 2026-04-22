@@ -5,6 +5,7 @@
 **Compress everything your AI agent reads. Same answers, fraction of the tokens.**
 
 [![CI](https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg)](https://github.com/chopratejas/headroom/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/chopratejas/headroom/graph/badge.svg)](https://app.codecov.io/gh/chopratejas/headroom)
 [![PyPI](https://img.shields.io/pypi/v/headroom-ai.svg)](https://pypi.org/project/headroom-ai/)
 [![npm](https://img.shields.io/npm/v/headroom-ai.svg)](https://www.npmjs.com/package/headroom-ai)
 [![Model: Kompress-base](https://img.shields.io/badge/model-Kompress--base-yellow.svg)](https://huggingface.co/chopratejas/kompress-base)
@@ -40,6 +41,14 @@ headroom wrap codex       # Codex
 headroom wrap cursor      # Cursor
 headroom wrap aider       # Aider
 headroom wrap copilot     # GitHub Copilot CLI
+```
+
+**Prefer a one-time durable install instead of wrapping every launch:**
+
+```bash
+headroom init -g          # Detect installed user-scoped agents and wire them to Headroom
+headroom init claude      # Install repo-local Claude hooks for just this project
+headroom init copilot -g  # Install user-scoped Copilot hooks and provider routing
 ```
 
 **Drop it into your own code — Python or TypeScript:**
@@ -146,14 +155,14 @@ python -m headroom.evals suite --tier 1
 
 ## Built for coding agents
 
-| Agent              | One-command wrap                   | Notes                                                            |
+| Agent              | Durable init / one-shot wrap       | Notes                                                            |
 |--------------------|------------------------------------|------------------------------------------------------------------|
-| **Claude Code**    | `headroom wrap claude`             | `--memory` for cross-agent memory, `--code-graph` for codebase intel |
-| **Codex**          | `headroom wrap codex --memory`     | Shares the same memory store as Claude                           |
-| **Cursor**         | `headroom wrap cursor`             | Prints Cursor config — paste once, done                          |
+| **Claude Code**    | `headroom init claude -g` / `headroom wrap claude` | `init` installs user or repo-local hooks; `wrap` is still useful for ad hoc sessions |
+| **Codex**          | `headroom init codex -g` / `headroom wrap codex --memory` | `init` installs provider config plus lifecycle hooks where supported |
+| **Cursor**         | `headroom wrap cursor`             | Prints Cursor config — durable init not available yet            |
 | **Aider**          | `headroom wrap aider`              | Starts proxy, launches Aider                                     |
-| **Copilot CLI**    | `headroom wrap copilot`            | Starts proxy, launches Copilot                                   |
-| **OpenClaw**       | `headroom wrap openclaw`           | Installs Headroom as ContextEngine plugin                        |
+| **Copilot CLI**    | `headroom init copilot -g` / `headroom wrap copilot` | `init` installs hooks and BYOK provider routing for the current user |
+| **OpenClaw**       | `headroom init openclaw -g` / `headroom wrap openclaw` | Installs Headroom as ContextEngine plugin                        |
 
 MCP-native too — `headroom mcp install` exposes `headroom_compress`, `headroom_retrieve`, and `headroom_stats` to any MCP client.
 
