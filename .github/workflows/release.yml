@@ -395,7 +395,7 @@ jobs:
         run: |
           ls -la release-assets
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -406,4 +406,17 @@ jobs:
           else
             gh release create "$TAG" --title "$TITLE" --notes-file .changelog.md
           fi
-          gh release upload "$TAG" release-assets/* --clobber
+
+      - name: Publish ${{ env.PYPI_PACKAGE }} Python distributions to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.detect-version.outputs.version }}"
+          gh release upload "$TAG" release-assets/*.whl release-assets/*.tar.gz --clobber
+
+      - name: Publish Node package tarballs to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.detect-version.outputs.version }}"
+          gh release upload "$TAG" release-assets/*.tgz --clobber
