@@ -2,26 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
-import types
 from pathlib import Path
 from unittest.mock import patch
 
-import click
 import pytest
 from click.testing import CliRunner
 
+from headroom.cli import wrap as wrap_cli
+from headroom.cli.main import main
 from headroom.copilot_auth import DEFAULT_API_URL
-
-fake_main_module = types.ModuleType("headroom.cli.main")
-fake_main_module.main = click.Group()
-sys.modules["headroom.cli.main"] = fake_main_module
-sys.modules.pop("headroom.cli", None)
-sys.modules.pop("headroom.cli.wrap", None)
-
-wrap_cli = importlib.import_module("headroom.cli.wrap")
-main = fake_main_module.main
 
 
 @pytest.fixture

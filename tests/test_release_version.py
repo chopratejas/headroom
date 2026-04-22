@@ -14,6 +14,7 @@ from headroom.release_version import (
     compute_release_version,
     determine_bump_level,
     find_latest_release_tag,
+    get_canonical_version,
     list_release_commits,
     normalize_release_tag,
     parse_release_tag,
@@ -177,7 +178,7 @@ def test_release_version_script_runs_directly_without_importing_headroom_package
     assert output_path.read_text(encoding="utf-8").splitlines() == [
         "version=0.6.0",
         "npm_version=0.6.0",
-        "canonical=0.5.25",
+        f"canonical={get_canonical_version(ROOT)}",
         "height=0",
         "bump=manual",
         "previous_tag=",

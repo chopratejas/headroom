@@ -53,6 +53,8 @@ def test_macos_native_wrapper_dependency_install_retries_pypi_downloads() -> Non
     content = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "python -m pip install --retries 10 --timeout 60 pytest" in content
+
+
 def test_ci_commitlint_skips_default_github_merge_commits() -> None:
     content = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
