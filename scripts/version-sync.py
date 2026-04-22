@@ -8,7 +8,10 @@ import json
 import re
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 
 def get_version_from_pyproject(root: Path) -> str:

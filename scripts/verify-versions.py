@@ -4,7 +4,10 @@
 import json
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 ROOT = Path(__file__).parent.parent
 
