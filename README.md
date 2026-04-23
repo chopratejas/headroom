@@ -5,6 +5,7 @@
 **Compress everything your AI agent reads. Same answers, fraction of the tokens.**
 
 [![CI](https://github.com/chopratejas/headroom/actions/workflows/ci.yml/badge.svg)](https://github.com/chopratejas/headroom/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/chopratejas/headroom/graph/badge.svg)](https://app.codecov.io/gh/chopratejas/headroom)
 [![PyPI](https://img.shields.io/pypi/v/headroom-ai.svg)](https://pypi.org/project/headroom-ai/)
 [![npm](https://img.shields.io/npm/v/headroom-ai.svg)](https://www.npmjs.com/package/headroom-ai)
 [![Model: Kompress-base](https://img.shields.io/badge/model-Kompress--base-yellow.svg)](https://huggingface.co/chopratejas/kompress-base)
