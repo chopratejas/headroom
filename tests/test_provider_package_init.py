@@ -12,6 +12,7 @@ from headroom.providers import install_registry
 
 def test_providers_package_resolves_exports_lazily_and_caches_them(monkeypatch) -> None:
     module = importlib.reload(providers)
+    module.__dict__.pop("OpenAIProvider", None)
     sentinel = object()
     import_calls: list[str] = []
 
