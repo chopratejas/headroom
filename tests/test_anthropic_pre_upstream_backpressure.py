@@ -564,6 +564,14 @@ def test_livez_unaffected_under_anthropic_backpressure():
 
     latencies: list[float] = []
     with TestClient(app) as client:
+        # Warm up: the first few requests pay one-time costs (TestClient
+        # ASGI lifespan, route resolution, import side effects) that are
+        # unrelated to what this test measures. Without warm-up, the
+        # single cold-start sample dominates `max(latencies)` (which is
+        # what the p99 fallback below reduces to for small N) and causes
+        # flakes on slow CI runners.
+        for _ in range(3):
+            client.get("/livez")
         for _ in range(20):
             t0 = time.perf_counter()
             resp = client.get("/livez")

@@ -16,6 +16,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block, delete it manually and re-run. (#231)
 
 ### Added
+- **Live flush of traffic-learned patterns to CLAUDE.md / MEMORY.md** — the
+  `TrafficLearner` now writes to agent-native context files continuously
+  during proxy operation, not just at shutdown. A new dirty-flag debounced
+  `_flush_worker` (10s window, `FLUSH_DEBOUNCE_SECONDS`) calls
+  `flush_to_file()` whenever `_accumulate()` marks the learner dirty, so
+  patterns surface in `CLAUDE.md` / `MEMORY.md` near real-time. Flushes
+  read both persisted rows (via `_load_persisted_patterns_from_sqlite`)
+  and the in-memory accumulator, bucket patterns by project via the learn
+  plugin registry (`plugin.discover_projects()` + longest-path anchoring
+  in `_project_for_pattern`), and route by `PatternCategory` to the
+  correct file (`_patterns_to_recommendations` +
+  `_CATEGORY_TO_TARGET`). Live flushes require `evidence_count >= 2`;
+  the shutdown flush accepts single-evidence rows.
+
+### Fixed
+- **Traffic-learner evidence count stuck at 1; duplicate DB rows across
+  restarts.** `_accumulate` queued patterns with the default
+  `ExtractedPattern.evidence_count = 1` regardless of how many times the
+  pattern was actually seen, so every persisted row landed at `1` and
+  never crossed the live-flush gate (`evidence_count >= 2`). Worse, once
+  a pattern was in `_saved_hashes` it was early-returned on every
+  re-sighting, and `_saved_hashes` reset on process restart — so a second
+  sighting in a later session inserted a duplicate row rather than
+  bumping the existing one. Now: `_accumulate` writes the real
+  accumulated count at save time, `start()` hydrates `_saved_hashes` +
+  a new `_persisted_ids` map from the DB, and re-sightings bump the
+  persisted row's `metadata.evidence_count` via an atomic `json_set`
+  `UPDATE` (`_bump_persisted_evidence`). `_load_persisted_patterns_from_sqlite`
+  now filters via `json_extract(metadata, '$.source')` instead of a
+  LIKE on the raw JSON string, so rows survive metadata rewrites.
+
+### Added
 - **Telemetry stack & install-mode identity fields** — anonymous beacon now
   reports `headroom_stack` (how Headroom is invoked: `proxy`, `wrap_claude`,
   `adapter_ts_openai`, ...) and `install_mode` (`wrapped` / `persistent` /
