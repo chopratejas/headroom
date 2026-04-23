@@ -280,6 +280,21 @@ wheels = [
 ]
 
 [[package]]
+name = "ast-grep-cli"
+version = "0.42.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/23/59f07c0d92393a1920597b28b1535157062ef916c723ca3c4ae946b5884d/ast_grep_cli-0.42.1.tar.gz", hash = "sha256:01b7e4dc99c24cc75e26e054f471a42b14b996e853314f3a4059a8af76cb6859", size = 232267, upload-time = "2026-04-04T16:08:00.065Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/22/d1/2e0483598fe1dcb3932682d3c7dc2428d793af81e328b715fbd762235e56/ast_grep_cli-0.42.1-py3-none-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:7704d9d6a7bfdaa0729eb31536878b63ad5161c4669b6ee4d783970ac4de1829", size = 14879688, upload-time = "2026-04-04T16:07:55.404Z" },
+    { url = "https://files.pythonhosted.org/packages/02/b0/523fcb7380ecf6629eca1c3d4e58d37d520a213885273e378295ca10046d/ast_grep_cli-0.42.1-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:8e735def2926d7e1a6a2b3cd0cfbe6a48e334dc2e19167285e08aeac359a401f", size = 7441802, upload-time = "2026-04-04T16:07:58.278Z" },
+    { url = "https://files.pythonhosted.org/packages/98/3b/52d70dabc57c545aee07fdffee6a9a48683c0c33d24dea2416debc429910/ast_grep_cli-0.42.1-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:5472942bfe59a3603a28b48a6c83c71b70a6074b675cee864fec87fbcad61a26", size = 7300231, upload-time = "2026-04-04T16:08:08.471Z" },
+    { url = "https://files.pythonhosted.org/packages/68/e0/5d5f7d396688f74491028c61e542aa9308cf1faccfb8df50ea5f674ffed4/ast_grep_cli-0.42.1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:728ad2cd4b328d5b179e0ff8344115a0744cd37a5f3836fc5380e609ea188135", size = 7579720, upload-time = "2026-04-04T16:08:10.815Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/ed/781473f8ffa5f2a04d3e8d785a8e600b6e3e9e60dae055910900d9b9b252/ast_grep_cli-0.42.1-py3-none-win32.whl", hash = "sha256:10e76a36a1370e3b43ed1e9531f0d49775de47ce36c07298e70979ace08b5f4b", size = 7190935, upload-time = "2026-04-04T16:08:06.515Z" },
+    { url = "https://files.pythonhosted.org/packages/73/76/89cbe5338c385370ea91d0eb5f7e02020a59db9dfa2e1118efba73aab83c/ast_grep_cli-0.42.1-py3-none-win_amd64.whl", hash = "sha256:b8ce8f32cd0c9d4afa21445f4ff523ac4987812543352695e0070ee3abdce7fa", size = 7614652, upload-time = "2026-04-04T16:08:01.759Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/8a/f2d1559d3ac8dd22234200f932e47fa2e5cc458e0e256c141c00970420eb/ast_grep_cli-0.42.1-py3-none-win_arm64.whl", hash = "sha256:ef95af6410f7cbee96d2ad4e05eff22257e858d1da785994b6f649e309e806d8", size = 7325911, upload-time = "2026-04-04T16:08:03.843Z" },
+]
+
+[[package]]
 name = "async-timeout"
 version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1318,15 +1333,17 @@ wheels = [
 
 [[package]]
 name = "headroom-ai"
-version = "0.5.25"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
+    { name = "ast-grep-cli" },
     { name = "click" },
     { name = "litellm" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "tiktoken" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.optional-dependencies]
@@ -1498,6 +1515,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.18.0" },
     { name = "anthropic", marker = "extra == 'evals'", specifier = ">=0.18.0" },
     { name = "any-llm-sdk", marker = "python_full_version >= '3.11' and extra == 'anyllm'", specifier = ">=1.0.0" },
+    { name = "ast-grep-cli", specifier = ">=0.30.0" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.28.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "datasets", marker = "extra == 'evals'", specifier = ">=2.14.0" },
@@ -1561,6 +1579,7 @@ requires-dist = [
     { name = "sqlite-vec", marker = "extra == 'proxy'", specifier = ">=0.1.6" },
     { name = "strands-agents", marker = "extra == 'strands'", specifier = ">=0.1.0" },
     { name = "tiktoken", specifier = ">=0.5.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'llmlingua'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'ml'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'voice'", specifier = ">=2.0.0" },
@@ -2776,7 +2795,7 @@ wheels = [
 
 [[package]]
 name = "nltk"
-version = "3.9.2"
+version = "3.9.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -2784,9 +2803,9 @@ dependencies = [
     { name = "regex" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/76/3a5e4312c19a028770f86fd7c058cf9f4ec4321c6cf7526bab998a5b683c/nltk-3.9.2.tar.gz", hash = "sha256:0f409e9b069ca4177c1903c3e843eef90c7e92992fa4931ae607da6de49e1419", size = 2887629, upload-time = "2025-10-01T07:19:23.764Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/a1/b3b4adf15585a5bc4c357adde150c01ebeeb642173ded4d871e89468767c/nltk-3.9.4.tar.gz", hash = "sha256:ed03bc098a40481310320808b2db712d95d13ca65b27372f8a403949c8b523d0", size = 2946864, upload-time = "2026-03-24T06:13:40.641Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/90/81ac364ef94209c100e12579629dc92bf7a709a84af32f8c551b02c07e94/nltk-3.9.2-py3-none-any.whl", hash = "sha256:1e209d2b3009110635ed9709a67a1a3e33a10f799490fa71cf4bec218c11c88a", size = 1513404, upload-time = "2025-10-01T07:19:21.648Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/91/04e965f8e717ba0ab4bdca5c112deeab11c9e750d94c4d4602f050295d39/nltk-3.9.4-py3-none-any.whl", hash = "sha256:f2fa301c3a12718ce4a0e9305c5675299da5ad9e26068218b69d692fda84828f", size = 1552087, upload-time = "2026-03-24T06:13:38.47Z" },
 ]
 
 [[package]]
