@@ -51,7 +51,7 @@ def install_fake_rich(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_exec_tool_windows_and_posix_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_tools.binaries, "resolve", lambda tool: Path("C:\\bin\\sg.exe"))
-    monkeypatch.setattr(cli_tools.os, "name", "nt", raising=False)
+    monkeypatch.setattr(cli_tools.sys, "platform", "win32")
     captured: dict[str, object] = {}
 
     def fake_run(cmd, check=False):  # noqa: ANN001
@@ -64,7 +64,7 @@ def test_exec_tool_windows_and_posix_paths(monkeypatch: pytest.MonkeyPatch) -> N
     assert excinfo.value.code == 7
     assert captured["cmd"] == ["C:\\bin\\sg.exe", "--json"]
 
-    monkeypatch.setattr(cli_tools.os, "name", "posix", raising=False)
+    monkeypatch.setattr(cli_tools.sys, "platform", "linux")
 
     def fake_execv(path: str, cmd: list[str]) -> None:
         raise SystemExit((path, cmd))

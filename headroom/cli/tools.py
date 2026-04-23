@@ -34,6 +34,10 @@ _PASSTHROUGH_CTX = {
 }
 
 
+def _is_windows() -> bool:
+    return sys.platform.startswith("win")
+
+
 def _exec_tool(tool: str, argv: Sequence[str]) -> None:
     try:
         path = binaries.resolve(tool)
@@ -58,7 +62,7 @@ def _exec_tool(tool: str, argv: Sequence[str]) -> None:
     # that needs to clean up on shell exit must be handled elsewhere (e.g.
     # the parent `headroom` process, not these thin passthroughs).
     cmd = [str(path), *argv]
-    if os.name == "posix":
+    if not _is_windows():
         os.execv(cmd[0], cmd)  # never returns
     else:
         completed = subprocess.run(cmd, check=False)
