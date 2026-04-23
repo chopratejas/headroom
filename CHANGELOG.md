@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new run win; sections not re-surfaced are carried forward so learnings
   accumulate across runs instead of disappearing. To fully rebuild the
   block, delete it manually and re-run. (#231)
+- **`headroom learn` no longer emits dangling cross-references when a
+  section is re-surfaced** — the analyzer now includes the project's
+  current `<!-- headroom:learn -->` block (from `CLAUDE.md` and
+  `MEMORY.md`) in the LLM digest as a "Prior Learned Patterns" section,
+  and the system prompt instructs the LLM that re-emitting a section
+  replaces the prior one wholesale. Prevents bullets like "`X` is *also*
+  large — same rule as `Y`, `Z`" from appearing after `Y` and `Z` got
+  dropped during per-section replacement. The writer's section-level
+  carry-forward from #231 remains in place as a safety net for sections
+  the LLM omits entirely. New helper `extract_marker_block` added to
+  `headroom.learn.writer`.
 
 ### Added
 - **`turn_id` linking agent-loop API calls to a single user prompt** — a new
