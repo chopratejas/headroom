@@ -104,6 +104,43 @@ def test_format_empty_detection_error_reports_found_paths(monkeypatch, tmp_path)
     assert "codex: not found" in message
 
 
+def test_init_verbose_enables_debug_logging_on_stderr(monkeypatch) -> None:
+    """``headroom init -v`` should emit diagnostic lines to stderr."""
+
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    # Make sure no agents are detected so the run exits fast without touching
+    # the filesystem.
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
+    runner = CliRunner(mix_stderr=False)
+
+    result = runner.invoke(fake_main, ["init", "-v", "-g"])
+
+    assert result.exit_code != 0
+    # Click routes ClickException to stderr; debug logs also go to stderr.
+    assert "[headroom init]" in result.stderr
+    assert "detect_init_targets" in result.stderr
+    assert "global_scope=True" in result.stderr
+    # Target names should show up from the per-target which probe.
+    for target in ("claude", "codex", "copilot", "openclaw"):
+        assert target in result.stderr
+
+
+def test_init_verbose_is_idempotent(monkeypatch) -> None:
+    """Calling _enable_verbose_logging repeatedly keeps one handler attached."""
+
+    init_cli, _ = _load_init_module(monkeypatch)
+    # Clear any prior handler state on the dedicated init logger.
+    init_cli.logger.handlers.clear()
+    if hasattr(init_cli.logger, init_cli._VERBOSE_HANDLER_ATTR):
+        delattr(init_cli.logger, init_cli._VERBOSE_HANDLER_ATTR)
+
+    init_cli._enable_verbose_logging()
+    init_cli._enable_verbose_logging()
+    init_cli._enable_verbose_logging()
+
+    assert len(init_cli.logger.handlers) == 1
+
+
 def test_init_copilot_requires_global(monkeypatch) -> None:
     init_cli, fake_main = _load_init_module(monkeypatch)
     runner = CliRunner()
