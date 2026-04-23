@@ -105,24 +105,34 @@ def test_format_empty_detection_error_reports_found_paths(monkeypatch, tmp_path)
 
 
 def test_init_verbose_enables_debug_logging_on_stderr(monkeypatch) -> None:
-    """``headroom init -v`` should emit diagnostic lines to stderr."""
+    """``headroom init -v`` should emit diagnostic lines to stderr.
+
+    Different Click 8.x versions expose stderr on ``CliRunner`` results
+    differently (``mix_stderr`` was removed in 8.2, and ``result.stderr``
+    appeared around the same time). To stay compatible with any Click 8.x
+    the repo targets, the test reads ``result.stderr`` when the attribute
+    exists AND contains data, otherwise falls back to ``result.output``
+    (which is the combined stream when stderr isn't captured separately).
+    """
 
     init_cli, fake_main = _load_init_module(monkeypatch)
-    # Make sure no agents are detected so the run exits fast without touching
-    # the filesystem.
     monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
 
     result = runner.invoke(fake_main, ["init", "-v", "-g"])
 
-    assert result.exit_code != 0
-    # Click routes ClickException to stderr; debug logs also go to stderr.
-    assert "[headroom init]" in result.stderr
-    assert "detect_init_targets" in result.stderr
-    assert "global_scope=True" in result.stderr
-    # Target names should show up from the per-target which probe.
+    # Newer Click: stderr captured separately.
+    stderr = getattr(result, "stderr", None) or ""
+    if not stderr:
+        # Older Click: everything in result.output.
+        stderr = result.output
+
+    assert result.exit_code != 0, f"output: {result.output!r}"
+    assert "[headroom init]" in stderr
+    assert "detect_init_targets" in stderr
+    assert "global_scope=True" in stderr
     for target in ("claude", "codex", "copilot", "openclaw"):
-        assert target in result.stderr
+        assert target in stderr
 
 
 def test_init_verbose_is_idempotent(monkeypatch) -> None:
