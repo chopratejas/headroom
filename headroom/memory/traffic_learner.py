@@ -22,10 +22,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -44,6 +46,20 @@ FLUSH_DEBOUNCE_SECONDS = 10.0
 # Absolute file-path heuristic for anchoring a pattern to a project root.
 # Matches POSIX paths (starts with /) and common Windows drive paths.
 _ABS_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[\w./\\\-]+")
+
+# Error-recovery refinement: the Learned: error recovery section is capped,
+# decayed, and re-validated at render time. Other categories are untouched.
+_ERROR_RECOVERY_SECTION_CAP = 15
+_ERROR_RECOVERY_HALF_LIFE_DAYS = 5.0
+_ERROR_RECOVERY_HARD_FLOOR_DAYS = 21
+
+# Suffixes that vary between otherwise-identical Bash recoveries. Stripping
+# them before hashing collapses near-duplicates.
+_BASH_VOLATILE_SUFFIX_RE = re.compile(
+    r"(?:\s*\|\s*(?:head|tail)\s+-n?\s*\d+"
+    r"|\s+-A\s*\d+|\s+-B\s*\d+|\s+-C\s*\d+"
+    r"|\s+2>&1|\s+2>/dev/null)+\s*$"
+)
 
 
 # =============================================================================
@@ -87,10 +103,60 @@ class ExtractedPattern:
     entity_refs: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     content_hash: str = ""
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.content_hash:
-            self.content_hash = hashlib.sha256(self.content.encode()).hexdigest()[:16]
+            key = _normalize_hash_key(self.category, self.content, self.metadata)
+            self.content_hash = hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def _normalize_hash_key(
+    category: PatternCategory,
+    content: str,
+    metadata: dict[str, Any],
+) -> str:
+    """Build the string that feeds the content hash.
+
+    Error-recovery rows are collapsed on recovery intent, not literal text:
+    trivial invocation differences (tail counts, pipe suffixes, full paths
+    that share a basename) hash to the same key. Other categories hash the
+    raw content for backwards compatibility.
+    """
+    if category is not PatternCategory.ERROR_RECOVERY:
+        return content
+
+    tool = metadata.get("tool")
+    if tool == "Read":
+        error_path = metadata.get("error_path", "")
+        success_path = metadata.get("success_path", "")
+        return (
+            f"error_recovery|Read|{os.path.basename(error_path)}|{os.path.basename(success_path)}"
+        )
+    if tool == "Bash":
+        failed = metadata.get("failed_cmd", "")
+        success = metadata.get("success_cmd", "")
+        return (
+            f"error_recovery|Bash|"
+            f"{_normalize_bash_for_hash(failed)}|{_normalize_bash_for_hash(success)}"
+        )
+    return content
+
+
+def _normalize_bash_for_hash(cmd: str) -> str:
+    """Strip volatile suffixes and truncate at the first pipe/chain boundary."""
+    if not cmd:
+        return ""
+    # Drop paging, line-context flags, and redirections that vary between runs.
+    trimmed = _BASH_VOLATILE_SUFFIX_RE.sub("", cmd).strip()
+    # Cut at the first pipe or && so we hash the primary command, not the tail.
+    for sep in (" | ", " && "):
+        idx = trimmed.find(sep)
+        if idx != -1:
+            trimmed = trimmed[:idx].rstrip()
+            break
+    return trimmed
 
 
 # =============================================================================
@@ -389,6 +455,7 @@ class TrafficLearner:
         Evidence counts are summed across duplicates.
         """
         by_hash: dict[str, ExtractedPattern] = {}
+        now = datetime.now(timezone.utc)
 
         # Persisted rows from memory.db
         db_path = _resolve_backend_db_path(self._backend)
@@ -404,11 +471,15 @@ class TrafficLearner:
                 else:
                     by_hash[p.content_hash] = p
 
-        # In-memory accumulator (patterns not yet persisted)
+        # In-memory accumulator (patterns not yet persisted). Re-sightings in
+        # this session bump last_seen_at to "now" on top of the persisted
+        # timestamp so recency ranking reflects live activity.
         for pattern, count in self._pattern_counts.values():
             h = pattern.content_hash
             if h in by_hash:
-                by_hash[h].evidence_count += count
+                existing = by_hash[h]
+                existing.evidence_count += count
+                existing.last_seen_at = now
             else:
                 by_hash[h] = ExtractedPattern(
                     category=pattern.category,
@@ -418,6 +489,8 @@ class TrafficLearner:
                     entity_refs=list(pattern.entity_refs),
                     metadata=dict(pattern.metadata),
                     content_hash=pattern.content_hash,
+                    first_seen_at=now,
+                    last_seen_at=now,
                 )
 
         return list(by_hash.values())
@@ -578,7 +651,12 @@ class TrafficLearner:
                     content=content,
                     importance=0.7,
                     entity_refs=[success_path],
-                    metadata={"error_category": error_cat},
+                    metadata={
+                        "error_category": error_cat,
+                        "tool": "Read",
+                        "error_path": error_path,
+                        "success_path": success_path,
+                    },
                 )
         elif tool in ("Grep", "Glob"):
             error_pattern = error_entry["input"].get("pattern", "")
@@ -635,7 +713,12 @@ class TrafficLearner:
             content=content,
             importance=importance,
             entity_refs=entities,
-            metadata={"error_category": error_cat, "failed_cmd": failed_short},
+            metadata={
+                "error_category": error_cat,
+                "tool": "Bash",
+                "failed_cmd": failed_short,
+                "success_cmd": success_short,
+            },
         )
 
     def _extract_environment(self, entry: dict[str, Any]) -> list[ExtractedPattern]:
@@ -762,6 +845,7 @@ class TrafficLearner:
                 if self._backend is None:
                     continue
 
+                now_iso = datetime.now(timezone.utc).isoformat()
                 memory = await self._backend.save_memory(
                     content=pattern.content,
                     user_id=self._user_id,
@@ -770,6 +854,8 @@ class TrafficLearner:
                         "source": "traffic_learner",
                         "category": pattern.category.value,
                         "evidence_count": pattern.evidence_count,
+                        "first_seen_at": now_iso,
+                        "last_seen_at": now_iso,
                         **pattern.metadata,
                     },
                 )
@@ -796,7 +882,7 @@ class TrafficLearner:
         if db_path is None or not db_path.exists():
             return
 
-        def _read() -> list[tuple[str, str]]:
+        def _read() -> list[tuple[str, str, str]]:
             uri = f"file:{db_path}?mode=ro"
             try:
                 conn = sqlite3.connect(uri, uri=True)
@@ -804,7 +890,7 @@ class TrafficLearner:
                 return []
             try:
                 rows = conn.execute(
-                    "SELECT id, content FROM memories "
+                    "SELECT id, content, metadata FROM memories "
                     "WHERE json_extract(metadata, '$.source') = 'traffic_learner'"
                 ).fetchall()
             except sqlite3.DatabaseError:
@@ -814,7 +900,7 @@ class TrafficLearner:
                     conn.close()
                 except Exception:
                     pass
-            return [(row[0], row[1] or "") for row in rows]
+            return [(row[0], row[1] or "", row[2] or "{}") for row in rows]
 
         try:
             rows = await asyncio.to_thread(_read)
@@ -822,10 +908,24 @@ class TrafficLearner:
             logger.debug("Traffic learner hydrate failed: %s", e)
             return
 
-        for memory_id, content in rows:
+        for memory_id, content, metadata_json in rows:
             if not content:
                 continue
-            h = hashlib.sha256(content.encode()).hexdigest()[:16]
+            try:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+            except json.JSONDecodeError:
+                metadata = {}
+            category_value = metadata.get("category")
+            try:
+                category = PatternCategory(category_value) if category_value else None
+            except ValueError:
+                category = None
+            if category is None:
+                # Legacy row without category — fall back to literal hash.
+                key = content
+            else:
+                key = _normalize_hash_key(category, content, metadata)
+            h = hashlib.sha256(key.encode()).hexdigest()[:16]
             self._saved_hashes.add(h)
             # If multiple rows share the same content (legacy duplicates),
             # last-wins — we only need one id to target the bump.
@@ -837,15 +937,18 @@ class TrafficLearner:
         if db_path is None or not db_path.exists():
             return
 
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         def _bump() -> None:
             conn = sqlite3.connect(str(db_path))
             try:
                 conn.execute(
                     "UPDATE memories SET metadata = json_set("
                     "metadata, '$.evidence_count', "
-                    "COALESCE(json_extract(metadata, '$.evidence_count'), 0) + 1"
+                    "COALESCE(json_extract(metadata, '$.evidence_count'), 0) + 1, "
+                    "'$.last_seen_at', ?"
                     ") WHERE id = ?",
-                    (memory_id,),
+                    (now_iso, memory_id),
                 )
                 conn.commit()
             finally:
@@ -1007,7 +1110,7 @@ def _load_persisted_patterns_from_sqlite(db_path: Path) -> list[ExtractedPattern
     try:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT content, metadata, entity_refs, importance "
+            "SELECT content, metadata, entity_refs, importance, created_at "
             "FROM memories "
             "WHERE json_extract(metadata, '$.source') = 'traffic_learner'"
         ).fetchall()
@@ -1045,12 +1148,24 @@ def _load_persisted_patterns_from_sqlite(db_path: Path) -> list[ExtractedPattern
         except (TypeError, ValueError):
             importance = 0.5
 
-        h = hashlib.sha256(content.encode()).hexdigest()[:16]
+        first_seen = _parse_iso_timestamp(meta.get("first_seen_at")) or _parse_iso_timestamp(
+            row["created_at"]
+        )
+        last_seen = _parse_iso_timestamp(meta.get("last_seen_at")) or first_seen
+
+        key = _normalize_hash_key(category, content, meta)
+        h = hashlib.sha256(key.encode()).hexdigest()[:16]
         if h in patterns:
             existing = patterns[h]
             existing.evidence_count += evidence
             if importance > existing.importance:
                 existing.importance = importance
+            if last_seen and (existing.last_seen_at is None or last_seen > existing.last_seen_at):
+                existing.last_seen_at = last_seen
+            if first_seen and (
+                existing.first_seen_at is None or first_seen < existing.first_seen_at
+            ):
+                existing.first_seen_at = first_seen
         else:
             patterns[h] = ExtractedPattern(
                 category=category,
@@ -1060,9 +1175,24 @@ def _load_persisted_patterns_from_sqlite(db_path: Path) -> list[ExtractedPattern
                 entity_refs=list(entity_refs),
                 metadata=meta,
                 content_hash=h,
+                first_seen_at=first_seen,
+                last_seen_at=last_seen,
             )
 
     return list(patterns.values())
+
+
+def _parse_iso_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp stored as TEXT. Returns None on any failure."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _patterns_to_recommendations(patterns: list[ExtractedPattern]) -> list:
@@ -1086,8 +1216,13 @@ def _patterns_to_recommendations(patterns: list[ExtractedPattern]) -> list:
             if target_str == "context_file"
             else RecommendationTarget.MEMORY_FILE
         )
-        # Sort by evidence_count desc so the most-supported rules appear first.
-        items.sort(key=lambda p: p.evidence_count, reverse=True)
+        if category is PatternCategory.ERROR_RECOVERY:
+            items = _refine_error_recovery(items)
+        else:
+            # Sort by evidence_count desc so the most-supported rules appear first.
+            items.sort(key=lambda p: p.evidence_count, reverse=True)
+        if not items:
+            continue
         bullets = "\n".join(f"- {p.content}" for p in items)
         recs.append(
             Recommendation(
@@ -1099,3 +1234,99 @@ def _patterns_to_recommendations(patterns: list[ExtractedPattern]) -> list:
             )
         )
     return recs
+
+
+def _refine_error_recovery(patterns: list[ExtractedPattern]) -> list[ExtractedPattern]:
+    """Apply the render-time pipeline for error_recovery patterns.
+
+    Pipeline: hard-floor drop by last_seen_at, re-validate Read success
+    paths against the filesystem, collapse ambiguous error_paths into a
+    single "search first" hint, rank by recency-weighted evidence, and
+    cap the section at _ERROR_RECOVERY_SECTION_CAP bullets.
+    """
+    now = datetime.now(timezone.utc)
+
+    # 1. Hard floor — drop rows not re-observed in the last N days.
+    alive: list[ExtractedPattern] = []
+    for p in patterns:
+        last_seen = p.last_seen_at or p.first_seen_at
+        if last_seen is None:
+            # No timestamp — treat as just-seen so it survives one render.
+            alive.append(p)
+            continue
+        age_days = (now - last_seen).total_seconds() / 86400.0
+        if age_days <= _ERROR_RECOVERY_HARD_FLOOR_DAYS:
+            alive.append(p)
+
+    # 2. Re-validate Read recoveries — drop if success_path no longer exists.
+    validated: list[ExtractedPattern] = []
+    for p in alive:
+        if p.metadata.get("tool") == "Read":
+            success_path = p.metadata.get("success_path")
+            if success_path:
+                try:
+                    if not Path(success_path).exists():
+                        continue
+                except OSError:
+                    # Path check failed (permissions, etc.) — keep the row
+                    # rather than drop on a transient error.
+                    pass
+        validated.append(p)
+
+    # 3. Collision-collapse — same error_path with >=2 distinct success_paths
+    #    is an ambiguity signal, not N separate lessons. Replace the group
+    #    with one synthesized "search first" bullet.
+    read_groups: dict[str, list[ExtractedPattern]] = {}
+    others: list[ExtractedPattern] = []
+    for p in validated:
+        if p.metadata.get("tool") == "Read" and p.metadata.get("error_path"):
+            read_groups.setdefault(p.metadata["error_path"], []).append(p)
+        else:
+            others.append(p)
+
+    collapsed: list[ExtractedPattern] = list(others)
+    for error_path, group in read_groups.items():
+        distinct_targets = {g.metadata.get("success_path") for g in group}
+        distinct_targets.discard(None)
+        if len(group) >= 2 and len(distinct_targets) >= 2:
+            basename = os.path.basename(error_path) or error_path
+            synth_content = (
+                f"Path `{basename}` has been guessed wrong repeatedly — "
+                f"use Glob/Grep to locate before reading."
+            )
+            max_last_seen = max(
+                (g.last_seen_at for g in group if g.last_seen_at),
+                default=now,
+            )
+            collapsed.append(
+                ExtractedPattern(
+                    category=PatternCategory.ERROR_RECOVERY,
+                    content=synth_content,
+                    importance=max(g.importance for g in group),
+                    evidence_count=sum(g.evidence_count for g in group),
+                    metadata={
+                        "tool": "Read",
+                        "error_path": error_path,
+                        "collapsed": True,
+                    },
+                    last_seen_at=max_last_seen,
+                    first_seen_at=min(
+                        (g.first_seen_at for g in group if g.first_seen_at),
+                        default=max_last_seen,
+                    ),
+                )
+            )
+        else:
+            collapsed.extend(group)
+
+    # 4. Recency-weighted score.
+    def _score(p: ExtractedPattern) -> float:
+        last_seen = p.last_seen_at or p.first_seen_at or now
+        age_days = max(0.0, (now - last_seen).total_seconds() / 86400.0)
+        decay = float(0.5 ** (age_days / _ERROR_RECOVERY_HALF_LIFE_DAYS))
+        return float(p.evidence_count) * decay
+
+    collapsed.sort(key=_score, reverse=True)
+
+    # 5. Cap the section.
+    return collapsed[:_ERROR_RECOVERY_SECTION_CAP]

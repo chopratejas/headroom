@@ -6,6 +6,8 @@ a real memory backend.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from headroom.memory.traffic_learner import (
@@ -17,7 +19,10 @@ from headroom.memory.traffic_learner import (
     _load_persisted_patterns_from_sqlite,
     _patterns_to_recommendations,
     _project_for_pattern,
+    _refine_error_recovery,
 )
+
+UTC = timezone.utc
 
 # =============================================================================
 # Error Classification Tests
@@ -361,18 +366,21 @@ class TestLoadPersistedPatterns:
             "id TEXT PRIMARY KEY, content TEXT NOT NULL, "
             "metadata TEXT NOT NULL DEFAULT '{}', "
             "entity_refs TEXT NOT NULL DEFAULT '[]', "
-            "importance REAL NOT NULL DEFAULT 0.5)"
+            "importance REAL NOT NULL DEFAULT 0.5, "
+            "created_at TEXT)"
         )
         for i, r in enumerate(rows):
             conn.execute(
-                "INSERT INTO memories (id, content, metadata, entity_refs, importance) "
-                "VALUES (?,?,?,?,?)",
+                "INSERT INTO memories "
+                "(id, content, metadata, entity_refs, importance, created_at) "
+                "VALUES (?,?,?,?,?,?)",
                 (
                     str(i),
                     r["content"],
                     _json.dumps(r.get("metadata", {})),
                     _json.dumps(r.get("entity_refs", [])),
                     r.get("importance", 0.5),
+                    r.get("created_at"),
                 ),
             )
         conn.commit()
@@ -612,7 +620,8 @@ def _init_db(path):
         "id TEXT PRIMARY KEY, content TEXT NOT NULL, "
         "metadata TEXT NOT NULL DEFAULT '{}', "
         "entity_refs TEXT NOT NULL DEFAULT '[]', "
-        "importance REAL NOT NULL DEFAULT 0.5)"
+        "importance REAL NOT NULL DEFAULT 0.5, "
+        "created_at TEXT)"
     )
     conn.commit()
     conn.close()
@@ -1076,3 +1085,287 @@ class TestStopCancels:
         assert learner._flush_task is not None and not learner._flush_task.done()
         await learner.stop()
         assert learner._flush_task is None or learner._flush_task.done()
+
+
+class TestNormalizedHash:
+    """Error-recovery patterns hash on recovery intent, not literal text."""
+
+    def _mk(self, **meta) -> ExtractedPattern:
+        return ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content=f"content-{meta.get('tool', 'none')}-{len(meta)}",
+            importance=0.7,
+            metadata=meta,
+        )
+
+    def test_read_recovery_basename_hash(self):
+        a = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="File `/a/state.rs` does not exist. The correct path is `/a/lib.rs`.",
+            importance=0.7,
+            metadata={"tool": "Read", "error_path": "/a/state.rs", "success_path": "/a/lib.rs"},
+        )
+        b = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="File `/b/state.rs` does not exist. The correct path is `/b/lib.rs`.",
+            importance=0.7,
+            metadata={"tool": "Read", "error_path": "/b/state.rs", "success_path": "/b/lib.rs"},
+        )
+        assert a.content_hash == b.content_hash
+
+    def test_bash_recovery_tail_count_collapse(self):
+        a = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Command `cargo check` fails. Use `cargo check --manifest-path src-tauri/Cargo.toml | tail -10` instead.",
+            importance=0.7,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "cargo check",
+                "success_cmd": "cargo check --manifest-path src-tauri/Cargo.toml | tail -10",
+            },
+        )
+        b = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Command `cargo check` fails. Use `cargo check --manifest-path src-tauri/Cargo.toml | tail -50` instead.",
+            importance=0.7,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "cargo check",
+                "success_cmd": "cargo check --manifest-path src-tauri/Cargo.toml | tail -50",
+            },
+        )
+        assert a.content_hash == b.content_hash
+
+    def test_bash_recovery_pipe_boundary(self):
+        a = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="x",
+            importance=0.7,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "grep foo bar.txt",
+                "success_cmd": "grep -n foo bar.txt | head -5",
+            },
+        )
+        b = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="y",
+            importance=0.7,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "grep foo bar.txt",
+                "success_cmd": "grep -n foo bar.txt | wc -l",
+            },
+        )
+        assert a.content_hash == b.content_hash
+
+    def test_bash_recovery_different_primary_cmd_different_hash(self):
+        a = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="x",
+            importance=0.7,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "cargo check",
+                "success_cmd": "cargo build",
+            },
+        )
+        b = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="y",
+            importance=0.7,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "cargo check",
+                "success_cmd": "cargo test",
+            },
+        )
+        assert a.content_hash != b.content_hash
+
+    def test_non_error_recovery_unchanged(self):
+        a = ExtractedPattern(
+            category=PatternCategory.ENVIRONMENT,
+            content="Use /usr/bin/python3.",
+            importance=0.7,
+        )
+        b = ExtractedPattern(
+            category=PatternCategory.ENVIRONMENT,
+            content="Use /opt/bin/python3.",
+            importance=0.7,
+        )
+        assert a.content_hash != b.content_hash
+
+    def test_error_recovery_without_tool_falls_back_to_content(self):
+        """Legacy error_recovery rows without a `tool` metadata key still work."""
+        a = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Some legacy bullet.",
+            importance=0.7,
+        )
+        b = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Some legacy bullet.",
+            importance=0.7,
+        )
+        assert a.content_hash == b.content_hash
+
+
+class TestRefineErrorRecovery:
+    """Render-time pipeline: hard floor, re-validate, collapse, rank, cap."""
+
+    def _mk_read(
+        self,
+        *,
+        error_path: str,
+        success_path: str,
+        evidence: int = 1,
+        last_seen: datetime | None = None,
+    ) -> ExtractedPattern:
+        now = datetime.now(UTC)
+        return ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content=f"File `{error_path}` does not exist. The correct path is `{success_path}`.",
+            importance=0.7,
+            evidence_count=evidence,
+            metadata={
+                "tool": "Read",
+                "error_path": error_path,
+                "success_path": success_path,
+            },
+            last_seen_at=last_seen or now,
+            first_seen_at=last_seen or now,
+        )
+
+    def test_drops_patterns_beyond_hard_floor(self, tmp_path):
+        target = tmp_path / "lib.rs"
+        target.write_text("pub fn x() {}")
+        old = self._mk_read(
+            error_path=str(tmp_path / "state.rs"),
+            success_path=str(target),
+            last_seen=datetime.now(UTC) - timedelta(days=22),
+        )
+        fresh = self._mk_read(
+            error_path=str(tmp_path / "other.rs"),
+            success_path=str(target),
+        )
+        refined = _refine_error_recovery([old, fresh])
+        assert fresh in refined
+        assert old not in refined
+
+    def test_revalidates_read_success_path(self, tmp_path):
+        present = tmp_path / "present.rs"
+        present.write_text("x")
+        p_ok = self._mk_read(
+            error_path=str(tmp_path / "miss.rs"),
+            success_path=str(present),
+        )
+        p_missing = self._mk_read(
+            error_path=str(tmp_path / "other.rs"),
+            success_path=str(tmp_path / "gone.rs"),
+        )
+        refined = _refine_error_recovery([p_ok, p_missing])
+        assert p_ok in refined
+        assert p_missing not in refined
+
+    def test_collapses_ambiguous_error_path(self, tmp_path):
+        a = tmp_path / "a.rs"
+        a.write_text("x")
+        b = tmp_path / "b.rs"
+        b.write_text("y")
+        c = tmp_path / "c.rs"
+        c.write_text("z")
+        error_path = str(tmp_path / "ambiguous.rs")
+        group = [
+            self._mk_read(error_path=error_path, success_path=str(a), evidence=3),
+            self._mk_read(error_path=error_path, success_path=str(b), evidence=2),
+            self._mk_read(error_path=error_path, success_path=str(c), evidence=1),
+        ]
+        refined = _refine_error_recovery(group)
+        assert len(refined) == 1
+        collapsed = refined[0]
+        assert collapsed.metadata.get("collapsed") is True
+        assert collapsed.evidence_count == 6
+        assert "ambiguous.rs" in collapsed.content
+        assert "Glob/Grep" in collapsed.content
+
+    def test_single_success_path_not_collapsed(self, tmp_path):
+        a = tmp_path / "a.rs"
+        a.write_text("x")
+        error_path = str(tmp_path / "only-one-target.rs")
+        patterns = [
+            self._mk_read(error_path=error_path, success_path=str(a), evidence=3),
+            self._mk_read(error_path=error_path, success_path=str(a), evidence=2),
+        ]
+        refined = _refine_error_recovery(patterns)
+        # Not collapsed — only one distinct success_path.
+        assert all(p.metadata.get("collapsed") is not True for p in refined)
+        assert len(refined) == 2
+
+    def test_recency_ranking_prefers_fresh_over_stale_heavy(self, tmp_path):
+        target = tmp_path / "lib.rs"
+        target.write_text("x")
+        # Heavy but old: evidence=10, seen 10 days ago → score ~10 * 0.5**2 = 2.5
+        heavy_old = self._mk_read(
+            error_path=str(tmp_path / "old.rs"),
+            success_path=str(target),
+            evidence=10,
+            last_seen=datetime.now(UTC) - timedelta(days=10),
+        )
+        # Light but fresh: evidence=3, seen now → score ~3
+        light_fresh = self._mk_read(
+            error_path=str(tmp_path / "fresh.rs"),
+            success_path=str(target),
+            evidence=3,
+        )
+        refined = _refine_error_recovery([heavy_old, light_fresh])
+        assert refined[0] is light_fresh
+        assert refined[1] is heavy_old
+
+    def test_section_cap_enforced(self, tmp_path):
+        target = tmp_path / "lib.rs"
+        target.write_text("x")
+        patterns = [
+            self._mk_read(
+                error_path=str(tmp_path / f"miss_{i}.rs"),
+                success_path=str(target),
+                evidence=i + 1,
+            )
+            for i in range(25)
+        ]
+        refined = _refine_error_recovery(patterns)
+        assert len(refined) == 15
+        # Highest-evidence ones kept (all are equally fresh, so evidence wins).
+        kept_evidence = sorted(p.evidence_count for p in refined)
+        assert kept_evidence[0] >= 11  # Bottom of top-15 out of 1..25
+
+    def test_bash_recoveries_not_revalidated(self, tmp_path):
+        """Bash patterns pass through re-validation regardless of command content."""
+        bash_pat = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Command `x` fails. Use `y` instead.",
+            importance=0.7,
+            evidence_count=1,
+            metadata={
+                "tool": "Bash",
+                "failed_cmd": "x",
+                "success_cmd": "y",
+            },
+            last_seen_at=datetime.now(UTC),
+        )
+        refined = _refine_error_recovery([bash_pat])
+        assert bash_pat in refined
+
+    def test_empty_input_returns_empty(self):
+        assert _refine_error_recovery([]) == []
+
+    def test_missing_timestamps_survive_one_render(self):
+        """Patterns without timestamps are kept rather than silently dropped."""
+        p = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="legacy bullet",
+            importance=0.7,
+        )
+        assert p.first_seen_at is None
+        assert p.last_seen_at is None
+        refined = _refine_error_recovery([p])
+        assert p in refined

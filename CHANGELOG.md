@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`Learned: error recovery` section in MEMORY.md no longer bloats with
+  stale or contradictory entries.** The dedup key for error-recovery
+  patterns was the literal rendered bullet text, so near-duplicate
+  recoveries (same intent, different `| tail -N` count, same error path
+  guessed against different successors) each created a new row. There was
+  also no TTL or re-validation, so wrong-today entries lingered. Fixed by:
+  (1) normalizing the hash on recovery intent — Read recoveries key on
+  `(basename(error_path), basename(success_path))`; Bash recoveries strip
+  volatile suffixes and hash only the primary command before the first
+  `|`/`&&`; (2) stamping `first_seen_at` / `last_seen_at` on every pattern
+  and bumping them in `_bump_persisted_evidence` via `json_set`; (3)
+  refining at render time — drop rows not re-observed in 21 days,
+  re-validate Read success paths against the filesystem, collapse
+  same-error_path-with-multiple-targets into one "use Glob/Grep first"
+  bullet, rank by `evidence_count * 0.5 ** (days/5)`, cap the section at
+  15. Other `Learned: …` categories (environment, preference,
+  architecture) are untouched.
 - **`headroom unwrap codex` now actually undoes `headroom wrap codex`** —
   previously there was no `unwrap codex` subcommand at all, so the injected
   `model_provider = "headroom"` / `[model_providers.headroom]` block stayed
