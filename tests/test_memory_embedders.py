@@ -142,6 +142,9 @@ async def test_onnx_local_embedder(monkeypatch) -> None:
         def encode(self, text):
             return SimpleNamespace(ids=[1, 2], attention_mask=[1, 1])
 
+        def encode_batch(self, texts):
+            return [self.encode(text) for text in texts]
+
     monkeypatch.setitem(
         sys.modules,
         "onnxruntime",

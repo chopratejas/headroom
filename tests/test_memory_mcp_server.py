@@ -72,7 +72,10 @@ async def test_warm_up_backend_indexes_memories() -> None:
     backend = SimpleNamespace(
         _ensure_initialized=AsyncMock(),
         _hierarchical_memory=SimpleNamespace(
-            _embedder=SimpleNamespace(embed=AsyncMock(side_effect=[["warm"], ["first-embedding"]])),
+            _embedder=SimpleNamespace(
+                embed=AsyncMock(side_effect=[["warm"], ["first-embedding"]]),
+                embed_batch=AsyncMock(return_value=[["first-embedding"], [9]]),
+            ),
             _store=SimpleNamespace(save=AsyncMock()),
             _vector_index=SimpleNamespace(index=AsyncMock()),
         ),
