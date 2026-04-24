@@ -161,14 +161,29 @@ def _merge_recommendations(
     return list(new_recommendations) + carried
 
 
-def _merge_into_file(file_path: Path, new_recommendations: list[Recommendation]) -> str:
-    """Merge new recommendations with any existing marker block and rebuild the file."""
+def _merge_into_file(
+    file_path: Path, new_recommendations: list[Recommendation]
+) -> str | None:
+    """Merge new recommendations with any existing marker block and rebuild the file.
+
+    Returns ``None`` when there is nothing to write: no new recommendations AND
+    no existing marker block to refresh. Otherwise returns the full new file
+    contents.
+
+    When the file already contains a marker block, the timestamp and any
+    carried-forward prior recommendations are always refreshed — even if the
+    current run produced zero new recommendations — so users can see that
+    ``headroom learn`` ran successfully.
+    """
+    existing = file_path.read_text() if file_path.exists() else ""
+    has_block = _MARKER_START in existing
+    if not new_recommendations and not has_block:
+        return None
     merged = _merge_recommendations(file_path, new_recommendations)
     section = _build_section(merged)
-    if file_path.exists():
-        existing = file_path.read_text()
-        if _MARKER_START in existing:
-            return _MARKER_PATTERN.sub(section, existing)
+    if has_block:
+        return _MARKER_PATTERN.sub(section, existing)
+    if existing:
         return existing.rstrip() + "\n\n" + section + "\n"
     return section + "\n"
 
@@ -193,17 +208,17 @@ class ClaudeCodeWriter(ContextWriter):
         context_recs = [r for r in recommendations if r.target == RecommendationTarget.CONTEXT_FILE]
         memory_recs = [r for r in recommendations if r.target == RecommendationTarget.MEMORY_FILE]
 
-        if context_recs:
-            claude_md_path = self._resolve_context_path(project)
-            full_content = _merge_into_file(claude_md_path, context_recs)
+        claude_md_path = self._resolve_context_path(project)
+        full_content = _merge_into_file(claude_md_path, context_recs)
+        if full_content is not None:
             result.add(claude_md_path, full_content)
             if not dry_run:
                 claude_md_path.parent.mkdir(parents=True, exist_ok=True)
                 claude_md_path.write_text(full_content)
 
-        if memory_recs:
-            memory_path = self._resolve_memory_path(project)
-            full_content = _merge_into_file(memory_path, memory_recs)
+        memory_path = self._resolve_memory_path(project)
+        full_content = _merge_into_file(memory_path, memory_recs)
+        if full_content is not None:
             result.add(memory_path, full_content)
             if not dry_run:
                 memory_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,17 +261,17 @@ class CodexWriter(ContextWriter):
         context_recs = [r for r in recommendations if r.target == RecommendationTarget.CONTEXT_FILE]
         memory_recs = [r for r in recommendations if r.target == RecommendationTarget.MEMORY_FILE]
 
-        if context_recs:
-            agents_md = project.context_file or (project.project_path / "AGENTS.md")
-            full_content = _merge_into_file(agents_md, context_recs)
+        agents_md = project.context_file or (project.project_path / "AGENTS.md")
+        full_content = _merge_into_file(agents_md, context_recs)
+        if full_content is not None:
             result.add(agents_md, full_content)
             if not dry_run:
                 agents_md.parent.mkdir(parents=True, exist_ok=True)
                 agents_md.write_text(full_content)
 
-        if memory_recs:
-            instructions_md = project.memory_file or (project.data_path.parent / "instructions.md")
-            full_content = _merge_into_file(instructions_md, memory_recs)
+        instructions_md = project.memory_file or (project.data_path.parent / "instructions.md")
+        full_content = _merge_into_file(instructions_md, memory_recs)
+        if full_content is not None:
             result.add(instructions_md, full_content)
             if not dry_run:
                 instructions_md.parent.mkdir(parents=True, exist_ok=True)
@@ -282,14 +297,12 @@ class GeminiWriter(ContextWriter):
         result = WriteResult()
         result.dry_run = dry_run
 
-        if not recommendations:
-            return result
-
         gemini_md = project.context_file or (project.project_path / "GEMINI.md")
         full_content = _merge_into_file(gemini_md, recommendations)
-        result.add(gemini_md, full_content)
-        if not dry_run:
-            gemini_md.parent.mkdir(parents=True, exist_ok=True)
-            gemini_md.write_text(full_content)
+        if full_content is not None:
+            result.add(gemini_md, full_content)
+            if not dry_run:
+                gemini_md.parent.mkdir(parents=True, exist_ok=True)
+                gemini_md.write_text(full_content)
 
         return result
