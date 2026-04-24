@@ -39,9 +39,17 @@ jobs:
       - name: Install pytest
         shell: bash
         run: |
-          python -m pip install pytest
+          python -m pip install pytest pytest-cov
 
       - name: Run install native smoke tests
         shell: bash
         run: |
-          pytest tests/test_cli/test_install_cli.py tests/test_install/test_paths.py -q
+          pytest tests/test_cli/test_install_cli.py tests/test_install/test_paths.py --cov=headroom --cov-report=xml:coverage-install-native.xml --cov-report=term-missing -q
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-install-native.xml
+          flags: install-native
+          name: install-native-${{ matrix.os }}
+          fail_ci_if_error: false

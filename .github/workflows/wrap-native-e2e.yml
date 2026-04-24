@@ -43,9 +43,17 @@ jobs:
       - name: Install pytest
         shell: bash
         run: |
-          python -m pip install pytest
+          python -m pip install pytest pytest-cov
 
       - name: Run wrap native bridge tests
         shell: bash
         run: |
-          pytest tests/test_cli/test_wrap_bridge.py -q
+          pytest tests/test_cli/test_wrap_bridge.py --cov=headroom --cov-report=xml:coverage-wrap-native.xml --cov-report=term-missing -q
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-wrap-native.xml
+          flags: wrap-native
+          name: wrap-native-${{ matrix.os }}
+          fail_ci_if_error: false

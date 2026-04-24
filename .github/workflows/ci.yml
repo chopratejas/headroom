@@ -80,7 +80,15 @@ jobs:
 
       - name: Run relevance tests
         run: |
-          pytest tests/test_relevance.py -v
+          pytest tests/test_relevance.py -v --cov=headroom --cov-report=xml:coverage-relevance.xml --cov-report=term-missing
+
+      - name: Upload relevance coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-relevance.xml
+          flags: relevance
+          name: relevance-${{ github.run_id }}
+          fail_ci_if_error: false
 
   test-agno:
     runs-on: ubuntu-latest
@@ -99,7 +107,15 @@ jobs:
 
       - name: Run agno tests
         run: |
-          pytest tests/test_integrations/agno/ -v
+          pytest tests/test_integrations/agno/ -v --cov=headroom --cov-report=xml:coverage-agno.xml --cov-report=term-missing
+
+      - name: Upload agno coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-agno.xml
+          flags: agno
+          name: agno-${{ github.run_id }}
+          fail_ci_if_error: false
 
   docker-native-e2e:
     runs-on: ubuntu-latest
