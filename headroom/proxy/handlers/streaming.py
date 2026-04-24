@@ -574,7 +574,14 @@ class StreamingMixin:
                     tags=tags or {},
                     cache_hit=False,
                     transforms_applied=transforms_applied,
-                    request_messages=body.get("messages")
+                    # `original_messages` (function param) is the pre-compression
+                    # snapshot threaded in by the caller; `body["messages"]`
+                    # was mutated in-place by the caller with the compressed
+                    # list actually sent upstream. Both gated by the same flag.
+                    request_messages=original_messages
+                    if getattr(self.config, "log_full_messages", False)
+                    else None,
+                    compressed_messages=body.get("messages")
                     if getattr(self.config, "log_full_messages", False)
                     else None,
                 )
@@ -937,6 +944,7 @@ class StreamingMixin:
         tags: dict[str, str],
         optimization_latency: float,
         pipeline_timing: dict[str, float] | None = None,
+        original_messages: list[dict] | None = None,
     ) -> StreamingResponse:
         """Stream response from Bedrock backend with metrics tracking.
 
@@ -1041,7 +1049,15 @@ class StreamingMixin:
                             tags=tags,
                             cache_hit=False,
                             transforms_applied=transforms_applied,
-                            request_messages=body.get("messages")
+                            # `original_messages` is threaded in by the caller
+                            # (anthropic.py _stream_response_bedrock call site).
+                            # `body["messages"]` is the compressed list after
+                            # the caller's in-place mutation. Both gated by
+                            # `log_full_messages`.
+                            request_messages=original_messages
+                            if self.config.log_full_messages
+                            else None,
+                            compressed_messages=body.get("messages")
                             if self.config.log_full_messages
                             else None,
                             turn_id=compute_turn_id(

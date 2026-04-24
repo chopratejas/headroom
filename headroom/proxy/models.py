@@ -47,6 +47,11 @@ class RequestLog:
 
     # Request/Response (optional, for debugging)
     request_messages: list[dict] | None = None
+    # Messages after compression — i.e. what was actually sent upstream. Paired
+    # with `request_messages` so consumers can diff the two sides of the
+    # compression to see exactly what was stripped, replaced, or kept. Gated
+    # by the same `log_full_messages` flag as the original request.
+    compressed_messages: list[dict] | None = None
     response_content: str | None = None
     error: str | None = None
 

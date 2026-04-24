@@ -1251,6 +1251,7 @@ class AnthropicHandlerMixin:
                             tags,
                             optimization_latency,
                             pipeline_timing=pipeline_timing,
+                            original_messages=original_messages,
                         )
                     else:
                         async with stage_timer.measure("upstream_connect"):
@@ -1346,7 +1347,16 @@ class AnthropicHandlerMixin:
                                     tags=tags,
                                     cache_hit=False,
                                     transforms_applied=transforms_applied,
-                                    request_messages=body.get("messages")
+                                    # `original_messages` is the pre-compression
+                                    # snapshot from line 724; `body["messages"]`
+                                    # was mutated in-place at line 1189 with the
+                                    # compressed (optimized) list that was sent
+                                    # upstream. Gated by the same flag so the
+                                    # two sides stay symmetric.
+                                    request_messages=original_messages
+                                    if self.config.log_full_messages
+                                    else None,
+                                    compressed_messages=body.get("messages")
                                     if self.config.log_full_messages
                                     else None,
                                     turn_id=compute_turn_id(
@@ -1819,7 +1829,15 @@ class AnthropicHandlerMixin:
                                 cache_hit=cache_hit,
                                 transforms_applied=transforms_applied,
                                 waste_signals=waste_signals_dict,
-                                request_messages=messages
+                                # See comment at the Bedrock log site above:
+                                # `original_messages` (line 724) is the
+                                # pre-compression snapshot, `body["messages"]`
+                                # is what was sent upstream after in-place
+                                # mutation at line 1189.
+                                request_messages=original_messages
+                                if self.config.log_full_messages
+                                else None,
+                                compressed_messages=body.get("messages")
                                 if self.config.log_full_messages
                                 else None,
                                 turn_id=compute_turn_id(
