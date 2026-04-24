@@ -5,9 +5,11 @@ coverage:
   status:
     project:
       default:
+        enabled: true
         target: auto
     patch:
       default:
+        enabled: true
         target: auto
 
 ignore:
