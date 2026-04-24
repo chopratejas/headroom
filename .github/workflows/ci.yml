@@ -180,11 +180,19 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          pip install pytest pytest-cov
 
       - name: Run native installer wrapper tests
         run: |
-          pytest tests/test_install/test_native_installers.py -q
+          pytest tests/test_install/test_native_installers.py --cov=headroom --cov-report=xml:coverage-native-wrapper-windows.xml --cov-report=term-missing -q
+
+      - name: Upload native wrapper coverage to Codecov (Windows)
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-native-wrapper-windows.xml
+          flags: native-wrapper-windows
+          name: native-wrapper-windows-${{ github.run_id }}
+          fail_ci_if_error: false
 
   macos-native-wrapper:
     runs-on: macos-latest
@@ -200,13 +208,21 @@ jobs:
         run: |
           brew install bash
           python -m pip install --upgrade pip
-          python -m pip install --retries 10 --timeout 60 pytest
+          python -m pip install --retries 10 --timeout 60 pytest pytest-cov
 
       - name: Run native installer wrapper tests
         run: |
           BASH_PREFIX="$(brew --prefix bash)"
           export PATH="$BASH_PREFIX/bin:$PATH"
-          pytest tests/test_install/test_native_installers.py -q
+          pytest tests/test_install/test_native_installers.py --cov=headroom --cov-report=xml:coverage-native-wrapper-macos.xml --cov-report=term-missing -q
+
+      - name: Upload native wrapper coverage to Codecov (macOS)
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-native-wrapper-macos.xml
+          flags: native-wrapper-macos
+          name: native-wrapper-macos-${{ github.run_id }}
+          fail_ci_if_error: false
 
   build:
     runs-on: ubuntu-latest
