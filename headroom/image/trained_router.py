@@ -10,6 +10,7 @@ The MiniLM model is hosted on HuggingFace: headroom-ai/technique-router
 
 from __future__ import annotations
 
+import gc
 import io
 from dataclasses import dataclass
 from enum import Enum
@@ -151,6 +152,8 @@ class TrainedRouter:
         self._siglip_model: Any = None
         self._siglip_processor: Any = None
         self._text_embeddings: Any = None
+        self._classifier_key: str | None = None
+        self._siglip_key: str | None = None
 
     def is_available(self) -> bool:
         """Check if required models can be loaded."""
@@ -186,6 +189,7 @@ class TrainedRouter:
                 model_path=model_id,
                 device=self.device,
             )
+            self._classifier_key = f"technique_router:{model_id}"
 
         if self.use_siglip and self._siglip_model is None:
             # Use centralized registry for shared model instances
@@ -195,9 +199,35 @@ class TrainedRouter:
                 model_name=self.siglip_model,
                 device=self.device,
             )
+            self._siglip_key = f"siglip:{self.siglip_model}"
 
             # Pre-compute text embeddings for image analysis
             self._compute_text_embeddings()
+
+    def release_models(self, unload_registry: bool = True) -> None:
+        """Release router-held model references and optional shared cache entries."""
+        classifier_key = self._classifier_key
+        siglip_key = self._siglip_key
+
+        self._text_embeddings = None
+        self._siglip_processor = None
+        self._siglip_model = None
+        self._tokenizer = None
+        self._classifier = None
+        self._classifier_key = None
+        self._siglip_key = None
+
+        if unload_registry:
+            from headroom.models.ml_models import MLModelRegistry
+
+            keys = [key for key in (classifier_key, siglip_key) if key]
+            MLModelRegistry.unload_many(keys)
+        else:
+            gc.collect()
+
+    def close(self, unload_registry: bool = True) -> None:
+        """Alias for release_models() while preserving subclass dispatch."""
+        self.release_models(unload_registry=unload_registry)
 
     def _compute_text_embeddings(self) -> None:
         """Pre-compute SigLIP text embeddings for image analysis."""

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import json
+from unittest.mock import patch
 
 from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
 from headroom.proxy.handlers.openai import OpenAIHandlerMixin, _decode_openai_bearer_payload
@@ -24,6 +26,13 @@ class _ImageCompressor:
     def compress(self, messages, provider):  # noqa: ANN001, ANN201
         assert provider == "anthropic"
         return [self._compressed_message]
+
+
+class _FreshCompressor:
+    instances = 0
+
+    def __init__(self):
+        type(self).instances += 1
 
 
 def test_decode_openai_bearer_payload_handles_missing_and_non_mapping_payloads() -> None:
@@ -146,6 +155,44 @@ def test_anthropic_image_compression_helper_only_rewrites_latest_eligible_turn()
         frozen_message_count=0,
         compressor=_ImageCompressor(compressed),
     ) == [compressed]
+
+
+def test_proxy_helper_creates_fresh_image_compressors(monkeypatch) -> None:
+    from headroom.proxy import helpers
+
+    monkeypatch.setattr(helpers, "_image_compressor_available", None)
+    _FreshCompressor.instances = 0
+
+    with patch("headroom.image.ImageCompressor", _FreshCompressor):
+        first = helpers._get_image_compressor()
+        second = helpers._get_image_compressor()
+
+    assert isinstance(first, _FreshCompressor)
+    assert isinstance(second, _FreshCompressor)
+    assert first is not second
+    assert _FreshCompressor.instances == 2
+
+
+def test_proxy_helper_caches_image_stack_import_failure(monkeypatch) -> None:
+    from headroom.proxy import helpers
+
+    real_import = builtins.__import__
+    calls = 0
+
+    def fake_import(name, *args, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal calls
+        if name == "headroom.image":
+            calls += 1
+            raise ImportError("image extras unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(helpers, "_image_compressor_available", None)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert helpers._get_image_compressor() is None
+    assert helpers._get_image_compressor() is None
+    assert calls == 1
+    assert helpers._image_compressor_available is False
 
 
 def test_anthropic_cache_delta_helpers_cover_string_list_and_role_mismatch() -> None:

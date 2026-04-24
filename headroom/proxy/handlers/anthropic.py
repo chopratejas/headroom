@@ -709,16 +709,21 @@ class AnthropicHandlerMixin:
                 and not _bypass
                 and not is_cache_mode(self.config.mode)
             ):
-                compressor = _get_image_compressor()
-                if compressor and compressor.has_images(messages):
-                    messages = compressor.compress(messages, provider="anthropic")
-                    if compressor.last_result:
-                        logger.info(
-                            f"Image compression: {compressor.last_result.technique.value} "
-                            f"({compressor.last_result.savings_percent:.0f}% saved, "
-                            f"{compressor.last_result.original_tokens} -> "
-                            f"{compressor.last_result.compressed_tokens} tokens)"
-                        )
+                compressor = None
+                try:
+                    compressor = _get_image_compressor()
+                    if compressor and compressor.has_images(messages):
+                        messages = compressor.compress(messages, provider="anthropic")
+                        if compressor.last_result:
+                            logger.info(
+                                f"Image compression: {compressor.last_result.technique.value} "
+                                f"({compressor.last_result.savings_percent:.0f}% saved, "
+                                f"{compressor.last_result.original_tokens} -> "
+                                f"{compressor.last_result.compressed_tokens} tokens)"
+                            )
+                finally:
+                    if compressor and hasattr(compressor, "close"):
+                        compressor.close()
 
             _compression_failed = False
             original_messages = messages  # Preserve for 400-retry fallback

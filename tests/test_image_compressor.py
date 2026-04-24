@@ -14,7 +14,9 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import base64
+import builtins
 import io
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -739,6 +741,27 @@ class TestTrainedRouterMocked:
         with patch.object(router, "_load_models", side_effect=Exception("Model not found")):
             assert router.is_available() is False
 
+    def test_release_models_unloads_registry_entries(self):
+        """Releasing router state should drop shared registry keys too."""
+        router = TrainedRouter()
+        router._classifier_key = "technique_router:demo"
+        router._siglip_key = "siglip:demo"
+        router._classifier = object()
+        router._tokenizer = object()
+        router._siglip_model = object()
+        router._siglip_processor = object()
+        router._text_embeddings = object()
+
+        with patch("headroom.models.ml_models.MLModelRegistry.unload_many") as unload_many:
+            router.release_models()
+
+        unload_many.assert_called_once_with(["technique_router:demo", "siglip:demo"])
+        assert router._classifier is None
+        assert router._tokenizer is None
+        assert router._siglip_model is None
+        assert router._siglip_processor is None
+        assert router._text_embeddings is None
+
 
 # ============================================================================
 # Test Convenience functions
@@ -753,16 +776,27 @@ class TestConvenienceFunctions:
         compressor = get_compressor()
         assert isinstance(compressor, ImageCompressor)
 
-    def test_get_compressor_singleton(self):
-        """get_compressor returns the same instance."""
+    def test_get_compressor_returns_fresh_instance(self):
+        """get_compressor returns a fresh caller-owned instance."""
         compressor1 = get_compressor()
         compressor2 = get_compressor()
-        assert compressor1 is compressor2
+        assert compressor1 is not compressor2
 
     def test_compress_images_function(self, text_only_messages):
         """compress_images convenience function works."""
         result = compress_images(text_only_messages, "openai")
         assert result == text_only_messages
+
+    def test_compress_images_function_closes_temporary_compressor(self, text_only_messages):
+        """compress_images should always close the one-shot compressor."""
+        with (
+            patch.object(ImageCompressor, "compress", return_value=text_only_messages),
+            patch.object(ImageCompressor, "close") as close,
+        ):
+            result = compress_images(text_only_messages, "openai")
+
+        assert result == text_only_messages
+        close.assert_called_once()
 
 
 # ============================================================================
@@ -890,11 +924,15 @@ class TestContentRouterIntegration:
         router = ContentRouter()
         compressor = router._get_image_optimizer()
 
-        # This should NOT be None - if it is, the import failed silently
-        assert compressor is not None, (
-            "ContentRouter._get_image_optimizer() returned None. "
-            "This means ImageCompressor import failed silently!"
-        )
+        try:
+            # This should NOT be None - if it is, the import failed silently
+            assert compressor is not None, (
+                "ContentRouter._get_image_optimizer() returned None. "
+                "This means ImageCompressor import failed silently!"
+            )
+        finally:
+            if compressor is not None:
+                compressor.close()
 
     def test_content_router_compressor_is_image_compressor(self):
         """Verify ContentRouter uses ImageCompressor (not old ImageOptimizer)."""
@@ -904,9 +942,29 @@ class TestContentRouterIntegration:
         router = ContentRouter()
         compressor = router._get_image_optimizer()
 
-        assert isinstance(compressor, ImageCompressor), (
-            f"Expected ImageCompressor, got {type(compressor).__name__}"
-        )
+        try:
+            assert isinstance(compressor, ImageCompressor), (
+                f"Expected ImageCompressor, got {type(compressor).__name__}"
+            )
+        finally:
+            if compressor is not None:
+                compressor.close()
+
+    def test_content_router_compressor_is_fresh_per_call(self):
+        """ContentRouter should not share image compressors across callers."""
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        first = router._get_image_optimizer()
+        second = router._get_image_optimizer()
+
+        try:
+            assert first is not second
+        finally:
+            if first is not None:
+                first.close()
+            if second is not None:
+                second.close()
 
     def test_content_router_optimize_images_works(self):
         """Test optimize_images_in_messages returns valid result."""
@@ -924,3 +982,99 @@ class TestContentRouterIntegration:
         assert result == messages
         assert "images_optimized" in metrics
         assert metrics["tokens_saved"] == 0
+
+    def test_content_router_returns_metrics_and_closes_after_compression(self):
+        """Image optimization should report savings and close the compressor."""
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        tokenizer = MagicMock()
+        optimized = [{"role": "user", "content": "optimized"}]
+        technique = SimpleNamespace(value="full_low")
+        fake = MagicMock()
+        fake.has_images.return_value = True
+        fake.compress.return_value = optimized
+        fake.last_result = SimpleNamespace(
+            original_tokens=1000,
+            compressed_tokens=85,
+            technique=technique,
+            confidence=0.9,
+        )
+
+        with patch.object(router, "_get_image_optimizer", return_value=fake):
+            result, metrics = router.optimize_images_in_messages(
+                [{"role": "user", "content": "with image"}],
+                tokenizer,
+                provider="openai",
+            )
+
+        assert result == optimized
+        assert metrics == {
+            "images_optimized": True,
+            "tokens_before": 1000,
+            "tokens_after": 85,
+            "tokens_saved": 915,
+            "technique": "full_low",
+            "confidence": 0.9,
+        }
+        fake.close.assert_called_once()
+
+    def test_content_router_returns_basic_metrics_when_compression_has_no_result(self):
+        """Missing compressor result should still close and return neutral metrics."""
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        tokenizer = MagicMock()
+        optimized = [{"role": "user", "content": "optimized"}]
+        fake = MagicMock()
+        fake.has_images.return_value = True
+        fake.compress.return_value = optimized
+        fake.last_result = None
+
+        with patch.object(router, "_get_image_optimizer", return_value=fake):
+            result, metrics = router.optimize_images_in_messages(
+                [{"role": "user", "content": "with image"}],
+                tokenizer,
+                provider="openai",
+            )
+
+        assert result == optimized
+        assert metrics == {"images_optimized": 0, "tokens_saved": 0}
+        fake.close.assert_called_once()
+
+    def test_content_router_image_optimizer_returns_none_when_image_stack_missing(self):
+        """Import failures should disable image optimization without raising."""
+        from headroom.transforms.content_router import ContentRouter
+
+        real_import = builtins.__import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
+            if name == "image" and fromlist == ("ImageCompressor",) and level == 2:
+                raise ImportError("image extras unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        router = ContentRouter()
+        with patch.object(builtins, "__import__", side_effect=fake_import):
+            compressor = router._get_image_optimizer()
+
+        assert compressor is None
+
+    def test_content_router_releases_image_optimizer_after_use(self):
+        """ContentRouter should drop the compressor after each optimization pass."""
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        tokenizer = MagicMock()
+        fake = MagicMock()
+        fake.has_images.return_value = False
+
+        with patch.object(router, "_get_image_optimizer", return_value=fake):
+            result, metrics = router.optimize_images_in_messages(
+                [{"role": "user", "content": "Hello"}],
+                tokenizer,
+                provider="openai",
+            )
+
+        assert result == [{"role": "user", "content": "Hello"}]
+        assert metrics["tokens_saved"] == 0
+        fake.close.assert_called_once()

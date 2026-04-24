@@ -26,6 +26,8 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import logging
 from threading import RLock
 from typing import TYPE_CHECKING, Any
@@ -75,6 +77,63 @@ class MLModelRegistry:
             if cls._instance is not None:
                 cls._instance._models.clear()
             cls._instance = None
+
+    @classmethod
+    def _release_runtime_memory(cls) -> None:
+        """Best-effort cleanup after unloading heavyweight models."""
+        gc.collect()
+        try:
+            import torch
+        except ImportError:
+            return
+
+        with contextlib.suppress(Exception):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            mps = getattr(torch, "mps", None)
+            if mps is not None and hasattr(mps, "empty_cache"):
+                mps.empty_cache()
+
+    @classmethod
+    def unload(cls, key: str) -> bool:
+        """Unload one cached model entry."""
+        return bool(cls.unload_many([key]))
+
+    @classmethod
+    def unload_many(cls, keys: list[str]) -> list[str]:
+        """Unload several cached model entries with one runtime cleanup pass."""
+        instance = cls.get()
+        removed_keys: list[str] = []
+
+        with instance._model_lock:
+            for key in keys:
+                if key not in instance._models:
+                    continue
+                value = instance._models.pop(key)
+                del value
+                removed_keys.append(key)
+
+        if removed_keys:
+            cls._release_runtime_memory()
+        return removed_keys
+
+    @classmethod
+    def unload_prefix(cls, prefix: str) -> list[str]:
+        """Unload every cached model entry matching a prefix."""
+        instance = cls.get()
+        removed_keys: list[str] = []
+
+        with instance._model_lock:
+            for key in list(instance._models):
+                if key.startswith(prefix):
+                    value = instance._models.pop(key)
+                    del value
+                    removed_keys.append(key)
+
+        if removed_keys:
+            cls._release_runtime_memory()
+        return removed_keys
 
     # =========================================================================
     # Sentence Transformers

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -843,6 +844,15 @@ class HeadroomProxy(
 
         if self.memory_handler and hasattr(self.memory_handler, "close"):
             await self.memory_handler.close()
+
+        with contextlib.suppress(Exception):
+            from headroom.models.ml_models import MLModelRegistry
+
+            released_models = []
+            released_models.extend(MLModelRegistry.unload_prefix("technique_router:"))
+            released_models.extend(MLModelRegistry.unload_prefix("siglip:"))
+            if released_models:
+                logger.info("Released image optimizer models: %s", ", ".join(released_models))
 
         # Stop all quota trackers via the registry
         await get_quota_registry().stop_all()
