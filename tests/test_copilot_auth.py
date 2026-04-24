@@ -124,7 +124,9 @@ def test_read_cached_oauth_token_skips_unreadable_and_non_matching_files(
     broken.write_text("{not-json", encoding="utf-8")
     valid = tmp_path / "hosts.json"
     valid.write_text(
-        json.dumps({"example.com": {"oauth_token": "gho-miss", "expires_at": "2999-01-01T00:00:00Z"}}),
+        json.dumps(
+            {"example.com": {"oauth_token": "gho-miss", "expires_at": "2999-01-01T00:00:00Z"}}
+        ),
         encoding="utf-8",
     )
     monkeypatch.delenv("GITHUB_COPILOT_GITHUB_TOKEN", raising=False)
@@ -156,8 +158,7 @@ def test_parse_expiry_and_entry_helpers_cover_edge_cases(monkeypatch: pytest.Mon
 
     assert copilot_auth._extract_oauth_token({"token": " gho-token "}) == "gho-token"
     assert (
-        copilot_auth._extract_oauth_token({"nested": {"accessToken": "gho-nested"}})
-        == "gho-nested"
+        copilot_auth._extract_oauth_token({"nested": {"accessToken": "gho-nested"}}) == "gho-nested"
     )
     assert copilot_auth._extract_oauth_token({"expires_at": now - 1, "token": "gho-old"}) is None
     assert copilot_auth._extract_oauth_token({"nested": {"value": "missing"}}) is None
@@ -167,7 +168,10 @@ def test_parse_expiry_and_entry_helpers_cover_edge_cases(monkeypatch: pytest.Mon
     ]
     assert copilot_auth._iter_file_entries(
         [{"host": "github.com", "token": "a"}, {"githubHost": "ghe", "token": "b"}, "bad"]
-    ) == [("github.com", {"host": "github.com", "token": "a"}), ("ghe", {"githubHost": "ghe", "token": "b"})]
+    ) == [
+        ("github.com", {"host": "github.com", "token": "a"}),
+        ("ghe", {"githubHost": "ghe", "token": "b"}),
+    ]
     assert copilot_auth._iter_file_entries("bad-payload") == []
 
 
@@ -234,7 +238,9 @@ def test_resolve_client_bearer_token_prefers_api_token(monkeypatch: pytest.Monke
     assert copilot_auth.resolve_client_bearer_token() == "copilot-api"
 
 
-def test_resolve_client_bearer_token_falls_back_to_cached_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_client_bearer_token_falls_back_to_cached_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("GITHUB_COPILOT_API_TOKEN", raising=False)
     monkeypatch.delenv("COPILOT_PROVIDER_BEARER_TOKEN", raising=False)
     monkeypatch.setattr(copilot_auth, "read_cached_oauth_token", lambda: "gho-cached")
@@ -375,7 +381,9 @@ def test_token_provider_reuses_cached_valid_token(monkeypatch: pytest.MonkeyPatc
         expires_at=time.time() + 3600,
         api_url=copilot_auth.DEFAULT_API_URL,
     )
-    monkeypatch.setattr(copilot_auth, "read_cached_oauth_token", lambda: (_ for _ in ()).throw(RuntimeError))
+    monkeypatch.setattr(
+        copilot_auth, "read_cached_oauth_token", lambda: (_ for _ in ()).throw(RuntimeError)
+    )
 
     token = asyncio.run(provider.get_api_token())
 
@@ -451,7 +459,9 @@ def test_exchange_token_uses_defaults_for_optional_fields(monkeypatch: pytest.Mo
     assert token.sku is None
 
 
-def test_exchange_token_sync_returns_empty_dict_for_non_object_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exchange_token_sync_returns_empty_dict_for_non_object_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class DummyResponse:
         def __enter__(self):
             return self
@@ -462,9 +472,14 @@ def test_exchange_token_sync_returns_empty_dict_for_non_object_payload(monkeypat
         def read(self) -> bytes:
             return b'["not", "a", "dict"]'
 
-    monkeypatch.setattr(copilot_auth.urllib_request, "urlopen", lambda request, timeout: DummyResponse())
+    monkeypatch.setattr(
+        copilot_auth.urllib_request, "urlopen", lambda request, timeout: DummyResponse()
+    )
 
-    assert copilot_auth.CopilotTokenProvider._exchange_token_sync({"Authorization": "token test"}) == {}
+    assert (
+        copilot_auth.CopilotTokenProvider._exchange_token_sync({"Authorization": "token test"})
+        == {}
+    )
 
 
 def test_apply_copilot_api_auth_returns_original_headers_for_non_copilot_url() -> None:
@@ -478,7 +493,9 @@ def test_apply_copilot_api_auth_returns_original_headers_for_non_copilot_url() -
     assert headers == {"authorization": "Bearer downstream-token"}
 
 
-def test_apply_copilot_api_auth_replaces_mixed_case_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_copilot_api_auth_replaces_mixed_case_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
         return copilot_auth.CopilotAPIToken(
             token="copilot-session",
