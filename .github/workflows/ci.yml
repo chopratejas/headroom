@@ -63,6 +63,13 @@ jobs:
           file: ./coverage.xml
           fail_ci_if_error: false
 
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-coverage-xml
+          path: coverage.xml
+
   test-extras:
     runs-on: ubuntu-latest
     steps:
@@ -223,6 +230,40 @@ jobs:
           flags: native-wrapper-macos
           name: native-wrapper-macos-${{ github.run_id }}
           fail_ci_if_error: false
+
+  coverage-total:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Download total coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: core-coverage-xml
+
+      - name: Report total coverage
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          coverage_xml = pathlib.Path("coverage.xml")
+          root = ET.parse(coverage_xml).getroot()
+          line_rate = float(root.attrib["line-rate"]) * 100
+          lines_covered = int(root.attrib["lines-covered"])
+          lines_valid = int(root.attrib["lines-valid"])
+          message = (
+              f"Total coverage: {line_rate:.2f}% "
+              f"({lines_covered}/{lines_valid} lines covered)"
+          )
+          print(message)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("## Total coverage\n\n")
+                  summary.write(f"{message}\n")
+          PY
 
   build:
     runs-on: ubuntu-latest
