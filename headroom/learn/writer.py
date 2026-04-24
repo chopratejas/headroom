@@ -161,9 +161,7 @@ def _merge_recommendations(
     return list(new_recommendations) + carried
 
 
-def _merge_into_file(
-    file_path: Path, new_recommendations: list[Recommendation]
-) -> str | None:
+def _merge_into_file(file_path: Path, new_recommendations: list[Recommendation]) -> str | None:
     """Merge new recommendations with any existing marker block and rebuild the file.
 
     Returns ``None`` when there is nothing to write: no new recommendations AND
