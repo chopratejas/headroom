@@ -255,6 +255,64 @@ class TestTrafficLearner:
         # Only environment patterns possible, no error_recovery
         assert stats["requests_processed"] == 1
 
+    @pytest.mark.asyncio
+    async def test_on_messages_ignores_non_user_and_empty_content(self, learner: TrafficLearner):
+        await learner.on_messages(
+            [
+                {"role": "assistant", "content": "do not store"},
+                {"role": "user", "content": [{"type": "image", "source": "ignored"}]},
+            ]
+        )
+        assert learner.get_stats()["patterns_extracted"] == 0
+
+    def test_extract_tool_results_handles_non_list_and_string_results(self, learner: TrafficLearner):
+        results = learner.extract_tool_results_from_messages(
+            [
+                {"role": "assistant", "content": "ignored"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "missing", "content": "Permission denied"},
+                    ],
+                },
+            ]
+        )
+        assert results == [
+            {
+                "tool_name": "unknown",
+                "input": {},
+                "output": "Permission denied",
+                "is_error": True,
+            }
+        ]
+
+    def test_build_recovery_for_grep_and_command_variants(self, learner: TrafficLearner):
+        grep_pattern = learner._build_recovery_pattern(
+            {"tool_name": "Grep", "input": {"pattern": "foo"}, "error_category": "runtime_error"},
+            {"tool_name": "Grep", "input": {"pattern": "bar"}},
+        )
+        assert grep_pattern is not None
+        assert "Use `bar` instead" in grep_pattern.content
+
+        assert (
+            learner._build_command_recovery(
+                {"input": {"command": "same"}, "output": "", "error_category": "unknown"},
+                {"input": {"command": "same"}},
+            )
+            is None
+        )
+        module_pattern = learner._build_command_recovery(
+            {
+                "input": {"command": "python test.py"},
+                "output": "ModuleNotFoundError: No module named 'rich'",
+                "error_category": "module_not_found",
+            },
+            {"input": {"command": "python -m pytest"}},
+        )
+        assert module_pattern is not None
+        assert module_pattern.importance == 0.8
+        assert module_pattern.entity_refs == ["rich"]
+
 
 # =============================================================================
 # Pattern Model Tests
@@ -798,6 +856,44 @@ class TestEvidencePersistence:
         assert rows[0][0] == "seed-id"
         assert rows[0][2]["evidence_count"] == 4
 
+    @pytest.mark.asyncio
+    async def test_stop_drains_queue_and_set_backend(self, tmp_path):
+        db = tmp_path / "memory.db"
+        _init_db(db)
+        backend = _FakeBackend(db)
+        learner = TrafficLearner(backend=None, min_evidence=1)
+        learner.set_backend(backend)
+        await learner._save_queue.put(
+            ExtractedPattern(
+                category=PatternCategory.ENVIRONMENT,
+                content="Use tool",
+                importance=0.6,
+                evidence_count=2,
+            )
+        )
+        await learner.stop()
+        rows = _read_traffic_rows(db)
+        assert len(rows) == 1
+        assert learner.get_stats()["patterns_saved"] == 1
+
+    @pytest.mark.asyncio
+    async def test_stop_breaks_when_backend_save_raises(self, tmp_path):
+        class BrokenBackend:
+            async def save_memory(self, **kwargs):
+                raise RuntimeError("boom")
+
+        learner = TrafficLearner(backend=BrokenBackend(), min_evidence=1)
+        await learner._save_queue.put(
+            ExtractedPattern(
+                category=PatternCategory.ENVIRONMENT,
+                content="bad",
+                importance=0.5,
+                evidence_count=2,
+            )
+        )
+        await learner.stop()
+        assert learner.get_stats()["patterns_saved"] == 0
+
 
 # =============================================================================
 # flush_to_file end-to-end + early-return paths
@@ -1140,6 +1236,20 @@ class TestHydrateEdgeCases:
         assert learner._saved_hashes == set()
         assert learner._persisted_ids == {}
 
+    @pytest.mark.asyncio
+    async def test_hydrate_to_thread_failure_is_swallowed(self, tmp_path, monkeypatch):
+        db = tmp_path / "memory.db"
+        _init_db(db)
+        backend = _FakeBackend(db)
+        learner = TrafficLearner(backend=backend, min_evidence=1)
+
+        async def boom(_func):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("headroom.memory.traffic_learner.asyncio.to_thread", boom)
+        await learner._hydrate_persisted_state()
+        assert learner._saved_hashes == set()
+
 
 class TestBumpEdgeCases:
     @pytest.mark.asyncio
@@ -1163,6 +1273,19 @@ class TestBumpEdgeCases:
         learner = TrafficLearner(backend=backend, min_evidence=1)
         await learner._bump_persisted_evidence("no-such-id")
         assert _read_traffic_rows(db) == []
+
+    @pytest.mark.asyncio
+    async def test_bump_to_thread_failure_is_swallowed(self, tmp_path, monkeypatch):
+        db = tmp_path / "memory.db"
+        _init_db(db)
+        backend = _FakeBackend(db)
+        learner = TrafficLearner(backend=backend, min_evidence=1)
+
+        async def boom(_func):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("headroom.memory.traffic_learner.asyncio.to_thread", boom)
+        await learner._bump_persisted_evidence("x")
 
 
 # =============================================================================
