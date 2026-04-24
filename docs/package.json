@@ -18,7 +18,7 @@
 		"fumadocs-ui": "16.7.10",
 		"headroom-ai": "file:../sdk/typescript",
 		"lucide-react": "^1.7.0",
-		"next": "16.2.2",
+		"next": "16.2.4",
 		"react": "^19.2.4",
 		"react-dom": "^19.2.4",
 		"recharts": "^3.8.1",
@@ -34,7 +34,7 @@
 		"@types/react-dom": "^19.2.3",
 		"ai": "^6.0.149",
 		"openai": "^6.33.0",
-		"postcss": "^8.5.8",
+		"postcss": "^8.5.10",
 		"tailwindcss": "^4.2.2",
 		"typescript": "^5.9.3"
 	}
