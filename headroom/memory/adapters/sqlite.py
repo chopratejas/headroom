@@ -13,6 +13,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,7 +85,7 @@ class SQLiteMemoryStore:
         return conn
 
     @contextmanager
-    def _conn(self):
+    def _conn(self) -> Iterator[sqlite3.Connection]:
         """Yield a connection that is always closed after use."""
         conn = self._get_conn()
         try:
@@ -362,7 +363,7 @@ class SQLiteMemoryStore:
                 (memory_id,),
             )
             conn.commit()
-            return cursor.rowcount > 0
+            return int(cursor.rowcount) > 0
 
     async def delete_batch(self, memory_ids: list[str]) -> int:
         """Delete multiple memories by ID.
@@ -384,7 +385,7 @@ class SQLiteMemoryStore:
                 memory_ids,
             )
             conn.commit()
-            return cursor.rowcount
+            return int(cursor.rowcount)
 
     def _build_query_conditions(self, filter: MemoryFilter) -> tuple[list[str], list[Any]]:
         """Build WHERE clause conditions from a MemoryFilter.
@@ -761,7 +762,7 @@ class SQLiteMemoryStore:
                 params,
             )
             conn.commit()
-            return cursor.rowcount
+            return int(cursor.rowcount)
 
     async def clear_all(self) -> int:
         """Clear all memories from the store.
@@ -772,7 +773,7 @@ class SQLiteMemoryStore:
         with self._conn() as conn:
             cursor = conn.execute("DELETE FROM memories")
             conn.commit()
-            return cursor.rowcount
+            return int(cursor.rowcount)
 
     def count_sync(self) -> int:
         """Synchronous count of all memories (for diagnostics).

@@ -17,6 +17,7 @@ import json
 import sqlite3
 from collections import deque
 from contextlib import contextmanager
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -152,7 +153,7 @@ class SQLiteGraphStore:
             conn.commit()
 
     @contextmanager
-    def _conn(self):
+    def _conn(self) -> Iterator[sqlite3.Connection]:
         """Yield a connection that is always closed after use."""
         conn = self._get_conn()
         try:
@@ -310,7 +311,7 @@ class SQLiteGraphStore:
                     (entity_id,),
                 )
                 conn.commit()
-                return cursor.rowcount > 0
+                return int(cursor.rowcount) > 0
 
     # =========================================================================
     # Relationship Operations
@@ -401,7 +402,7 @@ class SQLiteGraphStore:
                     (relationship_id,),
                 )
                 conn.commit()
-                return cursor.rowcount > 0
+                return int(cursor.rowcount) > 0
 
     # =========================================================================
     # Graph Traversal Operations
