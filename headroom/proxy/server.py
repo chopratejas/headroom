@@ -1332,11 +1332,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         return await call_next(request)
 
     # Third-party proxy extensions (Enterprise, custom plugins). Discovered via
-    # the `headroom.proxy_extension` entry-point group. An extension that raises
-    # from its install() is a deliberate fail-closed signal and aborts startup.
+    # the `headroom.proxy_extension` entry-point group, but **opt-in only**:
+    # only names listed in config.proxy_extensions (CLI: --proxy-extension,
+    # env: HEADROOM_PROXY_EXTENSIONS) actually get installed. Discovery alone
+    # never runs third-party code. An extension that raises from its install()
+    # is a deliberate fail-closed signal and aborts startup.
     from headroom.proxy.extensions import install_all as _install_extensions
 
-    _install_extensions(app, config)
+    _install_extensions(app, config, enabled=getattr(config, "proxy_extensions", None))
 
     # Health & Metrics
     @app.get("/livez")

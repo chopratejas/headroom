@@ -171,6 +171,12 @@ class ProxyConfig:
     log_file: str | None = None
     log_full_messages: bool = False
 
+    # Third-party proxy extensions (opt-in only). List of entry-point names
+    # to enable from the `headroom.proxy_extension` group, or `["*"]` for
+    # wildcard. Empty/None means no extensions run, even if installed.
+    # CLI: --proxy-extension <name1,name2>; env: HEADROOM_PROXY_EXTENSIONS.
+    proxy_extensions: list[str] | None = None
+
     # Fallback
     fallback_enabled: bool = False
     fallback_provider: str | None = None

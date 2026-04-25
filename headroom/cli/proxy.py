@@ -58,6 +58,17 @@ from .main import main
 @click.option("--no-cache", is_flag=True, help="Disable semantic caching")
 @click.option("--no-rate-limit", is_flag=True, help="Disable rate limiting")
 @click.option(
+    "--proxy-extension",
+    "proxy_extension",
+    multiple=True,
+    envvar="HEADROOM_PROXY_EXTENSIONS",
+    help=(
+        "Enable a registered proxy extension by entry-point name (opt-in). "
+        "Repeat the flag or pass a comma-separated list. Use '*' to enable "
+        "every discovered extension. Env: HEADROOM_PROXY_EXTENSIONS."
+    ),
+)
+@click.option(
     "--no-subscription-tracking",
     is_flag=True,
     envvar="HEADROOM_NO_SUBSCRIPTION_TRACKING",
@@ -274,6 +285,7 @@ def proxy(
     no_optimize: bool,
     no_cache: bool,
     no_rate_limit: bool,
+    proxy_extension: tuple[str, ...],
     no_subscription_tracking: bool,
     subscription_poll_interval: int | None,
     retry_max_attempts: int | None,
@@ -403,6 +415,13 @@ def proxy(
         optimize=not no_optimize,
         cache_enabled=not no_cache,
         rate_limit_enabled=not no_rate_limit,
+        # Flatten repeat-flag tuple AND any comma-separated values inside it.
+        # `--proxy-extension a,b --proxy-extension c` and `HEADROOM_PROXY_EXTENSIONS=a,b,c`
+        # both yield ["a", "b", "c"]. None when nothing was supplied.
+        proxy_extensions=(
+            [part.strip() for chunk in proxy_extension for part in chunk.split(",") if part.strip()]
+            or None
+        ),
         subscription_tracking_enabled=not no_subscription_tracking,
         subscription_poll_interval_s=(
             subscription_poll_interval if subscription_poll_interval is not None else 300
@@ -536,6 +555,33 @@ Memory (Multi-Provider):
     else:
         telemetry_line = "  Telemetry:    DISABLED"
 
+    # Discover proxy extensions (third-party packages registered via the
+    # `headroom.proxy_extension` entry-point group). Surfaced in the banner
+    # so operators can see what's available + what's currently opted-in.
+    # Discovery does NOT run extension code; only the explicitly-enabled
+    # set in config.proxy_extensions actually installs.
+    try:
+        from headroom.proxy.extensions import discover as _discover_extensions
+
+        _ext_available = sorted(name for name, _ in _discover_extensions())
+    except Exception:  # noqa: BLE001 — banner must never crash startup
+        _ext_available = []
+    _ext_enabled = config.proxy_extensions or []
+    if not _ext_available:
+        extensions_line = "  Extensions:   (none discovered)"
+    elif not _ext_enabled:
+        extensions_line = (
+            f"  Extensions:   discovered={','.join(_ext_available)} "
+            f"(opt-in: --proxy-extension <name> or HEADROOM_PROXY_EXTENSIONS=<n>)"
+        )
+    elif "*" in _ext_enabled:
+        extensions_line = f"  Extensions:   ENABLED (wildcard) {','.join(_ext_available)}"
+    else:
+        extensions_line = (
+            f"  Extensions:   ENABLED {','.join(sorted(_ext_enabled))} "
+            f"(available: {','.join(_ext_available)})"
+        )
+
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                         HEADROOM PROXY                                 ║
@@ -551,6 +597,7 @@ Starting proxy server...
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
   License:      {license_status}
+{extensions_line}
 {stateless_line}{telemetry_line}
 {backend_section}
 Routing:
