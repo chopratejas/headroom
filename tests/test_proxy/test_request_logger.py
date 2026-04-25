@@ -85,3 +85,16 @@ def test_jsonl_file_strips_both_sides_when_log_full_messages_disabled(tmp_path):
     assert "request_messages" not in obj
     assert "compressed_messages" not in obj
     assert "response_content" not in obj
+
+
+def test_get_memory_stats_accounts_for_compressed_messages():
+    logger = RequestLogger(log_file=None)
+    logger.log(
+        _entry(
+            compressed_messages=[{"role": "user", "content": "post"}],
+        )
+    )
+
+    stats = logger.get_memory_stats()
+    assert stats.entry_count == 1
+    assert stats.size_bytes > 0
