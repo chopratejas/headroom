@@ -2,6 +2,7 @@
 
 import os
 import sys
+from typing import Any
 
 import click
 
@@ -201,6 +202,37 @@ from .main import main
     default=10,
     help="Number of memories to inject as context (default: 10)",
 )
+@click.option(
+    "--memory-qdrant-url",
+    default=None,
+    help=(
+        "Full Qdrant URL for the qdrant-neo4j backend "
+        "(e.g. https://xyz.cloud.qdrant.io:6333). When set, takes precedence over "
+        "--memory-qdrant-host/--memory-qdrant-port. "
+        "Also reads HEADROOM_QDRANT_URL."
+    ),
+)
+@click.option(
+    "--memory-qdrant-host",
+    default=None,
+    help=(
+        "Qdrant host for the qdrant-neo4j backend "
+        "(default: localhost, also reads HEADROOM_QDRANT_HOST)"
+    ),
+)
+@click.option(
+    "--memory-qdrant-port",
+    type=int,
+    default=None,
+    help=(
+        "Qdrant port for the qdrant-neo4j backend (default: 6333, also reads HEADROOM_QDRANT_PORT)"
+    ),
+)
+@click.option(
+    "--memory-qdrant-api-key",
+    default=None,
+    help=("API key for hosted Qdrant (e.g. Qdrant Cloud). Also reads HEADROOM_QDRANT_API_KEY."),
+)
 # Traffic Learning (live pattern extraction from proxy traffic)
 @click.option(
     "--learn",
@@ -306,6 +338,10 @@ def proxy(
     no_memory_tools: bool,
     no_memory_context: bool,
     memory_top_k: int,
+    memory_qdrant_url: str | None,
+    memory_qdrant_host: str | None,
+    memory_qdrant_port: int | None,
+    memory_qdrant_api_key: str | None,
     learn: bool,
     no_learn: bool,
     backend: str,
@@ -404,6 +440,19 @@ def proxy(
     # License key for managed/enterprise deployments (optional)
     license_key = os.environ.get("HEADROOM_LICENSE_KEY")
 
+    # Qdrant connection for the qdrant-neo4j backend. CLI flags default
+    # to None; when omitted we let ProxyConfig's default_factory resolve
+    # HEADROOM_QDRANT_* env vars. Explicit CLI values win over env.
+    qdrant_overrides: dict[str, Any] = {}
+    if memory_qdrant_url is not None:
+        qdrant_overrides["memory_qdrant_url"] = memory_qdrant_url
+    if memory_qdrant_host is not None:
+        qdrant_overrides["memory_qdrant_host"] = memory_qdrant_host
+    if memory_qdrant_port is not None:
+        qdrant_overrides["memory_qdrant_port"] = memory_qdrant_port
+    if memory_qdrant_api_key is not None:
+        qdrant_overrides["memory_qdrant_api_key"] = memory_qdrant_api_key
+
     config = ProxyConfig(
         host=host,
         port=port,
@@ -450,6 +499,7 @@ def proxy(
         memory_inject_tools=not no_memory_tools,
         memory_inject_context=not no_memory_context,
         memory_top_k=memory_top_k,
+        **qdrant_overrides,
         # Traffic Learning: only with --learn, never with --no-learn
         # Stateless mode disables learning (requires filesystem)
         traffic_learning_enabled=False if is_stateless else (learn and not no_learn),
