@@ -23,6 +23,12 @@ tokenizers = "0.21"
 # AWS deploys). `from_pretrained` is called once at startup, so blocking is
 # fine; if a tokio caller needs it later we can wrap in `spawn_blocking`.
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+# `md5` for the CCR cache_key. Python's compression_store hashes the original
+# diff with MD5 truncated to 24 hex chars; we must match byte-for-byte.
+md-5 = "0.10"
+# `regex` is already a transitive dep of tokenizers; depend on it directly so
+# our hunk-header parser and priority-pattern matcher have a stable surface.
+regex = "1"
 
 [dev-dependencies]
 proptest = "1"

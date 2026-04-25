@@ -158,9 +158,88 @@ macro_rules! stub_comparator {
 }
 
 stub_comparator!(LogCompressorComparator, "log_compressor");
-stub_comparator!(DiffCompressorComparator, "diff_compressor");
 stub_comparator!(CacheAlignerComparator, "cache_aligner");
 stub_comparator!(CcrComparator, "ccr");
+
+/// Real comparator for the `diff_compressor` transform. Drives the Rust port
+/// over the recorded fixture inputs and emits the Python-shaped JSON output
+/// (subset: only fields the Python recorder serializes — i.e. fields, not
+/// `@property` derivatives like `compression_ratio`).
+pub struct DiffCompressorComparator;
+
+impl TransformComparator for DiffCompressorComparator {
+    fn name(&self) -> &str {
+        "diff_compressor"
+    }
+
+    fn run(
+        &self,
+        input: &serde_json::Value,
+        config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use headroom_core::transforms::{DiffCompressor, DiffCompressorConfig};
+
+        let content = input
+            .as_str()
+            .context("diff_compressor fixture input must be a JSON string")?;
+
+        // Build config from the fixture, falling back to defaults for any
+        // missing keys. The recorder writes every field today, but tolerating
+        // partial configs keeps fixtures forward-compatible if the Python
+        // dataclass picks up new fields.
+        let cfg = DiffCompressorConfig {
+            max_context_lines: config
+                .get("max_context_lines")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(2),
+            max_hunks_per_file: config
+                .get("max_hunks_per_file")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(10),
+            max_files: config
+                .get("max_files")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(20),
+            always_keep_additions: config
+                .get("always_keep_additions")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            always_keep_deletions: config
+                .get("always_keep_deletions")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            enable_ccr: config
+                .get("enable_ccr")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            min_lines_for_ccr: config
+                .get("min_lines_for_ccr")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(50),
+        };
+
+        let compressor = DiffCompressor::new(cfg);
+        // No `context` field is recorded; default to empty string. Python's
+        // recorder calls `compress(content, "")` too, so this matches.
+        let result = compressor.compress(content, "");
+
+        Ok(serde_json::json!({
+            "additions": result.additions,
+            "cache_key": result.cache_key,
+            "compressed": result.compressed,
+            "compressed_line_count": result.compressed_line_count,
+            "deletions": result.deletions,
+            "files_affected": result.files_affected,
+            "hunks_kept": result.hunks_kept,
+            "hunks_removed": result.hunks_removed,
+            "original_line_count": result.original_line_count,
+        }))
+    }
+}
 
 /// Real comparator for the `tokenizer` transform. The recorder used
 /// `headroom.providers.openai.OpenAITokenCounter("gpt-4o-mini")`, so the
