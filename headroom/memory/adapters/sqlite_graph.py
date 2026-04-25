@@ -16,8 +16,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import deque
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -93,7 +91,7 @@ class SQLiteGraphStore:
 
     def _init_db(self) -> None:
         """Initialize the database schema with indexes."""
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             # Create entities table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS entities (
@@ -151,15 +149,6 @@ class SQLiteGraphStore:
             )
 
             conn.commit()
-
-    @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        """Yield a connection that is always closed after use."""
-        conn = self._get_conn()
-        try:
-            yield conn
-        finally:
-            conn.close()
 
     def _entity_to_row(self, entity: Entity) -> dict[str, Any]:
         """Convert Entity object to row dict for insertion."""
@@ -233,7 +222,7 @@ class SQLiteGraphStore:
         row = self._entity_to_row(entity)
 
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO entities (
@@ -258,7 +247,7 @@ class SQLiteGraphStore:
             The entity if found, None otherwise.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute(
                     "SELECT * FROM entities WHERE id = ?",
                     (entity_id,),
@@ -281,7 +270,7 @@ class SQLiteGraphStore:
             The entity if found, None otherwise.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute(
                     "SELECT * FROM entities WHERE user_id = ? AND name_lower = ?",
                     (user_id, name.lower()),
@@ -305,13 +294,13 @@ class SQLiteGraphStore:
             True if the entity was deleted, False if not found.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute(
                     "DELETE FROM entities WHERE id = ?",
                     (entity_id,),
                 )
                 conn.commit()
-                return int(cursor.rowcount) > 0
+                return cursor.rowcount > 0
 
     # =========================================================================
     # Relationship Operations
@@ -328,7 +317,7 @@ class SQLiteGraphStore:
         row = self._relationship_to_row(relationship)
 
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO relationships (
@@ -360,7 +349,7 @@ class SQLiteGraphStore:
             List of matching relationships.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 conditions = []
                 params: list[Any] = []
 
@@ -396,13 +385,13 @@ class SQLiteGraphStore:
             True if the relationship was deleted, False if not found.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute(
                     "DELETE FROM relationships WHERE id = ?",
                     (relationship_id,),
                 )
                 conn.commit()
-                return int(cursor.rowcount) > 0
+                return cursor.rowcount > 0
 
     # =========================================================================
     # Graph Traversal Operations
@@ -431,7 +420,7 @@ class SQLiteGraphStore:
             Subgraph containing all reachable entities and relationships.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 collected_entities: dict[str, Entity] = {}
                 collected_relationships: dict[str, Relationship] = {}
 
@@ -537,7 +526,7 @@ class SQLiteGraphStore:
             or None if no path exists within max_depth.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 # Edge cases
                 if source_id == target_id:
                     cursor = conn.execute(
@@ -625,7 +614,7 @@ class SQLiteGraphStore:
             Tuple of (entities_deleted, relationships_deleted).
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 # Delete relationships for user first (also cascade-deleted)
                 cursor = conn.execute(
                     "DELETE FROM relationships WHERE user_id = ?",
@@ -657,7 +646,7 @@ class SQLiteGraphStore:
             List of all entities belonging to the user.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute(
                     "SELECT * FROM entities WHERE user_id = ?",
                     (user_id,),
@@ -667,7 +656,7 @@ class SQLiteGraphStore:
     async def clear(self) -> None:
         """Clear all data from the store."""
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 conn.execute("DELETE FROM relationships")
                 conn.execute("DELETE FROM entities")
                 conn.commit()
@@ -676,7 +665,7 @@ class SQLiteGraphStore:
     def entity_count(self) -> int:
         """Get the total number of entities."""
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute("SELECT COUNT(*) FROM entities")
                 result = cursor.fetchone()[0]
                 return int(result)
@@ -685,7 +674,7 @@ class SQLiteGraphStore:
     def relationship_count(self) -> int:
         """Get the total number of relationships."""
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 cursor = conn.execute("SELECT COUNT(*) FROM relationships")
                 result = cursor.fetchone()[0]
                 return int(result)
@@ -697,7 +686,7 @@ class SQLiteGraphStore:
             Dict with counts and database info.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 entity_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
                 rel_count = conn.execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
                 users_count = conn.execute(
@@ -730,7 +719,7 @@ class SQLiteGraphStore:
         from ..tracker import ComponentStats
 
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 entity_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
                 rel_count = conn.execute("SELECT COUNT(*) FROM relationships").fetchone()[0]
 
@@ -757,7 +746,7 @@ class SQLiteGraphStore:
         Call this periodically after many deletes to reduce file size.
         """
         with self._lock:
-            with self._conn() as conn:
+            with self._get_conn() as conn:
                 conn.execute("VACUUM")
 
     def close(self) -> None:

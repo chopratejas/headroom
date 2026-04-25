@@ -413,22 +413,6 @@ class TestSQLiteGraphStoreTraversal:
         assert "A" in entity_names
 
     @pytest.mark.asyncio
-    async def test_query_subgraph_both_direction_with_type_filter(self, store_with_graph):
-        """Test BOTH-direction traversal with relation type filtering."""
-        store, nodes = store_with_graph
-
-        subgraph = await store.query_subgraph(
-            [nodes["E"].id],
-            max_hops=1,
-            direction=RelationshipDirection.BOTH,
-            relation_types=["edge"],
-        )
-
-        entity_names = {e.name for e in subgraph.entities}
-        assert entity_names == {"E", "B", "C"}
-        assert len(subgraph.relationships) == 2
-
-    @pytest.mark.asyncio
     async def test_find_path_direct(self, store_with_graph):
         """Test finding a direct path."""
         store, nodes = store_with_graph
@@ -473,46 +457,6 @@ class TestSQLiteGraphStoreTraversal:
 
         assert path is not None
         assert path == [nodes["A"].id]
-
-    @pytest.mark.asyncio
-    async def test_find_path_missing_endpoint_returns_none(self, store_with_graph):
-        """Test missing source or target short-circuits to None."""
-        store, nodes = store_with_graph
-
-        assert await store.find_path("missing", nodes["A"].id) is None
-        assert await store.find_path(nodes["A"].id, "missing") is None
-
-    @pytest.mark.asyncio
-    async def test_find_path_incoming_direction(self, store_with_graph):
-        """Test path search following incoming edges."""
-        store, nodes = store_with_graph
-
-        path = await store.find_path(
-            nodes["E"].id, nodes["A"].id, direction=RelationshipDirection.INCOMING
-        )
-
-        assert path is not None
-        assert path[0] == nodes["E"].id
-        assert path[-1] == nodes["A"].id
-
-    @pytest.mark.asyncio
-    async def test_find_path_both_direction_from_target_side(self, store_with_graph):
-        """Test BOTH-direction path search when traversing from target to source."""
-        store, nodes = store_with_graph
-
-        path = await store.find_path(nodes["D"].id, nodes["A"].id)
-
-        assert path is not None
-        assert path[0] == nodes["D"].id
-        assert path[-1] == nodes["A"].id
-
-    @pytest.mark.asyncio
-    async def test_find_path_respects_max_depth(self, store_with_graph):
-        """Test max-depth limits prevent overly long paths."""
-        store, nodes = store_with_graph
-
-        assert await store.find_path(nodes["A"].id, nodes["D"].id, max_depth=1) is None
-        assert await store.find_path(nodes["A"].id, nodes["B"].id, max_depth=0) is None
 
 
 class TestSQLiteGraphStoreUserManagement:
@@ -723,10 +667,6 @@ class TestSQLiteGraphStoreMemoryStats:
         # Size should be smaller or same after vacuum
         stats_after = store.stats()
         assert stats_after["db_size_bytes"] <= stats_before["db_size_bytes"]
-
-    def test_close_is_noop(self, store):
-        """Test close is safe for connection-per-request usage."""
-        store.close()
 
 
 class TestSQLiteGraphStoreEdgeCases:

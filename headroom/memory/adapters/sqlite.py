@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,18 +82,9 @@ class SQLiteMemoryStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        """Yield a connection that is always closed after use."""
-        conn = self._get_conn()
-        try:
-            yield conn
-        finally:
-            conn.close()
-
     def _init_db(self) -> None:
         """Initialize the database schema with indexes."""
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             # Create memories table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
@@ -248,7 +237,7 @@ class SQLiteMemoryStore:
         """
         row = self._memory_to_row(memory)
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO memories (
@@ -282,7 +271,7 @@ class SQLiteMemoryStore:
 
         rows = [self._memory_to_row(m) for m in memories]
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO memories (
@@ -314,7 +303,7 @@ class SQLiteMemoryStore:
         Returns:
             The memory if found, None otherwise.
         """
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(
                 "SELECT * FROM memories WHERE id = ?",
                 (memory_id,),
@@ -340,7 +329,7 @@ class SQLiteMemoryStore:
 
         placeholders = ", ".join("?" * len(memory_ids))
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(
                 f"SELECT * FROM memories WHERE id IN ({placeholders})",  # nosec B608
                 memory_ids,
@@ -357,13 +346,13 @@ class SQLiteMemoryStore:
         Returns:
             True if the memory was deleted, False if not found.
         """
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(
                 "DELETE FROM memories WHERE id = ?",
                 (memory_id,),
             )
             conn.commit()
-            return int(cursor.rowcount) > 0
+            return cursor.rowcount > 0
 
     async def delete_batch(self, memory_ids: list[str]) -> int:
         """Delete multiple memories by ID.
@@ -379,13 +368,13 @@ class SQLiteMemoryStore:
 
         placeholders = ", ".join("?" * len(memory_ids))
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(
                 f"DELETE FROM memories WHERE id IN ({placeholders})",  # nosec B608
                 memory_ids,
             )
             conn.commit()
-            return int(cursor.rowcount)
+            return cursor.rowcount
 
     def _build_query_conditions(self, filter: MemoryFilter) -> tuple[list[str], list[Any]]:
         """Build WHERE clause conditions from a MemoryFilter.
@@ -524,12 +513,7 @@ class SQLiteMemoryStore:
                     continue
                 # Use JSON extraction for metadata filtering
                 conditions.append(f"json_extract(metadata, '$.{key}') = ?")
-                if isinstance(value, (dict, list)):
-                    params.append(json.dumps(value))
-                elif isinstance(value, bool):
-                    params.append(1 if value else 0)
-                else:
-                    params.append(value)
+                params.append(json.dumps(value) if not isinstance(value, str) else value)
 
         return conditions, params
 
@@ -575,7 +559,7 @@ class SQLiteMemoryStore:
             query += " OFFSET ?"
             params.append(filter.offset)
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(query, params)
             return [self._row_to_memory(row) for row in cursor]
 
@@ -594,7 +578,7 @@ class SQLiteMemoryStore:
 
         query = f"SELECT COUNT(*) FROM memories WHERE {where_clause}"
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(query, params)
             result = cursor.fetchone()[0]
             return int(result)
@@ -638,7 +622,7 @@ class SQLiteMemoryStore:
         new_memory.valid_from = supersede_time
 
         # Save both in a transaction
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             # Update old memory
             conn.execute(
                 """
@@ -756,13 +740,13 @@ class SQLiteMemoryStore:
 
         where_clause = " AND ".join(conditions)
 
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute(
                 f"DELETE FROM memories WHERE {where_clause}",  # nosec B608
                 params,
             )
             conn.commit()
-            return int(cursor.rowcount)
+            return cursor.rowcount
 
     async def clear_all(self) -> int:
         """Clear all memories from the store.
@@ -770,10 +754,10 @@ class SQLiteMemoryStore:
         Returns:
             Number of memories deleted.
         """
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute("DELETE FROM memories")
             conn.commit()
-            return int(cursor.rowcount)
+            return cursor.rowcount
 
     def count_sync(self) -> int:
         """Synchronous count of all memories (for diagnostics).
@@ -781,7 +765,7 @@ class SQLiteMemoryStore:
         Returns:
             Total number of memories in the store.
         """
-        with self._conn() as conn:
+        with self._get_conn() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM memories")
             result = cursor.fetchone()[0]
             return int(result)
