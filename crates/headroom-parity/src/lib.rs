@@ -160,8 +160,34 @@ macro_rules! stub_comparator {
 stub_comparator!(LogCompressorComparator, "log_compressor");
 stub_comparator!(DiffCompressorComparator, "diff_compressor");
 stub_comparator!(CacheAlignerComparator, "cache_aligner");
-stub_comparator!(TokenizerComparator, "tokenizer");
 stub_comparator!(CcrComparator, "ccr");
+
+/// Real comparator for the `tokenizer` transform. The recorder used
+/// `headroom.providers.openai.OpenAITokenCounter("gpt-4o-mini")`, so the
+/// fixture outputs are o200k_base BPE token counts. We rebuild the same
+/// encoding via `tiktoken-rs` and assert byte-equal counts.
+pub struct TokenizerComparator;
+
+impl TransformComparator for TokenizerComparator {
+    fn name(&self) -> &str {
+        "tokenizer"
+    }
+
+    fn run(
+        &self,
+        input: &serde_json::Value,
+        _config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use headroom_core::tokenizer::{TiktokenCounter, Tokenizer};
+        let text = input
+            .as_str()
+            .context("tokenizer fixture input must be a JSON string")?;
+        let counter = TiktokenCounter::for_model("gpt-4o-mini")
+            .context("init TiktokenCounter for gpt-4o-mini")?;
+        let count = counter.count_text(text);
+        Ok(serde_json::json!(count))
+    }
+}
 
 /// Every built-in comparator, in a stable order.
 pub fn builtin_comparators() -> Vec<Box<dyn TransformComparator>> {

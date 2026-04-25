@@ -1,7 +1,6 @@
 //! headroom-core: foundation crate for the Rust port of Headroom.
-//!
-//! Phase 0: only exposes stubs. No algorithm implementations yet.
 
+pub mod tokenizer;
 pub mod transforms;
 
 /// Identity stub used by downstream crates and the Python binding to verify

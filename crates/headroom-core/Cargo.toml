@@ -13,3 +13,16 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tiktoken-rs = "0.11"
+# `tokenizers` is the HuggingFace pure-Rust tokenizer crate. Default features
+# pull in `onig` for the BPE pre-tokenizer regex; that vendors oniguruma so it
+# builds without a system dep on macOS/Linux.
+tokenizers = "0.21"
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "tokenizer"
+harness = false
