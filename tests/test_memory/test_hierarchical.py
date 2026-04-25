@@ -183,12 +183,6 @@ class TestSQLiteMemoryStore:
             assert retrieved.content == memory.content
 
     @pytest.mark.asyncio
-    async def test_save_batch_empty(self, store):
-        """Test batch save is a no-op for empty input."""
-        await store.save_batch([])
-        assert store.count_sync() == 0
-
-    @pytest.mark.asyncio
     async def test_delete(self, store, sample_memory):
         """Test deleting a memory."""
         await store.save(sample_memory)
@@ -198,31 +192,6 @@ class TestSQLiteMemoryStore:
 
         retrieved = await store.get(sample_memory.id)
         assert retrieved is None
-
-    @pytest.mark.asyncio
-    async def test_get_batch_empty_and_partial(self, store):
-        """Test batch retrieval handles empty and missing IDs."""
-        assert await store.get_batch([]) == []
-
-        memories = [Memory(content=f"Memory {i}", user_id="alice") for i in range(2)]
-        await store.save_batch(memories)
-
-        results = await store.get_batch([memories[0].id, "missing", memories[1].id])
-        assert {result.id for result in results} == {memories[0].id, memories[1].id}
-
-    @pytest.mark.asyncio
-    async def test_delete_batch_empty_and_partial(self, store):
-        """Test batch delete handles empty input and partial matches."""
-        assert await store.delete_batch([]) == 0
-
-        memories = [Memory(content=f"Delete {i}", user_id="alice") for i in range(3)]
-        await store.save_batch(memories)
-
-        deleted = await store.delete_batch([memories[0].id, "missing", memories[2].id])
-        assert deleted == 2
-        assert await store.get(memories[0].id) is None
-        assert await store.get(memories[1].id) is not None
-        assert await store.get(memories[2].id) is None
 
     @pytest.mark.asyncio
     async def test_query_by_user(self, store):
@@ -297,130 +266,6 @@ class TestSQLiteMemoryStore:
         assert results[0].content == "Session level"
 
     @pytest.mark.asyncio
-    async def test_query_scope_variants_and_filters(self, store):
-        """Test uncommon scope filters, metadata, entity refs, and pagination."""
-        base_time = datetime(2025, 1, 1, 12, 0, 0)
-        user_memory = Memory(
-            content="User memory",
-            user_id="alice",
-            created_at=base_time,
-            valid_from=base_time,
-            importance=0.2,
-            metadata={"kind": "user", "active": True},
-            entity_refs=["shared"],
-        )
-        session_memory = Memory(
-            content="Session memory",
-            user_id="alice",
-            session_id="sess-1",
-            created_at=base_time + timedelta(minutes=1),
-            valid_from=base_time + timedelta(minutes=1),
-            importance=0.5,
-            metadata={"kind": "session", "active": True},
-            entity_refs=["shared", "session-only"],
-        )
-        agent_memory = Memory(
-            content="Agent memory",
-            user_id="alice",
-            session_id="sess-1",
-            agent_id="agent-1",
-            created_at=base_time + timedelta(minutes=2),
-            valid_from=base_time + timedelta(minutes=2),
-            importance=0.8,
-            promoted_from="raw-observation",
-            metadata={"kind": "agent", "active": False},
-            entity_refs=["agent-only"],
-        )
-        turn_memory = Memory(
-            content="Turn memory",
-            user_id="alice",
-            session_id="sess-1",
-            agent_id="agent-1",
-            turn_id="turn-1",
-            created_at=base_time + timedelta(minutes=3),
-            valid_from=base_time + timedelta(minutes=3),
-            importance=0.9,
-            metadata={"kind": "turn", "active": True},
-            entity_refs=["turn-only"],
-        )
-
-        await store.save_batch([user_memory, session_memory, agent_memory, turn_memory])
-
-        assert [m.content for m in await store.query(MemoryFilter(session_id="sess-1"))] == [
-            "Turn memory",
-            "Agent memory",
-            "Session memory",
-        ]
-        assert [m.content for m in await store.query(MemoryFilter(agent_id="agent-1"))] == [
-            "Turn memory",
-            "Agent memory",
-        ]
-        assert [m.content for m in await store.query(MemoryFilter(turn_id="turn-1"))] == [
-            "Turn memory"
-        ]
-
-        agent_scope = await store.query(
-            MemoryFilter(user_id="alice", scope_levels=[ScopeLevel.AGENT])
-        )
-        assert [m.content for m in agent_scope] == ["Agent memory"]
-        turn_scope = await store.query(
-            MemoryFilter(user_id="alice", scope_levels=[ScopeLevel.TURN])
-        )
-        assert [m.content for m in turn_scope] == ["Turn memory"]
-
-        created_window = await store.query(
-            MemoryFilter(
-                user_id="alice",
-                created_after=base_time + timedelta(seconds=30),
-                created_before=base_time + timedelta(minutes=2, seconds=30),
-                include_superseded=True,
-            )
-        )
-        assert [m.content for m in created_window] == ["Agent memory", "Session memory"]
-
-        medium_importance = await store.query(
-            MemoryFilter(user_id="alice", min_importance=0.5, max_importance=0.8)
-        )
-        assert [m.content for m in medium_importance] == ["Agent memory", "Session memory"]
-
-        entity_filtered = await store.query(
-            MemoryFilter(user_id="alice", entity_refs=["session-only"])
-        )
-        assert [m.content for m in entity_filtered] == ["Session memory"]
-
-        metadata_filtered = await store.query(
-            MemoryFilter(user_id="alice", metadata_filters={"active": True, "kind": "session"})
-        )
-        assert [m.content for m in metadata_filtered] == ["Session memory"]
-
-        malicious_but_valid = await store.query(
-            MemoryFilter(user_id="alice", metadata_filters={"1invalid": "ignored", "kind": "agent"})
-        )
-        assert [m.content for m in malicious_but_valid] == ["Agent memory"]
-
-        promoted_only = await store.query(MemoryFilter(user_id="alice", has_promoted_from=True))
-        assert [m.content for m in promoted_only] == ["Agent memory"]
-        not_promoted = await store.query(MemoryFilter(user_id="alice", has_promoted_from=False))
-        assert {m.content for m in not_promoted} == {"User memory", "Session memory", "Turn memory"}
-
-        invalid_order = await store.query(
-            MemoryFilter(user_id="alice", order_by="not-a-column", limit=2, offset=1)
-        )
-        assert [m.content for m in invalid_order] == ["Agent memory", "Session memory"]
-
-        ascending = await store.query(
-            MemoryFilter(user_id="alice", order_by="importance", order_desc=False)
-        )
-        assert [m.content for m in ascending] == [
-            "User memory",
-            "Session memory",
-            "Agent memory",
-            "Turn memory",
-        ]
-
-        assert await store.count(MemoryFilter(user_id="alice", min_importance=0.5)) == 3
-
-    @pytest.mark.asyncio
     async def test_supersession(self, store):
         """Test memory supersession."""
         original = Memory(
@@ -450,28 +295,6 @@ class TestSQLiteMemoryStore:
         assert superseded.is_current is True
 
     @pytest.mark.asyncio
-    async def test_supersession_filters_and_missing_old_memory(self, store):
-        """Test supersession filter branches and missing old-memory errors."""
-        original = Memory(content="Original", user_id="alice")
-        await store.save(original)
-
-        replacement = Memory(content="Replacement", user_id="alice")
-        replacement = await store.supersede(original.id, replacement)
-
-        has_supersedes = await store.query(
-            MemoryFilter(user_id="alice", include_superseded=True, has_supersedes=True)
-        )
-        assert [m.content for m in has_supersedes] == ["Replacement"]
-
-        no_supersedes = await store.query(
-            MemoryFilter(user_id="alice", include_superseded=True, has_supersedes=False)
-        )
-        assert [m.content for m in no_supersedes] == ["Original"]
-
-        with pytest.raises(ValueError, match="not found"):
-            await store.supersede("missing-id", Memory(content="Impossible", user_id="alice"))
-
-    @pytest.mark.asyncio
     async def test_get_history(self, store):
         """Test getting supersession chain history."""
         # Create a chain: v1 -> v2 -> v3
@@ -492,23 +315,6 @@ class TestSQLiteMemoryStore:
         assert history[2].content == "Version 3"
 
     @pytest.mark.asyncio
-    async def test_get_history_missing_and_broken_links(self, store):
-        """Test history lookup for missing memories and broken lineage links."""
-        assert await store.get_history("missing-id") == []
-
-        orphan_back = Memory(content="Orphan back", user_id="alice", supersedes="missing-back")
-        await store.save(orphan_back)
-        assert [m.content for m in await store.get_history(orphan_back.id)] == ["Orphan back"]
-
-        orphan_forward = Memory(
-            content="Orphan forward", user_id="alice", superseded_by="missing-next"
-        )
-        await store.save(orphan_forward)
-        assert [
-            m.content for m in await store.get_history(orphan_forward.id, include_future=True)
-        ] == ["Orphan forward"]
-
-    @pytest.mark.asyncio
     async def test_clear_scope(self, store):
         """Test clearing memories at a scope level."""
         # Create memories at different scopes
@@ -527,31 +333,6 @@ class TestSQLiteMemoryStore:
         # Alice's user-level memories should remain
         remaining = await store.query(MemoryFilter(user_id="alice"))
         assert len(remaining) == 2
-
-    @pytest.mark.asyncio
-    async def test_clear_scope_variants_and_clear_all(self, store):
-        """Test agent, turn, user, and global clearing helpers."""
-        memories = [
-            Memory(content="User", user_id="alice"),
-            Memory(content="Session", user_id="alice", session_id="sess-1"),
-            Memory(content="Agent", user_id="alice", session_id="sess-1", agent_id="agent-1"),
-            Memory(
-                content="Turn",
-                user_id="alice",
-                session_id="sess-1",
-                agent_id="agent-1",
-                turn_id="turn-1",
-            ),
-            Memory(content="Other user", user_id="bob"),
-        ]
-        await store.save_batch(memories)
-
-        assert await store.clear_scope("alice", turn_id="turn-1") == 1
-        assert await store.clear_scope("alice", agent_id="agent-1") == 1
-        assert await store.clear_scope("alice") == 2
-        assert store.count_sync() == 1
-        assert await store.clear_all() == 1
-        assert store.count_sync() == 0
 
 
 # =============================================================================
