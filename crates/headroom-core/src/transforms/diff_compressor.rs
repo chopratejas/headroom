@@ -42,18 +42,71 @@ use std::time::Instant;
 use md5::{Digest, Md5};
 use regex::Regex;
 
+// ─── Score-weight constants ────────────────────────────────────────────────
+//
+// These knobs tune the relevance scorer (used only when `max_hunks_per_file`
+// fires and we have to rank middle hunks). Promoted from inline magic numbers
+// so a future tuning PR can move them with full visibility, and so reviewers
+// can see exactly what bias the scorer encodes. Defaults match the Python
+// implementation byte-for-byte.
+
+/// Per-line-change weight in the change-density base term. The base score is
+/// `min(CHANGE_DENSITY_CAP, change_count * CHANGE_DENSITY_WEIGHT)`.
+pub const SCORE_CHANGE_DENSITY_WEIGHT: f64 = 0.03;
+/// Cap on the change-density base term; beyond this, additional changes
+/// don't keep raising the score.
+pub const SCORE_CHANGE_DENSITY_CAP: f64 = 0.3;
+/// Boost added per matching word from the user-query context that appears in
+/// the hunk content (case-insensitive substring match).
+pub const SCORE_CONTEXT_WORD_WEIGHT: f64 = 0.2;
+/// Minimum word length (exclusive of) for context-word matching. Words of
+/// length ≤ this are skipped (matches Python's `len(word) > 2`). Filters out
+/// stop-words like "is", "to", "a".
+pub const SCORE_CONTEXT_MIN_WORD_LEN: usize = 2;
+/// Boost added when ANY priority pattern matches (only one boost per hunk —
+/// matches Python's `break` after first match).
+pub const SCORE_PRIORITY_PATTERN_BOOST: f64 = 0.3;
+/// Cap on the total hunk score after all boosts.
+pub const SCORE_TOTAL_CAP: f64 = 1.0;
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /// Configuration. All defaults match Python `DiffCompressorConfig`.
 #[derive(Debug, Clone)]
 pub struct DiffCompressorConfig {
+    /// How many context lines (` ` prefix) to keep on either side of each
+    /// `+`/`-` change line. Python default: 2.
     pub max_context_lines: usize,
+    /// Cap on the number of hunks kept per file. When exceeded, keeps first
+    /// + last + top-scored middle. Python default: 10.
     pub max_hunks_per_file: usize,
+    /// Cap on the number of files kept across the whole diff. When exceeded,
+    /// sorts files by total changes (desc) and keeps top N. Files beyond
+    /// the cap are silently dropped from the output (their names appear in
+    /// [`DiffCompressorStats::files_dropped`] for observability). Python
+    /// default: 20.
     pub max_files: usize,
+    /// Reserved — Python config exposes this but the algorithm always keeps
+    /// `+` lines. Kept for fixture-config schema compatibility.
     pub always_keep_additions: bool,
+    /// Reserved — same as `always_keep_additions` but for `-` lines.
     pub always_keep_deletions: bool,
+    /// If true, attach an MD5-based CCR retrieval marker to the compressed
+    /// output when compression met the savings threshold. Python default: true.
     pub enable_ccr: bool,
+    /// **Misnomer alert.** This actually gates the entire compression path,
+    /// not just the CCR marker: when `original_line_count <
+    /// min_lines_for_ccr`, the input is returned unchanged, no parsing, no
+    /// summary, no CCR. The name comes from the Python implementation; we
+    /// keep it to maintain fixture-config compatibility. Treat it as
+    /// "minimum diff size before we bother compressing." Python default: 50.
     pub min_lines_for_ccr: usize,
+    /// CCR retrieval marker is emitted only when
+    /// `compressed_line_count < original_line_count *
+    /// min_compression_ratio_for_ccr`. Lower values demand more aggressive
+    /// compression before we bother emitting the marker. **Rust-only knob**
+    /// — Python hardcodes 0.8. Default: 0.8 (matches Python).
+    pub min_compression_ratio_for_ccr: f64,
 }
 
 impl Default for DiffCompressorConfig {
@@ -66,6 +119,7 @@ impl Default for DiffCompressorConfig {
             always_keep_deletions: true,
             enable_ccr: true,
             min_lines_for_ccr: 50,
+            min_compression_ratio_for_ccr: 0.8,
         }
     }
 }
@@ -118,6 +172,30 @@ pub struct DiffCompressorStats {
     pub largest_hunk_kept_lines: usize,
     /// Lines in the largest hunk we dropped (per-file cap). 0 if none dropped.
     pub largest_hunk_dropped_lines: usize,
+
+    /// Files whose original `new file mode` / `deleted file mode` line was
+    /// normalized to `100644` on output. Each entry is `(file_label,
+    /// original_mode_line)` — e.g. `("a/foo.sh -> b/foo.sh", "new file
+    /// mode 100755")`. Empty when no normalization occurred (mode was
+    /// already 100644, or no mode line was present).
+    ///
+    /// Why this matters: parity with Python forces us to hardcode `100644`
+    /// in the emit path regardless of what the input said. An input with
+    /// executable bit `100755` becomes a non-executable `100644` on output —
+    /// silent information loss. Surfacing this lets prod monitoring catch
+    /// real cases where it bites.
+    pub file_mode_normalizations: Vec<(String, String)>,
+
+    /// Binary file marker lines whose original detail (e.g. `Binary files
+    /// a/x.png and b/x.png differ`) was simplified to `Binary files differ`
+    /// on output. Each entry is the full original line. Empty when no
+    /// simplification occurred (input was already `Binary files differ`,
+    /// or the file wasn't binary).
+    ///
+    /// Same parity-loss pattern as `file_mode_normalizations`: Python's
+    /// emitter hardcodes `Binary files differ`, dropping the filename
+    /// detail. This stat surfaces what was lost.
+    pub binary_files_simplified: Vec<String>,
 
     /// Non-fatal parser hiccups: unrecognized line patterns, malformed
     /// hunk headers, etc. Surfacing them rather than dropping silently.
@@ -243,6 +321,40 @@ impl DiffCompressor {
         }
         stats.files_kept = diff_files.len();
 
+        // Capture lossy-emit signals on the files that survived the file cap.
+        // These cases are parity-bound (Python's emit hardcodes `100644` and
+        // `Binary files differ` regardless of input), so the only honest move
+        // is to surface the loss via observability rather than fix it.
+        for file in diff_files.iter() {
+            let label = format!("{} -> {}", file.old_file, file.new_file);
+            // File-mode normalization: any original mode line not literally
+            // `new file mode 100644` / `deleted file mode 100644` is lost on
+            // emit. Includes `100755` (executable), `100600` (private),
+            // `120000` (symlink), `160000` (gitlink/submodule), etc.
+            if let Some(orig) = &file.original_new_file_mode_line {
+                if orig != "new file mode 100644" {
+                    stats
+                        .file_mode_normalizations
+                        .push((label.clone(), orig.clone()));
+                }
+            }
+            if let Some(orig) = &file.original_deleted_file_mode_line {
+                if orig != "deleted file mode 100644" {
+                    stats
+                        .file_mode_normalizations
+                        .push((label.clone(), orig.clone()));
+                }
+            }
+            // Binary detail: any line richer than the bare `Binary files
+            // differ` (which is virtually all of them — git emits filenames)
+            // gets simplified on emit.
+            if let Some(orig) = &file.original_binary_line {
+                if orig != "Binary files differ" {
+                    stats.binary_files_simplified.push(orig.clone());
+                }
+            }
+        }
+
         // Compress each file's hunks: cap count, then trim context.
         let mut compressed_files: Vec<DiffFile> = Vec::with_capacity(diff_files.len());
         let mut total_additions = 0usize;
@@ -314,7 +426,9 @@ impl DiffCompressor {
         let compressed_line_count = count_split_lines(&compressed_output);
 
         // CCR layer: hash original with MD5[:24], append retrieval marker
-        // *only* if we saved >20% of lines (matches Python's threshold).
+        // *only* if compression met `min_compression_ratio_for_ccr`. Python
+        // hardcodes 0.8 (>20% savings); we expose it as a config knob with
+        // the same default.
         //
         // CRITICAL: `compressed_line_count` is captured BEFORE the CCR marker
         // is appended, both for the marker's own text ("compressed to N")
@@ -322,9 +436,10 @@ impl DiffCompressor {
         // line than `compressed_line_count` reports, by design — Python
         // does the same. Mismatching this by recounting after the append
         // breaks parity by 1.
+        let savings_threshold = self.config.min_compression_ratio_for_ccr;
         let mut cache_key: Option<String> = None;
         if self.config.enable_ccr
-            && (compressed_line_count as f64) < (original_line_count as f64) * 0.8
+            && (compressed_line_count as f64) < (original_line_count as f64) * savings_threshold
         {
             let key = md5_hex_24(content);
             compressed_output.push('\n');
@@ -337,7 +452,15 @@ impl DiffCompressor {
         } else if !self.config.enable_ccr {
             stats.ccr_skipped_reason = Some("ccr disabled".into());
         } else {
-            stats.ccr_skipped_reason = Some("compression below 20% threshold".into());
+            stats.ccr_skipped_reason = Some(format!(
+                "compression ratio {:.3} above threshold {:.3}",
+                if original_line_count == 0 {
+                    1.0
+                } else {
+                    compressed_line_count as f64 / original_line_count as f64
+                },
+                savings_threshold
+            ));
         }
 
         stats.output_lines = compressed_line_count;
@@ -387,6 +510,15 @@ struct DiffFile {
     is_new_file: bool,
     is_deleted_file: bool,
     is_renamed: bool,
+    /// Full original `new file mode <NNNNNN>` line if present. Captured so
+    /// we can detect when emit-time normalization to `100644` lost the
+    /// executable bit (or any other mode signal).
+    original_new_file_mode_line: Option<String>,
+    /// Full original `deleted file mode <NNNNNN>` line if present.
+    original_deleted_file_mode_line: Option<String>,
+    /// Full original `Binary files X and Y differ` line if present.
+    /// Captured so we can detect when emit simplifies to `Binary files differ`.
+    original_binary_line: Option<String>,
 }
 
 impl DiffFile {
@@ -457,16 +589,24 @@ fn parse_diff(lines: &[&str]) -> (Vec<DiffFile>, Vec<String>) {
                 is_new_file: false,
                 is_deleted_file: false,
                 is_renamed: false,
+                original_new_file_mode_line: None,
+                original_deleted_file_mode_line: None,
+                original_binary_line: None,
             });
             continue;
         }
 
-        // File-level mode/binary/rename markers.
+        // File-level mode/binary/rename markers. Capture the full original
+        // line in addition to the boolean — Python only sets the flag and
+        // discards the actual mode/detail, but we want the original around
+        // so we can surface emit-time normalizations as observability.
         if let Some(f) = current_file.as_mut() {
             if line.starts_with("new file mode") {
                 f.is_new_file = true;
+                f.original_new_file_mode_line = Some(line.to_string());
             } else if line.starts_with("deleted file mode") {
                 f.is_deleted_file = true;
+                f.original_deleted_file_mode_line = Some(line.to_string());
             } else if line.starts_with("rename ")
                 || line.starts_with("similarity ")
                 || line.starts_with("copy ")
@@ -474,6 +614,7 @@ fn parse_diff(lines: &[&str]) -> (Vec<DiffFile>, Vec<String>) {
                 f.is_renamed = true;
             } else if binary_regex().is_match(line) {
                 f.is_binary = true;
+                f.original_binary_line = Some(line.to_string());
             }
         }
 
@@ -569,28 +710,28 @@ fn score_hunks(files: &mut [DiffFile], context: &str) {
         for hunk in file.hunks.iter_mut() {
             let mut score: f64 = 0.0;
             // Base score from change density (capped).
-            score += (hunk.additions as f64 + hunk.deletions as f64) * 0.03;
-            if score > 0.3 {
-                score = 0.3;
+            score += (hunk.additions as f64 + hunk.deletions as f64) * SCORE_CHANGE_DENSITY_WEIGHT;
+            if score > SCORE_CHANGE_DENSITY_CAP {
+                score = SCORE_CHANGE_DENSITY_CAP;
             }
 
             let hunk_content_lower = hunk.lines.join("\n").to_lowercase();
 
             for word in &context_words {
-                if word.len() > 2 && hunk_content_lower.contains(word) {
-                    score += 0.2;
+                if word.len() > SCORE_CONTEXT_MIN_WORD_LEN && hunk_content_lower.contains(word) {
+                    score += SCORE_CONTEXT_WORD_WEIGHT;
                 }
             }
 
             for pat in priority_patterns() {
                 if pat.is_match(&hunk_content_lower) {
-                    score += 0.3;
+                    score += SCORE_PRIORITY_PATTERN_BOOST;
                     break;
                 }
             }
 
-            if score > 1.0 {
-                score = 1.0;
+            if score > SCORE_TOTAL_CAP {
+                score = SCORE_TOTAL_CAP;
             }
             hunk.score = score;
         }
@@ -858,6 +999,8 @@ fn emit_span_and_return(stats: DiffCompressorStats) -> DiffCompressorStats {
         parse_warnings = stats.parse_warnings.len(),
         processing_duration_us = stats.processing_duration_us,
         cache_key_emitted = stats.cache_key_emitted,
+        file_mode_normalizations = stats.file_mode_normalizations.len(),
+        binary_files_simplified = stats.binary_files_simplified.len(),
         "diff_compressor finished"
     );
     stats
@@ -959,5 +1102,155 @@ mod tests {
         // Compressed line count should be 129 (matches the parity fixture).
         assert_eq!(r.compressed_line_count, 129);
         assert!(r.cache_key.is_some());
+    }
+
+    // ─── Lossy-path tests ───────────────────────────────────────────────────
+
+    /// Build a single-file diff with N hunks. Each hunk has 2 context lines,
+    /// 1 deletion, 1 addition, 2 context lines. Hunk headers use distinct
+    /// start lines so the in-order resort after middle-hunk selection works.
+    fn build_n_hunk_diff(n: usize) -> String {
+        let mut s = String::from("diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n");
+        for i in 0..n {
+            // 100 lines apart per hunk so they're independent.
+            let start = i * 100 + 1;
+            s.push_str(&format!("@@ -{0},6 +{0},6 @@\n", start));
+            s.push_str(&format!(" ctx_a_{i}\n"));
+            s.push_str(&format!(" ctx_b_{i}\n"));
+            s.push_str(&format!("-old_{i}\n"));
+            s.push_str(&format!("+new_{i}\n"));
+            s.push_str(&format!(" ctx_c_{i}\n"));
+            s.push_str(&format!(" ctx_d_{i}\n"));
+        }
+        s
+    }
+
+    #[test]
+    fn max_hunks_per_file_cap_drops_excess_and_records_stats() {
+        // 15 hunks, cap = 10 → 5 dropped. First + last + 8 top-scored middle kept.
+        let cfg = DiffCompressorConfig {
+            max_hunks_per_file: 10,
+            ..Default::default()
+        };
+        let input = build_n_hunk_diff(15);
+        let (result, stats) = DiffCompressor::new(cfg).compress_with_stats(&input, "");
+
+        assert_eq!(result.hunks_kept, 10, "kept 10 hunks");
+        assert_eq!(result.hunks_removed, 5, "dropped 5");
+        assert_eq!(stats.hunks_total, 15);
+        assert_eq!(stats.hunks_dropped, 5);
+        // Per-file accounting must match overall.
+        let per_file_total: usize = stats.hunks_dropped_per_file.values().sum();
+        assert_eq!(per_file_total, 5);
+        // The dropped hunks have 6 lines each (after parsing); largest_dropped
+        // should reflect that.
+        assert!(stats.largest_hunk_dropped_lines >= 6);
+    }
+
+    #[test]
+    fn max_files_cap_drops_files_and_records_names_in_stats() {
+        // 25 files, cap = 20 → 5 dropped. files_dropped should carry the names.
+        let cfg = DiffCompressorConfig {
+            max_files: 20,
+            ..Default::default()
+        };
+        let input = build_synthetic_diff(25);
+        let (_result, stats) = DiffCompressor::new(cfg).compress_with_stats(&input, "");
+
+        assert_eq!(stats.files_total, 25);
+        assert_eq!(stats.files_kept, 20);
+        assert_eq!(
+            stats.files_dropped.len(),
+            5,
+            "expected 5 dropped file labels"
+        );
+        // Each label should be the `old_file -> new_file` form.
+        for label in &stats.files_dropped {
+            assert!(
+                label.contains("-> "),
+                "label `{label}` should contain ` -> `"
+            );
+        }
+    }
+
+    #[test]
+    fn file_mode_normalization_is_recorded_for_executable_bit() {
+        // Construct a long-enough diff that introduces an executable file.
+        // Mode 100755 != 100644, so emit will silently normalize and stats
+        // must capture the original.
+        let mut input = String::from(
+            "diff --git a/script.sh b/script.sh\n\
+             new file mode 100755\n\
+             --- /dev/null\n\
+             +++ b/script.sh\n\
+             @@ -0,0 +1,3 @@\n\
+             +#!/bin/sh\n\
+             +echo hi\n\
+             +exit 0\n",
+        );
+        // Pad to clear `min_lines_for_ccr` so compression runs.
+        for _ in 0..50 {
+            input.push_str("# pad\n");
+        }
+        let (_r, stats) = DiffCompressor::default().compress_with_stats(&input, "");
+        assert_eq!(stats.file_mode_normalizations.len(), 1, "{stats:?}");
+        let (label, original) = &stats.file_mode_normalizations[0];
+        assert!(label.contains("script.sh"));
+        assert_eq!(original, "new file mode 100755");
+    }
+
+    #[test]
+    fn binary_files_simplification_is_recorded() {
+        let mut input = String::from(
+            "diff --git a/img.png b/img.png\n\
+             Binary files a/img.png and b/img.png differ\n",
+        );
+        // Pad to clear min_lines_for_ccr.
+        for _ in 0..60 {
+            input.push_str("# pad\n");
+        }
+        let (_r, stats) = DiffCompressor::default().compress_with_stats(&input, "");
+        assert_eq!(stats.binary_files_simplified.len(), 1, "{stats:?}");
+        assert_eq!(
+            stats.binary_files_simplified[0],
+            "Binary files a/img.png and b/img.png differ"
+        );
+    }
+
+    #[test]
+    fn min_compression_ratio_for_ccr_is_configurable() {
+        // With default 0.8, the 8-file synthetic compresses 177→129 (ratio
+        // 0.729) which beats the threshold → CCR marker emitted.
+        let r = DiffCompressor::default().compress(&build_synthetic_diff(8), "");
+        assert!(r.cache_key.is_some(), "default 0.8 should emit CCR");
+
+        // With 0.5, the same compression (0.729 ratio) does NOT beat
+        // 0.5 → no CCR marker, no cache_key.
+        let cfg = DiffCompressorConfig {
+            min_compression_ratio_for_ccr: 0.5,
+            ..Default::default()
+        };
+        let (r2, stats) =
+            DiffCompressor::new(cfg).compress_with_stats(&build_synthetic_diff(8), "");
+        assert!(
+            r2.cache_key.is_none(),
+            "0.5 threshold should suppress CCR for 0.729-ratio compression"
+        );
+        assert!(!stats.cache_key_emitted);
+        assert!(stats.ccr_skipped_reason.is_some());
+    }
+
+    #[test]
+    fn score_constants_match_inline_values() {
+        // Pin the constants so a future tuning PR has to update both.
+        // (If you're updating these, also update the docs in the parity
+        // contract — the scorer only fires when max_hunks_per_file caps,
+        // so the impact is limited but observable.)
+        assert_eq!(SCORE_CHANGE_DENSITY_WEIGHT, 0.03);
+        assert_eq!(SCORE_CHANGE_DENSITY_CAP, 0.3);
+        assert_eq!(SCORE_CONTEXT_WORD_WEIGHT, 0.2);
+        assert_eq!(SCORE_CONTEXT_MIN_WORD_LEN, 2);
+        assert_eq!(SCORE_PRIORITY_PATTERN_BOOST, 0.3);
+        assert_eq!(SCORE_TOTAL_CAP, 1.0);
     }
 }

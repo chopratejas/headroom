@@ -220,6 +220,12 @@ impl TransformComparator for DiffCompressorComparator {
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize)
                 .unwrap_or(50),
+            // Rust-only knob; Python fixtures don't carry this field. The
+            // 0.8 default reproduces Python's hardcoded 20%-savings gate.
+            min_compression_ratio_for_ccr: config
+                .get("min_compression_ratio_for_ccr")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.8),
         };
 
         let compressor = DiffCompressor::new(cfg);
