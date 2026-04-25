@@ -14,7 +14,7 @@ import asyncio
 import logging
 import os
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -290,6 +290,7 @@ class OnnxLocalEmbedder:
     DEFAULT_DIMENSION = 384
     DEFAULT_MAX_TOKENS = 256
     ONNX_REPO = "Qdrant/all-MiniLM-L6-v2-onnx"
+    MAX_BATCH_SIZE = 2
 
     def __init__(self, max_length: int = 256) -> None:
         self._max_length = max_length
@@ -330,17 +331,12 @@ class OnnxLocalEmbedder:
 
         logger.info("ONNX embedding model loaded (384-dim, no torch)")
 
-    def _embed_single(self, text: str) -> np.ndarray:
-        """Embed a single text string."""
-        assert self._session is not None
-        assert self._tokenizer is not None
-
-        if not text or not text.strip():
-            return np.zeros(self.DEFAULT_DIMENSION, dtype=np.float32)
-
-        encoded = self._tokenizer.encode(text)
-        input_ids = np.array([encoded.ids], dtype=np.int64)
-        attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
+    def _build_feeds(
+        self,
+        input_ids: np.ndarray,
+        attention_mask: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        """Build ONNX feeds for a token batch."""
         token_type_ids = np.zeros_like(input_ids, dtype=np.int64)
 
         feeds: dict[str, np.ndarray] = {}
@@ -352,16 +348,37 @@ class OnnxLocalEmbedder:
             elif "token_type_ids" in name:
                 feeds[name] = token_type_ids
 
-        outputs = self._session.run(None, feeds)
-        token_embeddings = outputs[0]  # (1, seq_len, 384)
+        return feeds
+
+    def _embed_many(self, texts: list[str]) -> np.ndarray:
+        """Embed multiple non-empty text strings in one ONNX pass."""
+        assert self._session is not None
+        assert self._tokenizer is not None
+
+        encodings = self._tokenizer.encode_batch(texts)
+        input_ids = np.array([encoding.ids for encoding in encodings], dtype=np.int64)
+        attention_mask = np.array(
+            [encoding.attention_mask for encoding in encodings], dtype=np.int64
+        )
+
+        outputs = self._session.run(None, self._build_feeds(input_ids, attention_mask))
+        token_embeddings = outputs[0]  # (batch, seq_len, 384)
 
         # Mean pooling over non-padding tokens
         mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
         summed = np.sum(token_embeddings * mask_expanded, axis=1)
         counts = np.clip(mask_expanded.sum(axis=1), a_min=1e-9, a_max=None)
-        embedding = summed / counts
+        embeddings = summed / counts
 
-        return _normalize_embedding(embedding[0])
+        return _normalize_embeddings_batch(embeddings)
+
+    def _embed_single(self, text: str) -> np.ndarray:
+        """Embed a single text string."""
+        if not text or not text.strip():
+            return np.zeros(self.DEFAULT_DIMENSION, dtype=np.float32)
+
+        embedding = self._embed_many([text])[0]
+        return cast(np.ndarray, embedding)
 
     async def embed(self, text: str) -> np.ndarray:
         """Generate an embedding for a single text."""
@@ -369,18 +386,40 @@ class OnnxLocalEmbedder:
             if self._session is None:
                 await asyncio.get_event_loop().run_in_executor(None, self._load_model)
 
-        return await asyncio.get_event_loop().run_in_executor(None, self._embed_single, text)
+        loop = asyncio.get_event_loop()
+        embedding = await loop.run_in_executor(None, self._embed_single, text)
+        return cast(np.ndarray, embedding)
 
     async def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
         """Generate embeddings for multiple texts."""
+        if not texts:
+            return []
+
         async with self._lock:
             if self._session is None:
                 await asyncio.get_event_loop().run_in_executor(None, self._load_model)
 
-        results = []
-        for text in texts:
-            emb = await asyncio.get_event_loop().run_in_executor(None, self._embed_single, text)
-            results.append(emb)
+        non_empty_indices: list[int] = []
+        non_empty_texts: list[str] = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+
+        results: list[np.ndarray] = [
+            np.zeros(self.dimension, dtype=np.float32) for _ in range(len(texts))
+        ]
+        if not non_empty_texts:
+            return results
+
+        loop = asyncio.get_event_loop()
+        for start in range(0, len(non_empty_texts), self.MAX_BATCH_SIZE):
+            batch_texts = non_empty_texts[start : start + self.MAX_BATCH_SIZE]
+            batch_indices = non_empty_indices[start : start + self.MAX_BATCH_SIZE]
+            embeddings = await loop.run_in_executor(None, self._embed_many, batch_texts)
+            for idx, embedding in zip(batch_indices, embeddings):
+                results[idx] = embedding
+
         return results
 
     @property

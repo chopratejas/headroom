@@ -135,14 +135,16 @@ async def _warm_up_backend(backend: LocalBackend, user_id: str) -> None:
     if not all_memories:
         return
 
-    indexed = 0
-    for mem in all_memories:
-        if mem.embedding is None:
-            mem.embedding = await hm._embedder.embed(mem.content)
-            await hm._store.save(mem)
-        await hm._vector_index.index(mem)
-        indexed += 1
+    memories_missing_embeddings = [mem for mem in all_memories if mem.embedding is None]
+    if memories_missing_embeddings:
+        embeddings = await hm._embedder.embed_batch(
+            [mem.content for mem in memories_missing_embeddings]
+        )
+        for mem, embedding in zip(memories_missing_embeddings, embeddings):
+            mem.embedding = embedding
+        await hm._store.save_batch(memories_missing_embeddings)
 
+    indexed = await hm._vector_index.index_batch(all_memories)
     logger.info(f"Memory MCP: indexed {indexed} memories into vector store")
 
 

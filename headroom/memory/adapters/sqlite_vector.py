@@ -24,8 +24,8 @@ import struct
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from threading import RLock
-from typing import TYPE_CHECKING, Any
+from threading import RLock, get_ident
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from ..tracker import ComponentStats
 
 logger = logging.getLogger(__name__)
+
+_SQLITE_QUERY_CHUNK_SIZE = 500
 
 # sqlite-vec availability check
 _SQLITE_VEC_AVAILABLE: bool | None = None
@@ -226,11 +228,12 @@ class SQLiteVectorIndex:
         self._db_path = Path(db_path)
         self._page_cache_size_kb = page_cache_size_kb
         self._lock = RLock()
+        self._connections: dict[int, sqlite3.Connection] = {}
 
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        """Get a database connection with sqlite-vec loaded."""
+    def _create_conn(self) -> sqlite3.Connection:
+        """Create a SQLite connection with sqlite-vec loaded."""
         conn = sqlite3.connect(str(self._db_path))
         conn.row_factory = sqlite3.Row
 
@@ -244,6 +247,98 @@ class SQLiteVectorIndex:
             conn.execute(f"PRAGMA cache_size = -{self._page_cache_size_kb}")
 
         return conn
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get a cached per-thread SQLite connection with sqlite-vec loaded."""
+        thread_id = get_ident()
+        conn = self._connections.get(thread_id)
+        if conn is None:
+            conn = self._create_conn()
+            self._connections[thread_id] = conn
+        return conn
+
+    def _close_cached_connections(self) -> None:
+        """Close all cached SQLite connections."""
+        for conn in self._connections.values():
+            try:
+                conn.close()
+            except sqlite3.Error:
+                logger.debug("Failed to close cached sqlite-vec connection", exc_info=True)
+        self._connections.clear()
+
+    @staticmethod
+    def _chunked(items: list[Any], chunk_size: int = _SQLITE_QUERY_CHUNK_SIZE) -> list[list[Any]]:
+        """Split a list into SQLite-friendly chunks."""
+        return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    def _select_rowids_by_memory_ids(
+        self,
+        conn: sqlite3.Connection,
+        memory_ids: list[str],
+    ) -> dict[str, int]:
+        """Fetch rowids for the given memory IDs."""
+        rowids: dict[str, int] = {}
+        for chunk in self._chunked(memory_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"SELECT rowid, memory_id FROM vec_metadata WHERE memory_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                rowids[str(row["memory_id"])] = int(row["rowid"])
+        return rowids
+
+    def _prepare_memory_for_index(self, memory: Memory) -> tuple[np.ndarray, VectorMetadata]:
+        """Validate a memory and prepare it for indexing."""
+        if memory.embedding is None:
+            raise ValueError(f"Memory {memory.id} has no embedding")
+
+        embedding = np.asarray(memory.embedding, dtype=np.float32)
+        if embedding.shape[0] != self._dimension:
+            raise ValueError(
+                f"Embedding dimension {embedding.shape[0]} does not match "
+                f"index dimension {self._dimension}"
+            )
+
+        return embedding, VectorMetadata.from_memory(memory)
+
+    def _metadata_insert_params(self, memory_id: str, metadata: VectorMetadata) -> tuple[Any, ...]:
+        """Build INSERT parameters for vector metadata."""
+        return (
+            memory_id,
+            metadata.user_id,
+            metadata.session_id,
+            metadata.agent_id,
+            metadata.importance,
+            metadata.created_at.isoformat(),
+            metadata.valid_until.isoformat() if metadata.valid_until else None,
+            json.dumps(metadata.entity_refs),
+            metadata.content,
+            json.dumps(metadata.metadata or {}),
+        )
+
+    def _metadata_update_params(self, metadata: VectorMetadata, rowid: int) -> tuple[Any, ...]:
+        """Build UPDATE parameters for vector metadata."""
+        return (
+            metadata.user_id,
+            metadata.session_id,
+            metadata.agent_id,
+            metadata.importance,
+            metadata.created_at.isoformat(),
+            metadata.valid_until.isoformat() if metadata.valid_until else None,
+            json.dumps(metadata.entity_refs),
+            metadata.content,
+            json.dumps(metadata.metadata or {}),
+            rowid,
+        )
+
+    @staticmethod
+    def _cursor_lastrowid(cursor: sqlite3.Cursor) -> int:
+        """Return a non-null SQLite cursor lastrowid."""
+        rowid = cursor.lastrowid
+        if rowid is None:
+            raise RuntimeError("sqlite-vec insert did not produce a rowid")
+        return cast(int, rowid)
 
     def _init_db(self) -> None:
         """Initialize the database schema."""
@@ -320,37 +415,21 @@ class SQLiteVectorIndex:
         Raises:
             ValueError: If memory has no embedding or wrong dimension.
         """
-        if memory.embedding is None:
-            raise ValueError(f"Memory {memory.id} has no embedding")
-
-        embedding = np.asarray(memory.embedding, dtype=np.float32)
-        if embedding.shape[0] != self._dimension:
-            raise ValueError(
-                f"Embedding dimension {embedding.shape[0]} does not match "
-                f"index dimension {self._dimension}"
-            )
-
-        metadata = VectorMetadata.from_memory(memory)
+        embedding, metadata = self._prepare_memory_for_index(memory)
 
         with self._lock:
             with self._get_conn() as conn:
-                # Check if already exists
                 existing = conn.execute(
                     "SELECT rowid FROM vec_metadata WHERE memory_id = ?",
                     (memory.id,),
                 ).fetchone()
 
                 if existing:
-                    # Update existing entry
-                    rowid = existing[0]
-
-                    # Update vector
+                    rowid = int(existing[0])
                     conn.execute(
                         "UPDATE vec_embeddings SET embedding = ? WHERE rowid = ?",
                         (self._serialize_f32(embedding), rowid),
                     )
-
-                    # Update metadata
                     conn.execute(
                         """
                         UPDATE vec_metadata SET
@@ -359,22 +438,9 @@ class SQLiteVectorIndex:
                             entity_refs = ?, content = ?, metadata_json = ?
                         WHERE rowid = ?
                         """,
-                        (
-                            metadata.user_id,
-                            metadata.session_id,
-                            metadata.agent_id,
-                            metadata.importance,
-                            metadata.created_at.isoformat(),
-                            metadata.valid_until.isoformat() if metadata.valid_until else None,
-                            json.dumps(metadata.entity_refs),
-                            metadata.content,
-                            json.dumps(metadata.metadata or {}),
-                            rowid,
-                        ),
+                        self._metadata_update_params(metadata, rowid),
                     )
                 else:
-                    # Insert new entry
-                    # First insert metadata to get rowid
                     cursor = conn.execute(
                         """
                         INSERT INTO vec_metadata (
@@ -383,22 +449,9 @@ class SQLiteVectorIndex:
                             entity_refs, content, metadata_json
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (
-                            memory.id,
-                            metadata.user_id,
-                            metadata.session_id,
-                            metadata.agent_id,
-                            metadata.importance,
-                            metadata.created_at.isoformat(),
-                            metadata.valid_until.isoformat() if metadata.valid_until else None,
-                            json.dumps(metadata.entity_refs),
-                            metadata.content,
-                            json.dumps(metadata.metadata or {}),
-                        ),
+                        self._metadata_insert_params(memory.id, metadata),
                     )
-                    rowid = cursor.lastrowid
-
-                    # Insert vector with matching rowid
+                    rowid = self._cursor_lastrowid(cursor)
                     conn.execute(
                         "INSERT INTO vec_embeddings (rowid, embedding) VALUES (?, ?)",
                         (rowid, self._serialize_f32(embedding)),
@@ -415,15 +468,120 @@ class SQLiteVectorIndex:
         Returns:
             Number of memories indexed.
         """
-        indexed = 0
+        prepared: list[tuple[str, np.ndarray, VectorMetadata]] = []
         for memory in memories:
-            if memory.embedding is not None:
-                try:
-                    await self.index(memory)
-                    indexed += 1
-                except ValueError:
-                    pass
-        return indexed
+            try:
+                embedding, metadata = self._prepare_memory_for_index(memory)
+            except ValueError:
+                continue
+            prepared.append((memory.id, embedding, metadata))
+
+        if not prepared:
+            return 0
+
+        memory_ids = [memory_id for memory_id, _, _ in prepared]
+
+        with self._lock:
+            with self._get_conn() as conn:
+                if len(set(memory_ids)) != len(memory_ids):
+                    existing_rowids = self._select_rowids_by_memory_ids(
+                        conn, list(dict.fromkeys(memory_ids))
+                    )
+                    for memory_id, embedding, metadata in prepared:
+                        rowid = existing_rowids.get(memory_id)
+                        if rowid is None:
+                            cursor = conn.execute(
+                                """
+                                INSERT INTO vec_metadata (
+                                    memory_id, user_id, session_id, agent_id,
+                                    importance, created_at, valid_until,
+                                    entity_refs, content, metadata_json
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                self._metadata_insert_params(memory_id, metadata),
+                            )
+                            rowid = self._cursor_lastrowid(cursor)
+                            existing_rowids[memory_id] = rowid
+                            conn.execute(
+                                "INSERT INTO vec_embeddings (rowid, embedding) VALUES (?, ?)",
+                                (rowid, self._serialize_f32(embedding)),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE vec_embeddings SET embedding = ? WHERE rowid = ?",
+                                (self._serialize_f32(embedding), rowid),
+                            )
+                            conn.execute(
+                                """
+                                UPDATE vec_metadata SET
+                                    user_id = ?, session_id = ?, agent_id = ?,
+                                    importance = ?, created_at = ?, valid_until = ?,
+                                    entity_refs = ?, content = ?, metadata_json = ?
+                                WHERE rowid = ?
+                                """,
+                                self._metadata_update_params(metadata, rowid),
+                            )
+
+                    conn.commit()
+                    return len(prepared)
+
+                existing_rowids = self._select_rowids_by_memory_ids(conn, memory_ids)
+                metadata_updates: list[tuple[Any, ...]] = []
+                vector_updates: list[tuple[bytes, int]] = []
+                metadata_inserts: list[tuple[Any, ...]] = []
+                new_memory_ids: list[str] = []
+                new_vectors: list[tuple[str, bytes]] = []
+
+                for memory_id, embedding, metadata in prepared:
+                    rowid = existing_rowids.get(memory_id)
+                    serialized = self._serialize_f32(embedding)
+                    if rowid is None:
+                        metadata_inserts.append(self._metadata_insert_params(memory_id, metadata))
+                        new_memory_ids.append(memory_id)
+                        new_vectors.append((memory_id, serialized))
+                    else:
+                        vector_updates.append((serialized, rowid))
+                        metadata_updates.append(self._metadata_update_params(metadata, rowid))
+
+                if vector_updates:
+                    conn.executemany(
+                        "UPDATE vec_embeddings SET embedding = ? WHERE rowid = ?",
+                        vector_updates,
+                    )
+                if metadata_updates:
+                    conn.executemany(
+                        """
+                        UPDATE vec_metadata SET
+                            user_id = ?, session_id = ?, agent_id = ?,
+                            importance = ?, created_at = ?, valid_until = ?,
+                            entity_refs = ?, content = ?, metadata_json = ?
+                        WHERE rowid = ?
+                        """,
+                        metadata_updates,
+                    )
+                if metadata_inserts:
+                    conn.executemany(
+                        """
+                        INSERT INTO vec_metadata (
+                            memory_id, user_id, session_id, agent_id,
+                            importance, created_at, valid_until,
+                            entity_refs, content, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        metadata_inserts,
+                    )
+                    inserted_rowids = self._select_rowids_by_memory_ids(conn, new_memory_ids)
+                    conn.executemany(
+                        "INSERT INTO vec_embeddings (rowid, embedding) VALUES (?, ?)",
+                        [
+                            (inserted_rowids[memory_id], serialized)
+                            for memory_id, serialized in new_vectors
+                        ],
+                    )
+
+                conn.commit()
+
+        return len(prepared)
 
     async def remove(self, memory_id: str) -> bool:
         """Remove a memory from the index.
@@ -463,11 +621,30 @@ class SQLiteVectorIndex:
         Returns:
             Number removed.
         """
-        removed = 0
-        for memory_id in memory_ids:
-            if await self.remove(memory_id):
-                removed += 1
-        return removed
+        unique_ids = list(dict.fromkeys(memory_ids))
+        if not unique_ids:
+            return 0
+
+        with self._lock:
+            with self._get_conn() as conn:
+                rowids_by_memory_id = self._select_rowids_by_memory_ids(conn, unique_ids)
+                rowids = list(rowids_by_memory_id.values())
+                if not rowids:
+                    return 0
+
+                for rowid_chunk in self._chunked(rowids):
+                    placeholders = ", ".join("?" for _ in rowid_chunk)
+                    conn.execute(
+                        f"DELETE FROM vec_embeddings WHERE rowid IN ({placeholders})",
+                        rowid_chunk,
+                    )
+                    conn.execute(
+                        f"DELETE FROM vec_metadata WHERE rowid IN ({placeholders})",
+                        rowid_chunk,
+                    )
+
+                conn.commit()
+                return len(rowids)
 
     async def search(self, filter: VectorFilter) -> list[VectorSearchResult]:
         """Search for similar vectors.
@@ -746,4 +923,5 @@ class SQLiteVectorIndex:
 
     async def close(self) -> None:
         """Close the index (cleanup)."""
-        pass  # Connection-per-request pattern, nothing to close
+        with self._lock:
+            self._close_cached_connections()
