@@ -9,9 +9,13 @@ import pytest
 
 from headroom.providers import (
     GoogleProvider,
+    LiteLLMProvider,
     ModelCapabilities,
     OpenAICompatibleProvider,
+    create_anyscale_provider,
+    create_fireworks_provider,
     create_groq_provider,
+    create_litellm_provider,
     create_lmstudio_provider,
     create_ollama_provider,
     create_together_provider,
@@ -119,6 +123,99 @@ class TestOpenAICompatibleProvider:
             model="unknown-model",
         )
         assert cost is None
+
+    def test_register_model_accepts_capabilities_object(self):
+        provider = OpenAICompatibleProvider()
+        caps = ModelCapabilities(model="caps-model", context_window=16000, tokenizer_backend="test")
+
+        provider.register_model("caps-model", capabilities=caps)
+
+        assert provider.get_context_limit("caps-model") == 16000
+
+    def test_get_token_counter_uses_registered_tokenizer_backend(self, monkeypatch):
+        recorded: list[tuple[str, str | None]] = []
+
+        class DummyTokenizer:
+            def count_text(self, text: str) -> int:
+                return len(text.split())
+
+        monkeypatch.setattr(
+            "headroom.providers.openai_compatible.get_tokenizer",
+            lambda model, backend=None: recorded.append((model, backend)) or DummyTokenizer(),
+        )
+        provider = OpenAICompatibleProvider(
+            models={
+                "custom-model": ModelCapabilities(
+                    model="custom-model",
+                    tokenizer_backend="custom-backend",
+                )
+            }
+        )
+
+        counter = provider.get_token_counter("custom-model")
+
+        assert counter.count_text("one two three") == 3
+        assert recorded == [("custom-model", "custom-backend")]
+
+    def test_openai_compatible_token_counter_counts_message_parts(self, monkeypatch):
+        class DummyTokenizer:
+            def count_text(self, text: str) -> int:
+                return len(text)
+
+        monkeypatch.setattr(
+            "headroom.providers.openai_compatible.get_tokenizer",
+            lambda model, backend=None: DummyTokenizer(),
+        )
+        counter = OpenAICompatibleProvider().get_token_counter("demo-model")
+
+        tokens = counter.count_message(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}, "there"],
+                "name": "tester",
+                "tool_calls": [{"function": {"name": "lookup", "arguments": '{"x":1}'}}],
+                "tool_call_id": "call_123",
+            }
+        )
+        total = counter.count_messages(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": ["world"]},
+            ]
+        )
+
+        assert tokens == 55
+        assert total == 34
+
+    def test_openai_compatible_token_counter_ignores_unhandled_content_shapes(self, monkeypatch):
+        class DummyTokenizer:
+            def count_text(self, text: str) -> int:
+                return len(text)
+
+        monkeypatch.setattr(
+            "headroom.providers.openai_compatible.get_tokenizer",
+            lambda model, backend=None: DummyTokenizer(),
+        )
+        counter = OpenAICompatibleProvider().get_token_counter("demo-model")
+
+        assert counter.count_message({"role": "user", "content": {}}) == 8
+        assert counter.count_message({"role": "user", "content": [{"type": "image"}, 123]}) == 8
+
+    def test_get_context_limit_prefix_output_buffer_and_partial_pricing(self):
+        provider = OpenAICompatibleProvider(
+            models={
+                "buffered": ModelCapabilities(
+                    model="buffered",
+                    max_output_tokens=1200,
+                    input_cost_per_1m=1.0,
+                )
+            }
+        )
+
+        assert provider.get_context_limit("mistral-custom") == 32768
+        assert provider.get_output_buffer("buffered", default=4000) == 1200
+        assert provider.get_output_buffer("unknown", default=2222) == 2222
+        assert provider.estimate_cost(1000, 1000, "buffered") is None
 
 
 class TestModelCapabilities:
@@ -249,6 +346,17 @@ class TestProviderFactoryFunctions:
         assert provider.name == "lmstudio"
         assert provider.base_url == "http://localhost:1234/v1"
 
+    def test_create_fireworks_and_anyscale_providers(self):
+        fireworks = create_fireworks_provider(api_key="fireworks-key")
+        anyscale = create_anyscale_provider(api_key="anyscale-key")
+
+        assert fireworks.name == "fireworks"
+        assert fireworks.base_url == "https://api.fireworks.ai/inference/v1"
+        assert fireworks.api_key == "fireworks-key"
+        assert anyscale.name == "anyscale"
+        assert anyscale.base_url == "https://api.endpoints.anyscale.com/v1"
+        assert anyscale.api_key == "anyscale-key"
+
 
 class TestLiteLLMProvider:
     """Tests for LiteLLM provider."""
@@ -257,6 +365,99 @@ class TestLiteLLMProvider:
         """Test checking LiteLLM availability."""
         result = is_litellm_available()
         assert isinstance(result, bool)
+
+    def test_unavailable_litellm_paths(self, monkeypatch):
+        import headroom.providers.litellm as litellm_module
+
+        monkeypatch.setattr(litellm_module, "LITELLM_AVAILABLE", False)
+
+        assert litellm_module.is_litellm_available() is False
+        assert litellm_module.LiteLLMProvider.list_supported_providers() == []
+        with pytest.raises(RuntimeError, match="LiteLLM is required"):
+            litellm_module.LiteLLMTokenCounter("gpt-4o")
+        with pytest.raises(RuntimeError, match="LiteLLM is required"):
+            litellm_module.LiteLLMProvider()
+
+    def test_litellm_token_counter_fallback_paths(self, monkeypatch):
+        import headroom.providers.litellm as litellm_module
+
+        class DummyFallback:
+            def count_text(self, text: str) -> int:
+                return len(text.split())
+
+        monkeypatch.setattr(litellm_module, "LITELLM_AVAILABLE", True)
+        monkeypatch.setattr(
+            litellm_module,
+            "litellm_token_counter",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(litellm_module, "EstimatingTokenCounter", DummyFallback)
+
+        counter = litellm_module.LiteLLMTokenCounter("gpt-4o")
+
+        assert counter.count_text("") == 0
+        assert counter.count_text("one two three") == 3
+        assert counter.count_message({"content": "one two"}) == 6
+        assert counter.count_messages([]) == 0
+        assert counter.count_messages([{"content": "one two"}, {"content": "three"}]) == 14
+
+    def test_litellm_provider_info_and_cost_fallbacks(self, monkeypatch):
+        import headroom.providers.litellm as litellm_module
+
+        monkeypatch.setattr(litellm_module, "LITELLM_AVAILABLE", True)
+        monkeypatch.setattr(
+            litellm_module,
+            "litellm_get_model_info",
+            lambda model: {
+                "ctx-model": {"max_input_tokens": 64000},
+                "max-model": {"max_tokens": 32000},
+                "none-model": {"max_input_tokens": None, "max_output_tokens": None},
+                "output-model": {"max_output_tokens": 6000},
+            }[model],
+        )
+        monkeypatch.setattr(
+            litellm_module,
+            "litellm",
+            type(
+                "LiteLLM",
+                (),
+                {
+                    "completion_cost": staticmethod(
+                        lambda **kwargs: (
+                            1.23
+                            if kwargs["model"] == "priced-model"
+                            else (_ for _ in ()).throw(RuntimeError("missing price"))
+                        )
+                    )
+                },
+            )(),
+        )
+
+        provider = litellm_module.LiteLLMProvider()
+
+        assert provider.get_context_limit("ctx-model") == 64000
+        assert provider.get_context_limit("max-model") == 32000
+        assert provider.get_context_limit("none-model") == 128000
+        assert provider.get_output_buffer("output-model", default=4000) == 4000
+        assert provider.get_output_buffer("none-model", default=2222) == 2222
+        assert provider.estimate_cost(1000, 1000, "priced-model") == 1.23
+        assert provider.estimate_cost(1000, 1000, "missing-price") is None
+
+    def test_litellm_provider_handles_info_exceptions_and_factory(self, monkeypatch):
+        import headroom.providers.litellm as litellm_module
+
+        monkeypatch.setattr(litellm_module, "LITELLM_AVAILABLE", True)
+        monkeypatch.setattr(
+            litellm_module,
+            "litellm_get_model_info",
+            lambda model: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        provider = create_litellm_provider()
+
+        assert isinstance(provider, LiteLLMProvider)
+        assert provider.get_context_limit("gpt-4o") == 128000
+        assert provider.get_output_buffer("gpt-4o", default=3333) == 3333
 
     @pytest.mark.skipif(
         not is_litellm_available(),

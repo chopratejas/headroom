@@ -8,14 +8,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`Learned: error recovery` section in MEMORY.md no longer bloats with
+  stale or contradictory entries.** The dedup key for error-recovery
+  patterns was the literal rendered bullet text, so near-duplicate
+  recoveries (same intent, different `| tail -N` count, same error path
+  guessed against different successors) each created a new row. There was
+  also no TTL or re-validation, so wrong-today entries lingered. Fixed by:
+  (1) normalizing the hash on recovery intent — Read recoveries key on
+  `(basename(error_path), basename(success_path))`; Bash recoveries strip
+  volatile suffixes and hash only the primary command before the first
+  `|`/`&&`; (2) stamping `first_seen_at` / `last_seen_at` on every pattern
+  and bumping them in `_bump_persisted_evidence` via `json_set`; (3)
+  refining at render time — drop rows not re-observed in 21 days,
+  re-validate Read success paths against the filesystem, collapse
+  same-error_path-with-multiple-targets into one "use Glob/Grep first"
+  bullet, rank by `evidence_count * 0.5 ** (days/5)`, cap the section at
+  15. Other `Learned: …` categories (environment, preference,
+  architecture) are untouched.
+- **`headroom unwrap codex` now actually undoes `headroom wrap codex`** —
+  previously there was no `unwrap codex` subcommand at all, so the injected
+  `model_provider = "headroom"` / `[model_providers.headroom]` block stayed
+  in `~/.codex/config.toml` forever and Codex continued routing through the
+  (potentially stopped) proxy, surfacing as `Missing environment variable:
+  OPENAI_API_KEY`. `wrap codex` now snapshots the pre-wrap
+  `config.toml` to `config.toml.headroom-backup` before its first injection,
+  and `unwrap codex` restores that snapshot byte-for-byte (or, if the
+  backup is missing, strips only the Headroom-managed block and leaves
+  surrounding user content intact). Safe no-op when run without a prior
+  wrap. Reported by @raenaryl in Discord.
 - **`headroom learn` no longer clobbers prior recommendations on re-run** —
   the marker block in `CLAUDE.md` / `MEMORY.md` is now merged with the
   prior block instead of wholesale-replaced. Sections re-surfaced by the
   new run win; sections not re-surfaced are carried forward so learnings
   accumulate across runs instead of disappearing. To fully rebuild the
   block, delete it manually and re-run. (#231)
+- **`headroom learn` no longer emits dangling cross-references when a
+  section is re-surfaced** — the analyzer now includes the project's
+  current `<!-- headroom:learn -->` block (from `CLAUDE.md` and
+  `MEMORY.md`) in the LLM digest as a "Prior Learned Patterns" section,
+  and the system prompt instructs the LLM that re-emitting a section
+  replaces the prior one wholesale. Prevents bullets like "`X` is *also*
+  large — same rule as `Y`, `Z`" from appearing after `Y` and `Z` got
+  dropped during per-section replacement. The writer's section-level
+  carry-forward from #231 remains in place as a safety net for sections
+  the LLM omits entirely. New helper `extract_marker_block` added to
+  `headroom.learn.writer`.
 
 ### Added
+- **`turn_id` linking agent-loop API calls to a single user prompt** — a new
+  `compute_turn_id(model, system, messages)` helper in
+  `headroom/proxy/helpers.py` hashes the message prefix up to and including
+  the last user-text message, yielding an id that is stable across every
+  agent-loop iteration of one prompt but rolls over when the user sends a
+  new prompt (or runs `/compact`, `/clear`). `RequestLog` gained a
+  `turn_id: str | None` field, which is stamped at every log site
+  (anthropic handler bedrock + direct branches, and the streaming handler)
+  and surfaced as `turn_id` in `/transformations/feed`. Lets downstream
+  consumers (e.g. the Headroom Desktop Activity tab) aggregate savings per
+  user prompt rather than per API call.
 - **Live flush of traffic-learned patterns to CLAUDE.md / MEMORY.md** — the
   `TrafficLearner` now writes to agent-native context files continuously
   during proxy operation, not just at shutdown. A new dirty-flag debounced

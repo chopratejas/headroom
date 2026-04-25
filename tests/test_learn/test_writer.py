@@ -8,6 +8,7 @@ from headroom.learn.writer import (
     _MARKER_START,
     ClaudeCodeWriter,
     _parse_prior_recommendations,
+    extract_marker_block,
 )
 
 
@@ -239,3 +240,43 @@ class TestParsePriorRecommendations:
         assert len(recs) == 1
         assert recs[0].section == "Real Section"
         assert "real bullet" in recs[0].content
+
+
+class TestExtractMarkerBlock:
+    """Direct coverage for extract_marker_block."""
+
+    def test_returns_raw_block_when_present(self):
+        """Marker block is returned verbatim with delimiters, for LLM prompts."""
+        content = (
+            "# Project README\n\n"
+            "Some text.\n\n"
+            f"{_MARKER_START}\n"
+            "## Headroom Learned Patterns\n"
+            "### Environment\n"
+            "- Use uv run python\n"
+            f"{_MARKER_END}\n"
+            "Trailing text.\n"
+        )
+        block = extract_marker_block(content)
+        assert block is not None
+        assert block.startswith(_MARKER_START)
+        assert block.endswith(_MARKER_END)
+        assert "### Environment" in block
+        assert "Use uv run python" in block
+        assert "Trailing text." not in block
+
+    def test_returns_none_when_absent(self):
+        """File without any marker delimiters yields None."""
+        assert extract_marker_block("# Project\n\nJust a regular README.\n") is None
+
+    def test_returns_none_when_only_start_marker(self):
+        """Partial/malformed block (start only) yields None — writer expects both delimiters."""
+        content = f"prefix\n{_MARKER_START}\n### Something\n- content\n"
+        assert extract_marker_block(content) is None
+
+    def test_returns_empty_block_when_markers_are_adjacent(self):
+        """A block with nothing between the markers is still returned (caller's choice what to do)."""
+        content = f"prefix\n{_MARKER_START}\n{_MARKER_END}\nsuffix\n"
+        block = extract_marker_block(content)
+        assert block is not None
+        assert block == f"{_MARKER_START}\n{_MARKER_END}"

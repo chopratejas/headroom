@@ -91,6 +91,17 @@ def _build_section(recommendations: list[Recommendation]) -> str:
 _TOKENS_ANNOTATION_PATTERN = re.compile(r"\*~([\d,]+) tokens/session saved\*\n?")
 
 
+def extract_marker_block(file_content: str) -> str | None:
+    """Return the raw text of the headroom:learn marker block, or None.
+
+    Unlike _parse_prior_recommendations, this returns the block verbatim
+    (including the start/end markers) so it can be fed back to an LLM as
+    context without losing formatting. Returns None if no block is present.
+    """
+    match = _MARKER_PATTERN.search(file_content)
+    return match.group(0) if match else None
+
+
 def _parse_prior_recommendations(existing: str) -> list[Recommendation]:
     """Parse recommendations out of a prior marker block.
 

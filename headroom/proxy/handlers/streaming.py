@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from headroom.proxy.helpers import jitter_delay_ms
+from headroom.proxy.helpers import compute_turn_id, jitter_delay_ms
 
 if TYPE_CHECKING:
     from fastapi.responses import Response, StreamingResponse
@@ -1044,6 +1044,9 @@ class StreamingMixin:
                             request_messages=body.get("messages")
                             if self.config.log_full_messages
                             else None,
+                            turn_id=compute_turn_id(
+                                model, body.get("system"), body.get("messages")
+                            ),
                         )
                     )
 

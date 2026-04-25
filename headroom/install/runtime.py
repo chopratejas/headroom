@@ -41,6 +41,10 @@ PASSTHROUGH_ENV_PREFIXES = (
 )
 
 
+def _is_windows() -> bool:
+    return sys.platform.startswith("win")
+
+
 def _deployment_env(manifest: DeploymentManifest) -> dict[str, str]:
     return {
         "HEADROOM_DEPLOYMENT_PROFILE": manifest.profile,
@@ -73,7 +77,7 @@ def _ensure_host_dirs() -> None:
 
 
 def _mount_source(home: str, subdir: str) -> str:
-    if os.name == "nt":
+    if _is_windows():
         return f"{home}\\{subdir}"
     return f"{home}/{subdir}"
 
@@ -115,7 +119,7 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
         "--volume",
         f"{_mount_source(home, '.gemini')}:{container_home}/.gemini",
     ]
-    if os.name != "nt":
+    if not _is_windows():
         getuid = getattr(os, "getuid", None)
         getgid = getattr(os, "getgid", None)
         if callable(getuid) and callable(getgid):
@@ -198,7 +202,7 @@ def start_detached_agent(profile: str) -> subprocess.Popen[str]:
     log_file = open(log_file_path, "a", encoding="utf-8", errors="replace")  # noqa: SIM115
 
     kwargs: dict[str, Any] = {"stdout": log_file, "stderr": log_file}
-    if os.name == "nt":
+    if _is_windows():
         kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )

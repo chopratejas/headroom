@@ -4,12 +4,18 @@ import json
 import os
 from pathlib import Path
 
+import click
+import pytest
+
 from headroom.install.models import DeploymentManifest, ManagedMutation
 from headroom.install.providers import _apply_windows_env_scope, _remove_windows_env_scope
 from headroom.providers.claude.install import apply_provider_scope as apply_claude_provider_scope
+from headroom.providers.claude.install import build_install_env as build_claude_install_env
 from headroom.providers.claude.install import revert_provider_scope as revert_claude_provider_scope
 from headroom.providers.codex.install import apply_provider_scope as apply_codex_provider_scope
+from headroom.providers.codex.install import build_install_env as build_codex_install_env
 from headroom.providers.codex.install import revert_provider_scope as revert_codex_provider_scope
+from headroom.providers.copilot.install import build_install_env as build_copilot_install_env
 
 
 def _manifest(tmp_path: Path) -> DeploymentManifest:
@@ -72,6 +78,96 @@ def test_apply_and_revert_codex_provider_scope(monkeypatch, tmp_path: Path) -> N
     assert reverted.strip() == 'model = "gpt-4o"'
 
 
+def test_codex_build_install_env_returns_proxy_base_url() -> None:
+    env = build_codex_install_env(port=5566, backend="ignored")
+
+    assert env == {"OPENAI_BASE_URL": "http://127.0.0.1:5566/v1"}
+
+
+def test_apply_codex_provider_scope_skips_non_provider_scope(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config_path)
+    manifest = _manifest(tmp_path)
+    manifest.scope = "user"
+
+    mutation = apply_codex_provider_scope(manifest)
+
+    assert mutation is None
+    assert not config_path.exists()
+
+
+def test_apply_codex_provider_scope_replaces_existing_managed_block(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'model = "gpt-4o"\n\n'
+        "# --- Headroom persistent provider ---\n"
+        'model_provider = "headroom"\n\n'
+        "[model_providers.headroom]\n"
+        'name = "Headroom persistent proxy"\n'
+        'base_url = "http://127.0.0.1:1111/v1"\n'
+        'env_key = "OPENAI_API_KEY"\n'
+        "requires_openai_auth = true\n"
+        "supports_websockets = true\n"
+        "# --- end Headroom persistent provider ---\n"
+    )
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config_path)
+    manifest = _manifest(tmp_path)
+    manifest.port = 9999
+
+    apply_codex_provider_scope(manifest)
+
+    content = config_path.read_text()
+    assert content.count("# --- Headroom persistent provider ---") == 1
+    assert 'base_url = "http://127.0.0.1:9999/v1"' in content
+    assert 'base_url = "http://127.0.0.1:1111/v1"' not in content
+
+
+def test_apply_codex_provider_scope_creates_new_config_when_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "nested" / "config.toml"
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config_path)
+    manifest = _manifest(tmp_path)
+
+    mutation = apply_codex_provider_scope(manifest)
+
+    assert mutation is not None
+    assert 'base_url = "http://127.0.0.1:8787/v1"' in config_path.read_text()
+
+
+def test_revert_codex_provider_scope_ignores_missing_path_and_file(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+
+    revert_codex_provider_scope(
+        ManagedMutation(target="codex", kind="toml-block"),
+        manifest,
+    )
+    revert_codex_provider_scope(
+        ManagedMutation(
+            target="codex",
+            kind="toml-block",
+            path=str(tmp_path / "missing.toml"),
+        ),
+        manifest,
+    )
+
+
+def test_revert_codex_provider_scope_ignores_files_without_managed_block(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('model = "gpt-4o"\n')
+    monkeypatch.setattr("headroom.providers.codex.install.codex_config_path", lambda: config_path)
+    manifest = _manifest(tmp_path)
+    mutation = ManagedMutation(target="codex", kind="toml-block", path=str(config_path))
+
+    revert_codex_provider_scope(mutation, manifest)
+
+    assert config_path.read_text() == 'model = "gpt-4o"\n'
+
+
 def test_apply_openclaw_provider_scope_uses_manifest_port(monkeypatch, tmp_path: Path) -> None:
     recorded: list[list[str]] = []
     monkeypatch.setattr("headroom.providers.openclaw.install.shutil_which", lambda name: "openclaw")
@@ -97,6 +193,82 @@ def test_apply_openclaw_provider_scope_uses_manifest_port(monkeypatch, tmp_path:
     apply_openclaw_provider_scope(manifest)
 
     assert recorded == [["headroom", "wrap", "openclaw", "--no-auto-start", "--proxy-port", "9999"]]
+
+
+def test_openclaw_apply_provider_scope_requires_installed_binary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("headroom.providers.openclaw.install.shutil_which", lambda name: None)
+
+    with pytest.raises(click.ClickException, match="openclaw not found"):
+        from headroom.providers.openclaw.install import (
+            apply_provider_scope as apply_openclaw_provider_scope,
+        )
+
+        apply_openclaw_provider_scope(_manifest(tmp_path))
+
+
+def test_openclaw_helper_wrappers_delegate_to_stdlib(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: f"/fake/{name}")
+    recorded: list[tuple[list[str], bool]] = []
+
+    def fake_run(command: list[str], check: bool) -> None:
+        recorded.append((command, check))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    from headroom.providers.openclaw.install import _invoke_openclaw, shutil_which
+
+    assert shutil_which("openclaw") == "/fake/openclaw"
+    _invoke_openclaw(["headroom", "wrap", "openclaw"])
+
+    assert recorded == [(["headroom", "wrap", "openclaw"], True)]
+
+
+def test_openclaw_revert_provider_scope_skips_without_binary(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("headroom.providers.openclaw.install.shutil_which", lambda name: None)
+    called = False
+
+    def fail_if_called(command: list[str]) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("headroom.providers.openclaw.install._invoke_openclaw", fail_if_called)
+
+    from headroom.providers.openclaw.install import (
+        revert_provider_scope as revert_openclaw_provider_scope,
+    )
+
+    revert_openclaw_provider_scope(
+        ManagedMutation(target="openclaw", kind="openclaw-wrap", path=str(tmp_path / "cfg.json")),
+        _manifest(tmp_path),
+    )
+
+    assert called is False
+
+
+def test_openclaw_revert_provider_scope_invokes_unwrap(monkeypatch, tmp_path: Path) -> None:
+    recorded: list[list[str]] = []
+    monkeypatch.setattr("headroom.providers.openclaw.install.shutil_which", lambda name: "openclaw")
+    monkeypatch.setattr(
+        "headroom.providers.openclaw.install.resolve_headroom_command",
+        lambda: ["headroom"],
+    )
+    monkeypatch.setattr(
+        "headroom.providers.openclaw.install._invoke_openclaw",
+        lambda command: recorded.append(command),
+    )
+
+    from headroom.providers.openclaw.install import (
+        revert_provider_scope as revert_openclaw_provider_scope,
+    )
+
+    revert_openclaw_provider_scope(
+        ManagedMutation(target="openclaw", kind="openclaw-wrap", path=str(tmp_path / "cfg.json")),
+        _manifest(tmp_path),
+    )
+
+    assert recorded == [["headroom", "unwrap", "openclaw"]]
 
 
 def test_windows_env_scope_restores_previous_values(monkeypatch, tmp_path: Path) -> None:
@@ -187,3 +359,110 @@ def test_apply_mutations_runs_openclaw_for_user_scope(monkeypatch, tmp_path: Pat
     mutations = apply_mutations(manifest)
 
     assert [mutation.kind for mutation in mutations] == ["openclaw-wrap"]
+
+
+def test_claude_build_install_env_returns_proxy_base_url() -> None:
+    # Arrange / Act
+    env = build_claude_install_env(port=5566, backend="ignored")
+
+    # Assert
+    assert env == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:5566"}
+
+
+def test_copilot_build_install_env_uses_provider_type_specific_proxy_urls() -> None:
+    anthropic_env = build_copilot_install_env(port=8787, backend="anthropic")
+    openai_env = build_copilot_install_env(port=8787, backend="anyllm")
+
+    assert anthropic_env == {
+        "COPILOT_PROVIDER_TYPE": "anthropic",
+        "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:8787",
+    }
+    assert openai_env == {
+        "COPILOT_PROVIDER_TYPE": "openai",
+        "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:8787/v1",
+        "COPILOT_PROVIDER_WIRE_API": "completions",
+    }
+
+
+def test_apply_claude_provider_scope_skips_non_provider_scope(monkeypatch, tmp_path: Path) -> None:
+    # Arrange
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(
+        "headroom.providers.claude.install.claude_settings_path", lambda: settings_path
+    )
+    manifest = _manifest(tmp_path)
+    manifest.scope = "user"
+
+    # Act
+    mutation = apply_claude_provider_scope(manifest)
+
+    # Assert
+    assert mutation is None
+    assert not settings_path.exists()
+
+
+def test_revert_claude_provider_scope_removes_new_values_from_non_mapping_env(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # Arrange
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps({"env": ["not-a-map"]}))
+    monkeypatch.setattr(
+        "headroom.providers.claude.install.claude_settings_path", lambda: settings_path
+    )
+    manifest = _manifest(tmp_path)
+
+    # Act
+    mutation = apply_claude_provider_scope(manifest)
+    apply_payload = json.loads(settings_path.read_text())
+    revert_claude_provider_scope(mutation, manifest)
+    reverted_payload = json.loads(settings_path.read_text())
+
+    # Assert
+    assert mutation is not None
+    assert mutation.data["previous"] == {"ANTHROPIC_BASE_URL": None}
+    assert apply_payload["env"] == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}
+    assert reverted_payload["env"] == {}
+
+
+def test_apply_claude_provider_scope_creates_settings_when_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # Arrange
+    settings_path = tmp_path / "nested" / "settings.json"
+    monkeypatch.setattr(
+        "headroom.providers.claude.install.claude_settings_path", lambda: settings_path
+    )
+    manifest = _manifest(tmp_path)
+
+    # Act
+    mutation = apply_claude_provider_scope(manifest)
+
+    # Assert
+    assert mutation is not None
+    assert json.loads(settings_path.read_text()) == {
+        "env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}
+    }
+
+
+def test_revert_claude_provider_scope_ignores_missing_mutation_path(tmp_path: Path) -> None:
+    # Arrange
+    manifest = _manifest(tmp_path)
+    mutation = ManagedMutation(target="claude", kind="json-env", data={"previous": {}})
+
+    # Act / Assert
+    revert_claude_provider_scope(mutation, manifest)
+
+
+def test_revert_claude_provider_scope_ignores_missing_settings_file(tmp_path: Path) -> None:
+    # Arrange
+    manifest = _manifest(tmp_path)
+    mutation = ManagedMutation(
+        target="claude",
+        kind="json-env",
+        path=str(tmp_path / "missing-settings.json"),
+        data={"previous": {}},
+    )
+
+    # Act / Assert
+    revert_claude_provider_scope(mutation, manifest)

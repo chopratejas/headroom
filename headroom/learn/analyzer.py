@@ -29,6 +29,7 @@ from .models import (
     SessionEvent,
     ToolCall,
 )
+from .writer import extract_marker_block
 
 logger = logging.getLogger(__name__)
 
@@ -147,11 +148,51 @@ class SessionAnalyzer:
 # =============================================================================
 
 
+def _build_prior_patterns_section(project: ProjectInfo) -> str:
+    """Format the current marker blocks from CLAUDE.md / MEMORY.md for the LLM.
+
+    Returns "" when neither file exists nor contains a marker block. When at
+    least one file has a block, returns a header + labeled raw blocks so the
+    LLM can treat them as the starting baseline. See the "Prior Learned
+    Patterns" rule in _SYSTEM_PROMPT for the contract with the model.
+    """
+    parts: list[tuple[str, str]] = []  # (label, block)
+    candidates = (
+        ("CLAUDE.md (CONTEXT_FILE, project-level stable facts)", project.context_file),
+        ("MEMORY.md (MEMORY_FILE, session-level evolving preferences)", project.memory_file),
+    )
+    for label, path in candidates:
+        if path is None or not path.exists():
+            continue
+        block = extract_marker_block(path.read_text())
+        if block:
+            parts.append((label, block))
+
+    if not parts:
+        return ""
+
+    lines = [
+        "=== Prior Learned Patterns ===",
+        (
+            f"These patterns are currently written to {project.name}'s context "
+            f"files. They are your starting baseline — see the 'Prior Learned "
+            f"Patterns' rule in the system prompt for how to integrate them."
+        ),
+        "",
+    ]
+    for label, block in parts:
+        lines.append(f"--- From {label} ---")
+        lines.append(block)
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _build_digest(project: ProjectInfo, sessions: list[SessionData]) -> str:
     """Build a token-efficient text digest of all session events.
 
     The digest includes:
     - Project context
+    - Prior learned patterns (if any) from CLAUDE.md / MEMORY.md
     - Per-session summaries with condensed event streams
     - Error outputs (truncated), success indicators, user messages
     """
@@ -172,6 +213,12 @@ def _build_digest(project: ProjectInfo, sessions: list[SessionData]) -> str:
     if total_tokens_in:
         lines.append(f"Tokens used: {total_tokens_in:,} in / {total_tokens_out:,} out")
     lines.append("")
+
+    # Prior learned patterns (if any) — gives the LLM the current baseline so
+    # it can produce complete updated sections instead of condensed deltas.
+    prior_section = _build_prior_patterns_section(project)
+    if prior_section:
+        lines.append(prior_section)
 
     # Budget tracking — stop adding events when we approach the limit
     # Rough estimate: 4 chars per token
@@ -288,6 +335,24 @@ Rules:
 - Keep recommendations concise — each should be 1-3 lines of markdown
 - Do NOT produce tautological rules (e.g., "use python3 not python3")
 - Do NOT produce rules about things that only happened once (transient errors)
+
+Prior Learned Patterns:
+- The input may contain a "Prior Learned Patterns" section showing what is
+  already written to the project's CLAUDE.md / MEMORY.md. Treat those as the
+  starting baseline for your analysis.
+- When you re-emit a section heading that appears in the prior block, your
+  output REPLACES that prior section wholesale — so your section must be the
+  COMPLETE updated version:
+    * Preserve prior bullets that remain accurate (copy them forward)
+    * Revise bullets when new evidence refines them (merge, don't duplicate)
+    * Drop a prior bullet only when contradicted by clear new evidence
+- Sections from prior runs that you do NOT re-emit are preserved automatically
+  by the writer, so focus only on sections where you have something to add or
+  change. Do NOT re-emit a prior section just to echo it verbatim — that wastes
+  output tokens without changing the outcome.
+- Do NOT write bullets that reference prior siblings you are about to drop
+  (e.g., "X is ALSO large — same rule as Y, Z") unless Y and Z are also present
+  in your current output or preserved in the prior block.
 
 Return ONLY valid JSON matching this schema — no other text:
 {

@@ -8,6 +8,7 @@ Extracted from server.py for maintainability.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
@@ -278,3 +279,86 @@ async def _read_request_json(request: Request) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("Request body must be a JSON object, not " + type(result).__name__)
     return result
+
+
+def _strip_per_call_annotations(obj: Any) -> Any:
+    """Remove annotations that clients mutate between calls in one agent loop.
+
+    ``cache_control`` is the main offender: clients (notably Claude Code)
+    move the cache breakpoint to the newest message on each call, which
+    means the exact same user-text message carries ``cache_control`` on
+    call 1 and not on call 2. Hashing the raw message dicts therefore
+    produces a different turn_id for every iteration of a single agent
+    loop, collapsing ``turn_id`` to effectively ``request_id`` and
+    breaking prompt-level aggregation downstream.
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_per_call_annotations(v) for k, v in obj.items() if k != "cache_control"}
+    if isinstance(obj, list):
+        return [_strip_per_call_annotations(item) for item in obj]
+    return obj
+
+
+def compute_turn_id(
+    model: str,
+    system: Any,
+    messages: list[dict[str, Any]] | None,
+) -> str | None:
+    """Group all agent-loop API calls triggered by a single user prompt.
+
+    A turn spans the user's text prompt plus every assistant tool-use and
+    user tool-result message the agent appends while executing that prompt.
+    Hashing the prefix up to and including the last user *text* message yields
+    an id that is stable across the turn but rolls over when the user sends a
+    new prompt.
+
+    Returns None when no user-text message is present (nothing to identify).
+    """
+    if not messages:
+        return None
+
+    last_text_user_idx: int | None = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            last_text_user_idx = i
+            break
+        if isinstance(content, list):
+            has_text = any(
+                isinstance(block, dict) and block.get("type") == "text" for block in content
+            )
+            has_tool_result = any(
+                isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+            )
+            # An agent-loop continuation carries tool_result blocks; only a
+            # fresh user turn is text-only.
+            if has_text and not has_tool_result:
+                last_text_user_idx = i
+                break
+
+    if last_text_user_idx is None:
+        return None
+
+    prefix = _strip_per_call_annotations(messages[: last_text_user_idx + 1])
+    try:
+        prefix_json = json.dumps(prefix, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return None
+
+    h = hashlib.sha256()
+    h.update(model.encode("utf-8", errors="replace"))
+    h.update(b"\0")
+    if isinstance(system, str):
+        h.update(system.encode("utf-8", errors="replace"))
+    elif system is not None:
+        try:
+            normalized_system = _strip_per_call_annotations(system)
+            h.update(json.dumps(normalized_system, sort_keys=True, default=str).encode("utf-8"))
+        except (TypeError, ValueError):
+            pass
+    h.update(b"\0")
+    h.update(prefix_json.encode("utf-8", errors="replace"))
+    return h.hexdigest()[:16]

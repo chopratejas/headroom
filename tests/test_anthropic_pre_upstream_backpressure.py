@@ -24,7 +24,6 @@ import asyncio
 import json
 import logging
 import os
-import statistics
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -564,13 +563,13 @@ def test_livez_unaffected_under_anthropic_backpressure():
 
     latencies: list[float] = []
     with TestClient(app) as client:
-        # Warm up: the first few requests pay one-time costs (TestClient
-        # ASGI lifespan, route resolution, import side effects) that are
-        # unrelated to what this test measures. Without warm-up, the
-        # single cold-start sample dominates `max(latencies)` (which is
-        # what the p99 fallback below reduces to for small N) and causes
-        # flakes on slow CI runners.
-        for _ in range(3):
+        # Warm up: the first requests pay one-time costs (TestClient ASGI
+        # lifespan, route resolution, lazy imports the restructured proxy
+        # triggers on first-request paths). Three warmups was not enough on
+        # Python 3.10 under full-suite load; ten is comfortably past every
+        # lazy-init boundary observed in CI traces (the rogue sample landed
+        # at measured-index 2, i.e. request #6 overall).
+        for _ in range(10):
             client.get("/livez")
         for _ in range(20):
             t0 = time.perf_counter()
@@ -579,8 +578,15 @@ def test_livez_unaffected_under_anthropic_backpressure():
             assert resp.status_code == 200
             assert resp.json()["alive"] is True
 
-    p99 = statistics.quantiles(latencies, n=100)[98] if len(latencies) >= 100 else max(latencies)
-    assert p99 < 100.0, (p99, latencies)
+    # With only 20 samples `statistics.quantiles(n=100)[98]` collapses to
+    # max(latencies), so any single CI hiccup trips the assertion. Drop the
+    # one worst outlier and assert on the next-worst — that still fails hard
+    # if /livez is genuinely being blocked by the drained semaphore (every
+    # sample would cluster near the drained timeout) but tolerates a single
+    # GC pause or scheduler jitter in the 20-sample window.
+    sorted_latencies = sorted(latencies)
+    p95_like = sorted_latencies[-2] if len(sorted_latencies) >= 2 else sorted_latencies[-1]
+    assert p95_like < 100.0, (p95_like, latencies)
 
 
 # --------------------------------------------------------------------------- #

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import shutil
 import subprocess
+import sys
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,10 @@ from headroom.install.state import load_manifest, save_manifest
 from headroom.install.supervisors import start_supervisor
 
 from .main import main
+
+logger = logging.getLogger(__name__)
+
+_VERBOSE_HANDLER_ATTR = "_headroom_init_verbose_handler"
 
 _GLOBAL_PROFILE = "init-user"
 _CLAUDE_HOOK_MARKER = "headroom-init-claude"
@@ -54,6 +60,26 @@ def _hook_command(*parts: str) -> str:
 
 def _powershell_matcher() -> str:
     return "Bash|PowerShell" if os.name == "nt" else "Bash"
+
+
+def _enable_verbose_logging() -> None:
+    """Attach a stderr handler to the init logger at DEBUG level.
+
+    Idempotent: calling this multiple times in one process (e.g. when nested
+    subcommands are invoked) leaves exactly one handler attached. Does NOT
+    mutate stdout; all verbose output goes to stderr so ``headroom init``
+    can still be composed in pipes that consume stdout.
+    """
+
+    if getattr(logger, _VERBOSE_HANDLER_ATTR, None) is not None:
+        return
+    handler = logging.StreamHandler(stream=sys.stderr)
+    handler.setFormatter(logging.Formatter("[headroom init] %(message)s"))
+    handler.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    setattr(logger, _VERBOSE_HANDLER_ATTR, handler)
 
 
 def _local_profile(cwd: Path | None = None) -> str:
@@ -100,11 +126,13 @@ def _json_file(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    logger.debug("write json: %s (keys=%s)", path, sorted(payload.keys()))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _ensure_claude_hooks(path: Path, profile: str, port: int) -> None:
+    logger.debug("ensure claude hooks: %s (profile=%s, port=%s)", path, profile, port)
     payload = _json_file(path)
     env_map = dict(payload.get("env") or {}) if isinstance(payload.get("env"), dict) else {}
     env_map["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
@@ -152,6 +180,7 @@ def _ensure_claude_hooks(path: Path, profile: str, port: int) -> None:
 
 
 def _ensure_copilot_hooks(path: Path, profile: str) -> None:
+    logger.debug("ensure copilot hooks: %s (profile=%s)", path, profile)
     payload = _json_file(path)
     hooks = dict(payload.get("hooks") or {}) if isinstance(payload.get("hooks"), dict) else {}
     command = f"{_hook_command('--profile', profile)} --marker {_COPILOT_HOOK_MARKER}"
@@ -179,6 +208,7 @@ def _replace_marker_block(content: str, marker_start: str, marker_end: str, bloc
 
 
 def _ensure_codex_provider(path: Path, port: int) -> None:
+    logger.debug("ensure codex provider block: %s (port=%s)", path, port)
     block = (
         f"{_CODEX_PROVIDER_MARKER_START}\n"
         'model_provider = "headroom"\n\n'
@@ -256,6 +286,7 @@ def _ensure_codex_feature_flag(path: Path) -> None:
 
 
 def _ensure_codex_hooks(path: Path, profile: str) -> None:
+    logger.debug("ensure codex hooks: %s (profile=%s)", path, profile)
     command = f"{_hook_command('--profile', profile)} --marker {_CODEX_HOOK_MARKER}"
     payload = {
         "hooks": {
@@ -368,6 +399,8 @@ def _apply_user_env(values: dict[str, str]) -> None:
     manifest = _env_manifest(values)
     manifest.base_env = {}
     manifest.tool_envs = {"copilot": values}
+    scope = "windows" if os.name == "nt" else "unix"
+    logger.debug("apply user env scope=%s keys=%s", scope, sorted(values.keys()))
     if os.name == "nt":
         _apply_windows_env_scope(manifest)
     else:
@@ -398,6 +431,7 @@ def _marketplace_source() -> str:
 
 
 def _run_checked(command: list[str], *, action: str) -> None:
+    logger.debug("subprocess [%s]: %s", action, _command_string(command))
     result = subprocess.run(
         command,
         capture_output=True,
@@ -405,10 +439,20 @@ def _run_checked(command: list[str], *, action: str) -> None:
         encoding="utf-8",
         errors="replace",
     )
+    logger.debug(
+        "subprocess [%s] exit=%s stdout=%r stderr=%r",
+        action,
+        result.returncode,
+        result.stdout[:200],
+        result.stderr[:200],
+    )
     if result.returncode == 0:
         return
     detail = "\n".join(part for part in (result.stderr.strip(), result.stdout.strip()) if part)
     if "already" in detail.lower() or "exists" in detail.lower():
+        logger.debug(
+            "subprocess [%s] non-zero exit tolerated ('already'/'exists' detected)", action
+        )
         return
     raise click.ClickException(f"{action} failed: {detail or result.returncode}")
 
@@ -460,15 +504,78 @@ def _ensure_profile_running(profile: str) -> None:
         return
 
 
-def detect_init_targets(global_scope: bool) -> list[str]:
+def _probe_init_targets(global_scope: bool) -> list[tuple[str, str | None]]:
+    """Return ``[(target, which_result)]`` for every in-scope supported target.
+
+    ``which_result`` is the absolute path reported by :func:`shutil.which`, or
+    ``None`` when the binary is not on PATH. Callers use the list both to
+    build an auto-detected target list and to produce a diagnostic error
+    message when nothing was found.
+    """
+
     allowed = _GLOBAL_TARGETS if global_scope else _LOCAL_TARGETS
-    detected: list[str] = []
+    logger.debug(
+        "detect_init_targets: global_scope=%s allowed=%s",
+        global_scope,
+        sorted(allowed),
+    )
+    probes: list[tuple[str, str | None]] = []
     for target in _SUPPORTED_TARGETS:
         if target not in allowed:
             continue
-        if shutil.which(target):
-            detected.append(target)
-    return detected
+        path = shutil.which(target)
+        logger.debug("detect_init_targets: shutil.which(%r) -> %s", target, path or "None")
+        probes.append((target, path))
+    return probes
+
+
+def detect_init_targets(global_scope: bool) -> list[str]:
+    """Return agent names in scope for which a binary was found on PATH."""
+
+    return [name for name, path in _probe_init_targets(global_scope) if path]
+
+
+def _format_empty_detection_error(global_scope: bool) -> str:
+    """Build the error message shown when no in-scope targets were detected.
+
+    Lists every agent that was probed, what ``shutil.which`` returned, and
+    confirms how to proceed explicitly — including that the ``-g`` / ``--global``
+    flag the user tried is still valid.
+    """
+
+    probes = _probe_init_targets(global_scope)
+    scope_flag = "-g" if global_scope else ""
+    scope_label = "user" if global_scope else "local"
+
+    lines: list[str] = [
+        f"No supported {scope_label}-scope agents were found on PATH.",
+        "",
+        "Headroom probed the following agents via shutil.which():",
+    ]
+    for name, path in probes:
+        status = f"found at {path}" if path else "not found"
+        lines.append(f"  - {name}: {status}")
+
+    lines.extend(
+        [
+            "",
+            f"The {scope_flag or '--local (no flag)'} option is still supported; "
+            "headroom init just needs to know which agent to target.",
+            "Install the agent you want first, then re-run with an explicit target:",
+            "",
+        ]
+    )
+    for name, _path in probes:
+        flag = " -g" if global_scope else ""
+        lines.append(f"  headroom init{flag} {name}")
+
+    lines.extend(
+        [
+            "",
+            "Tip: run `headroom init --help` to see all options.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _init_claude(*, global_scope: bool, profile: str, port: int) -> None:
@@ -524,6 +631,14 @@ def _run_init_targets(
     region: str | None,
     memory: bool,
 ) -> None:
+    logger.debug(
+        "run_init_targets: targets=%s global_scope=%s port=%s backend=%s memory=%s",
+        targets,
+        global_scope,
+        port,
+        backend,
+        memory,
+    )
     runtime_targets = [target for target in targets if target != "openclaw"]
     profile = _ensure_runtime_manifest(
         global_scope=global_scope,
@@ -534,7 +649,9 @@ def _run_init_targets(
         region=region,
         memory=memory,
     )
+    logger.debug("run_init_targets: using profile=%s", profile)
     for target in targets:
+        logger.debug("run_init_targets: dispatching -> %s", target)
         if target == "claude":
             _init_claude(global_scope=global_scope, profile=profile, port=port)
         elif target == "copilot":
@@ -552,6 +669,13 @@ def _run_init_targets(
 @click.option("--anyllm-provider", default=None, help="Provider for any-llm backends.")
 @click.option("--region", default=None, help="Cloud region for Bedrock / Vertex style backends.")
 @click.option("--memory", is_flag=True, help="Enable persistent memory in the proxy runtime.")
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Emit debug-level diagnostics to stderr (flag values, shutil.which results, "
+    "file paths touched, subprocess invocations and exit codes).",
+)
 @click.pass_context
 def init(
     ctx: click.Context,
@@ -561,8 +685,22 @@ def init(
     anyllm_provider: str | None,
     region: str | None,
     memory: bool,
+    verbose: bool,
 ) -> None:
     """Install durable Headroom integrations for supported agents."""
+    if verbose:
+        _enable_verbose_logging()
+    logger.debug(
+        "init: global_scope=%s port=%s backend=%s anyllm_provider=%s region=%s memory=%s "
+        "invoked_subcommand=%s",
+        global_scope,
+        port,
+        backend,
+        anyllm_provider,
+        region,
+        memory,
+        ctx.invoked_subcommand,
+    )
     if ctx.invoked_subcommand is not None:
         ctx.obj = {
             "global_scope": global_scope,
@@ -571,15 +709,15 @@ def init(
             "anyllm_provider": anyllm_provider,
             "region": region,
             "memory": memory,
+            "verbose": verbose,
         }
         return
 
     targets = detect_init_targets(global_scope)
     if not targets:
-        scope_label = "user" if global_scope else "local"
-        raise click.ClickException(
-            f"No supported {scope_label} init targets were auto-detected. Specify one explicitly."
-        )
+        logger.debug("init: detect_init_targets returned empty; exiting with guided error")
+        raise click.ClickException(_format_empty_detection_error(global_scope))
+    logger.debug("init: detected targets=%s", targets)
     _run_init_targets(
         targets=targets,
         global_scope=global_scope,

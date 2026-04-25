@@ -5,6 +5,9 @@ import json
 import urllib.error
 from unittest.mock import patch
 
+import click
+import pytest
+
 from headroom.providers.copilot.wrap import (
     build_launch_env,
     detect_running_proxy_backend,
@@ -49,6 +52,14 @@ def test_validate_configuration_accepts_supported_combinations() -> None:
     validate_configuration(provider_type="openai", wire_api="completions", backend="anyllm")
 
 
+def test_validate_configuration_rejects_invalid_combinations() -> None:
+    with pytest.raises(click.ClickException, match="--wire-api is only valid"):
+        validate_configuration(provider_type="anthropic", wire_api="responses", backend=None)
+
+    with pytest.raises(click.ClickException, match="not supported with translated backends"):
+        validate_configuration(provider_type="openai", wire_api="responses", backend="anyllm")
+
+
 def test_provider_key_source_and_build_launch_env_cover_anthropic_and_openai() -> None:
     assert provider_key_source("anthropic") == "ANTHROPIC_API_KEY"
     assert provider_key_source("openai") == "OPENAI_API_KEY"
@@ -83,6 +94,27 @@ def test_provider_key_source_and_build_launch_env_cover_anthropic_and_openai() -
     assert openai_env["COPILOT_PROVIDER_WIRE_API"] == "completions"
     assert openai_env["COPILOT_PROVIDER_API_KEY"] == "sk-proj-test"
     assert openai_lines[-1] == "COPILOT_PROVIDER_WIRE_API=completions"
+
+
+def test_build_launch_env_keeps_existing_provider_key_and_allows_missing_source_key() -> None:
+    existing_env, _existing_lines = build_launch_env(
+        port=8787,
+        provider_type="openai",
+        wire_api="responses",
+        environ={
+            "COPILOT_PROVIDER_API_KEY": "existing-provider-key",
+            "OPENAI_API_KEY": "sk-proj-test",
+        },
+    )
+    missing_env, _missing_lines = build_launch_env(
+        port=8787,
+        provider_type="openai",
+        wire_api="responses",
+        environ={},
+    )
+
+    assert existing_env["COPILOT_PROVIDER_API_KEY"] == "existing-provider-key"
+    assert "COPILOT_PROVIDER_API_KEY" not in missing_env
 
 
 def test_model_configured_detects_env_and_cli_variants() -> None:

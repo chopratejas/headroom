@@ -45,14 +45,110 @@ def test_init_auto_detects_targets(monkeypatch) -> None:
 
 
 def test_init_fails_when_auto_detection_empty(monkeypatch) -> None:
+    """Bare ``headroom init`` with no agents on PATH prints a guided error.
+
+    Regression guard for issue #245: the error must list every target that
+    was probed, confirm that -g / --global is a valid flag, and show the
+    explicit per-target invocation so the user knows how to proceed.
+    """
+
     init_cli, fake_main = _load_init_module(monkeypatch)
     runner = CliRunner()
-    monkeypatch.setattr(init_cli, "detect_init_targets", lambda global_scope: [])
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
 
-    result = runner.invoke(fake_main, ["init"])
+    result = runner.invoke(fake_main, ["init", "-g"])
 
     assert result.exit_code != 0
-    assert "auto-detected" in result.output
+    assert "No supported user-scope agents were found on PATH" in result.output
+    assert "probed the following agents" in result.output
+    # Every in-scope target is listed with its lookup status.
+    for target in ("claude", "codex", "copilot", "openclaw"):
+        assert target in result.output
+    # The user is told that -g is still valid and given a concrete next step.
+    assert "-g" in result.output
+    assert "headroom init -g claude" in result.output
+
+
+def test_format_empty_detection_error_local_scope(monkeypatch) -> None:
+    """Local-scope variant of the guided error only lists local-scope agents."""
+
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
+
+    message = init_cli._format_empty_detection_error(global_scope=False)
+
+    assert "local-scope agents" in message
+    assert "claude" in message and "codex" in message
+    # Copilot / openclaw are global-only; must not be suggested for local.
+    assert "headroom init copilot" not in message
+    assert "headroom init openclaw" not in message
+    assert "headroom init claude" in message
+    assert "headroom init codex" in message
+
+
+def test_format_empty_detection_error_reports_found_paths(monkeypatch, tmp_path) -> None:
+    """When a binary IS present, the error still surfaces its path for debugging."""
+
+    init_cli, _ = _load_init_module(monkeypatch)
+    fake_claude = tmp_path / "claude"
+    fake_claude.write_text("")
+    monkeypatch.setattr(
+        init_cli.shutil,
+        "which",
+        lambda name: str(fake_claude) if name == "claude" else None,
+    )
+
+    message = init_cli._format_empty_detection_error(global_scope=True)
+
+    assert f"claude: found at {fake_claude}" in message
+    assert "codex: not found" in message
+
+
+def test_init_verbose_enables_debug_logging_on_stderr(monkeypatch) -> None:
+    """``headroom init -v`` should emit diagnostic lines to stderr.
+
+    Different Click 8.x versions expose stderr on ``CliRunner`` results
+    differently (``mix_stderr`` was removed in 8.2, and ``result.stderr``
+    appeared around the same time). To stay compatible with any Click 8.x
+    the repo targets, the test reads ``result.stderr`` when the attribute
+    exists AND contains data, otherwise falls back to ``result.output``
+    (which is the combined stream when stderr isn't captured separately).
+    """
+
+    init_cli, fake_main = _load_init_module(monkeypatch)
+    monkeypatch.setattr(init_cli.shutil, "which", lambda name: None)
+    runner = CliRunner()
+
+    result = runner.invoke(fake_main, ["init", "-v", "-g"])
+
+    # Newer Click: stderr captured separately.
+    stderr = getattr(result, "stderr", None) or ""
+    if not stderr:
+        # Older Click: everything in result.output.
+        stderr = result.output
+
+    assert result.exit_code != 0, f"output: {result.output!r}"
+    assert "[headroom init]" in stderr
+    assert "detect_init_targets" in stderr
+    assert "global_scope=True" in stderr
+    for target in ("claude", "codex", "copilot", "openclaw"):
+        assert target in stderr
+
+
+def test_init_verbose_is_idempotent(monkeypatch) -> None:
+    """Calling _enable_verbose_logging repeatedly keeps one handler attached."""
+
+    init_cli, _ = _load_init_module(monkeypatch)
+    # Clear any prior handler state on the dedicated init logger.
+    init_cli.logger.handlers.clear()
+    if hasattr(init_cli.logger, init_cli._VERBOSE_HANDLER_ATTR):
+        delattr(init_cli.logger, init_cli._VERBOSE_HANDLER_ATTR)
+
+    init_cli._enable_verbose_logging()
+    init_cli._enable_verbose_logging()
+    init_cli._enable_verbose_logging()
+
+    assert len(init_cli.logger.handlers) == 1
 
 
 def test_init_copilot_requires_global(monkeypatch) -> None:

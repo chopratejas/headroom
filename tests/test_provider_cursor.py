@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from headroom.providers.cursor import build_proxy_targets, render_setup_lines
+from headroom.providers.cursor.install import build_install_env
 
 
 def test_cursor_proxy_targets_use_local_headroom_proxy() -> None:
@@ -16,3 +17,14 @@ def test_cursor_setup_lines_include_both_provider_urls() -> None:
 
     assert "http://127.0.0.1:8787/v1" in joined
     assert "http://127.0.0.1:8787" in joined
+
+
+def test_cursor_build_install_env_returns_both_proxy_urls() -> None:
+    # Arrange / Act
+    env = build_install_env(port=7654, backend="ignored")
+
+    # Assert
+    assert env == {
+        "OPENAI_BASE_URL": "http://127.0.0.1:7654/v1",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:7654",
+    }

@@ -445,6 +445,34 @@ class TestSQLiteVectorIndexEdgeCases:
         assert index.size == 10
 
     @pytest.mark.asyncio
+    async def test_batch_index_uses_single_connection(self, index, monkeypatch):
+        """Test batch indexing reuses a single sqlite-vec connection."""
+        np.random.seed(42)
+        memories = [
+            Memory(
+                content=f"Content {i}",
+                user_id="alice",
+                embedding=np.random.randn(384).astype(np.float32),
+            )
+            for i in range(10)
+        ]
+
+        original_get_conn = index._get_conn
+        conn_calls = 0
+
+        def counting_get_conn():
+            nonlocal conn_calls
+            conn_calls += 1
+            return original_get_conn()
+
+        monkeypatch.setattr(index, "_get_conn", counting_get_conn)
+
+        indexed = await index.index_batch(memories)
+
+        assert indexed == 10
+        assert conn_calls == 1
+
+    @pytest.mark.asyncio
     async def test_batch_remove(self, index):
         """Test batch removal."""
         np.random.seed(42)
@@ -466,3 +494,32 @@ class TestSQLiteVectorIndexEdgeCases:
 
         assert removed == 2
         assert index.size == 3
+
+    @pytest.mark.asyncio
+    async def test_batch_remove_uses_single_connection(self, index, monkeypatch):
+        """Test batch removal reuses a single sqlite-vec connection."""
+        np.random.seed(42)
+        memories = []
+        for i in range(5):
+            memory = Memory(
+                content=f"Content {i}",
+                user_id="alice",
+                embedding=np.random.randn(384).astype(np.float32),
+            )
+            await index.index(memory)
+            memories.append(memory)
+
+        original_get_conn = index._get_conn
+        conn_calls = 0
+
+        def counting_get_conn():
+            nonlocal conn_calls
+            conn_calls += 1
+            return original_get_conn()
+
+        monkeypatch.setattr(index, "_get_conn", counting_get_conn)
+
+        removed = await index.remove_batch([memories[0].id, memories[2].id, "nonexistent"])
+
+        assert removed == 2
+        assert conn_calls == 1

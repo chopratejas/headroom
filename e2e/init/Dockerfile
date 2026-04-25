@@ -24,10 +24,15 @@ COPY headroom ./headroom
 COPY .claude-plugin ./.claude-plugin
 COPY .github/plugin ./.github/plugin
 COPY plugins/headroom-agent-hooks ./plugins/headroom-agent-hooks
+# The init e2e harness imports from e2e._lib; both directories must be
+# present and each must contain an __init__.py so Python sees them as
+# packages rooted at /workspace.
+COPY e2e/__init__.py ./e2e/__init__.py
+COPY e2e/_lib ./e2e/_lib
 COPY e2e/init ./e2e/init
 
 RUN python -m venv /opt/headroom-venv && \
-    /opt/headroom-venv/bin/python -m pip install --upgrade pip && \
+    /opt/headroom-venv/bin/python -m pip install --upgrade "pip<25" && \
     /opt/headroom-venv/bin/python -m pip install -e ".[proxy]"
 
 CMD ["python", "e2e/init/run.py"]

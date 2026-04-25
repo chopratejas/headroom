@@ -315,6 +315,7 @@ class AnthropicHandlerMixin:
             MAX_REQUEST_BODY_SIZE,
             _get_image_compressor,
             _read_request_json,
+            compute_turn_id,
         )
         from headroom.proxy.models import RequestLog
         from headroom.proxy.modes import is_cache_mode, is_token_mode
@@ -1348,6 +1349,9 @@ class AnthropicHandlerMixin:
                                     request_messages=body.get("messages")
                                     if self.config.log_full_messages
                                     else None,
+                                    turn_id=compute_turn_id(
+                                        model, body.get("system"), body.get("messages")
+                                    ),
                                 )
                             )
 
@@ -1818,6 +1822,9 @@ class AnthropicHandlerMixin:
                                 request_messages=messages
                                 if self.config.log_full_messages
                                 else None,
+                                turn_id=compute_turn_id(
+                                    model, body.get("system"), body.get("messages")
+                                ),
                             )
                         )
 

@@ -1723,6 +1723,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                         "transforms_applied": log.get("transforms_applied", []),
                         "request_messages": log.get("request_messages"),
                         "response_content": log.get("response_content"),
+                        "turn_id": log.get("turn_id"),
                     }
                 )
 

@@ -416,6 +416,94 @@ _MEMORY_MCP_MARKER = "# --- Headroom memory MCP (auto-injected) ---"
 _MEMORY_MCP_END = "# --- end Headroom memory ---"
 _MEMORY_AGENTS_MARKER = "<!-- headroom:memory-instructions -->"
 
+# Codex config injection markers
+_CODEX_TOP_LEVEL_MARKER = "# --- Headroom proxy (auto-injected by headroom wrap codex) ---"
+_CODEX_END_MARKER = "# --- end Headroom ---"
+# File name used for the pre-wrap snapshot of ~/.codex/config.toml.  The
+# snapshot lets `headroom unwrap codex` restore the exact prior state, even
+# if the user had their own `model_provider` / `[model_providers.*]` config
+# before running wrap.
+_CODEX_CONFIG_BACKUP_SUFFIX = ".headroom-backup"
+
+
+def _codex_config_paths() -> tuple[Path, Path]:
+    """Return ``(config_file, backup_file)`` paths for the Codex TOML config."""
+    config_dir = Path.home() / ".codex"
+    config_file = config_dir / "config.toml"
+    backup_file = config_dir / f"config.toml{_CODEX_CONFIG_BACKUP_SUFFIX}"
+    return config_file, backup_file
+
+
+def _strip_codex_headroom_blocks(content: str) -> str:
+    """Remove all Headroom-managed blocks from a Codex ``config.toml`` string.
+
+    Returns the cleaned content.  Safe to call on content that never contained
+    any markers — it will be returned effectively unchanged (only trailing
+    whitespace is normalized).
+    """
+    import re
+
+    # Remove any top-level-marker → end-marker span, possibly repeated.
+    while _CODEX_TOP_LEVEL_MARKER in content and _CODEX_END_MARKER in content:
+        start = content.index(_CODEX_TOP_LEVEL_MARKER)
+        end_idx = content.index(_CODEX_END_MARKER, start)
+        if end_idx < start:
+            break
+        end = end_idx + len(_CODEX_END_MARKER)
+        content = content[:start].rstrip("\n") + "\n" + content[end:].lstrip("\n")
+
+    # Remove any stale top-level marker or end marker that lost its partner
+    # (e.g. a crashed prior wrap).
+    content = content.replace(_CODEX_TOP_LEVEL_MARKER + "\n", "")
+    content = content.replace(_CODEX_END_MARKER + "\n", "")
+
+    # Strip any leftover top-level `model_provider = "headroom"` line, which
+    # older versions of `wrap codex` wrote outside the marker block.
+    content = re.sub(r'(?m)^[ \t]*model_provider[ \t]*=[ \t]*"headroom"[ \t]*\r?\n', "", content)
+
+    # Strip any orphaned `[model_providers.headroom]` table with the fields we
+    # write.  We only remove it if the table is recognisably ours (base_url
+    # mentions localhost and a Headroom proxy port).  This protects users who
+    # happen to have a differently configured `headroom` provider.
+    orphan_headroom_table = re.compile(
+        r"(?ms)^\[model_providers\.headroom\][^\[]*?"
+        r'base_url[ \t]*=[ \t]*"http://127\.0\.0\.1:\d+/v1"[^\[]*?'
+        r"(?=^\[|\Z)"
+    )
+    content = orphan_headroom_table.sub("", content)
+
+    return content.lstrip("\n").rstrip() + "\n" if content.strip() else ""
+
+
+def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) -> None:
+    """Snapshot ``config.toml`` to ``backup_file`` before the first injection.
+
+    Called as the first step of every Headroom injection into Codex's
+    ``config.toml``.  Guarantees that ``headroom unwrap codex`` can restore the
+    user's original file byte-for-byte.
+
+    Rules:
+
+    * If the backup already exists, leave it alone — we only snapshot the
+      *pre-wrap* state, so running wrap repeatedly must not clobber it.
+    * If the config file doesn't exist yet, there's nothing to back up; unwrap
+      will remove the file entirely instead of restoring a snapshot.
+    * If the config already contains a Headroom marker, a wrap run is already
+      active: do not snapshot the injected state.
+    """
+    if backup_file.exists():
+        return
+    if not config_file.exists():
+        return
+    try:
+        content = config_file.read_text()
+    except OSError:
+        return
+    if _CODEX_TOP_LEVEL_MARKER in content or _CODEX_END_MARKER in content:
+        return
+    backup_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(config_file, backup_file)
+
 
 def _ensure_rtk_binary(verbose: bool = False) -> Path | None:
     """Ensure rtk binary is installed (download if needed). No hook registration."""
@@ -454,47 +542,56 @@ def _inject_codex_provider_config(port: int) -> None:
     ``[model_providers.headroom]`` section that routes both HTTP and WS
     through the proxy, and sets ``model_provider = "headroom"``.
 
-    Safe to call multiple times — only writes if the section is missing
-    or the port changed.
+    Safe to call multiple times — the injected block is fully replaced on
+    each call, so re-running with a different ``port`` updates the config.
+    Before the first injection, the pre-wrap file is snapshotted to
+    ``~/.codex/config.toml.headroom-backup`` so ``headroom unwrap codex``
+    can restore it byte-for-byte.
     """
-    config_dir = Path.home() / ".codex"
-    config_file = config_dir / "config.toml"
+    config_file, backup_file = _codex_config_paths()
+    config_dir = config_file.parent
 
-    # model_provider must be a top-level TOML key (before any [section]).
-    # The [model_providers.headroom] table can go at the end.
-    top_level_marker = "# --- Headroom proxy (auto-injected by headroom wrap codex) ---"
-    top_level_block = f'{top_level_marker}\nmodel_provider = "headroom"\n'
+    # The injected content is split into two self-contained, marker-delimited
+    # blocks: a top-level key block (at the start of the file, because bare
+    # TOML keys must precede any [section]) and a provider-table block (at
+    # the end).  Each block has its own matching begin/end marker pair so
+    # stripping them is unambiguous and never consumes user content that
+    # happens to sit between the two.
+    top_level_block = (
+        f'{_CODEX_TOP_LEVEL_MARKER}\nmodel_provider = "headroom"\n{_CODEX_END_MARKER}\n'
+    )
     provider_section = (
-        f"\n[model_providers.headroom]\n"
-        f'name = "OpenAI via Headroom proxy"\n'
+        f"{_CODEX_TOP_LEVEL_MARKER}\n"
+        "[model_providers.headroom]\n"
+        'name = "OpenAI via Headroom proxy"\n'
         f'base_url = "http://127.0.0.1:{port}/v1"\n'
         f'env_key = "OPENAI_API_KEY"\n'
         f"requires_openai_auth = true\n"
         f"supports_websockets = true\n"
-        f"# --- end Headroom ---\n"
+        f"{_CODEX_END_MARKER}\n"
     )
-
-    marker = top_level_marker
-    end_marker = "# --- end Headroom ---"
 
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
 
+        # Snapshot the pre-wrap state before touching anything.  No-op if the
+        # config is already wrapped, is missing, or we've already snapshotted.
+        _snapshot_codex_config_if_unwrapped(config_file, backup_file)
+
         if config_file.exists():
             content = config_file.read_text()
-            if marker in content:
-                # Remove existing Headroom blocks entirely
-                start = content.index(marker)
-                end = content.index(end_marker) + len(end_marker)
-                content = content[:start].rstrip("\n") + content[end:].lstrip("\n")
+            # Remove any prior Headroom-managed blocks before re-injecting so
+            # the operation is idempotent and supports port changes.
+            content = _strip_codex_headroom_blocks(content)
 
-            # Strip any stale top-level model_provider left behind
-            import re
-
-            content = re.sub(r'\nmodel_provider\s*=\s*"headroom"\n', "\n", content)
-
-            # Place top-level key at the very beginning, provider table at the end
-            content = top_level_block + "\n" + content.strip() + "\n" + provider_section
+            # Place the top-level key block at the very beginning of the file
+            # (bare TOML keys must precede any [section]) and the provider
+            # table at the end.  User content, if any, sits between them.
+            user_content = content.strip()
+            if user_content:
+                content = top_level_block + "\n" + user_content + "\n\n" + provider_section
+            else:
+                content = top_level_block + "\n" + provider_section
         else:
             content = top_level_block + "\n" + provider_section
 
@@ -502,6 +599,44 @@ def _inject_codex_provider_config(port: int) -> None:
         click.echo(f"  Codex config: injected Headroom provider (WS + HTTP) into {config_file}")
     except Exception as e:
         click.echo(f"  Warning: could not update Codex config: {e}")
+
+
+def _restore_codex_provider_config() -> tuple[str, Path]:
+    """Undo ``_inject_codex_provider_config`` for ``~/.codex/config.toml``.
+
+    Returns a tuple of ``(status, config_file)`` where status is one of:
+
+    * ``"restored"`` — a pre-wrap backup existed and was restored; backup
+      file has been removed.
+    * ``"cleaned"``  — no backup existed, but the Headroom-managed block was
+      found and stripped out (preserving surrounding user content).
+    * ``"removed"``  — the config file only contained Headroom-managed
+      content (created by wrap) and has been deleted.
+    * ``"noop"``     — nothing to undo; no Headroom marker and no backup.
+    """
+    config_file, backup_file = _codex_config_paths()
+
+    # Case 1: pre-wrap snapshot exists — restore it exactly.
+    if backup_file.exists():
+        shutil.copy2(backup_file, config_file)
+        backup_file.unlink()
+        return "restored", config_file
+
+    # Case 2: no backup, but config file exists and has markers — strip them.
+    if config_file.exists():
+        original = config_file.read_text()
+        if _CODEX_TOP_LEVEL_MARKER in original or _CODEX_END_MARKER in original:
+            cleaned = _strip_codex_headroom_blocks(original)
+            if not cleaned.strip():
+                # Nothing left but Headroom content — remove the file entirely
+                # so Codex falls back to its default config.
+                config_file.unlink()
+                return "removed", config_file
+            config_file.write_text(cleaned)
+            return "cleaned", config_file
+
+    # Nothing to undo.
+    return "noop", config_file
 
 
 def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
@@ -553,6 +688,12 @@ def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
 
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
+
+        # Snapshot pre-wrap state before touching config.toml so `unwrap codex`
+        # can fully restore it even when only `--memory` (not a full provider
+        # injection) was used.
+        _, backup_file = _codex_config_paths()
+        _snapshot_codex_config_if_unwrapped(config_file, backup_file)
 
         if config_file.exists():
             content = config_file.read_text()
@@ -2137,4 +2278,50 @@ def unwrap_openclaw(
     click.echo("✓ OpenClaw Headroom wrap removed.")
     click.echo("  Plugin: headroom (installed, disabled)")
     click.echo("  Slot:   plugins.slots.contextEngine = legacy")
+    click.echo()
+
+
+# =============================================================================
+# OpenAI Codex CLI (unwrap)
+# =============================================================================
+
+
+@unwrap.command("codex")
+def unwrap_codex() -> None:
+    """Undo ``headroom wrap codex`` edits to ``~/.codex/config.toml``.
+
+    Behaviour:
+
+    * If a pre-wrap backup (``config.toml.headroom-backup``) exists, the
+      original file is restored byte-for-byte and the backup is removed.
+    * Otherwise, if the config file still contains the Headroom-managed
+      block, that block is stripped out and the rest of the file is
+      preserved.
+    * If the config only ever contained Headroom-written content, the file
+      is removed entirely so Codex falls back to its defaults.
+    * If neither a backup nor a Headroom block is present, this is a safe
+      no-op (the user either never wrapped, or already unwrapped).
+    """
+    click.echo()
+    click.echo("  ╔═══════════════════════════════════════════════╗")
+    click.echo("  ║           HEADROOM UNWRAP: CODEX              ║")
+    click.echo("  ╚═══════════════════════════════════════════════╝")
+    click.echo()
+
+    try:
+        status, config_file = _restore_codex_provider_config()
+    except Exception as e:  # pragma: no cover - filesystem-level errors
+        raise click.ClickException(f"could not unwrap Codex config: {e}") from e
+
+    if status == "restored":
+        click.echo(f"  Restored prior {config_file} from pre-wrap backup.")
+    elif status == "cleaned":
+        click.echo(f"  Removed Headroom block from {config_file}; other content preserved.")
+    elif status == "removed":
+        click.echo(f"  Removed {config_file} (contained only Headroom-written config).")
+    else:
+        click.echo(f"  Nothing to undo: {config_file} has no Headroom wrap markers.")
+
+    click.echo()
+    click.echo("✓ Codex is no longer routed through the Headroom proxy.")
     click.echo()

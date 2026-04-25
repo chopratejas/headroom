@@ -23,6 +23,10 @@ from .paths import (
 from .runtime import resolve_headroom_command
 
 
+def _is_windows() -> bool:
+    return sys.platform.startswith("win")
+
+
 def _command_for_script(*parts: str) -> list[str]:
     return [*resolve_headroom_command(), *parts]
 
@@ -60,7 +64,7 @@ def _render_windows_runner(
 def render_runner_scripts(manifest: DeploymentManifest) -> list[ArtifactRecord]:
     """Render runner/watchdog scripts for the deployment profile."""
 
-    if os.name == "nt":
+    if _is_windows():
         records = []
         records.extend(
             _render_windows_runner(
@@ -230,7 +234,7 @@ def install_supervisor(manifest: DeploymentManifest) -> list[ArtifactRecord]:
         records.append(ArtifactRecord(kind="plist", path=str(plist_path)))
         return records
 
-    if os.name == "nt" and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
+    if _is_windows() and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
         service_bin = f'cmd.exe /c "{windows_run_cmd_path(manifest.profile)}"'
         subprocess.run(
             ["sc.exe", "create", manifest.service_name, f"binPath= {service_bin}", "start= auto"],
@@ -243,7 +247,7 @@ def install_supervisor(manifest: DeploymentManifest) -> list[ArtifactRecord]:
         records.append(ArtifactRecord(kind="windows-service", path=manifest.service_name))
         return records
 
-    if os.name == "nt" and manifest.supervisor_kind == SupervisorKind.TASK.value:
+    if _is_windows() and manifest.supervisor_kind == SupervisorKind.TASK.value:
         startup_name = f"{manifest.service_name}-startup"
         health_name = f"{manifest.service_name}-health"
         startup_cmd = str(windows_ensure_cmd_path(manifest.profile))
@@ -308,7 +312,7 @@ def start_supervisor(manifest: DeploymentManifest) -> None:
         )
         subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=True)
         return
-    if os.name == "nt" and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
+    if _is_windows() and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
         subprocess.run(["sc.exe", "start", manifest.service_name], check=True)
 
 
@@ -331,7 +335,7 @@ def stop_supervisor(manifest: DeploymentManifest) -> None:
         )
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=True)
         return
-    if os.name == "nt" and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
+    if _is_windows() and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
         subprocess.run(["sc.exe", "stop", manifest.service_name], check=True)
 
 
@@ -392,7 +396,7 @@ def remove_supervisor(manifest: DeploymentManifest) -> None:
             plist_path.unlink()
         return
 
-    if os.name == "nt":
+    if _is_windows():
         if manifest.supervisor_kind == SupervisorKind.SERVICE.value:
             subprocess.run(
                 ["sc.exe", "stop", manifest.service_name], capture_output=True, text=True
