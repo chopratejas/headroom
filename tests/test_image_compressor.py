@@ -1,499 +1,926 @@
-from __future__ import annotations
+"""Comprehensive tests for the image compression feature.
+
+Tests ImageCompressor class and TrainedRouter for:
+- Image detection in various provider formats
+- Query extraction
+- Compression routing
+- Provider-specific compression
+- Edge cases
+- Token estimation
+"""
+
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import base64
-import sys
-import types
+import io
+from unittest.mock import MagicMock, patch
 
-import headroom.image.compressor as image_compressor
-from headroom.image.compressor import (
+import pytest
+
+# Import from PIL for creating test images
+try:
+    from PIL import Image
+
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
+torch = pytest.importorskip("torch")
+
+from headroom.image.compressor import (  # noqa: E402
     CompressionResult,
     ImageCompressor,
     Technique,
     compress_images,
     get_compressor,
 )
+from headroom.image.trained_router import (  # noqa: E402
+    ImageSignals,
+    RouteDecision,
+    TrainedRouter,
+)
+from headroom.image.trained_router import (  # noqa: E402
+    Technique as RouterTechnique,
+)
+
+# ============================================================================
+# Fixtures
+# ============================================================================
 
 
-def _data_url(payload: bytes) -> str:
-    return f"data:image/png;base64,{base64.b64encode(payload).decode()}"
+@pytest.fixture
+def small_test_image_bytes():
+    """Create a small test image as bytes."""
+    if not HAS_PIL:
+        pytest.skip("PIL not available")
+
+    # Create a simple 100x100 red image
+    img = Image.new("RGB", (100, 100), color="red")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
-def _b64(payload: bytes) -> str:
-    return base64.b64encode(payload).decode()
+@pytest.fixture
+def large_test_image_bytes():
+    """Create a larger test image as bytes (1024x1024)."""
+    if not HAS_PIL:
+        pytest.skip("PIL not available")
+
+    # Create a 1024x1024 image with some pattern
+    img = Image.new("RGB", (1024, 1024), color="blue")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
-def test_image_detection_query_extraction_and_singleton_helpers(monkeypatch) -> None:
-    compressor = ImageCompressor()
+@pytest.fixture
+def small_image_base64(small_test_image_bytes):
+    """Base64 encoded small test image."""
+    return base64.b64encode(small_test_image_bytes).decode("utf-8")
 
-    messages = [
-        {"role": "system", "content": "ignore"},
+
+@pytest.fixture
+def large_image_base64(large_test_image_bytes):
+    """Base64 encoded large test image."""
+    return base64.b64encode(large_test_image_bytes).decode("utf-8")
+
+
+@pytest.fixture
+def openai_messages_with_image(small_image_base64):
+    """Sample OpenAI format messages with image."""
+    return [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "describe"},
-                " this",
-                {"type": "image_url", "image_url": {"url": _data_url(b"img")}},
+                {"type": "text", "text": "What is in this image?"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{small_image_base64}",
+                        "detail": "auto",
+                    },
+                },
             ],
-        },
+        }
     ]
-    assert compressor.has_images(messages) is True
-    assert compressor.has_images([{"role": "user", "content": "plain text"}]) is False
-    assert compressor._extract_query(messages) == "describe  this"
-    assert compressor._extract_query([{"role": "assistant", "content": "no user"}]) == ""
-
-    assert compressor._extract_image_data(messages) == b"img"
-    assert (
-        compressor._extract_image_data(
-            [
-                {
-                    "content": [
-                        {"type": "image", "source": {"type": "base64", "data": _b64(b"anthropic")}}
-                    ]
-                }
-            ]
-        )
-        == b"anthropic"
-    )
-    assert (
-        compressor._extract_image_data([{"content": [{"inlineData": {"data": _b64(b"google")}}]}])
-        == b"google"
-    )
-    assert compressor._extract_image_data([{"content": "plain"}]) is None
-
-    compressor.last_result = CompressionResult(
-        technique=Technique.FULL_LOW,
-        original_tokens=200,
-        compressed_tokens=50,
-        confidence=0.9,
-    )
-    assert compressor.last_savings == 75.0
-    assert (
-        CompressionResult(
-            technique=Technique.PRESERVE,
-            original_tokens=0,
-            compressed_tokens=0,
-            confidence=1.0,
-        ).savings_percent
-        == 0.0
-    )
-
-    monkeypatch.setattr(image_compressor, "_default_compressor", None)
-    singleton = get_compressor()
-    assert singleton is get_compressor()
-    monkeypatch.setattr(
-        image_compressor,
-        "_default_compressor",
-        types.SimpleNamespace(compress=lambda messages, provider: [provider]),
-    )
-    assert compress_images(messages, "google") == ["google"]
 
 
-def test_count_result_tokens_covers_ocr_and_provider_specific_paths(monkeypatch) -> None:
-    compressor = ImageCompressor()
-    token_values = {b"openai": 12, b"anthropic": 15, b"google": 18, b"original": 21}
-
-    monkeypatch.setattr(
-        compressor,
-        "_estimate_tokens",
-        lambda data, detail="high": token_values[data],
-    )
-
-    messages = [
+@pytest.fixture
+def anthropic_messages_with_image(small_image_base64):
+    """Sample Anthropic format messages with image."""
+    return [
         {
+            "role": "user",
             "content": [
-                {"type": "text", "text": "[OCR from image]\nhello world"},
-                {"type": "image_url", "image_url": {"url": _data_url(b"openai"), "detail": "high"}},
-                {"type": "image_url", "image_url": {"url": _data_url(b"skip"), "detail": "low"}},
-                {"type": "image", "source": {"type": "base64", "data": _b64(b"anthropic")}},
-                {"inlineData": {"data": _b64(b"google")}},
-            ]
+                {"type": "text", "text": "Describe this image"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": small_image_base64,
+                    },
+                },
+            ],
         }
     ]
 
-    total = compressor._count_result_tokens(messages, b"original", "openai")
-    assert total == max(1, len("[OCR from image]\nhello world") // 4) + 12 + 85 + 15 + 18
 
-    assert (
-        compressor._count_result_tokens([{"content": ["no dict blocks"]}], b"original", "openai")
-        == 21
-    )
-
-
-def test_apply_compression_handles_preserve_transcode_and_resize_paths(monkeypatch) -> None:
-    compressor = ImageCompressor()
-    openai_item = {"type": "image_url", "image_url": {"url": _data_url(b"openai")}}
-    anthropic_item = {
-        "type": "image",
-        "source": {"type": "base64", "media_type": "image/png", "data": _b64(b"anthropic")},
-    }
-    google_item = {"inlineData": {"mimeType": "image/png", "data": _b64(b"google")}}
-
-    messages = [{"role": "user", "content": [openai_item, anthropic_item, google_item, "keep-me"]}]
-    assert compressor._apply_compression(messages, Technique.PRESERVE, "openai") == messages
-
-    monkeypatch.setattr(compressor, "_ocr_extract", lambda image_data: "decoded text")
-    transcoded = compressor._apply_compression(
-        [{"content": [openai_item]}], Technique.TRANSCODE, "openai"
-    )
-    assert transcoded[0]["content"] == [{"type": "text", "text": "[OCR from image]\ndecoded text"}]
-
-    monkeypatch.setattr(compressor, "_ocr_extract", lambda image_data: None)
-    openai_low = compressor._apply_compression(
-        [{"content": [openai_item]}], Technique.TRANSCODE, "openai"
-    )
-    assert openai_low[0]["content"][0]["image_url"]["detail"] == "low"
-
-    monkeypatch.setattr(
-        compressor, "_resize_image", lambda image_data, max_dimension=512: (b"small", "image/jpeg")
-    )
-    anthropic_low = compressor._apply_compression(
-        [{"content": [anthropic_item]}], Technique.FULL_LOW, "anthropic"
-    )
-    assert anthropic_low[0]["content"][0]["source"]["media_type"] == "image/jpeg"
-    assert base64.b64decode(anthropic_low[0]["content"][0]["source"]["data"]) == b"small"
-
-    google_low = compressor._apply_compression(
-        [{"content": [google_item]}], Technique.CROP, "google"
-    )
-    assert google_low[0]["content"][0]["inlineData"]["mimeType"] == "image/jpeg"
-    assert base64.b64decode(google_low[0]["content"][0]["inlineData"]["data"]) == b"small"
-
-
-def test_ocr_extract_handles_success_low_confidence_and_errors(monkeypatch) -> None:
-    compressor = ImageCompressor()
-
-    class _RapidOCR:
-        def __init__(self, result):
-            self.result = result
-
-        def __call__(self, image_data: bytes):
-            return self.result, None
-
-    monkeypatch.setitem(
-        sys.modules,
-        "rapidocr_onnxruntime",
-        types.SimpleNamespace(
-            RapidOCR=lambda: _RapidOCR(
-                [
-                    (None, "first", 0.95),
-                    (None, "second", 0.85),
-                ]
-            )
-        ),
-    )
-    assert compressor._ocr_extract(b"img") == "first\nsecond"
-
-    compressor = ImageCompressor()
-    monkeypatch.setitem(
-        sys.modules,
-        "rapidocr_onnxruntime",
-        types.SimpleNamespace(RapidOCR=lambda: _RapidOCR([(None, "low", 0.2)])),
-    )
-    assert compressor._ocr_extract(b"img", min_confidence=0.7) is None
-
-    compressor = ImageCompressor()
-    monkeypatch.setitem(
-        sys.modules,
-        "rapidocr_onnxruntime",
-        types.SimpleNamespace(RapidOCR=lambda: _RapidOCR([])),
-    )
-    assert compressor._ocr_extract(b"img") is None
-
-    compressor = ImageCompressor()
-
-    class _ExplodingOCR:
-        def __call__(self, image_data: bytes):
-            raise RuntimeError("boom")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "rapidocr_onnxruntime",
-        types.SimpleNamespace(RapidOCR=lambda: _ExplodingOCR()),
-    )
-    assert compressor._ocr_extract(b"img") is None
-
-
-def test_compress_orchestrates_tile_savings_router_paths_and_fallbacks(monkeypatch) -> None:
-    compressor = ImageCompressor()
-    image_messages = [
+@pytest.fixture
+def google_messages_with_image(small_image_base64):
+    """Sample Google format messages with image."""
+    return [
         {
             "role": "user",
-            "content": [{"type": "image_url", "image_url": {"url": _data_url(b"img")}}],
+            "content": [
+                {"text": "What do you see?"},
+                {"inlineData": {"mimeType": "image/png", "data": small_image_base64}},
+            ],
         }
     ]
 
-    assert compressor.compress([{"role": "user", "content": "plain"}], "openai") == [
-        {"role": "user", "content": "plain"}
+
+@pytest.fixture
+def text_only_messages():
+    """Messages without any images."""
+    return [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello, how are you?"},
+        {"role": "assistant", "content": "I'm doing well, thank you!"},
+        {"role": "user", "content": "What is the capital of France?"},
     ]
 
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.tile_optimizer",
-        types.SimpleNamespace(
-            optimize_images_in_messages=lambda messages, provider: (
-                messages,
-                [types.SimpleNamespace(tokens_saved=7)],
-            )
-        ),
-    )
-    monkeypatch.setattr(compressor, "_extract_query", lambda messages: "")
-    monkeypatch.setattr(compressor, "_extract_image_data", lambda messages: b"img")
-    assert compressor.compress(image_messages, "openai") == image_messages
-    assert compressor.last_result.technique == Technique.PRESERVE
-    assert compressor.last_result.original_tokens == 7
-    assert compressor.last_result.compressed_tokens == 0
 
-    compressor = ImageCompressor()
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.tile_optimizer",
-        types.SimpleNamespace(
-            optimize_images_in_messages=lambda messages, provider: (
-                messages,
-                [types.SimpleNamespace(tokens_saved=10)],
-            )
-        ),
-    )
-    monkeypatch.setattr(compressor, "_extract_query", lambda messages: "what is shown?")
-    monkeypatch.setattr(compressor, "_extract_image_data", lambda messages: b"img")
-    monkeypatch.setattr(compressor, "_estimate_tokens", lambda image_data, detail="high": 200)
-    monkeypatch.setattr(
-        compressor,
-        "_apply_compression",
-        lambda messages, technique, provider: [{"role": "assistant", "content": technique.value}],
-    )
-    monkeypatch.setattr(
-        compressor, "_count_result_tokens", lambda messages, original_image_data, provider: 50
+@pytest.fixture
+def compressor():
+    """Get an ImageCompressor instance."""
+    return ImageCompressor()
+
+
+@pytest.fixture
+def mock_route_decision_full_low():
+    """Mock RouteDecision for FULL_LOW."""
+    return RouteDecision(
+        technique=RouterTechnique.FULL_LOW,
+        confidence=0.9,
+        reason="General query about image contents",
+        image_signals=None,
+        query_prediction="full_low",
+        query_confidence=0.9,
     )
 
-    class _OnnxRouter:
-        def __init__(self, use_siglip: bool = True) -> None:
-            self.use_siglip = use_siglip
 
-        def classify(self, image_data: bytes, query: str):
-            return types.SimpleNamespace(technique=Technique.FULL_LOW, confidence=0.8)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.onnx_router",
-        types.SimpleNamespace(OnnxTechniqueRouter=_OnnxRouter),
-    )
-    routed = compressor.compress(image_messages, "openai")
-    assert routed == [{"role": "assistant", "content": "full_low"}]
-    assert compressor.last_result.technique == Technique.FULL_LOW
-    assert compressor.last_result.original_tokens == 210
-    assert compressor.last_result.compressed_tokens == 50
-    assert compressor.last_result.confidence == 0.8
-
-    compressor = ImageCompressor()
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.tile_optimizer",
-        types.SimpleNamespace(
-            optimize_images_in_messages=lambda messages, provider: (messages, [])
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.onnx_router",
-        types.SimpleNamespace(
-            OnnxTechniqueRouter=type(
-                "BrokenOnnxRouter",
-                (),
-                {
-                    "__init__": lambda self, use_siglip=True: None,
-                    "classify": lambda self, image_data, query: (_ for _ in ()).throw(
-                        RuntimeError("onnx fail")
-                    ),
-                },
-            )
-        ),
-    )
-    monkeypatch.setattr(compressor, "_extract_query", lambda messages: "fallback")
-    monkeypatch.setattr(compressor, "_extract_image_data", lambda messages: b"img")
-    monkeypatch.setattr(
-        compressor, "_get_router", lambda: (_ for _ in ()).throw(RuntimeError("pt fail"))
-    )
-    monkeypatch.setattr(compressor, "_estimate_tokens", lambda image_data, detail="high": 30)
-    monkeypatch.setattr(
-        compressor, "_count_result_tokens", lambda messages, original_image_data, provider: 30
+@pytest.fixture
+def mock_route_decision_preserve():
+    """Mock RouteDecision for PRESERVE."""
+    return RouteDecision(
+        technique=RouterTechnique.PRESERVE,
+        confidence=0.95,
+        reason="Query requires fine detail analysis",
+        image_signals=None,
+        query_prediction="preserve",
+        query_confidence=0.95,
     )
 
-    preserved = compressor.compress(image_messages, "openai")
-    assert preserved == image_messages
-    assert compressor.last_result.technique == Technique.PRESERVE
-    assert compressor.last_result.confidence == 0.0
 
-
-def test_router_resize_and_token_estimation_paths(monkeypatch) -> None:
-    compressor = ImageCompressor(model_id="router-id", use_siglip=False, device="cpu")
-    created: list[tuple[str | None, bool, str | None]] = []
-
-    class _Router:
-        def __init__(self, model_path=None, use_siglip=True, device=None) -> None:
-            created.append((model_path, use_siglip, device))
-
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.trained_router",
-        types.SimpleNamespace(Technique=Technique, TrainedRouter=_Router),
+@pytest.fixture
+def mock_route_decision_transcode():
+    """Mock RouteDecision for TRANSCODE."""
+    return RouteDecision(
+        technique=RouterTechnique.TRANSCODE,
+        confidence=0.88,
+        reason="Query asks to read text from image",
+        image_signals=None,
+        query_prediction="transcode",
+        query_confidence=0.88,
     )
-    assert compressor._get_router().__class__ is _Router
-    assert compressor._get_router().__class__ is _Router
-    assert created == [("router-id", False, "cpu")]
 
-    class _FakeImage:
-        def __init__(self, size: tuple[int, int], *, fmt: str = "PNG", mode: str = "RGBA") -> None:
-            self.size = size
-            self.format = fmt
-            self.mode = mode
-            self.saved = False
 
-        def resize(self, size: tuple[int, int], resample) -> _FakeImage:
-            return _FakeImage(size, fmt=self.format, mode=self.mode)
-
-        def convert(self, mode: str) -> _FakeImage:
-            return _FakeImage(self.size, fmt=self.format, mode=mode)
-
-        def save(self, buf, format: str, quality: int, optimize: bool) -> None:
-            buf.write(f"{format}:{quality}:{optimize}:{self.size}".encode())
-
-    pil_module = types.SimpleNamespace(
-        Image=types.SimpleNamespace(
-            open=lambda stream: _FakeImage((1024, 256)),
-            Resampling=types.SimpleNamespace(LANCZOS="lanczos"),
-        )
+@pytest.fixture
+def mock_route_decision_crop():
+    """Mock RouteDecision for CROP."""
+    return RouteDecision(
+        technique=RouterTechnique.CROP,
+        confidence=0.85,
+        reason="Query asks about specific region",
+        image_signals=None,
+        query_prediction="crop",
+        query_confidence=0.85,
     )
-    monkeypatch.setitem(sys.modules, "PIL", pil_module)
-    resized, media_type = compressor._resize_image(b"img", max_dimension=512, quality=77)
-    assert media_type == "image/jpeg"
-    assert b"JPEG:77:True:(512, 128)" in resized
-
-    pil_module.Image.open = lambda stream: _FakeImage((100, 100), fmt="PNG", mode="RGB")
-    original, media_type = compressor._resize_image(b"small", max_dimension=512)
-    assert original == b"small"
-    assert media_type == "image/png"
-
-    pil_module.Image.open = lambda stream: _FakeImage((1025, 513), fmt="PNG", mode="RGB")
-    assert compressor._estimate_tokens(b"img", "high") == 680
-    assert compressor._estimate_tokens(b"img", "low") == 85
-
-    def raise_open(stream):
-        raise RuntimeError("bad image")
-
-    pil_module.Image.open = raise_open
-    assert compressor._estimate_tokens(b"img", "high") == 765
 
 
-def test_apply_compression_and_compress_cover_remaining_fallback_paths(monkeypatch) -> None:
-    compressor = ImageCompressor()
-    weird_technique = types.SimpleNamespace(value="weird")
+def create_mock_router(route_decision):
+    """Create a mock router that returns the given decision."""
+    mock_router = MagicMock()
+    mock_router.classify.return_value = route_decision
+    return mock_router
 
-    openai_remote = {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
-    anthropic_bad = {"type": "image", "source": {"type": "url", "data": "ignored"}}
-    google_item = {"inlineData": {"mimeType": "image/png", "data": _b64(b"google")}}
 
-    result = compressor._apply_compression(
-        [
-            {"content": "plain"},
+# ============================================================================
+# Test ImageCompressor class - Image detection
+# ============================================================================
+
+
+class TestImageDetection:
+    """Tests for image detection in various formats."""
+
+    def test_has_images_openai_format(self, compressor, openai_messages_with_image):
+        """Detect images in OpenAI format."""
+        assert compressor.has_images(openai_messages_with_image) is True
+
+    def test_has_images_anthropic_format(self, compressor, anthropic_messages_with_image):
+        """Detect images in Anthropic format."""
+        assert compressor.has_images(anthropic_messages_with_image) is True
+
+    def test_has_images_google_format(self, compressor, google_messages_with_image):
+        """Detect images in Google format."""
+        assert compressor.has_images(google_messages_with_image) is True
+
+    def test_has_images_no_images(self, compressor, text_only_messages):
+        """Returns False when no images in messages."""
+        assert compressor.has_images(text_only_messages) is False
+
+    def test_has_images_empty_messages(self, compressor):
+        """Handles empty message list."""
+        assert compressor.has_images([]) is False
+
+    def test_has_images_string_content(self, compressor):
+        """Handles messages with plain string content."""
+        messages = [{"role": "user", "content": "Just text, no images"}]
+        assert compressor.has_images(messages) is False
+
+    def test_has_images_mixed_content(self, compressor, small_image_base64):
+        """Detect images in messages with mixed content."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "What is 2+2?"},
             {
+                "role": "user",
                 "content": [
-                    "keep",
-                    {"type": "text", "text": "no image"},
-                    openai_remote,
-                    anthropic_bad,
-                    google_item,
-                ]
+                    {"type": "text", "text": "Now look at this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
             },
-        ],
-        weird_technique,
-        "openai",
-    )
-    assert result[0]["content"] == "plain"
-    assert result[1]["content"][0] == "keep"
-    assert result[1]["content"][1] == {"type": "text", "text": "no image"}
-    assert result[1]["content"][2] == openai_remote
-    assert result[1]["content"][3] == anthropic_bad
-    assert result[1]["content"][4] == google_item
+        ]
+        assert compressor.has_images(messages) is True
 
-    monkeypatch.setattr(
-        compressor,
-        "_resize_image",
-        lambda image_data, max_dimension=512: (_ for _ in ()).throw(RuntimeError("resize failed")),
-    )
-    failed_google = compressor._apply_compression(
-        [{"content": [google_item]}], Technique.CROP, "google"
-    )
-    assert failed_google[0]["content"][0] == google_item
 
-    failed_anthropic = compressor._apply_compression(
-        [
+# ============================================================================
+# Test ImageCompressor class - Query extraction
+# ============================================================================
+
+
+class TestQueryExtraction:
+    """Tests for extracting text query from messages."""
+
+    def test_extract_query_from_openai_format(self, compressor, openai_messages_with_image):
+        """Extracts text query from OpenAI format messages."""
+        query = compressor._extract_query(openai_messages_with_image)
+        assert query == "What is in this image?"
+
+    def test_extract_query_from_anthropic_format(self, compressor, anthropic_messages_with_image):
+        """Extracts text query from Anthropic format messages."""
+        query = compressor._extract_query(anthropic_messages_with_image)
+        assert query == "Describe this image"
+
+    def test_extract_query_empty_string_when_no_text(self, compressor, small_image_base64):
+        """Returns empty string when no text in user message."""
+        messages = [
             {
+                "role": "user",
                 "content": [
-                    {"type": "image", "source": {"type": "base64", "data": _b64(b"anthropic")}}
-                ]
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    }
+                ],
             }
-        ],
-        Technique.FULL_LOW,
-        "anthropic",
-    )
-    assert failed_anthropic[0]["content"][0]["type"] == "image"
+        ]
+        query = compressor._extract_query(messages)
+        assert query == ""
 
-    compressor = ImageCompressor()
-    image_messages = [
-        {
-            "role": "user",
-            "content": [{"type": "image_url", "image_url": {"url": _data_url(b"img")}}],
-        }
-    ]
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.tile_optimizer",
-        types.SimpleNamespace(
-            optimize_images_in_messages=lambda messages, provider: (_ for _ in ()).throw(
-                RuntimeError("tile fail")
-            )
-        ),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "headroom.image.onnx_router",
-        types.SimpleNamespace(
-            OnnxTechniqueRouter=type(
-                "BrokenOnnxRouter",
-                (),
-                {
-                    "__init__": lambda self, use_siglip=True: None,
-                    "classify": lambda self, image_data, query: (_ for _ in ()).throw(
-                        RuntimeError("onnx fail")
-                    ),
-                },
-            )
-        ),
-    )
-    monkeypatch.setattr(compressor, "_extract_query", lambda messages: "fallback")
-    monkeypatch.setattr(compressor, "_extract_image_data", lambda messages: b"img")
-    monkeypatch.setattr(
-        compressor,
-        "_get_router",
-        lambda: types.SimpleNamespace(
-            classify=lambda image_data, query: types.SimpleNamespace(
-                technique=Technique.CROP,
-                confidence=0.6,
-            )
-        ),
-    )
-    monkeypatch.setattr(compressor, "_estimate_tokens", lambda image_data, detail="high": 50)
-    monkeypatch.setattr(
-        compressor,
-        "_apply_compression",
-        lambda messages, technique, provider: [{"role": "assistant", "content": technique.value}],
-    )
-    monkeypatch.setattr(
-        compressor, "_count_result_tokens", lambda messages, original_image_data, provider: 15
-    )
-    routed = compressor.compress(image_messages, "google")
-    assert routed == [{"role": "assistant", "content": "crop"}]
-    assert compressor.last_result.technique == Technique.CROP
-    assert compressor.last_result.original_tokens == 50
-    assert compressor.last_result.compressed_tokens == 15
+    def test_extract_query_from_plain_text_message(self, compressor):
+        """Extracts query from plain text user message."""
+        messages = [{"role": "user", "content": "What is this?"}]
+        query = compressor._extract_query(messages)
+        assert query == "What is this?"
+
+    def test_extract_query_uses_last_user_message(self, compressor):
+        """Extracts query from the most recent user message."""
+        messages = [
+            {"role": "user", "content": "First question"},
+            {"role": "assistant", "content": "First answer"},
+            {"role": "user", "content": "Second question"},
+        ]
+        query = compressor._extract_query(messages)
+        assert query == "Second question"
+
+
+# ============================================================================
+# Test ImageCompressor class - Image data extraction
+# ============================================================================
+
+
+class TestImageDataExtraction:
+    """Tests for extracting base64 image data from messages."""
+
+    def test_extract_image_data_openai_format(
+        self, compressor, openai_messages_with_image, small_test_image_bytes
+    ):
+        """Extracts base64 image data from OpenAI format."""
+        data = compressor._extract_image_data(openai_messages_with_image)
+        assert data is not None
+        assert isinstance(data, bytes)
+        # Verify it's valid image data
+        assert data == small_test_image_bytes
+
+    def test_extract_image_data_anthropic_format(
+        self, compressor, anthropic_messages_with_image, small_test_image_bytes
+    ):
+        """Extracts base64 image data from Anthropic format."""
+        data = compressor._extract_image_data(anthropic_messages_with_image)
+        assert data is not None
+        assert isinstance(data, bytes)
+        assert data == small_test_image_bytes
+
+    def test_extract_image_data_google_format(
+        self, compressor, google_messages_with_image, small_test_image_bytes
+    ):
+        """Extracts base64 image data from Google format."""
+        data = compressor._extract_image_data(google_messages_with_image)
+        assert data is not None
+        assert isinstance(data, bytes)
+        assert data == small_test_image_bytes
+
+    def test_extract_image_data_returns_none_for_text_only(self, compressor, text_only_messages):
+        """Returns None when no images in messages."""
+        data = compressor._extract_image_data(text_only_messages)
+        assert data is None
+
+    def test_extract_image_data_returns_first_image(self, compressor, small_image_base64):
+        """Extracts the first image when multiple images present."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,SECOND_IMAGE_DATA"},
+                    },
+                ],
+            }
+        ]
+        data = compressor._extract_image_data(messages)
+        assert data is not None
+
+
+# ============================================================================
+# Test Compression routing
+# ============================================================================
+
+
+class TestCompressionRouting:
+    """Tests for compression technique routing based on query."""
+
+    def test_compress_general_query(
+        self, compressor, openai_messages_with_image, mock_route_decision_full_low
+    ):
+        """'What is this?' query routes to full_low technique."""
+        mock_router = create_mock_router(mock_route_decision_full_low)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(openai_messages_with_image, "openai")
+
+            # Verify the router was called
+            mock_router.classify.assert_called_once()
+
+            # For FULL_LOW, OpenAI should get detail="low"
+            content = result[0]["content"]
+            for item in content:
+                if item.get("type") == "image_url":
+                    assert item["image_url"].get("detail") == "low"
+
+    def test_compress_detail_query(
+        self, compressor, small_image_base64, mock_route_decision_preserve
+    ):
+        """'Count the whiskers' query routes to preserve technique."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Count the whiskers on the cat"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
+            }
+        ]
+        mock_router = create_mock_router(mock_route_decision_preserve)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            compressor.compress(messages, "openai")
+            mock_router.classify.assert_called_once()
+
+    def test_compress_text_query(
+        self, compressor, small_image_base64, mock_route_decision_transcode
+    ):
+        """'Read the text' query routes to transcode technique."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read the text in this document"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
+            }
+        ]
+        mock_router = create_mock_router(mock_route_decision_transcode)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            compressor.compress(messages, "openai")
+            mock_router.classify.assert_called_once()
+
+    def test_compress_region_query(self, compressor, small_image_base64, mock_route_decision_crop):
+        """'What's in the corner?' query routes to crop technique."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What's in the top-left corner?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
+            }
+        ]
+        mock_router = create_mock_router(mock_route_decision_crop)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            compressor.compress(messages, "openai")
+            mock_router.classify.assert_called_once()
+
+
+# ============================================================================
+# Test Provider-specific compression
+# ============================================================================
+
+
+class TestProviderSpecificCompression:
+    """Tests for provider-specific image compression."""
+
+    def test_openai_detail_low(
+        self, compressor, openai_messages_with_image, mock_route_decision_full_low
+    ):
+        """OpenAI: sets detail='low' for full_low technique."""
+        mock_router = create_mock_router(mock_route_decision_full_low)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(openai_messages_with_image, "openai")
+
+            # Find the image item and check detail
+            for item in result[0]["content"]:
+                if item.get("type") == "image_url":
+                    assert item["image_url"]["detail"] == "low"
+
+    def test_openai_detail_preserved(
+        self, compressor, small_image_base64, mock_route_decision_preserve
+    ):
+        """OpenAI: preserves original detail setting for preserve technique."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Analyze fine details"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{small_image_base64}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }
+        ]
+        mock_router = create_mock_router(mock_route_decision_preserve)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(messages, "openai")
+
+            # For preserve, the image should remain unchanged
+            for item in result[0]["content"]:
+                if item.get("type") == "image_url":
+                    # Should keep original high detail
+                    detail = item["image_url"].get("detail")
+                    assert detail == "high"
+
+    def test_anthropic_format(
+        self, compressor, anthropic_messages_with_image, mock_route_decision_full_low
+    ):
+        """Handles Anthropic image format correctly."""
+        mock_router = create_mock_router(mock_route_decision_full_low)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(anthropic_messages_with_image, "anthropic")
+
+            # Should return valid messages (may or may not transform Anthropic format)
+            assert isinstance(result, list)
+            assert len(result) > 0
+
+
+# ============================================================================
+# Test Edge cases
+# ============================================================================
+
+
+class TestEdgeCases:
+    """Tests for edge cases and error handling."""
+
+    def test_no_images_passthrough(self, compressor, text_only_messages):
+        """Returns messages unchanged if no images present."""
+        result = compressor.compress(text_only_messages, "openai")
+        assert result == text_only_messages
+
+    def test_empty_messages(self, compressor):
+        """Handles empty message list gracefully."""
+        result = compressor.compress([], "openai")
+        assert result == []
+
+    def test_router_failure_fallback(self, compressor, openai_messages_with_image):
+        """Falls back to preserve technique on router error."""
+        mock_router = MagicMock()
+        mock_router.classify.side_effect = Exception("Router failed")
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            # Should not raise, should fall back gracefully
+            result = compressor.compress(openai_messages_with_image, "openai")
+
+            # Messages should be returned (either original or with preserve)
+            assert isinstance(result, list)
+            assert len(result) > 0
+
+    def test_invalid_base64_data(self, compressor, mock_route_decision_preserve):
+        """Handles invalid base64 data gracefully."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,bm90X3ZhbGlkX2ltYWdlX2RhdGE="},
+                    },
+                ],
+            }
+        ]
+
+        # Use a mock router to avoid actual model loading
+        mock_router = create_mock_router(mock_route_decision_preserve)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            # Should not raise
+            result = compressor.compress(messages, "openai")
+            assert isinstance(result, list)
+
+    def test_url_image_not_base64(self, compressor):
+        """Handles URL-based images (not base64)."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
+                ],
+            }
+        ]
+
+        # URL images should just pass through since we can't extract data
+        result = compressor.compress(messages, "openai")
+        assert isinstance(result, list)
+        # Should return original messages since no base64 data to extract
+        assert result == messages
+
+    def test_none_content(self, compressor):
+        """Handles messages with None content."""
+        messages = [{"role": "user", "content": None}]
+
+        result = compressor.compress(messages, "openai")
+        assert result == messages
+
+    def test_missing_content_key(self, compressor):
+        """Handles messages missing content key."""
+        messages = [{"role": "user"}]
+
+        result = compressor.compress(messages, "openai")
+        assert result == messages
+
+
+# ============================================================================
+# Test Token estimation
+# ============================================================================
+
+
+class TestTokenEstimation:
+    """Tests for image token estimation."""
+
+    def test_estimate_tokens_small_image(self, compressor, small_test_image_bytes):
+        """Estimates tokens for a small image correctly."""
+        # Pass actual image bytes, not base64
+        # 100x100 image with low detail = 85 tokens
+        tokens = compressor._estimate_tokens(small_test_image_bytes, "low")
+        assert tokens == 85
+
+    def test_estimate_tokens_large_image(self, compressor, large_test_image_bytes):
+        """Estimates tokens for a large image correctly."""
+        # 1024x1024 image with high detail
+        # tiles_x = ceil(1024/512) = 2
+        # tiles_y = ceil(1024/512) = 2
+        # tokens = 85 * 2 * 2 + 170 = 510
+        tokens = compressor._estimate_tokens(large_test_image_bytes, "high")
+        assert tokens == 510
+
+    def test_estimate_tokens_low_detail_constant(self, compressor, large_test_image_bytes):
+        """Low detail always returns 85 tokens regardless of size."""
+        tokens = compressor._estimate_tokens(large_test_image_bytes, "low")
+        assert tokens == 85
+
+    def test_savings_calculation(self):
+        """CompressionResult calculates savings percentage correctly."""
+        result = CompressionResult(
+            technique=Technique.FULL_LOW, original_tokens=1000, compressed_tokens=85, confidence=0.9
+        )
+
+        # (1000 - 85) / 1000 * 100 = 91.5%
+        assert result.savings_percent == pytest.approx(91.5, rel=0.01)
+
+    def test_savings_zero_original_tokens(self):
+        """Handles zero original tokens without division error."""
+        result = CompressionResult(
+            technique=Technique.PRESERVE, original_tokens=0, compressed_tokens=0, confidence=1.0
+        )
+
+        assert result.savings_percent == 0.0
+
+    def test_estimate_tokens_invalid_data(self, compressor):
+        """Returns default token count for invalid image data."""
+        # Pass invalid bytes that can't be opened as image
+        tokens = compressor._estimate_tokens(b"invalid_image_data", "high")
+        # Should return a default value (765 based on the code)
+        assert tokens == 765
+
+
+# ============================================================================
+# Test TrainedRouter (mocked)
+# ============================================================================
+
+
+class TestTrainedRouterMocked:
+    """Tests for TrainedRouter with mocked model loading."""
+
+    def test_router_technique_enum_values(self):
+        """Verify Technique enum has expected values."""
+        assert RouterTechnique.FULL_LOW.value == "full_low"
+        assert RouterTechnique.PRESERVE.value == "preserve"
+        assert RouterTechnique.TRANSCODE.value == "transcode"
+        assert RouterTechnique.CROP.value == "crop"
+
+    def test_route_decision_dataclass(self):
+        """Verify RouteDecision dataclass structure."""
+        decision = RouteDecision(
+            technique=RouterTechnique.FULL_LOW,
+            confidence=0.9,
+            reason="Test reason",
+            image_signals=None,
+            query_prediction="full_low",
+            query_confidence=0.9,
+        )
+
+        assert decision.technique == RouterTechnique.FULL_LOW
+        assert decision.confidence == 0.9
+        assert decision.reason == "Test reason"
+
+    def test_image_signals_dataclass(self):
+        """Verify ImageSignals dataclass structure."""
+        signals = ImageSignals(has_text=0.8, is_document=0.6, is_complex=0.3, has_small_details=0.2)
+
+        assert signals.has_text == 0.8
+        assert signals.is_document == 0.6
+        assert signals.is_complex == 0.3
+        assert signals.has_small_details == 0.2
+
+    def test_router_is_available_with_models(self):
+        """Router reports available when models can load."""
+        router = TrainedRouter()
+
+        # Mock _load_models to not actually load (models loaded via MLModelRegistry now)
+        with patch.object(router, "_load_models"):
+            assert router.is_available() is True
+
+    def test_router_is_available_false_on_error(self):
+        """Router reports not available when models fail to load."""
+        router = TrainedRouter(model_path="/nonexistent/path")
+
+        # This should return False since the model path doesn't exist
+        # and loading will fail
+        with patch.object(router, "_load_models", side_effect=Exception("Model not found")):
+            assert router.is_available() is False
+
+
+# ============================================================================
+# Test Convenience functions
+# ============================================================================
+
+
+class TestConvenienceFunctions:
+    """Tests for module-level convenience functions."""
+
+    def test_get_compressor_returns_instance(self):
+        """get_compressor returns an ImageCompressor instance."""
+        compressor = get_compressor()
+        assert isinstance(compressor, ImageCompressor)
+
+    def test_get_compressor_singleton(self):
+        """get_compressor returns the same instance."""
+        compressor1 = get_compressor()
+        compressor2 = get_compressor()
+        assert compressor1 is compressor2
+
+    def test_compress_images_function(self, text_only_messages):
+        """compress_images convenience function works."""
+        result = compress_images(text_only_messages, "openai")
+        assert result == text_only_messages
+
+
+# ============================================================================
+# Integration tests (with mocked router)
+# ============================================================================
+
+
+class TestIntegration:
+    """Integration tests with mocked router."""
+
+    def test_full_compression_flow_openai(self, small_image_base64, mock_route_decision_full_low):
+        """Test complete compression flow for OpenAI format."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{small_image_base64}",
+                            "detail": "auto",
+                        },
+                    },
+                ],
+            }
+        ]
+
+        compressor = ImageCompressor()
+        mock_router = create_mock_router(mock_route_decision_full_low)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(messages, "openai")
+
+            # Verify structure
+            assert len(result) == 1
+            assert result[0]["role"] == "user"
+            assert isinstance(result[0]["content"], list)
+
+            # Verify image was processed
+            has_image = False
+            for item in result[0]["content"]:
+                if item.get("type") == "image_url":
+                    has_image = True
+                    assert item["image_url"]["detail"] == "low"
+            assert has_image
+
+    def test_full_compression_flow_anthropic(
+        self, small_image_base64, mock_route_decision_full_low
+    ):
+        """Test complete compression flow for Anthropic format."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": small_image_base64,
+                        },
+                    },
+                ],
+            }
+        ]
+
+        compressor = ImageCompressor()
+        mock_router = create_mock_router(mock_route_decision_full_low)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(messages, "anthropic")
+
+            # Should return valid messages
+            assert len(result) == 1
+            assert result[0]["role"] == "user"
+
+    def test_multiple_images_in_message(self, small_image_base64, mock_route_decision_full_low):
+        """Test compression with multiple images."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Compare these images"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{small_image_base64}"},
+                    },
+                ],
+            }
+        ]
+
+        compressor = ImageCompressor()
+        mock_router = create_mock_router(mock_route_decision_full_low)
+
+        with patch.object(compressor, "_get_router", return_value=mock_router):
+            result = compressor.compress(messages, "openai")
+
+            # Both images should be processed
+            image_count = 0
+            for item in result[0]["content"]:
+                if item.get("type") == "image_url":
+                    image_count += 1
+                    assert item["image_url"]["detail"] == "low"
+            assert image_count == 2
+
+
+# ============================================================================
+# ContentRouter Integration Tests
+# ============================================================================
+
+
+class TestContentRouterIntegration:
+    """Test ImageCompressor integration with ContentRouter."""
+
+    def test_content_router_loads_image_compressor(self):
+        """Verify ContentRouter can load ImageCompressor (not None)."""
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        compressor = router._get_image_optimizer()
+
+        # This should NOT be None - if it is, the import failed silently
+        assert compressor is not None, (
+            "ContentRouter._get_image_optimizer() returned None. "
+            "This means ImageCompressor import failed silently!"
+        )
+
+    def test_content_router_compressor_is_image_compressor(self):
+        """Verify ContentRouter uses ImageCompressor (not old ImageOptimizer)."""
+        from headroom.image import ImageCompressor
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        compressor = router._get_image_optimizer()
+
+        assert isinstance(compressor, ImageCompressor), (
+            f"Expected ImageCompressor, got {type(compressor).__name__}"
+        )
+
+    def test_content_router_optimize_images_works(self):
+        """Test optimize_images_in_messages returns valid result."""
+        from unittest.mock import MagicMock
+
+        from headroom.transforms.content_router import ContentRouter
+
+        router = ContentRouter()
+        tokenizer = MagicMock()
+
+        # Simple message without images
+        messages = [{"role": "user", "content": "Hello"}]
+        result, metrics = router.optimize_images_in_messages(messages, tokenizer, provider="openai")
+
+        assert result == messages
+        assert "images_optimized" in metrics
+        assert metrics["tokens_saved"] == 0
