@@ -478,6 +478,46 @@ Date:   Mon Apr 25 12:00:00 2026
     out.append(f"{combined_diff}\n# bugfix:combined-diff-3way")
     out.append(f"{no_newline_diff}\n# bugfix:no-newline-marker")
     out.append(f"{pre_diff_content}\n# bugfix:pre-diff-content")
+
+    # Routing-gap path coverage (2026-04-25 follow-up). These exercise the
+    # ContentRouter→DiffCompressor pipeline gaps:
+    #   1. `diff --combined <path>` merge-commit header (parser had hardcoded
+    #      `diff --git`, so the whole input fell into pre-diff blob).
+    #   2. `diff --cc <path>` (alternate merge-commit form).
+    #   3. Long pre-diff content (>50 lines) that previously slipped past
+    #      the detector's first-50-lines scan window.
+    merge_combined_diff = """diff --combined merge_target.py
+index abc..def..ghi 100644
+--- a/merge_target.py
++++ b/merge_target.py
+@@@ -1,4 -1,4 +1,5 @@@
+  unchanged_a
+- old_branch_1
+ -old_branch_2
+++new_in_merge
+ +new_added
+  unchanged_b
+"""
+    merge_cc_diff = """diff --cc cc_target.py
+index abc..def..ghi
+--- a/cc_target.py
++++ b/cc_target.py
+@@@ -1,3 -1,3 +1,4 @@@
+  ctx
+- removed_p1
+ -removed_p2
+++added_in_merge
+  more_ctx
+"""
+    long_pre_diff = (
+        "commit 0123456789abcdef\n"
+        "Author: Tester <t@example.com>\n"
+        "Date:   Mon Apr 25 12:00:00 2026\n"
+        "\n" + "\n".join(f"    msg line {i}" for i in range(60)) + "\n\n" + rename_diff
+    )
+    out.append(f"{merge_combined_diff}\n# bugfix:diff-combined")
+    out.append(f"{merge_cc_diff}\n# bugfix:diff-cc")
+    out.append(f"{long_pre_diff}\n# bugfix:long-pre-diff")
     return out
 
 

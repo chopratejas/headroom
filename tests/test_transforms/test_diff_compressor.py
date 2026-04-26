@@ -837,3 +837,101 @@ class TestBugfixPreDiffContent:
         diff = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"
         result = DiffCompressor(_cfg_below_threshold()).compress(diff)
         assert result.compressed.startswith("diff --git a/x.py b/x.py")
+
+
+class TestRoutingGapMergeDiffs:
+    """Routing gap (2026-04-25 follow-up): ContentRouter detects diff inputs
+    and routes them to DiffCompressor, but the parser previously only knew
+    the `diff --git` shape. Merge-commit diffs from `git log -p` use
+    `diff --combined <path>` or `diff --cc <path>` and were treated as
+    non-diff blobs and passed through unchanged.
+    """
+
+    def test_diff_combined_header_starts_a_file_section(self):
+        from headroom.transforms.diff_compressor import DiffCompressor
+
+        diff = (
+            "diff --combined merge_target.py\n"
+            "index abc..def..ghi 100644\n"
+            "--- a/merge_target.py\n"
+            "+++ b/merge_target.py\n"
+            "@@@ -1,3 -1,3 +1,4 @@@\n"
+            "  unchanged_a\n"
+            "- old_p1\n"
+            " -old_p2\n"
+            "++new_in_merge\n"
+            "  unchanged_b\n"
+        )
+        result = DiffCompressor(_cfg_below_threshold()).compress(diff)
+        assert result.files_affected == 1
+        assert "diff --combined merge_target.py" in result.compressed
+        assert "@@@ -1,3 -1,3 +1,4 @@@" in result.compressed
+        assert "++new_in_merge" in result.compressed
+
+    def test_diff_cc_header_starts_a_file_section(self):
+        from headroom.transforms.diff_compressor import DiffCompressor
+
+        diff = (
+            "diff --cc cc_target.py\n"
+            "index abc..def..ghi\n"
+            "--- a/cc_target.py\n"
+            "+++ b/cc_target.py\n"
+            "@@@ -1,3 -1,3 +1,4 @@@\n"
+            "  ctx\n"
+            "- removed_p1\n"
+            " -removed_p2\n"
+            "++added_in_merge\n"
+            "  more_ctx\n"
+        )
+        result = DiffCompressor(_cfg_below_threshold()).compress(diff)
+        assert result.files_affected == 1
+        assert "diff --cc cc_target.py" in result.compressed
+        assert "++added_in_merge" in result.compressed
+
+
+class TestRoutingGapDetectorScanWindow:
+    """Routing gap (2026-04-25 follow-up): `_try_detect_diff` only scanned
+    the first 50 lines, so `git log -p` outputs with long commit messages
+    pushed the diff past the detection window — input was misrouted away
+    from DiffCompressor entirely. Window widened to 500 lines.
+    """
+
+    def test_detect_picks_up_diff_after_long_commit_message(self):
+        from headroom.transforms.content_detector import (
+            ContentType,
+            detect_content_type,
+        )
+
+        # 60 lines of commit message before the diff. Old 50-line cap
+        # would have missed the `diff --git` header entirely.
+        msg_lines = [
+            "commit abc123",
+            "Author: Tester <t@example.com>",
+            "Date:   Mon Apr 25 12:00:00 2026",
+            "",
+        ] + [f"    msg line {i}" for i in range(60)]
+        diff = (
+            "\n".join(msg_lines)
+            + "\n\n"
+            + "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        result = detect_content_type(diff)
+        assert result.content_type == ContentType.GIT_DIFF
+        assert result.confidence >= 0.7
+
+    def test_detect_recognizes_combined_diff_headers(self):
+        """The detector also gained recognition for combined-diff hunk
+        headers (`@@@`+) — useful when the only signal in a snippet is
+        the merge-style hunk."""
+        from headroom.transforms.content_detector import (
+            ContentType,
+            detect_content_type,
+        )
+
+        # Full merge diff (with `--- a/` shared with regular diffs as a
+        # belt-and-suspenders signal).
+        diff = (
+            "diff --combined m.py\n--- a/m.py\n+++ b/m.py\n@@@ -1,2 -1,2 +1,3 @@@\n  ctx\n++added\n"
+        )
+        result = detect_content_type(diff)
+        assert result.content_type == ContentType.GIT_DIFF

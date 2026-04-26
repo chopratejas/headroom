@@ -593,6 +593,29 @@ fn diff_git_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^diff --git a/(.+) b/(.+)$").expect("static regex compiles"))
 }
 
+/// Bug-fix (2026-04-25): merge-commit headers `diff --combined <path>` and
+/// `diff --cc <path>`. Single-path file diffs paired with combined-diff
+/// hunk syntax (`@@@`+). Previously not recognized — merge diffs from
+/// `git log -p` were treated as a single non-diff blob because the header
+/// didn't match `diff --git`, so they fell into pre-diff content.
+fn diff_combined_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^diff --combined (.+)$").expect("static regex compiles"))
+}
+
+fn diff_cc_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^diff --cc (.+)$").expect("static regex compiles"))
+}
+
+/// Returns true if `line` is any kind of `diff --…` file-section header
+/// (regular `--git`, or the combined-diff `--combined` / `--cc` variants).
+fn is_diff_header(line: &str) -> bool {
+    diff_git_regex().is_match(line)
+        || diff_combined_regex().is_match(line)
+        || diff_cc_regex().is_match(line)
+}
+
 fn old_file_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^--- (a/(.+)|/dev/null)$").expect("static regex compiles"))
@@ -626,8 +649,12 @@ fn parse_diff(lines: &[&str]) -> ParsedDiff {
     let warnings: Vec<String> = Vec::new();
 
     for &line in lines {
-        // New file section.
-        if diff_git_regex().is_match(line) {
+        // New file section. Includes regular `diff --git` AND merge-commit
+        // `diff --combined <path>` / `diff --cc <path>` (bug-fix
+        // 2026-04-25). Without these, merge diffs from `git log -p` got
+        // treated as one giant pre-diff blob and never reached the
+        // hunk-parsing path.
+        if is_diff_header(line) {
             if let Some(h) = current_hunk.take() {
                 if let Some(f) = current_file.as_mut() {
                     f.hunks.push(h);
@@ -1475,6 +1502,57 @@ mod tests {
             "no-newline marker dropped by context trim:\n{}",
             r.compressed
         );
+    }
+
+    /// Routing-gap test: `diff --combined <path>` (merge-commit header)
+    /// must start a new file section. Before the fix, only `diff --git`
+    /// was recognized — merge diffs from `git log -p` got treated as one
+    /// big pre-diff blob and passed through unchanged.
+    #[test]
+    fn gap_diff_combined_header_starts_a_file() {
+        let input = "diff --combined merge.py\n\
+                     index abc..def..ghi 100644\n\
+                     --- a/merge.py\n\
+                     +++ b/merge.py\n\
+                     @@@ -1,3 -1,3 +1,4 @@@\n\
+                       ctx_a\n\
+                     - removed_p1\n\
+                      -removed_p2\n\
+                     ++added_in_merge\n\
+                       ctx_b\n";
+        let cfg = DiffCompressorConfig {
+            min_lines_for_ccr: 5,
+            ..Default::default()
+        };
+        let r = DiffCompressor::new(cfg).compress(input, "");
+        assert_eq!(r.files_affected, 1);
+        assert!(r.compressed.contains("diff --combined merge.py"));
+        assert!(r.compressed.contains("@@@ -1,3 -1,3 +1,4 @@@"));
+        assert!(r.compressed.contains("++added_in_merge"));
+    }
+
+    /// Routing-gap test: `diff --cc <path>` (alternate merge-commit form).
+    /// Same reasoning as `diff_combined`.
+    #[test]
+    fn gap_diff_cc_header_starts_a_file() {
+        let input = "diff --cc cc_target.py\n\
+                     index abc..def..ghi\n\
+                     --- a/cc_target.py\n\
+                     +++ b/cc_target.py\n\
+                     @@@ -1,3 -1,3 +1,4 @@@\n\
+                       ctx\n\
+                     - p1_removed\n\
+                      -p2_removed\n\
+                     ++merge_added\n\
+                       more_ctx\n";
+        let cfg = DiffCompressorConfig {
+            min_lines_for_ccr: 5,
+            ..Default::default()
+        };
+        let r = DiffCompressor::new(cfg).compress(input, "");
+        assert_eq!(r.files_affected, 1);
+        assert!(r.compressed.contains("diff --cc cc_target.py"));
+        assert!(r.compressed.contains("++merge_added"));
     }
 
     /// Bug-fix test: pre-diff content (commit headers, email-style

@@ -147,8 +147,18 @@ class DiffCompressor:
         >>> print(result.compressed)  # Reduced diff with summary
     """
 
-    # Pattern for diff --git header
+    # Pattern for `diff --git a/X b/Y` header (regular diff).
     _DIFF_GIT_PATTERN = re.compile(r"^diff --git a/(.+) b/(.+)$")
+
+    # Bug-fix (2026-04-25): merge-commit headers — `diff --combined <path>`
+    # and `diff --cc <path>`. Both produce a single-path file diff with
+    # combined-diff hunk syntax (`@@@`+). Previously the parser only
+    # recognized `diff --git`, so merge-commit diffs from `git log -p`
+    # of merges fell through to "no files parsed" and were passed
+    # through unchanged — even though ContentRouter had routed them here
+    # because `--- a/` triggered the detector.
+    _DIFF_COMBINED_PATTERN = re.compile(r"^diff --combined (.+)$")
+    _DIFF_CC_PATTERN = re.compile(r"^diff --cc (.+)$")
 
     # Pattern for --- a/file or --- /dev/null
     _OLD_FILE_PATTERN = re.compile(r"^--- (a/(.+)|/dev/null)$")
@@ -292,8 +302,17 @@ class DiffCompressor:
         while i < len(lines):
             line = lines[i]
 
-            # Check for diff --git header (new file section)
-            if self._DIFF_GIT_PATTERN.match(line):
+            # Check for diff --git header (new file section). Bug-fix:
+            # `diff --combined <path>` and `diff --cc <path>` (merge
+            # commits) also start a new file section — single-path,
+            # combined-diff hunk syntax. Treat them the same as
+            # `diff --git` for sectioning purposes; the path goes in
+            # `header` verbatim.
+            if (
+                self._DIFF_GIT_PATTERN.match(line)
+                or self._DIFF_COMBINED_PATTERN.match(line)
+                or self._DIFF_CC_PATTERN.match(line)
+            ):
                 # Save previous hunk and file
                 if current_hunk and current_file:
                     current_file.hunks.append(current_hunk)
