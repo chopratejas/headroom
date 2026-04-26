@@ -8,14 +8,20 @@
 //! `tokenizer.json` on the HuggingFace Hub and the `tokenizers` crate is a
 //! pure-Rust loader, so we don't have to estimate.
 //!
+//! # Sources
+//! - [`HfTokenizer::from_bytes`] — for tokenizers embedded via `include_bytes!`.
+//! - [`HfTokenizer::from_file`] — for a local `tokenizer.json`.
+//! - [`HfTokenizer::from_pretrained`] — pulls `tokenizer.json` from the
+//!   HuggingFace Hub via `hf-hub`. First call downloads to
+//!   `~/.cache/huggingface/hub`, subsequent calls hit the cache. Blocking;
+//!   call from `main()` or `tokio::task::spawn_blocking`. Gated repos
+//!   (Llama, Mistral) require an `HF_TOKEN` env var or a token in
+//!   `~/.cache/huggingface/token`.
+//!
 //! # What's NOT here
-//! - **No HuggingFace Hub auto-download.** Callers pass bytes or a path. A
-//!   later stage can add `hf-hub` integration behind a Cargo feature; doing it
-//!   here would drag in ureq/rustls, a `~/.cache/huggingface` dependency, and
-//!   gated-model auth flows that don't belong in the core crate.
 //! - **No tokenizer.json bundled in the binary.** Bundling Llama / Cohere
 //!   tokenizers would add several MB of binary bloat for code paths most users
-//!   don't hit.
+//!   don't hit. `from_pretrained` lazily downloads instead.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -32,6 +38,14 @@ pub enum HfTokenizerError {
     #[error("failed to load tokenizer for `{name}`: {source}")]
     Load {
         name: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// The HuggingFace Hub fetch failed: network error, 404 on the repo, or
+    /// 401 on a gated model without an `HF_TOKEN`.
+    #[error("failed to download `{repo}` from HuggingFace Hub: {source}")]
+    Hub {
+        repo: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -84,6 +98,37 @@ impl HfTokenizer {
             name,
             inner: Arc::new(inner),
         })
+    }
+
+    /// Download (or fetch from cache) `tokenizer.json` for `repo` from the
+    /// HuggingFace Hub and load it. `repo` is the canonical Hub identifier,
+    /// e.g. `"CohereForAI/c4ai-command-r-v01"` or `"meta-llama/Meta-Llama-3-8B"`.
+    ///
+    /// Uses the `main` revision. Blocking — calls into `ureq` synchronously.
+    /// First successful call writes the file to `~/.cache/huggingface/hub`
+    /// (or `$HF_HOME` if set); subsequent calls in the same or later
+    /// processes hit the on-disk cache.
+    ///
+    /// Errors:
+    /// - [`HfTokenizerError::Hub`] for download failures (no network, 404,
+    ///   401 on a gated model without `HF_TOKEN`).
+    /// - [`HfTokenizerError::Load`] if the downloaded bytes don't parse as
+    ///   a valid `tokenizer.json`. Should not happen for healthy HF repos.
+    pub fn from_pretrained(repo: &str) -> Result<Self, HfTokenizerError> {
+        let api = hf_hub::api::sync::Api::new().map_err(|e| HfTokenizerError::Hub {
+            repo: repo.to_string(),
+            source: Box::new(e),
+        })?;
+        let path = api
+            .model(repo.to_string())
+            .get("tokenizer.json")
+            .map_err(|e| HfTokenizerError::Hub {
+                repo: repo.to_string(),
+                source: Box::new(e),
+            })?;
+        // `get` returns the on-disk path; reuse `from_file` to keep the load
+        // path identical to user-supplied tokenizer.json files.
+        Self::from_file(repo, path)
     }
 
     /// The logical name this tokenizer was registered under (e.g.
@@ -236,5 +281,34 @@ mod tests {
         assert_eq!(t.count_text("hello world"), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Network-dependent: hits HuggingFace Hub. Run with
+    /// `cargo test -p headroom-core -- --ignored from_pretrained_downloads_real_tokenizer`.
+    /// `gpt2` is a small public unauthenticated repo (~1.4 MB tokenizer.json).
+    #[test]
+    #[ignore = "network-dependent: hits HuggingFace Hub"]
+    fn from_pretrained_downloads_real_tokenizer() {
+        let t = HfTokenizer::from_pretrained("gpt2").expect("download succeeds");
+        // GPT-2 BPE: "hello world" is 2 tokens. Locks in that we got a real
+        // BPE tokenizer (not a WhitespaceSplit fixture) from HF.
+        assert_eq!(t.count_text("hello world"), 2);
+        assert_eq!(t.name(), "gpt2");
+        assert_eq!(t.backend(), Backend::HuggingFace);
+    }
+
+    /// Negative path: a malformed repo name fails before any network call
+    /// (the Hub URL builder rejects it). No network required to run.
+    #[test]
+    fn from_pretrained_invalid_repo_returns_hub_error() {
+        // Empty repo name — hf-hub rejects this without making a network
+        // request. Locks in that we propagate Hub errors as `Hub`, not
+        // `Load`, so callers can distinguish "couldn't fetch" from
+        // "fetched but malformed".
+        let r = HfTokenizer::from_pretrained("");
+        assert!(
+            matches!(r, Err(HfTokenizerError::Hub { .. })),
+            "expected HfTokenizerError::Hub, got {r:?}"
+        );
     }
 }

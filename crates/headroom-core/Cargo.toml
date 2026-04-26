@@ -18,6 +18,11 @@ tiktoken-rs = "0.11"
 # pull in `onig` for the BPE pre-tokenizer regex; that vendors oniguruma so it
 # builds without a system dep on macOS/Linux.
 tokenizers = "0.21"
+# `hf-hub` is the HuggingFace Hub client. We use the blocking `ureq` transport
+# with `rustls` (no system OpenSSL dep — keeps the binary static-linkable for
+# AWS deploys). `from_pretrained` is called once at startup, so blocking is
+# fine; if a tokio caller needs it later we can wrap in `spawn_blocking`.
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
 
 [dev-dependencies]
 proptest = "1"

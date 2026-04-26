@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use super::{EstimatingCounter, HfTokenizer, TiktokenCounter, Tokenizer};
+use super::{EstimatingCounter, HfTokenizer, HfTokenizerError, TiktokenCounter, Tokenizer};
 
 /// Which family of tokenizer was selected for a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +122,25 @@ pub fn register_hf(prefix: impl Into<String>, tokenizer: HfTokenizer) {
 /// should register once at startup.
 pub fn clear_hf_registrations() {
     hf_table().write().expect("hf registry poisoned").clear();
+}
+
+/// Convenience: download `tokenizer.json` for `repo` from the HuggingFace
+/// Hub and register it under `prefix`. One-line glue around
+/// [`HfTokenizer::from_pretrained`] + [`register_hf`].
+///
+/// Useful for proxy startup code that wants real tokenizers for the major
+/// non-OpenAI families. Each call is independent — failure for one model
+/// (e.g. a gated Llama repo without `HF_TOKEN`) does not affect others.
+///
+/// ```no_run
+/// use headroom_core::tokenizer::try_register_hf;
+/// let _ = try_register_hf("command-", "CohereForAI/c4ai-command-r-v01");
+/// let _ = try_register_hf("mistral-", "mistralai/Mistral-7B-v0.1");
+/// ```
+pub fn try_register_hf(prefix: &str, repo: &str) -> Result<(), HfTokenizerError> {
+    let t = HfTokenizer::from_pretrained(repo)?;
+    register_hf(prefix, t);
+    Ok(())
 }
 
 fn lookup_hf(model: &str) -> Option<HfTokenizer> {
