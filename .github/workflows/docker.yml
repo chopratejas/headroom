@@ -137,7 +137,6 @@ jobs:
 
       - name: Sign images with cosign (keyless via Sigstore OIDC)
         env:
-          BAKE_META: ${{ steps.bake.outputs.metadata }}
           # Route signatures to a sibling GHCR package so the main image's
           # package version list stays clean. GHCR does not implement the OCI 1.1
           # referrers API yet (community discussion #163029, June 2025), so
@@ -147,9 +146,22 @@ jobs:
           # COSIGN_REPOSITORY value when running 'cosign verify'.
           COSIGN_REPOSITORY: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name }}-signatures
         run: |
-          echo "$BAKE_META" | jq -r '
-            to_entries[].value."containerimage.digest" // empty
-          ' | while read -r digest; do
+          # Write bake metadata to a file rather than pass it through
+          # the `env:` block. The `code-nonroot` and `runtime-code-nonroot`
+          # bake targets emit metadata blobs large enough that combined
+          # argv+env at bash spawn exceeds Linux ARG_MAX (~128 KiB on
+          # ubuntu-latest), failing with `E2BIG: Argument list too long`
+          # before the script can run. The heredoc puts the JSON in the
+          # script body (which is read from a temp file by bash, no
+          # ARG_MAX limit) and we read it back via `jq -f`-style file
+          # input. Sentinel chosen long enough that no JSON payload is
+          # plausibly going to collide with it.
+          cat > "${RUNNER_TEMP}/bake_meta.json" <<'__HEADROOM_BAKE_META_EOF__'
+          ${{ steps.bake.outputs.metadata }}
+          __HEADROOM_BAKE_META_EOF__
+
+          jq -r 'to_entries[].value."containerimage.digest" // empty' \
+              "${RUNNER_TEMP}/bake_meta.json" | while read -r digest; do
             image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name }}@${digest}"
             echo "Signing ${image} (signatures -> ${COSIGN_REPOSITORY})"
             cosign sign --yes "${image}"
