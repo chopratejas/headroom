@@ -254,18 +254,17 @@ pub fn crush_number_array(
     let mut sorted_finite: Vec<f64> = finite.clone();
     sorted_finite.sort_by(f64::total_cmp);
 
-    // BUG #1 (faithful port): integer-division index. For `len(sorted_finite) < 4`,
-    // fall back to min/max. Otherwise `sorted_finite[len/4]` / `sorted_finite[3*len/4]`.
-    let p25 = if sorted_finite.len() >= 4 {
-        sorted_finite[sorted_finite.len() / 4]
-    } else {
-        finite_min(&finite)
-    };
-    let p75 = if sorted_finite.len() >= 4 {
-        sorted_finite[3 * sorted_finite.len() / 4]
-    } else {
-        finite_max(&finite)
-    };
+    // BUG #1 FIX (lockstep with Python `_percentile_linear`): replace
+    // integer-division indexing with proper linear interpolation.
+    // Matches numpy's "linear" method exactly:
+    //   index = q * (n - 1)
+    //   if integer: sorted[index]
+    //   else: linear interpolate between floor and ceil
+    // The Python source's `_percentile_linear` helper uses the same
+    // formula; both languages now agree byte-for-byte on the strategy
+    // string's p25/p75 values.
+    let p25 = percentile_linear(&sorted_finite, 0.25);
+    let p75 = percentile_linear(&sorted_finite, 0.75);
 
     // Outliers (>variance_threshold σ from mean).
     let mut outlier_indices: BTreeSet<usize> = BTreeSet::new();
@@ -489,6 +488,24 @@ pub fn crush_object(
 }
 
 // ---------- helpers ----------
+
+/// Linear-interpolation percentile (numpy "linear" method).
+/// Mirrors Python's `_percentile_linear` helper for byte-equal
+/// strategy-string parity (BUG #1 FIX).
+fn percentile_linear(sorted_values: &[f64], q: f64) -> f64 {
+    let n = sorted_values.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return sorted_values[0];
+    }
+    let pos = q * (n - 1) as f64;
+    let lo = pos as usize;
+    let hi = if lo + 1 < n { lo + 1 } else { lo };
+    let frac = pos - lo as f64;
+    sorted_values[lo] * (1.0 - frac) + sorted_values[hi] * frac
+}
 
 fn finite_min(values: &[f64]) -> f64 {
     values.iter().cloned().reduce(f64::min).unwrap_or(0.0)
@@ -782,23 +799,46 @@ mod tests {
     // ---------- BUG #1 documentation test ----------
 
     #[test]
-    fn bug1_percentile_off_by_one_documented() {
-        // Pin Python's buggy index choice for 9-element finite list:
-        // sorted_finite[9 // 4] = sorted_finite[2] (3rd element).
-        // sorted_finite[3 * 9 // 4] = sorted_finite[6] (7th element).
-        //
-        // For sorted [1,2,3,4,5,6,7,8,9]:
-        //   buggy p25 = sorted[2] = 3
-        //   buggy p75 = sorted[6] = 7
-        //
-        // Stage 3c.1 commit 7 will fix this in BOTH languages and
-        // regenerate fixtures. Until then, this test pins parity.
+    fn bug1_percentile_proper_linear_interpolation() {
+        // BUG #1 FIX (Rust + Python in lockstep): proper linear-
+        // interpolation percentile. For sorted [1,2,3,4,5,6,7,8,9],
+        // n=9 so:
+        //   p25 index = 0.25 * 8 = 2.0    → sorted[2] = 3.0
+        //   p75 index = 0.75 * 8 = 6.0    → sorted[6] = 7.0
+        // (Both p25 and p75 land on integer indices for n=9.)
         let mut items: Vec<Value> = (1..=9).map(|i| json!(i)).collect();
-        // Pad past n>8 threshold and keep finite list exactly 9.
         items.extend(vec![json!(null); 5]); // nulls drop out of `finite`
         let (_out, strat) = crush_number_array(&items, &cfg(), 1.0);
-        // Verify the buggy p25/p75 land in the strategy string.
         assert!(strat.contains("p25=3"), "got: {}", strat);
         assert!(strat.contains("p75=7"), "got: {}", strat);
+    }
+
+    #[test]
+    fn bug1_percentile_interpolates_when_index_non_integer() {
+        // For sorted [10, 20, 30, 40, 50] (n=5):
+        //   p25 = 0.25 * 4 = 1.0  → sorted[1] = 20
+        //   p75 = 0.75 * 4 = 3.0  → sorted[3] = 40
+        // For sorted with n=10, n=11, etc., the index is non-integer
+        // and we interpolate. Pin a case where interpolation actually
+        // happens to verify the fix.
+        // n=10 finite: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        //   p25 = 0.25 * 9 = 2.25 → sorted[2] * 0.75 + sorted[3] * 0.25
+        //                          = 30 * 0.75 + 40 * 0.25 = 32.5
+        //   p75 = 0.75 * 9 = 6.75 → sorted[6] * 0.25 + sorted[7] * 0.75
+        //                          = 70 * 0.25 + 80 * 0.75 = 77.5
+        let items: Vec<Value> = (1..=10).map(|i| json!(i * 10)).collect();
+        let (_out, strat) = crush_number_array(&items, &cfg(), 1.0);
+        // Pre-fix would have given p25=sorted[10/4]=sorted[2]=30 (wrong).
+        // Post-fix gives 32.5.
+        assert!(
+            strat.contains("p25=32.5"),
+            "expected proper-percentile p25=32.5, got: {}",
+            strat
+        );
+        assert!(
+            strat.contains("p75=77.5"),
+            "expected proper-percentile p75=77.5, got: {}",
+            strat
+        );
     }
 }

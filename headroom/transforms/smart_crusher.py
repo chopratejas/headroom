@@ -286,6 +286,34 @@ def _get_preserve_field_values(
     return matches
 
 
+def _percentile_linear(sorted_values: list[float], q: float) -> float:
+    """Linear-interpolation percentile, matching numpy's "linear" method.
+
+    BUG #1 FIX (replaces integer-division indexing in _crush_number_array
+    that was off by one for `len < 8`). Computes:
+        index = q * (n - 1)
+        if index is integer: return sorted_values[index]
+        else: linear interpolate between floor and ceil
+
+    Args:
+        sorted_values: Pre-sorted ascending list of finite numbers.
+        q: Quantile in [0, 1] (e.g. 0.25 for p25, 0.75 for p75).
+
+    Returns:
+        The interpolated quantile value. Empty input returns 0.0.
+    """
+    n = len(sorted_values)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return float(sorted_values[0])
+    pos = q * (n - 1)
+    lo = int(pos)
+    hi = lo + 1 if lo + 1 < n else lo
+    frac = pos - lo
+    return sorted_values[lo] * (1 - frac) + sorted_values[hi] * frac
+
+
 def _item_has_preserve_field_match(
     item: dict,
     preserve_field_hashes: list[str],
@@ -436,18 +464,33 @@ def _detect_sequential_pattern(values: list[Any], check_order: bool = True) -> b
     if len(values) < 5:
         return False
 
-    # Get numeric values
+    # BUG #2 FIX: track whether ANY value was already numeric (not
+    # just a stringified number). If every "number" came from `int(s)`
+    # of a string value, the field is almost certainly a categorical
+    # string ID — possibly zero-padded — and should NOT be flagged
+    # as sequential. Without this guard, `["001", "002", "003"]`
+    # silently becomes `[1, 2, 3]` and gets misclassified.
     nums = []
+    had_non_string_numeric = False
     for v in values:
         if isinstance(v, int | float) and not isinstance(v, bool):
             nums.append(v)
+            had_non_string_numeric = True
         elif isinstance(v, str):
             try:
                 nums.append(int(v))
+                # Intentionally do NOT set had_non_string_numeric —
+                # see fix doc above.
             except ValueError:
                 pass
 
     if len(nums) < 5:
+        return False
+
+    # BUG #2 FIX: if every parseable value came from a string, the
+    # field is categorical (zero-padded codes, alphanumeric IDs that
+    # happen to be int-parseable, etc.). Don't classify as sequential.
+    if not had_non_string_numeric:
         return False
 
     # Need at least 2 elements for pairwise comparison
@@ -670,8 +713,13 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
         except Exception:
             continue
 
-        # Status field = low cardinality (2-10 distinct values)
-        if not (2 <= len(unique_values) <= 10):
+        # BUG #3 FIX: cardinality cap raised from 10 to 50 so that
+        # higher-cardinality but Pareto-distributed fields (e.g.
+        # 60 INFO + 25 WARN + 15 distinct error codes) still get
+        # their rare values flagged. Above 50 distinct values, the
+        # field is almost certainly an ID/free-form column, not a
+        # status enum.
+        if not (2 <= len(unique_values) <= 50):
             continue
 
         # Count value frequencies
@@ -680,23 +728,39 @@ def _detect_rare_status_values(items: list[dict], common_fields: set[str]) -> li
             key = str(v) if v is not None else "__none__"
             value_counts[key] = value_counts.get(key, 0) + 1
 
-        # Find the dominant value
         if not value_counts:
             continue
 
-        max_count = max(value_counts.values())
         total = len(values)
 
-        # If one value dominates (>90%), others are interesting
-        if max_count >= total * 0.9:
-            dominant_value = max(value_counts.keys(), key=lambda k: value_counts[k])
+        # BUG #3 FIX: replace single-dominant check with Pareto top-K.
+        # Sort frequencies descending; tiebreak by key ascending so the
+        # outcome is deterministic when multiple values have the same
+        # frequency. Find the smallest K such that top-K covers >=80%
+        # of items.
+        sorted_counts = sorted(value_counts.items(), key=lambda x: (-x[1], x[0]))
+        threshold = math.ceil(total * 0.8)
+        cumulative = 0
+        top_k_values: set[str] = set()
+        for value, count in sorted_counts:
+            cumulative += count
+            top_k_values.add(value)
+            if cumulative >= threshold:
+                break
 
-            for i, item in enumerate(items):
-                if not isinstance(item, dict) or field_name not in item:
-                    continue
-                item_value = str(item[field_name]) if item[field_name] is not None else "__none__"
-                if item_value != dominant_value:
-                    outlier_indices.append(i)
+        # K must be small (<=5) for any value to count as "rare".
+        # Above this the distribution is too uniform to label a value
+        # rare.
+        if len(top_k_values) > 5:
+            continue
+
+        # Items NOT in top_k_values are outliers.
+        for i, item in enumerate(items):
+            if not isinstance(item, dict) or field_name not in item:
+                continue
+            item_value = str(item[field_name]) if item[field_name] is not None else "__none__"
+            if item_value not in top_k_values:
+                outlier_indices.append(i)
 
     return outlier_indices
 
@@ -982,7 +1046,14 @@ class SmartAnalyzer:
             if isinstance(item, dict):
                 all_keys.update(item.keys())
 
-        for key in all_keys:
+        # PARITY FIX (Stage 3c.1): iterate in sorted key order. Python's
+        # set iteration is non-deterministic across PYTHONHASHSEED, so
+        # downstream short-circuits (`_select_strategy` "message" lookup,
+        # `_detect_pattern` first-score-field) become non-deterministic.
+        # Rust uses BTreeMap which iterates ASCII-sorted; sorting here
+        # locks both languages to the same iteration order so parity
+        # fixtures byte-match.
+        for key in sorted(all_keys):
             field_stats[key] = self._analyze_field(key, items)
 
         # Detect pattern
@@ -2719,8 +2790,14 @@ class SmartCrusher(Transform):
             min_k=3,
             max_k=self.config.max_items_after_crush or None,
         )
+        # BUG #4 FIX: clamp k_first and k_last so their sum never exceeds
+        # k_total. Without the clamp, k_total=1 produces k_first=k_last=1
+        # (both `max(1, round(0))`), violating max_items_after_crush.
+        # No-op for k_total >= 2 (the common path).
         k_first = max(1, round(k_total * self.config.first_fraction))
+        k_first = min(k_first, k_total)
         k_last = max(1, round(k_total * self.config.last_fraction))
+        k_last = min(k_last, max(0, k_total - k_first))
         k_importance = max(0, k_total - k_first - k_last)
         return k_total, k_first, k_last, k_importance
 
@@ -2841,8 +2918,12 @@ class SmartCrusher(Transform):
         median_val = statistics.median(finite)
         std_val = statistics.stdev(finite) if len(finite) > 1 else 0.0
         sorted_finite = sorted(finite)
-        p25 = sorted_finite[len(sorted_finite) // 4] if len(sorted_finite) >= 4 else min(finite)
-        p75 = sorted_finite[3 * len(sorted_finite) // 4] if len(sorted_finite) >= 4 else max(finite)
+        # BUG #1 FIX: replace integer-division indexing (off-by-one
+        # for len < 8) with proper linear-interpolation percentile.
+        # `_percentile_linear` matches numpy's "linear" method exactly
+        # — index = q * (n - 1), interpolate between floor and ceil.
+        p25 = _percentile_linear(sorted_finite, 0.25)
+        p75 = _percentile_linear(sorted_finite, 0.75)
 
         # Outliers (> variance_threshold σ from mean)
         outlier_indices: set[int] = set()

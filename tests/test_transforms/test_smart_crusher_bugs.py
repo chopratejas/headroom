@@ -210,3 +210,81 @@ class TestRecursionDepthLimit:
         result, was_modified, info = crusher._smart_crush_content(content)
         parsed = json.loads(result)
         assert isinstance(parsed, list)
+
+
+# ---------------------------------------------------------------------------
+# Stage 3c.1 lockstep bug fixes (#1 percentile, #2 sequential, #3 rare-status,
+# #4 k-split). Each test pins the Python behavior post-fix; Rust has matching
+# tests so parity fixtures byte-equal both languages.
+# ---------------------------------------------------------------------------
+
+
+class TestStage3c1BugFixes:
+    """Bugs fixed in lockstep with the Rust port at Stage 3c.1."""
+
+    # Bug #1 — percentile off-by-one (cosmetic, strategy string only).
+    def test_bug1_percentile_uses_linear_interpolation(self) -> None:
+        from headroom.transforms.smart_crusher import _percentile_linear
+
+        # n=10 [10..100]: p25 index = 0.25 * 9 = 2.25 → 30*0.75 + 40*0.25 = 32.5
+        sorted_vals = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+        assert _percentile_linear(sorted_vals, 0.25) == 32.5
+        assert _percentile_linear(sorted_vals, 0.75) == 77.5
+        # n=1 → return the single value.
+        assert _percentile_linear([42.0], 0.25) == 42.0
+        # n=0 → 0.0 (defensive).
+        assert _percentile_linear([], 0.25) == 0.0
+
+    # Bug #2 — zero-padded string IDs misclassified as sequential.
+    def test_bug2_zero_padded_strings_not_sequential(self) -> None:
+        from headroom.transforms.smart_crusher import _detect_sequential_pattern
+
+        # Pre-fix: int("001") → 1, so ["001",...,"005"] looked like 1..5
+        # and was classified as sequential. Post-fix: had_non_string_numeric
+        # stays False because every value came from a string → return False.
+        zero_padded = ["001", "002", "003", "004", "005"]
+        assert _detect_sequential_pattern(zero_padded, check_order=False) is False
+
+        # Real ints (not strings) still classify as sequential.
+        real_ints = [1, 2, 3, 4, 5]
+        assert _detect_sequential_pattern(real_ints, check_order=False) is True
+
+    # Bug #3 — rare-status detection cardinality cap.
+    def test_bug3_high_cardinality_pareto(self) -> None:
+        from headroom.transforms.smart_crusher import _detect_rare_status_values
+
+        # 60×INFO + 25×WARN + 15 distinct error codes (cardinality 17).
+        # Pre-fix: 17 > 10 → field skipped → 0 outliers.
+        # Post-fix: top-2 covers 85% (60+25=85), K=2 ≤ 5, the 15 rare codes flagged.
+        items = []
+        for _ in range(60):
+            items.append({"code": "INFO"})
+        for _ in range(25):
+            items.append({"code": "WARN"})
+        for i in range(15):
+            items.append({"code": f"ERR_{i}"})
+        outliers = _detect_rare_status_values(items, common_fields={"code"})
+        assert len(outliers) == 15
+
+    def test_bug3_uniform_distribution_no_outliers(self) -> None:
+        # 50 distinct values, 1 each → top-K never reaches 80% with K<=5.
+        # Field correctly identified as non-categorical.
+        from headroom.transforms.smart_crusher import _detect_rare_status_values
+
+        items = [{"code": f"CAT_{i}"} for i in range(50)]
+        assert _detect_rare_status_values(items, common_fields={"code"}) == []
+
+    # Bug #4 — k-split overshoot when k_total=1.
+    def test_bug4_k_split_no_overshoot_when_k_total_one(self) -> None:
+        from headroom import SmartCrusherConfig
+        from headroom.transforms.smart_crusher import SmartCrusher
+
+        config = SmartCrusherConfig(min_items_to_analyze=1)
+        crusher = SmartCrusher(config=config)
+        # Force k_total=1 by passing a single-item list — the n<=8 fast
+        # path returns n=1, so k_total=1.
+        k_total, k_first, k_last, k_importance = crusher._compute_k_split(["only"], 1.0)
+        assert k_total == 1
+        assert k_first + k_last <= k_total, (
+            f"BUG #4: k_first={k_first} + k_last={k_last} must not exceed k_total={k_total}"
+        )
