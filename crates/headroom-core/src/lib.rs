@@ -1,5 +1,6 @@
 //! headroom-core: foundation crate for the Rust port of Headroom.
 
+pub mod relevance;
 pub mod tokenizer;
 pub mod transforms;
 
