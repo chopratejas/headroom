@@ -36,10 +36,13 @@
 use serde_json::Value;
 
 use super::analyzer::SmartAnalyzer;
+use super::classifier::{classify_array, ArrayType};
 use super::config::SmartCrusherConfig;
-use super::crushers::{compute_k_split, crush_string_array};
+use super::crushers::{
+    compute_k_split, crush_number_array, crush_object, crush_string_array,
+};
 use super::planning::SmartCrusherPlanner;
-use super::types::{CompressionPlan, CompressionStrategy};
+use super::types::{CompressionPlan, CompressionStrategy, CrushResult};
 use crate::relevance::{HybridScorer, RelevanceScorer};
 use crate::transforms::adaptive_sizer::compute_optimal_k;
 use crate::transforms::anchor_selector::{AnchorConfig, AnchorSelector};
@@ -117,6 +120,167 @@ impl SmartCrusher {
             .filter(|&idx| idx < items.len())
             .map(|idx| items[idx].clone())
             .collect()
+    }
+
+    /// Top-level entry point. Mirrors Python `SmartCrusher.crush`
+    /// (line 1581-1603) — used by `ContentRouter` when routing JSON
+    /// arrays.
+    ///
+    /// Parses `content` as JSON, recursively processes it (compressing
+    /// arrays at every depth via the appropriate per-type crusher),
+    /// then re-serializes with Python-compatible formatting (`, ` and
+    /// `: ` separators, ASCII-escaped non-ASCII).
+    ///
+    /// Returns a `CrushResult` with:
+    /// - `compressed`: the re-serialized JSON.
+    /// - `original`: the input string (unmodified).
+    /// - `was_modified`: whether `compressed` differs from `content`'s
+    ///   trimmed form.
+    /// - `strategy`: combined strategy info from all crushed arrays
+    ///   (or `"passthrough"`).
+    pub fn crush(&self, content: &str, query: &str, bias: f64) -> CrushResult {
+        let (compressed, was_modified, info) = self.smart_crush_content(content, query, bias);
+        let strategy = if info.is_empty() {
+            "passthrough".to_string()
+        } else {
+            info
+        };
+        CrushResult {
+            compressed,
+            original: content.to_string(),
+            was_modified,
+            strategy,
+        }
+    }
+
+    /// `SmartCrusher._smart_crush_content` (Python line 2243-2301).
+    /// JSON-parse, recursively process, re-serialize. CCR marker
+    /// injection is stubbed (CCR is disabled in this stage).
+    ///
+    /// Returns `(crushed_content, was_modified, info)`.
+    pub fn smart_crush_content(
+        &self,
+        content: &str,
+        query_context: &str,
+        bias: f64,
+    ) -> (String, bool, String) {
+        // Parse — non-JSON content passes through unchanged.
+        let Ok(parsed) = serde_json::from_str::<Value>(content) else {
+            return (content.to_string(), false, String::new());
+        };
+
+        let (crushed, info) = self.process_value(&parsed, 0, query_context, bias);
+
+        // Re-serialize with Python-compatible formatting (preserves
+        // insertion order; uses `, ` / `: ` separators and ASCII
+        // escapes for non-ASCII codepoints).
+        let result = crate::transforms::anchor_selector::python_json_dumps(&crushed);
+        let was_modified = result != content.trim();
+        (result, was_modified, info)
+    }
+
+    /// Maximum recursion depth for nested JSON. Mirrors Python's
+    /// `_MAX_PROCESS_DEPTH = 50`. Beyond this, values are returned as-is.
+    const MAX_PROCESS_DEPTH: usize = 50;
+
+    /// Recursively process a value, crushing arrays where appropriate.
+    /// Mirrors Python `_process_value` (line 2307-2398).
+    ///
+    /// Returns `(processed_value, info_string)`. CCR markers are
+    /// stubbed (Python's tuple has a third element for them — Rust's
+    /// version omits since we never produce markers in this stage).
+    pub fn process_value(
+        &self,
+        value: &Value,
+        depth: usize,
+        query_context: &str,
+        bias: f64,
+    ) -> (Value, String) {
+        if depth >= Self::MAX_PROCESS_DEPTH {
+            return (value.clone(), String::new());
+        }
+
+        let mut info_parts: Vec<String> = Vec::new();
+
+        match value {
+            Value::Array(arr) => {
+                let n = arr.len();
+                if n >= self.config.min_items_to_analyze {
+                    let arr_type = classify_array(arr);
+                    match arr_type {
+                        ArrayType::DictArray => {
+                            let result = self.crush_array(arr, query_context, bias);
+                            info_parts
+                                .push(format!("{}({}->{})", result.strategy_info, n, result.items.len()));
+                            return (Value::Array(result.items), info_parts.join(","));
+                        }
+                        ArrayType::StringArray => {
+                            let strs: Vec<&str> =
+                                arr.iter().filter_map(|v| v.as_str()).collect();
+                            let (crushed, strategy) =
+                                crush_string_array(&strs, &self.config, bias);
+                            info_parts.push(format!("{}({}->{})", strategy, n, crushed.len()));
+                            let crushed_values: Vec<Value> =
+                                crushed.into_iter().map(Value::String).collect();
+                            return (Value::Array(crushed_values), info_parts.join(","));
+                        }
+                        ArrayType::NumberArray => {
+                            let (crushed, strategy) =
+                                crush_number_array(arr, &self.config, bias);
+                            info_parts.push(format!("{}({}->{})", strategy, n, crushed.len()));
+                            return (Value::Array(crushed), info_parts.join(","));
+                        }
+                        ArrayType::MixedArray => {
+                            let (crushed, strategy) =
+                                self.crush_mixed_array(arr, query_context, bias);
+                            info_parts.push(format!("{}({}->{})", strategy, n, crushed.len()));
+                            return (Value::Array(crushed), info_parts.join(","));
+                        }
+                        // NestedArray, BoolArray, Empty → fall through
+                        // to recursive descent.
+                        _ => {}
+                    }
+                }
+
+                // Below threshold or not crushable → recurse into items.
+                let mut processed: Vec<Value> = Vec::with_capacity(n);
+                for item in arr {
+                    let (p_item, p_info) =
+                        self.process_value(item, depth + 1, query_context, bias);
+                    processed.push(p_item);
+                    if !p_info.is_empty() {
+                        info_parts.push(p_info);
+                    }
+                }
+                (Value::Array(processed), info_parts.join(","))
+            }
+            Value::Object(map) => {
+                // First pass: recurse into values to compress nested arrays.
+                let mut processed = serde_json::Map::new();
+                for (k, v) in map {
+                    let (p_val, p_info) =
+                        self.process_value(v, depth + 1, query_context, bias);
+                    processed.insert(k.clone(), p_val);
+                    if !p_info.is_empty() {
+                        info_parts.push(p_info);
+                    }
+                }
+
+                // Second pass: if the object itself has many keys,
+                // compress at the key level.
+                if processed.len() >= self.config.min_items_to_analyze {
+                    let (crushed_dict, strategy) = crush_object(&processed, &self.config, bias);
+                    if strategy != "object:passthrough" {
+                        info_parts.push(strategy);
+                        return (Value::Object(crushed_dict), info_parts.join(","));
+                    }
+                }
+
+                (Value::Object(processed), info_parts.join(","))
+            }
+            // Scalars — passthrough.
+            _ => (value.clone(), String::new()),
+        }
     }
 
     /// Compress an array of dict items.
@@ -575,6 +739,88 @@ mod tests {
     fn crusher_construction_default() {
         let c = SmartCrusher::new(SmartCrusherConfig::default());
         assert_eq!(c.config.max_items_after_crush, 15);
+    }
+
+    // ---------- top-level crush ----------
+
+    #[test]
+    fn crush_non_json_passes_through_unchanged() {
+        let c = crusher();
+        let result = c.crush("not json at all", "", 1.0);
+        assert!(!result.was_modified);
+        assert_eq!(result.compressed, "not json at all");
+        assert_eq!(result.strategy, "passthrough");
+    }
+
+    #[test]
+    fn crush_scalar_json_passes_through() {
+        let c = crusher();
+        let result = c.crush("42", "", 1.0);
+        // A scalar is not crushable; should round-trip unchanged.
+        assert_eq!(result.compressed, "42");
+        assert!(!result.was_modified);
+    }
+
+    #[test]
+    fn crush_small_array_passes_through() {
+        let c = crusher();
+        let result = c.crush(r#"[1, 2, 3]"#, "", 1.0);
+        // Below min_items_to_analyze=5 → no crushing.
+        assert!(!result.was_modified);
+    }
+
+    #[test]
+    fn crush_dict_array_crushes_when_low_uniqueness() {
+        let c = crusher();
+        // 30 dicts all with status=ok → low uniqueness path → crushable.
+        let mut input = String::from("[");
+        for i in 0..30 {
+            if i > 0 {
+                input.push(',');
+            }
+            input.push_str(r#"{"status":"ok"}"#);
+        }
+        input.push(']');
+        let result = c.crush(&input, "", 1.0);
+        assert!(
+            result.was_modified,
+            "30 identical dicts should compress (low_uniqueness_safe_to_sample)"
+        );
+        assert_ne!(result.strategy, "passthrough");
+    }
+
+    #[test]
+    fn crush_serializes_with_python_format() {
+        let c = crusher();
+        // 3-key object should round-trip as `{"a": 1, "b": 2, "c": 3}`
+        // (with spaces) — Python's default json.dumps format.
+        let input = r#"{"a":1,"b":2,"c":3}"#;
+        let result = c.crush(input, "", 1.0);
+        assert_eq!(
+            result.compressed, r#"{"a": 1, "b": 2, "c": 3}"#,
+            "Python-format serializer adds spaces after `,` and `:`"
+        );
+    }
+
+    #[test]
+    fn crush_recurses_into_nested_arrays() {
+        let c = crusher();
+        // Top-level dict with a nested array of 30 identical items.
+        // The inner array should compress (low_uniqueness path).
+        let mut inner = String::from("[");
+        for i in 0..30 {
+            if i > 0 {
+                inner.push(',');
+            }
+            inner.push_str(r#"{"status":"ok"}"#);
+        }
+        inner.push(']');
+        let input = format!(r#"{{"data": {}}}"#, inner);
+        let result = c.crush(&input, "", 1.0);
+        assert!(
+            result.was_modified,
+            "nested compressible array must be crushed even inside a wrapper object"
+        );
     }
 
     #[test]

@@ -368,11 +368,25 @@ pub fn compute_item_hash(item: &Value) -> String {
 ///    impossible so we don't handle them here.
 pub fn python_json_dumps_sort_keys(value: &Value) -> String {
     let mut out = String::new();
-    write_python_json(value, &mut out);
+    write_python_json_inner(value, &mut out, true);
     out
 }
 
-fn write_python_json(value: &Value, out: &mut String) {
+/// Python `json.dumps(value)` — exact format parity, preserving
+/// object-key insertion order (matches the JSON parser's order via
+/// serde_json's `preserve_order` feature).
+///
+/// Used by `_smart_crush_content` to re-serialize crushed JSON for
+/// the proxy. Bytes differ from `to_string` because of the `, ` /
+/// `: ` separators and `\uXXXX` non-ASCII escapes — both Python
+/// defaults that affect output bytes the proxy may compare against.
+pub fn python_json_dumps(value: &Value) -> String {
+    let mut out = String::new();
+    write_python_json_inner(value, &mut out, false);
+    out
+}
+
+fn write_python_json_inner(value: &Value, out: &mut String, sort_keys: bool) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(true) => out.push_str("true"),
@@ -385,22 +399,35 @@ fn write_python_json(value: &Value, out: &mut String) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_python_json(v, out);
+                write_python_json_inner(v, out, sort_keys);
             }
             out.push(']');
         }
         Value::Object(map) => {
-            // Python's sort_keys=True → alphabetical key order.
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
             out.push('{');
-            for (i, key) in keys.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
+            if sort_keys {
+                // Python's sort_keys=True → alphabetical key order.
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                for (i, key) in keys.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    write_python_json_string(key, out);
+                    out.push_str(": ");
+                    write_python_json_inner(&map[key.as_str()], out, sort_keys);
                 }
-                write_python_json_string(key, out);
-                out.push_str(": ");
-                write_python_json(&map[key.as_str()], out);
+            } else {
+                // Insertion order — serde_json's preserve_order feature
+                // ensures Map iteration matches the source JSON.
+                for (i, (key, val)) in map.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    write_python_json_string(key, out);
+                    out.push_str(": ");
+                    write_python_json_inner(val, out, sort_keys);
+                }
             }
             out.push('}');
         }
