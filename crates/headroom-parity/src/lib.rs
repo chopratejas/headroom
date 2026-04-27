@@ -274,6 +274,123 @@ impl TransformComparator for TokenizerComparator {
     }
 }
 
+/// Real comparator for the `smart_crusher` transform. Drives the Rust
+/// port over the recorded fixture inputs (`{content, query, bias}`)
+/// and emits the same shape the Python recorder serialized:
+/// `{compressed, original, was_modified, strategy}`.
+///
+/// The comparator builds `SmartCrusherConfig` from the fixture's
+/// `config` block, falling back to the Rust default for any missing
+/// field. The Python recorder writes every field today, but tolerating
+/// partial configs keeps fixtures forward-compatible if either side
+/// gains a field.
+pub struct SmartCrusherComparator;
+
+impl TransformComparator for SmartCrusherComparator {
+    fn name(&self) -> &str {
+        "smart_crusher"
+    }
+
+    fn run(
+        &self,
+        input: &serde_json::Value,
+        config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use headroom_core::transforms::smart_crusher::{SmartCrusher, SmartCrusherConfig};
+
+        let content = input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .context("smart_crusher fixture input.content must be a JSON string")?;
+        let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let bias = input.get("bias").and_then(|v| v.as_f64()).unwrap_or(1.0);
+
+        let defaults = SmartCrusherConfig::default();
+        let cfg = SmartCrusherConfig {
+            enabled: config
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.enabled),
+            min_items_to_analyze: config
+                .get("min_items_to_analyze")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(defaults.min_items_to_analyze),
+            min_tokens_to_crush: config
+                .get("min_tokens_to_crush")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(defaults.min_tokens_to_crush),
+            variance_threshold: config
+                .get("variance_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.variance_threshold),
+            uniqueness_threshold: config
+                .get("uniqueness_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.uniqueness_threshold),
+            similarity_threshold: config
+                .get("similarity_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.similarity_threshold),
+            max_items_after_crush: config
+                .get("max_items_after_crush")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(defaults.max_items_after_crush),
+            preserve_change_points: config
+                .get("preserve_change_points")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.preserve_change_points),
+            factor_out_constants: config
+                .get("factor_out_constants")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.factor_out_constants),
+            include_summaries: config
+                .get("include_summaries")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.include_summaries),
+            use_feedback_hints: config
+                .get("use_feedback_hints")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.use_feedback_hints),
+            toin_confidence_threshold: config
+                .get("toin_confidence_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.toin_confidence_threshold),
+            dedup_identical_items: config
+                .get("dedup_identical_items")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.dedup_identical_items),
+            first_fraction: config
+                .get("first_fraction")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.first_fraction),
+            last_fraction: config
+                .get("last_fraction")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.last_fraction),
+            // Rust-only knob; Python config has no field for it. Use
+            // the Rust default (which mirrors Python's hardcoded
+            // RelevanceConfig.relevance_threshold = 0.3).
+            relevance_threshold: config
+                .get("relevance_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(defaults.relevance_threshold),
+        };
+
+        let crusher = SmartCrusher::new(cfg);
+        let result = crusher.crush(content, query, bias);
+
+        Ok(serde_json::json!({
+            "compressed": result.compressed,
+            "original": result.original,
+            "was_modified": result.was_modified,
+            "strategy": result.strategy,
+        }))
+    }
+}
+
 /// Every built-in comparator, in a stable order.
 pub fn builtin_comparators() -> Vec<Box<dyn TransformComparator>> {
     vec![
@@ -282,6 +399,7 @@ pub fn builtin_comparators() -> Vec<Box<dyn TransformComparator>> {
         Box::new(CacheAlignerComparator),
         Box::new(TokenizerComparator),
         Box::new(CcrComparator),
+        Box::new(SmartCrusherComparator),
     ]
 }
 

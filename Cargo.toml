@@ -26,7 +26,12 @@ authors = ["Headroom Maintainers"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` makes `serde_json::Value::Object` use IndexMap so JSON
+# parse order is preserved through Value→string→Value round-trips. The
+# smart_crusher port relies on this to match Python's `str(dict)` output,
+# which preserves insertion order; otherwise BTreeMap's sorted-key default
+# would diverge from Python on every multi-key object.
+serde_json = { version = "1", features = ["preserve_order"] }
 bytes = "1"
 thiserror = "1"
 tracing = "0.1"

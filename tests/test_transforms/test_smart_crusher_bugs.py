@@ -20,6 +20,7 @@ from headroom.transforms.smart_crusher import SmartCrusher
 
 
 def _make_crusher(max_items: int = 10, min_items: int = 3) -> SmartCrusher:
+    """Build a SmartCrusher with deterministic small-K config for tests."""
     config = SmartCrusherConfig(
         enabled=True,
         min_items_to_analyze=min_items,
@@ -30,102 +31,13 @@ def _make_crusher(max_items: int = 10, min_items: int = 3) -> SmartCrusher:
     return SmartCrusher(config=config)
 
 
-# ---------------------------------------------------------------------------
-# Bug 1: Number array type mixing
-# ---------------------------------------------------------------------------
-
-
-class TestNumberArraySchemaPreservation:
-    """_crush_number_array must return only original numeric values.
-
-    Previously it prepended a stats summary string, producing
-    [string, int, int, ...] which violates the schema-preserving
-    guarantee and breaks type-aware JSON consumers.
-    """
-
-    def test_crushed_number_array_contains_only_numbers(self) -> None:
-        """Every element of the crushed array must be int or float."""
-        crusher = _make_crusher(max_items=10)
-        numbers = list(range(50))  # 0..49, well above the n<=8 passthrough
-        crushed, strategy = crusher._crush_number_array(numbers)
-
-        for i, item in enumerate(crushed):
-            assert isinstance(item, int | float), (
-                f"Item {i} is {type(item).__name__} = {item!r}, expected int/float. "
-                f"Schema-preserving guarantee violated."
-            )
-
-    def test_crushed_number_array_subset_of_original(self) -> None:
-        """Every value in the crushed array must exist in the original."""
-        crusher = _make_crusher(max_items=10)
-        numbers = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
-        crushed, _ = crusher._crush_number_array(numbers)
-
-        original_set = set(numbers)
-        for item in crushed:
-            assert item in original_set, (
-                f"Value {item!r} not in original array — generated content detected"
-            )
-
-    def test_stats_summary_in_strategy_not_in_array(self) -> None:
-        """Statistics should be communicated via strategy string, not array content."""
-        crusher = _make_crusher(max_items=5)
-        numbers = list(range(100))
-        crushed, strategy = crusher._crush_number_array(numbers)
-
-        # Strategy should contain stats info
-        assert "number:" in strategy
-
-        # Array should not contain any strings
-        strings_in_result = [x for x in crushed if isinstance(x, str)]
-        assert strings_in_result == [], f"Found string(s) in numeric array: {strings_in_result}"
-
-    def test_number_array_passthrough_for_small(self) -> None:
-        """Arrays with n <= 8 should pass through unchanged."""
-        crusher = _make_crusher()
-        small = [1, 2, 3, 4, 5]
-        crushed, strategy = crusher._crush_number_array(small)
-        assert crushed == small
-        assert strategy == "number:passthrough"
-
-    def test_number_array_preserves_outliers(self) -> None:
-        """Outlier values should be preserved in the crushed output."""
-        crusher = _make_crusher(max_items=10)
-        # Normal range + extreme outlier
-        numbers = [10] * 20 + [10000]
-        crushed, strategy = crusher._crush_number_array(numbers)
-        assert 10000 in crushed, "Outlier value 10000 was dropped"
-
-    def test_number_array_preserves_boundaries(self) -> None:
-        """First and last values should always be kept."""
-        crusher = _make_crusher(max_items=5)
-        numbers = list(range(100))
-        crushed, strategy = crusher._crush_number_array(numbers)
-        assert crushed[0] == 0, "First value not preserved"
-        assert numbers[-1] in crushed, "Last value not preserved"
-
-    def test_non_finite_passthrough(self) -> None:
-        """All-NaN/Inf arrays should return unchanged."""
-        crusher = _make_crusher()
-        nans = [float("nan")] * 10
-        crushed, strategy = crusher._crush_number_array(nans)
-        assert strategy == "number:no_finite"
-        assert len(crushed) == 10
-
-    def test_full_crush_pipeline_number_array_types(self) -> None:
-        """End-to-end: crushing a JSON number array via the public API."""
-        crusher = _make_crusher(max_items=10)
-        content = json.dumps(list(range(50)))
-        result, was_modified, info = crusher._smart_crush_content(content)
-
-        if was_modified:
-            parsed = json.loads(result)
-            assert isinstance(parsed, list)
-            for item in parsed:
-                assert isinstance(item, int | float), (
-                    f"Public API returned non-numeric item {item!r} in number array"
-                )
-
+# Bug #1 (number array schema preservation) — invariant pinned by the
+# Rust port (`crates/headroom-core/src/transforms/smart_crusher/crushers.rs::
+# crush_number_array` + its unit tests) and the parity fixtures
+# (`tests/parity/fixtures/smart_crusher/number_array_40_changepoint*`).
+# The Python `_crush_number_array` helper that the previous tests
+# probed was removed when the Python implementation was retired in
+# Stage 3c.1b.
 
 # ---------------------------------------------------------------------------
 # Bug 2: Race condition on _current_field_semantics
@@ -210,3 +122,14 @@ class TestRecursionDepthLimit:
         result, was_modified, info = crusher._smart_crush_content(content)
         parsed = json.loads(result)
         assert isinstance(parsed, list)
+
+
+# Stage 3c.1 lockstep bug-fix tests previously lived here; they probed
+# Python helpers (`_percentile_linear`, `_detect_sequential_pattern`,
+# `_detect_rare_status_values`, `_compute_k_split`) that were removed
+# along with the Python implementation in Stage 3c.1b. The Rust port
+# pins the same invariants — see the `bug1_*` / `bug2_*` / `bug3_*` /
+# `bug4_*` tests in `crates/headroom-core/src/transforms/smart_crusher/`
+# (notably `crushers.rs` and `analyzer.rs`). Parity fixtures
+# (`tests/parity/fixtures/smart_crusher/`) byte-compare the post-fix
+# behavior across the language boundary.

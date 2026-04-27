@@ -15,6 +15,10 @@
 
 use std::collections::BTreeMap;
 
+use headroom_core::transforms::smart_crusher::{
+    CrushResult as RustCrushResult, SmartCrusher as RustSmartCrusher,
+    SmartCrusherConfig as RustSmartCrusherConfig,
+};
 use headroom_core::transforms::{
     DiffCompressionResult, DiffCompressor, DiffCompressorConfig, DiffCompressorStats,
 };
@@ -367,6 +371,241 @@ impl PyDiffCompressor {
     }
 }
 
+// ─── SmartCrusherConfig ────────────────────────────────────────────────────
+
+/// Mirror of `headroom.transforms.smart_crusher.SmartCrusherConfig`.
+/// Defaults match Python's dataclass byte-for-byte. The constructor
+/// accepts every field as a kwarg with the same name and type so the
+/// Python shim can pass `SmartCrusherConfig(**asdict(py_cfg))`.
+#[pyclass(name = "SmartCrusherConfig", module = "headroom._core")]
+#[derive(Clone)]
+struct PySmartCrusherConfig {
+    inner: RustSmartCrusherConfig,
+}
+
+#[pymethods]
+impl PySmartCrusherConfig {
+    #[new]
+    #[pyo3(signature = (
+        enabled = true,
+        min_items_to_analyze = 5,
+        min_tokens_to_crush = 200,
+        variance_threshold = 2.0,
+        uniqueness_threshold = 0.1,
+        similarity_threshold = 0.8,
+        max_items_after_crush = 15,
+        preserve_change_points = true,
+        factor_out_constants = false,
+        include_summaries = false,
+        use_feedback_hints = true,
+        toin_confidence_threshold = 0.5,
+        dedup_identical_items = true,
+        first_fraction = 0.3,
+        last_fraction = 0.15,
+        relevance_threshold = 0.3,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        enabled: bool,
+        min_items_to_analyze: usize,
+        min_tokens_to_crush: usize,
+        variance_threshold: f64,
+        uniqueness_threshold: f64,
+        similarity_threshold: f64,
+        max_items_after_crush: usize,
+        preserve_change_points: bool,
+        factor_out_constants: bool,
+        include_summaries: bool,
+        use_feedback_hints: bool,
+        toin_confidence_threshold: f64,
+        dedup_identical_items: bool,
+        first_fraction: f64,
+        last_fraction: f64,
+        relevance_threshold: f64,
+    ) -> Self {
+        Self {
+            inner: RustSmartCrusherConfig {
+                enabled,
+                min_items_to_analyze,
+                min_tokens_to_crush,
+                variance_threshold,
+                uniqueness_threshold,
+                similarity_threshold,
+                max_items_after_crush,
+                preserve_change_points,
+                factor_out_constants,
+                include_summaries,
+                use_feedback_hints,
+                toin_confidence_threshold,
+                dedup_identical_items,
+                first_fraction,
+                last_fraction,
+                relevance_threshold,
+            },
+        }
+    }
+
+    #[getter]
+    fn enabled(&self) -> bool {
+        self.inner.enabled
+    }
+    #[getter]
+    fn min_items_to_analyze(&self) -> usize {
+        self.inner.min_items_to_analyze
+    }
+    #[getter]
+    fn min_tokens_to_crush(&self) -> usize {
+        self.inner.min_tokens_to_crush
+    }
+    #[getter]
+    fn variance_threshold(&self) -> f64 {
+        self.inner.variance_threshold
+    }
+    #[getter]
+    fn uniqueness_threshold(&self) -> f64 {
+        self.inner.uniqueness_threshold
+    }
+    #[getter]
+    fn similarity_threshold(&self) -> f64 {
+        self.inner.similarity_threshold
+    }
+    #[getter]
+    fn max_items_after_crush(&self) -> usize {
+        self.inner.max_items_after_crush
+    }
+    #[getter]
+    fn preserve_change_points(&self) -> bool {
+        self.inner.preserve_change_points
+    }
+    #[getter]
+    fn factor_out_constants(&self) -> bool {
+        self.inner.factor_out_constants
+    }
+    #[getter]
+    fn include_summaries(&self) -> bool {
+        self.inner.include_summaries
+    }
+    #[getter]
+    fn use_feedback_hints(&self) -> bool {
+        self.inner.use_feedback_hints
+    }
+    #[getter]
+    fn toin_confidence_threshold(&self) -> f64 {
+        self.inner.toin_confidence_threshold
+    }
+    #[getter]
+    fn dedup_identical_items(&self) -> bool {
+        self.inner.dedup_identical_items
+    }
+    #[getter]
+    fn first_fraction(&self) -> f64 {
+        self.inner.first_fraction
+    }
+    #[getter]
+    fn last_fraction(&self) -> f64 {
+        self.inner.last_fraction
+    }
+    #[getter]
+    fn relevance_threshold(&self) -> f64 {
+        self.inner.relevance_threshold
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SmartCrusherConfig(enabled={}, min_items_to_analyze={}, \
+             min_tokens_to_crush={}, max_items_after_crush={}, \
+             relevance_threshold={})",
+            self.inner.enabled,
+            self.inner.min_items_to_analyze,
+            self.inner.min_tokens_to_crush,
+            self.inner.max_items_after_crush,
+            self.inner.relevance_threshold,
+        )
+    }
+}
+
+// ─── CrushResult ───────────────────────────────────────────────────────────
+
+/// Mirror of `headroom.transforms.smart_crusher.CrushResult`. Read-only;
+/// the Python shim builds its own dataclass instance from these
+/// attributes so callers that destructure with `asdict()` keep working.
+#[pyclass(name = "CrushResult", module = "headroom._core")]
+struct PyCrushResult {
+    inner: RustCrushResult,
+}
+
+#[pymethods]
+impl PyCrushResult {
+    #[getter]
+    fn compressed(&self) -> &str {
+        &self.inner.compressed
+    }
+    #[getter]
+    fn original(&self) -> &str {
+        &self.inner.original
+    }
+    #[getter]
+    fn was_modified(&self) -> bool {
+        self.inner.was_modified
+    }
+    #[getter]
+    fn strategy(&self) -> &str {
+        &self.inner.strategy
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CrushResult(compressed=<{} chars>, was_modified={}, strategy={:?})",
+            self.inner.compressed.len(),
+            self.inner.was_modified,
+            self.inner.strategy,
+        )
+    }
+}
+
+// ─── SmartCrusher ──────────────────────────────────────────────────────────
+
+/// Mirror of `headroom.transforms.smart_crusher.SmartCrusher`.
+///
+/// Constructor accepts only `config` — Python's `relevance_config`,
+/// `scorer`, and `ccr_config` parameters are handled in the Python
+/// shim (Stage 3c.1 keeps the optional subsystems disabled in Rust;
+/// the shim drops those args to preserve call-site compatibility).
+#[pyclass(name = "SmartCrusher", module = "headroom._core")]
+struct PySmartCrusher {
+    inner: RustSmartCrusher,
+}
+
+#[pymethods]
+impl PySmartCrusher {
+    #[new]
+    #[pyo3(signature = (config = None))]
+    fn new(config: Option<&PySmartCrusherConfig>) -> Self {
+        let cfg = config.map(|c| c.inner.clone()).unwrap_or_default();
+        Self {
+            inner: RustSmartCrusher::new(cfg),
+        }
+    }
+
+    /// `crush(content, query="", bias=1.0) -> CrushResult`. Argument
+    /// order and keyword names mirror the Python implementation.
+    #[pyo3(signature = (content, query = "", bias = 1.0))]
+    fn crush(&self, content: &str, query: &str, bias: f64) -> PyCrushResult {
+        PyCrushResult {
+            inner: self.inner.crush(content, query, bias),
+        }
+    }
+
+    /// `smart_crush_content(content, query="", bias=1.0) -> (str, bool, str)`.
+    /// Mirrors Python's `_smart_crush_content` — used by
+    /// `smart_crush_tool_output` convenience function and direct
+    /// callers that want the tuple form.
+    #[pyo3(signature = (content, query = "", bias = 1.0))]
+    fn smart_crush_content(&self, content: &str, query: &str, bias: f64) -> (String, bool, String) {
+        self.inner.smart_crush_content(content, query, bias)
+    }
+}
+
 // ─── Module init ───────────────────────────────────────────────────────────
 
 #[pymodule]
@@ -376,5 +615,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDiffCompressionResult>()?;
     m.add_class::<PyDiffCompressorStats>()?;
     m.add_class::<PyDiffCompressor>()?;
+    m.add_class::<PySmartCrusherConfig>()?;
+    m.add_class::<PyCrushResult>()?;
+    m.add_class::<PySmartCrusher>()?;
     Ok(())
 }

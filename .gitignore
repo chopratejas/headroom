@@ -1,3 +1,8 @@
+# fastembed model cache (auto-downloaded ONNX weights, ~30 MB+).
+# Should NEVER be committed — bloats the repo significantly.
+.fastembed_cache/
+**/.fastembed_cache/
+
 # Private scripts (contain credentials). Allowlist checked-in helpers below.
 scripts/
 !scripts/
@@ -15,6 +20,7 @@ scripts/*
 !scripts/fixtures/*.json
 !scripts/record_fixtures.py
 !scripts/build_rust_extension.sh
+!scripts/install-git-hooks.sh
 
 # Rust / Cargo build artifacts
 /target/
