@@ -38,6 +38,7 @@ use serde_json::Value;
 use super::analyzer::SmartAnalyzer;
 use super::builder::SmartCrusherBuilder;
 use super::classifier::{classify_array, ArrayType};
+use super::compaction::{Compaction, CompactionStage};
 use super::config::SmartCrusherConfig;
 use super::crushers::{compute_k_split, crush_number_array, crush_object, crush_string_array};
 use super::planning::SmartCrusherPlanner;
@@ -49,15 +50,29 @@ use crate::transforms::anchor_selector::AnchorSelector;
 
 /// Return type for `crush_array` — mirrors Python's
 /// `(crushed_items, strategy_info, ccr_hash, dropped_summary)` tuple.
+///
+/// Stage 3c.2 PR2 added `compacted` and `compaction_kind` for the new
+/// lossless-first compaction stage. They stay `None` when no
+/// [`CompactionStage`] is configured on the crusher (default), so
+/// existing parity guarantees are preserved.
 pub struct CrushArrayResult {
     pub items: Vec<Value>,
     /// Strategy debug string, e.g. `"smart_sample"`, `"top_n"`,
     /// `"none:adaptive_at_limit"`, `"skip:unique_entities_no_signal"`.
+    /// When compaction wins, this is `"compaction:<formatter_name>"`.
     pub strategy_info: String,
     /// CCR retrieval hash if caching is enabled. Stub: always `None`.
     pub ccr_hash: Option<String>,
     /// Categorical summary of dropped items. Stub: always empty.
     pub dropped_summary: String,
+    /// Rendered bytes from the compaction stage. `Some(s)` when the
+    /// stage was configured AND produced non-`Untouched` output;
+    /// `None` otherwise (default OSS path).
+    pub compacted: Option<String>,
+    /// Top-level [`Compaction`] variant tag — `"table"`, `"buckets"`,
+    /// `"ccr"`, or `"untouched"`. Mirrors `compacted` — populated only
+    /// when the compaction stage ran.
+    pub compaction_kind: Option<&'static str>,
 }
 
 /// Top-level SmartCrusher.
@@ -78,6 +93,11 @@ pub struct SmartCrusher {
     pub analyzer: SmartAnalyzer,
     pub constraints: Vec<Box<dyn Constraint>>,
     pub observers: Vec<Box<dyn Observer>>,
+    /// Optional lossless-first compaction stage (Stage 3c.2 PR2). When
+    /// set, `crush_array` runs compaction up front and short-circuits
+    /// the lossy path on success. When `None` (default OSS), parity
+    /// with the pre-PR2 lossy-only pipeline is preserved exactly.
+    pub compaction: Option<CompactionStage>,
 }
 
 impl SmartCrusher {
@@ -116,6 +136,7 @@ impl SmartCrusher {
     /// [`SmartCrusherBuilder::build`] — not part of the public stable
     /// API. Prefer the builder.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         config: SmartCrusherConfig,
         anchor_selector: AnchorSelector,
@@ -123,6 +144,7 @@ impl SmartCrusher {
         analyzer: SmartAnalyzer,
         constraints: Vec<Box<dyn Constraint>>,
         observers: Vec<Box<dyn Observer>>,
+        compaction: Option<CompactionStage>,
     ) -> Self {
         SmartCrusher {
             config,
@@ -131,6 +153,7 @@ impl SmartCrusher {
             analyzer,
             constraints,
             observers,
+            compaction,
         }
     }
 
@@ -362,6 +385,25 @@ impl SmartCrusher {
     /// 7. `execute_plan(plan, items)` → result.
     /// 8. Strategy info = `analysis.recommended_strategy.as_str()`.
     pub fn crush_array(&self, items: &[Value], query_context: &str, bias: f64) -> CrushArrayResult {
+        // ── Stage 0 (PR2): lossless-first compaction (opt-in) ──
+        //
+        // Runs only when a CompactionStage is configured. Sits BEFORE
+        // the existing lossy pipeline so the lossless path can
+        // short-circuit on success. When the compactor declines
+        // (returns Untouched) the rest of crush_array runs unchanged
+        // — preserving byte-equal parity with the pre-PR2 path.
+        let compaction_result: Option<(String, &'static str)> =
+            if let Some(stage) = &self.compaction {
+                let (c, rendered) = stage.run(items);
+                if c.was_compacted() {
+                    Some((rendered, compaction_kind_str(&c)))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         let item_strings: Vec<String> = items
             .iter()
             .map(|i| serde_json::to_string(i).unwrap_or_default())
@@ -382,9 +424,11 @@ impl SmartCrusher {
             // in this stage).
             return CrushArrayResult {
                 items: items.to_vec(),
-                strategy_info: "none:adaptive_at_limit".to_string(),
+                strategy_info: compaction_strategy_or(&compaction_result, "none:adaptive_at_limit"),
                 ccr_hash: None,
                 dropped_summary: String::new(),
+                compacted: compaction_result.as_ref().map(|(s, _)| s.clone()),
+                compaction_kind: compaction_result.as_ref().map(|(_, k)| *k),
             };
         }
 
@@ -401,9 +445,11 @@ impl SmartCrusher {
             };
             return CrushArrayResult {
                 items: items.to_vec(),
-                strategy_info: reason,
+                strategy_info: compaction_strategy_or(&compaction_result, &reason),
                 ccr_hash: None,
                 dropped_summary: String::new(),
+                compacted: compaction_result.as_ref().map(|(s, _)| s.clone()),
+                compaction_kind: compaction_result.as_ref().map(|(_, k)| *k),
             };
         }
 
@@ -419,13 +465,16 @@ impl SmartCrusher {
         let result = self.execute_plan(&plan, items);
 
         // CCR/telemetry/TOIN-record paths stubbed.
-        let strategy_info = analysis.recommended_strategy.as_str().to_string();
+        let strategy_info =
+            compaction_strategy_or(&compaction_result, analysis.recommended_strategy.as_str());
 
         CrushArrayResult {
             items: result,
             strategy_info,
             ccr_hash: None,
             dropped_summary: String::new(),
+            compacted: compaction_result.as_ref().map(|(s, _)| s.clone()),
+            compaction_kind: compaction_result.as_ref().map(|(_, k)| *k),
         }
     }
 
@@ -617,6 +666,28 @@ impl IntoIterator for GroupBuckets {
 /// is already JSON-native, so plain canonical JSON suffices.
 fn canonical_json_for_match(value: &Value) -> String {
     crate::transforms::anchor_selector::python_json_dumps_sort_keys(value)
+}
+
+/// Maps a `Compaction` to a stable kind tag exposed via `CrushArrayResult`.
+fn compaction_kind_str(c: &Compaction) -> &'static str {
+    match c {
+        Compaction::Table { .. } => "table",
+        Compaction::Buckets { .. } => "buckets",
+        Compaction::OpaqueRef { .. } => "ccr",
+        Compaction::Untouched(_) => "untouched",
+    }
+}
+
+/// If compaction won, override the lossy strategy string with
+/// `"compaction:<formatter_name>:<kind>"`. Else return `default`.
+fn compaction_strategy_or(
+    compaction_result: &Option<(String, &'static str)>,
+    default: &str,
+) -> String {
+    match compaction_result {
+        Some((_, kind)) => format!("compaction:{kind}"),
+        None => default.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -879,5 +950,64 @@ mod tests {
         let items: Vec<Value> = (0..30).map(|_| json!({"status": "ok"})).collect();
         let result = c.crush_array(&items, "anything", 1.0);
         assert!(result.items.len() <= 30);
+    }
+
+    // ---------- Stage 3c.2 PR2: lossless-first compaction wiring ----------
+
+    #[test]
+    fn no_compaction_stage_yields_none_compacted_field() {
+        // Default SmartCrusher::new() sets compaction = None. Existing
+        // parity preserved: compacted/compaction_kind both None.
+        let c = crusher();
+        let items: Vec<Value> = (0..30).map(|_| json!({"status": "ok"})).collect();
+        let result = c.crush_array(&items, "", 1.0);
+        assert!(result.compacted.is_none());
+        assert!(result.compaction_kind.is_none());
+    }
+
+    #[test]
+    fn compaction_stage_runs_and_populates_compacted() {
+        let c = SmartCrusherBuilder::new(SmartCrusherConfig::default())
+            .with_default_oss_setup()
+            .with_default_compaction()
+            .build();
+        let items: Vec<Value> = (0..50)
+            .map(|i| json!({"id": i, "name": format!("u_{i}"), "status": "ok"}))
+            .collect();
+        let result = c.crush_array(&items, "", 1.0);
+        let compacted = result.compacted.expect("compacted should be set");
+        assert!(compacted.starts_with("[50]{"), "got: {compacted}");
+        assert_eq!(result.compaction_kind, Some("table"));
+        assert!(result.strategy_info.starts_with("compaction:table"));
+    }
+
+    #[test]
+    fn compaction_does_not_alter_lossy_items_field() {
+        // The compacted bytes are emitted alongside the existing lossy
+        // result. items field still holds the lossy-path output so
+        // downstream consumers can choose either form.
+        let c = SmartCrusherBuilder::new(SmartCrusherConfig::default())
+            .with_default_oss_setup()
+            .with_default_compaction()
+            .build();
+        let items: Vec<Value> = (0..30).map(|_| json!({"status": "ok"})).collect();
+        let with_compaction = c.crush_array(&items, "", 1.0);
+
+        let baseline = crusher().crush_array(&items, "", 1.0);
+        assert_eq!(with_compaction.items.len(), baseline.items.len());
+    }
+
+    #[test]
+    fn compaction_skips_non_object_array() {
+        // Compactor returns Untouched for non-object arrays → no
+        // compacted field populated, no kind tag.
+        let c = SmartCrusherBuilder::new(SmartCrusherConfig::default())
+            .with_default_oss_setup()
+            .with_default_compaction()
+            .build();
+        let items: Vec<Value> = (0..30).map(|i| json!(i)).collect();
+        let result = c.crush_array(&items, "", 1.0);
+        assert!(result.compacted.is_none());
+        assert!(result.compaction_kind.is_none());
     }
 }

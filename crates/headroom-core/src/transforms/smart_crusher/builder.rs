@@ -34,6 +34,7 @@ use crate::relevance::{HybridScorer, RelevanceScorer};
 use crate::transforms::anchor_selector::{AnchorConfig, AnchorSelector};
 
 use super::analyzer::SmartAnalyzer;
+use super::compaction::CompactionStage;
 use super::config::SmartCrusherConfig;
 use super::constraints::default_oss_constraints;
 use super::crusher::SmartCrusher;
@@ -47,10 +48,12 @@ pub struct SmartCrusherBuilder {
     scorer: Option<Box<dyn RelevanceScorer + Send + Sync>>,
     constraints: Vec<Box<dyn Constraint>>,
     observers: Vec<Box<dyn Observer>>,
+    compaction: Option<CompactionStage>,
 }
 
 impl SmartCrusherBuilder {
-    /// Empty builder — no scorer, no constraints, no observers.
+    /// Empty builder — no scorer, no constraints, no observers, no
+    /// compaction stage.
     pub fn new(config: SmartCrusherConfig) -> Self {
         SmartCrusherBuilder {
             config,
@@ -58,6 +61,7 @@ impl SmartCrusherBuilder {
             scorer: None,
             constraints: Vec::new(),
             observers: Vec::new(),
+            compaction: None,
         }
     }
 
@@ -117,6 +121,25 @@ impl SmartCrusherBuilder {
             .add_observer(Box::new(TracingObserver))
     }
 
+    /// Plug in a compaction stage. When set, `crush_array` runs the
+    /// stage before the lossy pipeline; if it produces a non-`Untouched`
+    /// compaction the rendered bytes are returned via
+    /// [`CrushArrayResult::compacted`]. The lossy result still fills
+    /// `items` so callers can choose either output.
+    ///
+    /// [`CrushArrayResult::compacted`]: super::crusher::CrushArrayResult::compacted
+    pub fn with_compaction(mut self, stage: CompactionStage) -> Self {
+        self.compaction = Some(stage);
+        self
+    }
+
+    /// Convenience: enable the OSS compaction preset (CSV+schema
+    /// formatter, default `CompactConfig`). Equivalent to
+    /// `with_compaction(CompactionStage::default_csv_schema())`.
+    pub fn with_default_compaction(self) -> Self {
+        self.with_compaction(CompactionStage::default_csv_schema())
+    }
+
     /// Construct the `SmartCrusher`. If `with_scorer` was not called,
     /// falls back to `HybridScorer::default()` so a builder with no
     /// other customization still produces a working crusher.
@@ -133,6 +156,7 @@ impl SmartCrusherBuilder {
             analyzer,
             self.constraints,
             self.observers,
+            self.compaction,
         )
     }
 }

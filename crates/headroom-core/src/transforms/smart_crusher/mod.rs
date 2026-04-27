@@ -36,6 +36,7 @@ mod analyzer;
 mod anchors;
 mod builder;
 mod classifier;
+pub mod compaction;
 mod config;
 mod constraints;
 mod crusher;
