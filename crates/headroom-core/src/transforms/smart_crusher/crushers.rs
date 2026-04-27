@@ -47,6 +47,32 @@ use crate::transforms::adaptive_sizer::compute_optimal_k;
 /// - `k_importance`: leftover budget for importance-driven items.
 ///
 /// Returns `(k_total, k_first, k_last, k_importance)`.
+///
+/// # BUG #4 — k-split overshoot (FIXED in Rust)
+///
+/// Python's original (line 2722):
+/// ```text
+/// k_first = max(1, round(k_total * first_fraction))
+/// k_last  = max(1, round(k_total * last_fraction))
+/// ```
+/// For `k_total = 1`, both `round()` results are 0, both `max(1, …)`s
+/// return 1, so `k_first + k_last = 2 > k_total = 1`. The crusher then
+/// overshoots `max_items_after_crush` because the boundary unions
+/// already exceed the budget before importance-fill kicks in.
+///
+/// The fix: after computing the floored fractions, clamp `k_first` to
+/// `min(k_first, k_total)`, then clamp `k_last` to
+/// `min(k_last, k_total - k_first)`. Preserves the Python behavior in
+/// every case where `k_total >= 2` (the common path) and only deviates
+/// for `k_total <= 1` (the previously buggy edge).
+///
+/// Same fix lands in `headroom/transforms/smart_crusher.py:2722` at
+/// commit 7 (parity-fixture stage). Until then this is a one-sided fix
+/// — Rust is correct, Python overshoots — and parity fixtures for the
+/// `k_total=1` edge case won't match. Real-world inputs reach `k_total=1`
+/// only when `n <= 8` AND all items deduplicate to a single SimHash
+/// cluster, which rarely happens because every crusher early-returns
+/// `passthrough` on `n <= 8` before `compute_k_split` is even called.
 pub fn compute_k_split(
     items: &[&str],
     config: &SmartCrusherConfig,
@@ -62,8 +88,13 @@ pub fn compute_k_split(
     // banker's rounding (round-half-to-even). Rust's
     // f64::round_ties_even() mirrors that exactly — was stabilized in
     // Rust 1.77 and is the right primitive for this parity port.
-    let k_first = 1_usize.max(round_ties_even(k_total as f64 * config.first_fraction) as usize);
-    let k_last = 1_usize.max(round_ties_even(k_total as f64 * config.last_fraction) as usize);
+    let k_first_raw = 1_usize.max(round_ties_even(k_total as f64 * config.first_fraction) as usize);
+    let k_last_raw = 1_usize.max(round_ties_even(k_total as f64 * config.last_fraction) as usize);
+    // BUG #4 FIX: clamp so `k_first + k_last <= k_total`. Without this,
+    // a `k_total=1` produces `k_first=k_last=1` → 2 items kept,
+    // violating max_items_after_crush.
+    let k_first = k_first_raw.min(k_total);
+    let k_last = k_last_raw.min(k_total.saturating_sub(k_first));
     let k_importance = k_total.saturating_sub(k_first + k_last);
     (k_total, k_first, k_last, k_importance)
 }
@@ -520,6 +551,42 @@ mod tests {
         assert_eq!(kl, 1);
         // 5 - 2 - 1 = 2
         assert_eq!(ki, 2);
+    }
+
+    #[test]
+    fn bug4_k_split_no_overshoot_when_k_total_is_one() {
+        // BUG #4 FIX (Rust): direct test on the helper. We can't easily
+        // make `compute_optimal_k` return 1 (its `min_k` floor is 3),
+        // so verify the clamp via the helper that does the splitting:
+        // when `k_total = 1`, we want `k_first + k_last <= 1`.
+        //
+        // We verify by exposing the clamp directly via a small synthetic
+        // scenario: `compute_optimal_k` falls through to the n<=8 branch
+        // with `n=1` and returns `n=1`. Construct that input.
+        let items: [&str; 1] = ["only"];
+        let (kt, kf, kl, ki) = compute_k_split(&items, &cfg(), 1.0);
+        assert_eq!(kt, 1, "n=1 triggers fast-path n<=8 → k_total=1");
+        assert!(
+            kf + kl <= kt,
+            "BUG #4: k_first={} + k_last={} must not exceed k_total={}",
+            kf,
+            kl,
+            kt
+        );
+        assert_eq!(ki, kt.saturating_sub(kf + kl));
+    }
+
+    #[test]
+    fn bug4_k_split_no_overshoot_when_k_total_is_two() {
+        // For k_total=2: pre-fix Python: k_first=1, k_last=1 — sum=2 = k_total ✓
+        // (this case wasn't actually buggy). We pin it anyway to lock the
+        // boundary that the bug #4 fix preserves untouched.
+        let items: [&str; 2] = ["a", "b"];
+        let (kt, kf, kl, _) = compute_k_split(&items, &cfg(), 1.0);
+        assert_eq!(kt, 2);
+        assert!(kf + kl <= kt);
+        assert_eq!(kf, 1);
+        assert_eq!(kl, 1);
     }
 
     #[test]
