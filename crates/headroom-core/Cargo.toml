@@ -49,6 +49,11 @@ flate2 = "1"
 # Same library + same model = byte-equal embeddings between Python and Rust
 # (both call into ONNX Runtime over the identical ONNX file).
 fastembed = "5"
+# `dashmap` provides a sharded concurrent map. The `ContentRouter`'s
+# `CompressionCache` is read/written from every worker thread on the
+# proxy hot path; sharding avoids the contention a single `Mutex<HashMap>`
+# would create. Using v6 (latest) with default features.
+dashmap = "6"
 
 [dev-dependencies]
 proptest = "1"

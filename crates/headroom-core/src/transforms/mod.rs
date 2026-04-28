@@ -18,11 +18,17 @@
 pub mod adaptive_sizer;
 pub mod anchor_selector;
 pub mod content_detector;
+pub mod content_router;
 pub mod diff_compressor;
 pub mod smart_crusher;
 
 pub use content_detector::{
     detect_content_type, is_json_array_of_dicts, ContentType, DetectionResult,
+};
+pub use content_router::{
+    content_type_for_strategy, strategy_for_content_type, CacheStats, CachedResult,
+    CompressionCache, CompressionStrategy, ContentRouterConfig, ContentSection,
+    RouterCompressionResult, RoutingDecision,
 };
 pub use diff_compressor::{
     DiffCompressionResult, DiffCompressor, DiffCompressorConfig, DiffCompressorStats,
