@@ -45,8 +45,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
-COPY --from=builder /usr/local/bin/headroom /usr/local/bin/headroom
+COPY --link --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
+COPY --link --from=builder /usr/local/bin/headroom /usr/local/bin/headroom
 
 RUN mkdir -p /home/nonroot /data && \
     if [ "$RUNTIME_USER" = "nonroot" ]; then \
@@ -78,7 +78,7 @@ FROM ${DISTROLESS_IMAGE}@${DISTROLESS_DIGEST} AS runtime-slim
 ARG RUNTIME_USER=nonroot
 ARG PYTHON_SITE_PACKAGES
 
-COPY --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
+COPY --link --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
 
 USER ${RUNTIME_USER}
 WORKDIR /app
