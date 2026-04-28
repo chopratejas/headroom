@@ -25,16 +25,16 @@ fallback. Build it locally with `scripts/build_rust_extension.sh`
   `strategy != "passthrough"` to ignore JSON re-canonicalization).
   The retired Python class did this inline; the bridge keeps the
   highest-traffic strategy fueling the learning loop.
-- **CCR marker emission** — partial gap. The Rust port emits
-  `<<ccr:HASH N_rows_offloaded>>` markers unconditionally as part of
-  `dropped_summary`; the `ccr_config.inject_retrieval_marker=False`
-  knob is therefore not honored end-to-end. The shim now logs a
-  WARNING when callers pass `False`. Suppression needs a Rust-side
-  gate; see RUST_DEV.md.
+- **CCR marker emission** — honored. `ccr_config.inject_retrieval_marker
+  =False` flips the Rust crusher's `enable_ccr_marker` field; the
+  lossy row-drop path then skips both the marker text and the store
+  write. Scope: gates only the row-drop sentinel path. Opaque-string
+  CCR substitutions (Stage 3c.2) still emit always — they have no
+  Python equivalent.
 - **Custom relevance scorer / scorer override** — still not wired.
   `relevance_config` and `scorer` constructor args are accepted for
   source compat but the Rust default `HybridScorer` is always used.
-  The shim now logs a WARNING (was: debug) when these are passed.
+  The shim logs a WARNING when these are passed. See RUST_DEV.md.
 """
 
 from __future__ import annotations
@@ -169,26 +169,21 @@ class SmartCrusher(Transform):
         self._with_compaction = with_compaction
 
         # CCR config is preserved on `self` for callers that read it
-        # back (`headroom.proxy.server` does). Storage-side semantics
-        # (CCR cache lookups) are honored via the Rust crusher's own
-        # CCR store. *Marker emission* is the gap: the Rust port emits
-        # `<<ccr:HASH N_rows_offloaded>>` markers unconditionally as
-        # part of `dropped_summary`, so `inject_retrieval_marker=False`
-        # has no effect on the prompt today. We log a WARNING (not
-        # debug) so it's visible. Suppression of marker emission needs
-        # a Rust-side gate; tracked in RUST_DEV.md.
+        # back (`headroom.proxy.server` does). The Rust crusher honors
+        # `inject_retrieval_marker` end-to-end via its
+        # `enable_ccr_marker` config field — when False, the lossy
+        # row-drop path skips marker emission AND skips the CCR store
+        # write (no point storing a payload nothing in the prompt can
+        # reference).
+        #
+        # Scope: gates ONLY the row-drop sentinel path. Stage-3c.2
+        # opaque-string CCR substitutions still emit always — they have
+        # no Python equivalent and no production caller has asked for
+        # them to be suppressed.
         if ccr_config is None:
             self._ccr_config = CCRConfig(enabled=True, inject_retrieval_marker=False)
         else:
             self._ccr_config = ccr_config
-        if not self._ccr_config.inject_retrieval_marker:
-            logger.warning(
-                "SmartCrusher: ccr_config.inject_retrieval_marker=False "
-                "is currently NOT honored by the Rust port — CCR row-drop "
-                "markers (`<<ccr:HASH N_rows_offloaded>>`) will still appear "
-                "in compressed output. Tracked as a known regression in "
-                "RUST_DEV.md until a Rust-side gate lands."
-            )
 
         # `relevance_config` and `scorer` are accepted for source
         # compatibility but currently dropped — Stage 3c.1 ships with
@@ -229,6 +224,7 @@ class SmartCrusher(Transform):
             first_fraction=cfg.first_fraction,
             last_fraction=cfg.last_fraction,
             relevance_threshold=0.3,
+            enable_ccr_marker=self._ccr_config.inject_retrieval_marker,
         )
         # Default: lossless-first compaction (PR4). Lossless wins for
         # cleanly tabular input where it saves ≥ 30% bytes; otherwise

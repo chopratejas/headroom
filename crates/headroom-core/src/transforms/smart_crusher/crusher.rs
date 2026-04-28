@@ -660,13 +660,20 @@ impl SmartCrusher {
         );
         let result = self.execute_plan(&plan, items);
 
-        // Emit CCR-Dropped marker iff rows were actually dropped.
-        // **This is the cornerstone of CCR's no-data-loss guarantee:**
-        // we hash the full original, stash it in the configured store,
-        // and emit a marker pointing at that hash. The runtime later
-        // serves the original back via retrieval tool calls.
+        // Emit CCR-Dropped marker iff rows were actually dropped AND
+        // the config opted in. **This is the cornerstone of CCR's
+        // no-data-loss guarantee:** we hash the full original, stash
+        // it in the configured store, and emit a marker pointing at
+        // that hash. The runtime later serves the original back via
+        // retrieval tool calls.
+        //
+        // When `enable_ccr_marker` is false (Python shim's path for
+        // `inject_retrieval_marker=False`), we keep the row drops
+        // (compression is still requested) but skip the marker text
+        // and the store write — there's no point storing a payload
+        // that nothing in the prompt can reference.
         let dropped_count = items.len().saturating_sub(result.len());
-        let (ccr_hash, dropped_summary) = if dropped_count > 0 {
+        let (ccr_hash, dropped_summary) = if dropped_count > 0 && self.config.enable_ccr_marker {
             // Serialize the original array exactly ONCE. The hash is
             // taken over those bytes, and (if a store is configured) the
             // same bytes get stored — eliminating a redundant tree clone
@@ -1318,6 +1325,66 @@ mod tests {
         let ra = c.crush_array(&a, "", 1.0);
         let rb = c.crush_array(&b, "", 1.0);
         assert_ne!(ra.ccr_hash, rb.ccr_hash);
+    }
+
+    #[test]
+    fn enable_ccr_marker_false_suppresses_marker_and_store() {
+        // The Rust-side gate for Python `inject_retrieval_marker=False`.
+        // Compression still runs (rows dropped) but the result carries
+        // no marker text and no hash — the LLM will see only the kept
+        // rows and won't be told to retrieve anything.
+        let cfg = SmartCrusherConfig {
+            lossless_min_savings_ratio: 0.99, // force lossy path
+            enable_ccr_marker: false,
+            ..SmartCrusherConfig::default()
+        };
+        let c = SmartCrusher::new(cfg);
+        let items: Vec<Value> = (0..50).map(|_| json!({"status": "ok"})).collect();
+
+        // Sanity: with the gate off there's no store entry for any
+        // hash we'd otherwise emit.
+        let store_len_before = c.ccr_store().map(|s| s.len()).unwrap_or(0);
+
+        let result = c.crush_array(&items, "", 1.0);
+
+        // Compression still happened — rows were dropped.
+        assert!(
+            result.items.len() < 50,
+            "expected lossy drop, got {}",
+            result.items.len()
+        );
+        // No marker text.
+        assert_eq!(result.dropped_summary, "");
+        // No hash to retrieve with.
+        assert!(result.ccr_hash.is_none());
+        // No new store entry.
+        let store_len_after = c.ccr_store().map(|s| s.len()).unwrap_or(0);
+        assert_eq!(
+            store_len_after, store_len_before,
+            "ccr_store grew despite enable_ccr_marker=false"
+        );
+    }
+
+    #[test]
+    fn enable_ccr_marker_true_is_default_behavior() {
+        // Regression guard: the default config still emits markers
+        // exactly as before. If this test ever fails, the default
+        // shifted and existing fixtures are about to mismatch.
+        let cfg = SmartCrusherConfig {
+            lossless_min_savings_ratio: 0.99,
+            ..SmartCrusherConfig::default()
+        };
+        assert!(cfg.enable_ccr_marker, "default must remain true");
+
+        let c = SmartCrusher::new(cfg);
+        let items: Vec<Value> = (0..50).map(|_| json!({"status": "ok"})).collect();
+        let result = c.crush_array(&items, "", 1.0);
+
+        if result.items.len() < 50 {
+            // Lossy fired — should have hash + marker text.
+            assert!(result.ccr_hash.is_some());
+            assert!(result.dropped_summary.starts_with("<<ccr:"));
+        }
     }
 
     #[test]

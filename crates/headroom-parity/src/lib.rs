@@ -385,6 +385,13 @@ impl TransformComparator for SmartCrusherComparator {
                 .get("lossless_min_savings_ratio")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(defaults.lossless_min_savings_ratio),
+            // Rust-only knob — Python recorded fixtures predate it.
+            // Default `true` keeps marker emission on, which matches
+            // the recorded fixture outputs byte-for-byte.
+            enable_ccr_marker: config
+                .get("enable_ccr_marker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.enable_ccr_marker),
         };
 
         // Use without_compaction so the legacy fixtures (recorded

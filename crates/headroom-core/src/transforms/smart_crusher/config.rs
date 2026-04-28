@@ -62,6 +62,30 @@ pub struct SmartCrusherConfig {
     /// lossless when available; set to `1.0` to effectively disable
     /// the lossless path (lossy + CCR always).
     pub lossless_min_savings_ratio: f64,
+    /// Whether `crush_array` emits the `<<ccr:HASH N_rows_offloaded>>`
+    /// marker text (and the `_ccr_dropped` sentinel that wraps it)
+    /// when the lossy path drops rows. Default `true`.
+    ///
+    /// This is the Rust-side gate for the Python `CCRConfig.
+    /// inject_retrieval_marker` flag. When `false`:
+    ///
+    /// - Rows are still dropped (compression still happens).
+    /// - The originals are NOT placed in the CCR store and the
+    ///   `ccr_hash` field on the result is `None` (no retrieval is
+    ///   possible — and we don't want to waste store space when no
+    ///   marker will reference it).
+    /// - `dropped_summary` stays empty so the lossy-path callsite
+    ///   (which appends a sentinel iff `dropped_summary.is_empty() ==
+    ///   false`) skips the sentinel append.
+    ///
+    /// Scope: gates ONLY the row-drop sentinel path. The Stage-3c.2
+    /// opaque-string CCR substitutions (`<<ccr:HASH,KIND,SIZE>>`
+    /// emitted by the document walker) are deliberately not gated —
+    /// they have no Python equivalent, no production caller has
+    /// asked for opaque-string suppression, and gating them would
+    /// silently disable compression of large strings (more confusing
+    /// than no marker at all).
+    pub enable_ccr_marker: bool,
 }
 
 impl Default for SmartCrusherConfig {
@@ -87,6 +111,7 @@ impl Default for SmartCrusherConfig {
             last_fraction: 0.15,
             relevance_threshold: 0.3,
             lossless_min_savings_ratio: 0.30,
+            enable_ccr_marker: true,
         }
     }
 }
@@ -118,5 +143,9 @@ mod tests {
         assert_eq!(c.last_fraction, 0.15);
         assert_eq!(c.relevance_threshold, 0.3);
         assert_eq!(c.lossless_min_savings_ratio, 0.30);
+        // `enable_ccr_marker` defaults to true (preserves prior
+        // behavior — markers always emitted). The Python shim flips
+        // this when the caller passes `inject_retrieval_marker=False`.
+        assert!(c.enable_ccr_marker);
     }
 }

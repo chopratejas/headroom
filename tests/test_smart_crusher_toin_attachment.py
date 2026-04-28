@@ -172,36 +172,47 @@ def test_non_json_input_does_not_record(fresh_toin):
 # ─── CCR marker knob ───────────────────────────────────────────────────
 
 
-def test_ccr_inject_marker_false_logs_warning(monkeypatch):
-    """Until the Rust port honors the marker-suppression flag, we want a
-    visible warning when callers ask for it. This guards against the
-    silent regression that started this audit.
-
-    Why monkeypatch instead of `caplog`: `caplog` flakes under the full
-    suite — earlier tests can leave `logging.disable()` or root-handler
-    state that suppresses the named logger's records before the
-    test's filter sees them. Patching `logger.warning` on the module
-    bypasses every level/disable/handler concern; we only assert that
-    the constructor *called* `logger.warning` with the flag name in
-    the message.
-    """
+def test_ccr_inject_marker_false_suppresses_markers_in_output():
+    """`inject_retrieval_marker=False` is honored end-to-end now. The
+    Rust crusher's `enable_ccr_marker` flips off and the lossy path
+    skips both the `<<ccr:HASH>>` marker text and the CCR store write.
+    Compression itself still happens — rows still drop — just without
+    a retrieval pointer in the prompt."""
     from headroom.config import CCRConfig
-    from headroom.transforms import smart_crusher as sc_module
 
-    captured: list[str] = []
-    real_warning = sc_module.logger.warning
-
-    def _capture(msg: str, *args: object, **kwargs: object) -> None:
-        captured.append(msg % args if args else msg)
-        real_warning(msg, *args, **kwargs)
-
-    monkeypatch.setattr(sc_module.logger, "warning", _capture)
-
-    SmartCrusher(
+    crusher = SmartCrusher(
         SmartCrusherConfig(),
         ccr_config=CCRConfig(enabled=True, inject_retrieval_marker=False),
     )
+    payload = _bigger_array(60)
+    result = crusher.crush(payload, query="", bias=1.0)
 
-    assert any("inject_retrieval_marker=False" in m for m in captured), (
-        "expected a WARNING about the unsupported marker-suppression flag"
+    if result.strategy == "passthrough":
+        pytest.skip("payload didn't trigger compression — bump the size")
+
+    # The compressed output must NOT contain the CCR marker shape.
+    assert "<<ccr:" not in result.compressed, f"expected no marker, got: {result.compressed!r}"
+    # Nor the sentinel key.
+    assert "_ccr_dropped" not in result.compressed
+
+
+def test_ccr_inject_marker_true_emits_markers_when_lossy():
+    """The default keeps marker emission on. If the lossy path runs
+    (which it should for a sufficiently big crushable payload), the
+    `<<ccr:HASH>>` marker appears in the compressed output."""
+    from headroom.config import CCRConfig
+
+    crusher = SmartCrusher(
+        SmartCrusherConfig(),
+        ccr_config=CCRConfig(enabled=True, inject_retrieval_marker=True),
     )
+    payload = _bigger_array(60)
+    result = crusher.crush(payload, query="", bias=1.0)
+
+    if result.strategy == "passthrough":
+        pytest.skip("payload didn't trigger compression")
+    # If lossless won, marker won't appear (no row drops). If lossy
+    # ran on these uniform `{status, tag, n}` records, we expect rows
+    # to drop and the marker to fire.
+    if "lossy" in result.strategy or "row" in result.strategy.lower():
+        assert "<<ccr:" in result.compressed
