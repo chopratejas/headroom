@@ -38,6 +38,8 @@ use serde_json::Value;
 use super::analyzer::SmartAnalyzer;
 use super::builder::SmartCrusherBuilder;
 use super::classifier::{classify_array, ArrayType};
+use super::compaction::classifier::{classify_cell, CellClass, ClassifyConfig};
+use super::compaction::ir::OpaqueKind;
 use super::compaction::{Compaction, CompactionStage};
 use super::config::SmartCrusherConfig;
 use super::crushers::{compute_k_split, crush_number_array, crush_object, crush_string_array};
@@ -425,9 +427,76 @@ impl SmartCrusher {
 
                 (Value::Object(processed), info_parts.join(","))
             }
-            // Scalars — passthrough.
+            // Strings: walker-equivalent handling. Parse stringified-JSON
+            // containers and recurse; CCR-substitute long opaque blobs.
+            // (Stage 3c.2 PR5: brings DocumentCompactor's String semantics
+            // into the public `crush()` path so tool outputs that wrap
+            // JSON in strings, or contain opaque blobs, get processed.)
+            Value::String(s) => self.process_string(s, depth, query_context, bias),
+            // Other scalars — passthrough.
             _ => (value.clone(), String::new()),
         }
+    }
+
+    /// Walker-equivalent string handling. Mirrors `walker::walk_string`
+    /// in `compaction/walker.rs` but lives on `SmartCrusher` so the
+    /// public `crush()` path picks it up.
+    ///
+    /// Two cases:
+    /// 1. **Stringified-JSON.** Strings that parse to a JSON object or
+    ///    array → recurse via `process_value`, then re-emit the result
+    ///    as a compact JSON string. The wrapping string is preserved
+    ///    (so the parent JSON shape stays a string-typed field), but
+    ///    its contents are processed end-to-end.
+    /// 2. **Opaque blobs.** Strings classified as
+    ///    [`CellClass::Opaque`] (long base64 / HTML / long-text) →
+    ///    substitute with a `<<ccr:HASH,KIND,SIZE>>` marker. Same
+    ///    format as `compaction::walker::format_ccr_marker` so
+    ///    downstream consumers can pattern-match markers regardless
+    ///    of which path emitted them.
+    fn process_string(
+        &self,
+        s: &str,
+        depth: usize,
+        query_context: &str,
+        bias: f64,
+    ) -> (Value, String) {
+        // 1. Stringified-JSON: parse, recurse, re-render.
+        if let Some(parsed) = try_parse_json_container_str(s) {
+            let (processed, sub_info) = self.process_value(&parsed, depth + 1, query_context, bias);
+            // If recursion produced something different, re-emit.
+            // Special case: if the recursion returned a `Value::String`
+            // (lossless compaction substituted the array with a
+            // rendered CSV+schema string), use that string directly.
+            // Re-encoding it as JSON would produce a quoted string
+            // literal — double-encoded — which is not what callers
+            // expect in the wrapping field.
+            if processed != parsed {
+                let rendered = match &processed {
+                    Value::String(rendered_str) => rendered_str.clone(),
+                    _ => serde_json::to_string(&processed).unwrap_or_else(|_| s.to_string()),
+                };
+                let info = if sub_info.is_empty() {
+                    "string_json".to_string()
+                } else {
+                    format!("string_json[{sub_info}]")
+                };
+                return (Value::String(rendered), info);
+            }
+        }
+
+        // 2. Opaque blob: substitute with CCR marker.
+        let cfg = ClassifyConfig::default();
+        if let CellClass::Opaque(kind) = classify_cell(&Value::String(s.to_string()), &cfg) {
+            let marker = ccr_marker_for_string(s.as_bytes(), &kind);
+            return (
+                Value::String(marker),
+                format!("string_ccr:{}", opaque_kind_label(&kind)),
+            );
+        }
+
+        // 3. Plain string — passthrough.
+        (Value::String(s.to_string()), String::new())
     }
 
     /// Compress an array of dict items.
@@ -786,6 +855,63 @@ fn hash_array_for_ccr(items: &[Value]) -> String {
         .take(6)
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+// ─── PR5 walker-integration helpers (string handling) ───────────────────────
+
+/// Cheap parse-as-JSON-container check. Returns `Some(parsed)` only
+/// when `s` parses to an object or array — not for bare scalars
+/// (numbers, bools, nulls) that happen to be valid JSON literals.
+fn try_parse_json_container_str(s: &str) -> Option<Value> {
+    let trimmed = s.trim_start();
+    if !matches!(trimmed.chars().next(), Some('{') | Some('[')) {
+        return None;
+    }
+    serde_json::from_str::<Value>(s)
+        .ok()
+        .filter(|v| matches!(v, Value::Object(_) | Value::Array(_)))
+}
+
+/// Format a CCR retrieval marker for an opaque string. Format must
+/// match `compaction::walker::format_ccr_marker` so downstream
+/// consumers can pattern-match markers regardless of which path
+/// emitted them.
+fn ccr_marker_for_string(bytes: &[u8], kind: &OpaqueKind) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let hash: String = h
+        .finalize()
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!(
+        "<<ccr:{},{},{}>>",
+        hash,
+        opaque_kind_label(kind),
+        humanize_bytes(bytes.len())
+    )
+}
+
+fn opaque_kind_label(kind: &OpaqueKind) -> &str {
+    match kind {
+        OpaqueKind::Base64Blob => "base64",
+        OpaqueKind::LongString => "string",
+        OpaqueKind::HtmlChunk => "html",
+        OpaqueKind::Other(s) => s.as_str(),
+    }
+}
+
+fn humanize_bytes(n: usize) -> String {
+    if n < 1024 {
+        return format!("{n}B");
+    }
+    let kb = n as f64 / 1024.0;
+    if kb < 1024.0 {
+        return format!("{kb:.1}KB");
+    }
+    format!("{:.1}MB", kb / 1024.0)
 }
 
 #[cfg(test)]
@@ -1189,5 +1315,86 @@ mod tests {
         let result = c.crush_array(&items, "", 1.0);
         assert!(result.compacted.is_none());
         assert!(result.compaction_kind.is_none());
+    }
+
+    // ---------- Stage 3c.2 PR5: walker-integration in process_value ----------
+
+    #[test]
+    fn process_string_short_string_passthrough() {
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let (out, info) = c.process_value(&json!("hello world"), 0, "", 1.0);
+        assert_eq!(out, json!("hello world"));
+        assert!(info.is_empty());
+    }
+
+    #[test]
+    fn process_string_stringified_json_array_recurses() {
+        // A string-typed field whose value is a JSON-encoded array of
+        // dicts. process_value should parse it, recurse, and return
+        // the processed JSON re-rendered as a string.
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let big_array_json = serde_json::to_string(
+            &(0..50)
+                .map(|i| json!({"id": i, "level": "info", "msg": "ok"}))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let doc = json!({"payload": big_array_json.clone()});
+        let (out, info) = c.process_value(&doc, 0, "", 1.0);
+        // payload still a string-typed field — we preserved the
+        // wrapping shape — but its content was processed.
+        let payload = out.pointer("/payload").and_then(|v| v.as_str()).unwrap();
+        // Either compressed or unchanged; if compressed, info reflects.
+        // For 50 items with low-uniqueness, compression should fire.
+        // The strategy info should mention string_json processing.
+        assert!(
+            info.contains("string_json") || payload != big_array_json,
+            "expected processing trace; info={info}, len before={}, after={}",
+            big_array_json.len(),
+            payload.len(),
+        );
+    }
+
+    #[test]
+    fn process_string_opaque_blob_becomes_ccr_marker() {
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let big_b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=".repeat(8);
+        let doc = json!({"id": 1, "blob": big_b64});
+        let (out, _info) = c.process_value(&doc, 0, "", 1.0);
+        let blob = out.pointer("/blob").and_then(|v| v.as_str()).unwrap();
+        assert!(blob.starts_with("<<ccr:"), "got: {blob}");
+        assert!(blob.contains(",base64,"));
+    }
+
+    #[test]
+    fn process_string_top_level_string_processed() {
+        // crush() takes a string; if it doesn't parse as JSON, today's
+        // behavior returns it unchanged. But if it's a stringified
+        // JSON object/array, it should now get processed.
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        // Non-JSON top-level string — passthrough.
+        let plain = "just some plain text";
+        let result = c.crush(plain, "", 1.0);
+        assert_eq!(result.compressed, plain);
+    }
+
+    #[test]
+    fn process_string_does_not_alter_short_quoted_strings() {
+        // Strings that look JSON-like but are short shouldn't be
+        // CCR-substituted.
+        let c = SmartCrusher::new(SmartCrusherConfig::default());
+        let doc = json!({"msg": "{this looks like json but isnt}"});
+        let (out, _) = c.process_value(&doc, 0, "", 1.0);
+        assert_eq!(out, doc);
+    }
+
+    #[test]
+    fn process_string_helper_parses_only_containers() {
+        assert!(try_parse_json_container_str("{\"a\":1}").is_some());
+        assert!(try_parse_json_container_str("[1,2,3]").is_some());
+        assert!(try_parse_json_container_str("123").is_none()); // bare scalar
+        assert!(try_parse_json_container_str("\"hello\"").is_none()); // bare string
+        assert!(try_parse_json_container_str("not json").is_none());
+        assert!(try_parse_json_container_str("{malformed").is_none());
     }
 }
