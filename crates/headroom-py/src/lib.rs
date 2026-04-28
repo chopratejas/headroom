@@ -22,12 +22,17 @@ use headroom_core::transforms::smart_crusher::{
 };
 use headroom_core::transforms::{
     detect_content_type as rust_detect_content_type,
-    is_json_array_of_dicts as rust_is_json_array_of_dicts, ContentType as RustContentType,
-    DetectionResult as RustDetectionResult, DiffCompressionResult, DiffCompressor,
-    DiffCompressorConfig, DiffCompressorStats,
+    is_json_array_of_dicts as rust_is_json_array_of_dicts, CacheStats as RustCacheStats,
+    CachedResult as RustCachedResult, CompressionCache as RustCompressionCache,
+    CompressionStrategy as RustCompressionStrategy, ContentRouterConfig as RustContentRouterConfig,
+    ContentType as RustContentType, DetectionResult as RustDetectionResult, DiffCompressionResult,
+    DiffCompressor, DiffCompressorConfig, DiffCompressorStats,
 };
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Identity stub used by the Python smoke test to verify linkage.
 #[pyfunction]
@@ -859,6 +864,348 @@ const _: fn() = || {
     let _ = RustContentType::PlainText;
 };
 
+// ─── ContentRouter — types + config + cache (PR2) ──────────────────────────
+
+/// Mirror of `headroom.transforms.content_router.ContentRouterConfig`.
+///
+/// PR2 ports the simple fields that drive dispatch decisions. The
+/// complex Python-only fields (`exclude_tools`, `read_lifecycle`,
+/// `tool_profiles`) come back in PR6 with the `apply()` proxy port.
+/// Constructor accepts every field as a kwarg with the same name and
+/// default as the Python dataclass.
+#[pyclass(name = "ContentRouterConfig", module = "headroom._core")]
+#[derive(Clone)]
+struct PyContentRouterConfig {
+    inner: RustContentRouterConfig,
+}
+
+#[pymethods]
+impl PyContentRouterConfig {
+    #[new]
+    #[pyo3(signature = (
+        enable_code_aware = false,
+        enable_kompress = true,
+        enable_smart_crusher = true,
+        enable_search_compressor = true,
+        enable_log_compressor = true,
+        enable_html_extractor = true,
+        enable_image_optimizer = true,
+        prefer_code_aware_for_code = false,
+        mixed_content_threshold = 2,
+        min_section_tokens = 20,
+        fallback_strategy = "kompress",
+        skip_user_messages = true,
+        protect_recent_code = 4,
+        protect_analysis_context = true,
+        protect_recent_reads_fraction = 0.0,
+        min_ratio_relaxed = 0.85,
+        min_ratio_aggressive = 0.65,
+        ccr_enabled = true,
+        ccr_inject_marker = true,
+        compress_tagged_content = false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        enable_code_aware: bool,
+        enable_kompress: bool,
+        enable_smart_crusher: bool,
+        enable_search_compressor: bool,
+        enable_log_compressor: bool,
+        enable_html_extractor: bool,
+        enable_image_optimizer: bool,
+        prefer_code_aware_for_code: bool,
+        mixed_content_threshold: usize,
+        min_section_tokens: usize,
+        fallback_strategy: &str,
+        skip_user_messages: bool,
+        protect_recent_code: usize,
+        protect_analysis_context: bool,
+        protect_recent_reads_fraction: f64,
+        min_ratio_relaxed: f64,
+        min_ratio_aggressive: f64,
+        ccr_enabled: bool,
+        ccr_inject_marker: bool,
+        compress_tagged_content: bool,
+    ) -> PyResult<Self> {
+        let fallback_strategy = fallback_strategy
+            .parse::<RustCompressionStrategy>()
+            .map_err(|_| {
+                PyValueError::new_err(format!(
+                    "unknown fallback_strategy {fallback_strategy:?}; expected one of \
+                     code_aware, smart_crusher, search, log, kompress, text, diff, html, \
+                     mixed, passthrough"
+                ))
+            })?;
+        Ok(Self {
+            inner: RustContentRouterConfig {
+                enable_code_aware,
+                enable_kompress,
+                enable_smart_crusher,
+                enable_search_compressor,
+                enable_log_compressor,
+                enable_html_extractor,
+                enable_image_optimizer,
+                prefer_code_aware_for_code,
+                mixed_content_threshold,
+                min_section_tokens,
+                fallback_strategy,
+                skip_user_messages,
+                protect_recent_code,
+                protect_analysis_context,
+                protect_recent_reads_fraction,
+                min_ratio_relaxed,
+                min_ratio_aggressive,
+                ccr_enabled,
+                ccr_inject_marker,
+                compress_tagged_content,
+            },
+        })
+    }
+
+    // Read-only field accessors mirroring the Python dataclass.
+    #[getter]
+    fn enable_code_aware(&self) -> bool {
+        self.inner.enable_code_aware
+    }
+    #[getter]
+    fn enable_kompress(&self) -> bool {
+        self.inner.enable_kompress
+    }
+    #[getter]
+    fn enable_smart_crusher(&self) -> bool {
+        self.inner.enable_smart_crusher
+    }
+    #[getter]
+    fn enable_search_compressor(&self) -> bool {
+        self.inner.enable_search_compressor
+    }
+    #[getter]
+    fn enable_log_compressor(&self) -> bool {
+        self.inner.enable_log_compressor
+    }
+    #[getter]
+    fn enable_html_extractor(&self) -> bool {
+        self.inner.enable_html_extractor
+    }
+    #[getter]
+    fn enable_image_optimizer(&self) -> bool {
+        self.inner.enable_image_optimizer
+    }
+    #[getter]
+    fn prefer_code_aware_for_code(&self) -> bool {
+        self.inner.prefer_code_aware_for_code
+    }
+    #[getter]
+    fn mixed_content_threshold(&self) -> usize {
+        self.inner.mixed_content_threshold
+    }
+    #[getter]
+    fn min_section_tokens(&self) -> usize {
+        self.inner.min_section_tokens
+    }
+    #[getter]
+    fn fallback_strategy(&self) -> &'static str {
+        self.inner.fallback_strategy.as_str()
+    }
+    #[getter]
+    fn skip_user_messages(&self) -> bool {
+        self.inner.skip_user_messages
+    }
+    #[getter]
+    fn protect_recent_code(&self) -> usize {
+        self.inner.protect_recent_code
+    }
+    #[getter]
+    fn protect_analysis_context(&self) -> bool {
+        self.inner.protect_analysis_context
+    }
+    #[getter]
+    fn protect_recent_reads_fraction(&self) -> f64 {
+        self.inner.protect_recent_reads_fraction
+    }
+    #[getter]
+    fn min_ratio_relaxed(&self) -> f64 {
+        self.inner.min_ratio_relaxed
+    }
+    #[getter]
+    fn min_ratio_aggressive(&self) -> f64 {
+        self.inner.min_ratio_aggressive
+    }
+    #[getter]
+    fn ccr_enabled(&self) -> bool {
+        self.inner.ccr_enabled
+    }
+    #[getter]
+    fn ccr_inject_marker(&self) -> bool {
+        self.inner.ccr_inject_marker
+    }
+    #[getter]
+    fn compress_tagged_content(&self) -> bool {
+        self.inner.compress_tagged_content
+    }
+}
+
+/// Python-facing snapshot of `CompressionCache.stats()`. Matches the
+/// keys returned by Python's `CompressionCache.stats` property so
+/// existing telemetry scrapers keep working.
+#[pyclass(name = "CacheStats", module = "headroom._core")]
+#[derive(Clone)]
+struct PyCacheStats {
+    inner: RustCacheStats,
+}
+
+#[pymethods]
+impl PyCacheStats {
+    #[getter]
+    fn cache_hits(&self) -> u64 {
+        self.inner.hits
+    }
+    #[getter]
+    fn cache_skip_hits(&self) -> u64 {
+        self.inner.skip_hits
+    }
+    #[getter]
+    fn cache_misses(&self) -> u64 {
+        self.inner.misses
+    }
+    #[getter]
+    fn cache_evictions(&self) -> u64 {
+        self.inner.evictions
+    }
+    #[getter]
+    fn cache_size(&self) -> u64 {
+        self.inner.size
+    }
+    #[getter]
+    fn cache_skip_size(&self) -> u64 {
+        self.inner.skip_size
+    }
+    #[getter]
+    fn cache_avg_lookup_ns(&self) -> f64 {
+        self.inner.avg_lookup_ns
+    }
+
+    fn as_dict<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        // `unwrap()` is fine: every key is a static `&str` literal and
+        // every value is a primitive owned by us, so the `set_item`
+        // conversions can't fail. Pulling this out of `#[pymethods]`
+        // also dodges the pyo3 0.22 `clippy::useless_conversion`
+        // macro false-positive that fires on `?` inside method bodies.
+        let d = PyDict::new_bound(py);
+        d.set_item("cache_hits", self.inner.hits).unwrap();
+        d.set_item("cache_skip_hits", self.inner.skip_hits).unwrap();
+        d.set_item("cache_misses", self.inner.misses).unwrap();
+        d.set_item("cache_evictions", self.inner.evictions).unwrap();
+        d.set_item("cache_size", self.inner.size).unwrap();
+        d.set_item("cache_skip_size", self.inner.skip_size).unwrap();
+        d.set_item("cache_avg_lookup_ns", self.inner.avg_lookup_ns)
+            .unwrap();
+        d
+    }
+}
+
+/// Single cached result tuple — mirrors Python's
+/// `(compressed, ratio, strategy)` tuple from `CompressionCache.get`.
+/// Exposed as a class with attribute access so PR5 doesn't have to
+/// unpack a tuple.
+#[pyclass(name = "CachedResult", module = "headroom._core")]
+#[derive(Clone)]
+struct PyCachedResult {
+    inner: RustCachedResult,
+}
+
+#[pymethods]
+impl PyCachedResult {
+    #[getter]
+    fn compressed(&self) -> &str {
+        &self.inner.compressed
+    }
+    #[getter]
+    fn ratio(&self) -> f64 {
+        self.inner.ratio
+    }
+    #[getter]
+    fn strategy(&self) -> &str {
+        &self.inner.strategy
+    }
+
+    fn as_tuple<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyTuple> {
+        pyo3::types::PyTuple::new_bound(
+            py,
+            [
+                self.inner.compressed.clone().into_py(py),
+                self.inner.ratio.into_py(py),
+                self.inner.strategy.clone().into_py(py),
+            ],
+        )
+    }
+}
+
+/// Mirror of `headroom.transforms.content_router.CompressionCache`.
+///
+/// Backed by an `Arc<RustCompressionCache>` so multiple Python handles
+/// to the same logical cache share storage. The proxy hot path will
+/// hold one cache per worker pool; tests can build their own.
+#[pyclass(name = "CompressionCache", module = "headroom._core")]
+struct PyCompressionCache {
+    inner: Arc<RustCompressionCache>,
+}
+
+#[pymethods]
+impl PyCompressionCache {
+    #[new]
+    #[pyo3(signature = (ttl_seconds = 1800))]
+    fn new(ttl_seconds: u64) -> Self {
+        Self {
+            inner: Arc::new(RustCompressionCache::with_ttl(Duration::from_secs(
+                ttl_seconds,
+            ))),
+        }
+    }
+
+    fn get(&self, key: u64) -> Option<PyCachedResult> {
+        self.inner.get(key).map(|r| PyCachedResult { inner: r })
+    }
+
+    fn is_skipped(&self, key: u64) -> bool {
+        self.inner.is_skipped(key)
+    }
+
+    fn put(&self, key: u64, compressed: &str, ratio: f64, strategy: &str) {
+        self.inner
+            .put(key, compressed.to_string(), ratio, strategy.to_string());
+    }
+
+    fn mark_skip(&self, key: u64) {
+        self.inner.mark_skip(key);
+    }
+
+    fn move_to_skip(&self, key: u64) {
+        self.inner.move_to_skip(key);
+    }
+
+    #[getter]
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
+
+    #[getter]
+    fn skip_size(&self) -> usize {
+        self.inner.skip_size()
+    }
+
+    #[getter]
+    fn stats(&self) -> PyCacheStats {
+        PyCacheStats {
+            inner: self.inner.stats(),
+        }
+    }
+
+    fn clear(&self) {
+        self.inner.clear();
+    }
+}
+
 // ─── Module init ───────────────────────────────────────────────────────────
 
 #[pymodule]
@@ -874,5 +1221,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDetectionResult>()?;
     m.add_function(wrap_pyfunction!(detect_content_type, m)?)?;
     m.add_function(wrap_pyfunction!(is_json_array_of_dicts, m)?)?;
+    m.add_class::<PyContentRouterConfig>()?;
+    m.add_class::<PyCacheStats>()?;
+    m.add_class::<PyCachedResult>()?;
+    m.add_class::<PyCompressionCache>()?;
     Ok(())
 }
