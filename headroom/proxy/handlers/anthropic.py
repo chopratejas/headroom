@@ -966,10 +966,17 @@ class AnthropicHandlerMixin:
                         f"(frozen prefix={frozen_message_count}) to preserve cache"
                     )
                     inject_system_instructions = False
+                inject_tool = self.config.ccr_inject_tool
+                if inject_tool and frozen_message_count > 0:
+                    logger.info(
+                        f"[{request_id}] CCR: deferring tool injection "
+                        f"(frozen prefix={frozen_message_count}) to preserve cache"
+                    )
+                    inject_tool = False
                 # Create fresh injector to avoid state leakage between requests
                 injector = CCRToolInjector(
                     provider="anthropic",
-                    inject_tool=self.config.ccr_inject_tool,
+                    inject_tool=inject_tool,
                     inject_system_instructions=inject_system_instructions,
                 )
                 optimized_messages, tools, was_injected = injector.process_request(
