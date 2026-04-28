@@ -494,6 +494,70 @@ def test_ccr_system_instruction_injection_disabled_when_prefix_frozen(monkeypatc
         assert captured["inject_system"] is False
 
 
+def test_ccr_tool_injection_disabled_when_prefix_frozen(monkeypatch) -> None:
+    captured = {"inject_tool": None}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = False
+        proxy.config.image_optimize = False
+        proxy.config.ccr_inject_tool = True
+        proxy.config.ccr_inject_system_instructions = False
+
+        fake_tracker = _FakePrefixTracker(frozen_count=1)
+        proxy.session_tracker_store.compute_session_id = lambda request, model, messages: (
+            "stable-session"
+        )
+        proxy.session_tracker_store.get_or_create = lambda session_id, provider: fake_tracker
+
+        class _FakeInjector:
+            def __init__(
+                self,
+                provider,  # noqa: ANN001
+                inject_tool,  # noqa: ANN001
+                inject_system_instructions,  # noqa: ANN001
+            ):
+                captured["inject_tool"] = inject_tool
+                self.has_compressed_content = False
+                self.detected_hashes = []
+
+            def process_request(self, messages, tools):  # noqa: ANN001
+                return messages, tools, False
+
+        monkeypatch.setattr("headroom.ccr.CCRToolInjector", _FakeInjector)
+
+        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_ccr_tool_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 3,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "test-key", "anthropic-version": "2023-06-01"},
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured["inject_tool"] is False
+
+
 def test_previous_turns_always_frozen_only_final_turn_mutable() -> None:
     captured = {}
     with _make_proxy_client() as client:
