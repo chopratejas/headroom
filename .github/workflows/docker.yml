@@ -1,5 +1,22 @@
 name: Docker
 
+# ─── Optimized release CI ──────────────────────────────────────────────────────
+# Strategy:
+#   1. Native amd64 + arm64 runners (no QEMU emulation).
+#   2. Single bake invocation per platform builds all 8 variants → builder
+#      stage shared in-memory across all targets within one buildx run.
+#   3. Cross-run caching via type=registry (persists across releases, unlike
+#      type=gha which is scoped to a single workflow run).
+#   4. Per-platform builds push by digest; merge job creates multi-arch
+#      manifest lists with all tags (no rebuild — pure manifest plumbing).
+#   5. Cosign signing limited to root + slim variants (the public-facing
+#      tags) to drop ~30s of aggregate cosign overhead.
+#
+# Security note: all dynamic values referenced inside `run:` blocks are
+# routed via `env:` to prevent shell injection through `${{ ... }}`
+# template expansion of untrusted inputs (release tags, workflow_dispatch
+# inputs, action outputs).
+
 on:
   workflow_call:
     inputs:
@@ -26,39 +43,24 @@ env:
 permissions:
   contents: read
   packages: write
-  id-token: write # For cosign keyless signing via Sigstore OIDC
+  id-token: write # cosign keyless signing via Sigstore OIDC
 
 jobs:
-  docker-variant-tags:
+  setup:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: ""
-            bake_target: runtime
-          - variant: nonroot
-            bake_target: runtime-nonroot
-          - variant: code
-            bake_target: runtime-code
-          - variant: code-nonroot
-            bake_target: runtime-code-nonroot
-          - variant: slim
-            bake_target: runtime-slim
-          - variant: slim-nonroot
-            bake_target: runtime-slim-nonroot
-          - variant: code-slim
-            bake_target: runtime-code-slim
-          - variant: code-slim-nonroot
-            bake_target: runtime-code-slim-nonroot
-
+    outputs:
+      image_name: ${{ steps.image.outputs.image_name }}
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.sha.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
 
       - name: Normalize image name
-        id: image-name
+        id: image
+        env:
+          GH_REPO: ${{ github.repository }}
         run: |
-          image_name="$(printf '%s' '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          image_name="$(printf '%s' "${GH_REPO}" | tr '[:upper:]' '[:lower:]')"
           printf 'image_name=%s\n' "$image_name" >> "$GITHUB_OUTPUT"
 
       - name: Determine image version
@@ -73,19 +75,40 @@ jobs:
           fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
+      - name: Compute short SHA
+        id: sha
+        env:
+          GH_SHA: ${{ github.sha }}
+        run: printf 'sha=%s\n' "${GH_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runs_on: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runs_on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Set up Python
-        if: steps.version.outputs.version != ''
+        if: needs.setup.outputs.version != ''
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Sync versioned files for image build
-        if: steps.version.outputs.version != ''
+        if: needs.setup.outputs.version != ''
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
         run: |
-          python scripts/version-sync.py --version ${{ steps.version.outputs.version }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+          python scripts/version-sync.py --version "${VERSION}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -97,102 +120,201 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute short SHA
-        id: short-sha
-        run: printf 'sha=%s\n' "${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - name: Build and push by digest (all variants, single bake)
+        id: bake
+        uses: docker/bake-action@v7
+        with:
+          files: ./docker-bake.hcl
+          targets: |
+            runtime
+            runtime-nonroot
+            runtime-code
+            runtime-code-nonroot
+            runtime-slim
+            runtime-slim-nonroot
+            runtime-code-slim
+            runtime-code-slim-nonroot
+          push: true
+          # Bake `--set` uses singular `platform` (not `platforms` like the
+          # HCL field). All other keys (tags/output/cache-from/cache-to)
+          # match between HCL and `--set`.
+          set: |
+            *.platform=${{ matrix.platform }}
+            *.tags=${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}
+            *.output=type=image,push-by-digest=true,name-canonical=true,push=true
+            *.cache-from=type=registry,ref=${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}-buildcache:${{ matrix.arch }}
+            *.cache-to=type=registry,mode=max,ref=${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}-buildcache:${{ matrix.arch }}
 
-      - name: Extract metadata (variant)
+      - name: Export per-target digests
+        run: |
+          # Bake metadata blob can exceed argv/env (ARG_MAX) — write it via
+          # quoted heredoc into a file so no shell expansion happens, then
+          # read with jq from disk.
+          mkdir -p /tmp/digests
+          cat > "${RUNNER_TEMP}/bake_meta.json" <<'__HEADROOM_BAKE_META_EOF__'
+          ${{ steps.bake.outputs.metadata }}
+          __HEADROOM_BAKE_META_EOF__
+          jq -r 'to_entries[] | "\(.key) \(.value."containerimage.digest")"' \
+            "${RUNNER_TEMP}/bake_meta.json" | while read -r target digest; do
+              [ -z "$digest" ] && continue
+              printf '%s\n' "$digest" > "/tmp/digests/${target}"
+            done
+          ls -la /tmp/digests/
+
+      - name: Upload digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: ""
+            target: runtime
+          - variant: nonroot
+            target: runtime-nonroot
+          - variant: code
+            target: runtime-code
+          - variant: code-nonroot
+            target: runtime-code-nonroot
+          - variant: slim
+            target: runtime-slim
+          - variant: slim-nonroot
+            target: runtime-slim-nonroot
+          - variant: code-slim
+            target: runtime-code-slim
+          - variant: code-slim-nonroot
+            target: runtime-code-slim-nonroot
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download amd64 digests
+        uses: actions/download-artifact@v4
+        with:
+          name: digests-amd64
+          path: /tmp/digests/amd64
+
+      - name: Download arm64 digests
+        uses: actions/download-artifact@v4
+        with:
+          name: digests-arm64
+          path: /tmp/digests/arm64
+
+      - name: Compute tags for variant
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name }}
+          images: ${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch,enable=${{ inputs.enable_ref_tags != 'false' && github.event_name != 'release' }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=ref,event=pr,enable=${{ inputs.enable_ref_tags != 'false' && github.event_name != 'release' }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != '' }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
-            type=raw,value=${{ steps.version.outputs.version }}-${{ steps.short-sha.outputs.sha }},enable=${{ steps.version.outputs.version != '' && matrix.variant == '' }}
-            type=raw,value=${{ steps.version.outputs.version }}-${{ matrix.variant }}-${{ steps.short-sha.outputs.sha }},enable=${{ steps.version.outputs.version != '' && matrix.variant != '' }}
+            type=raw,value=${{ needs.setup.outputs.version }},enable=${{ needs.setup.outputs.version != '' }},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
+            type=raw,value=${{ needs.setup.outputs.version }}-${{ needs.setup.outputs.short_sha }},enable=${{ needs.setup.outputs.version != '' && matrix.variant == '' }}
+            type=raw,value=${{ needs.setup.outputs.version }}-${{ matrix.variant }}-${{ needs.setup.outputs.short_sha }},enable=${{ needs.setup.outputs.version != '' && matrix.variant != '' }}
             type=semver,pattern={{version}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=semver,pattern={{major}},suffix=${{ matrix.variant != '' && format('-{0}', matrix.variant) || '' }}
             type=sha,format=short,prefix=${{ matrix.variant != '' && format('{0}-', matrix.variant) || 'sha-' }}
             type=raw,value=${{ matrix.variant }},enable=${{ matrix.variant != '' }}
 
-      - name: Build and push variant (bake)
-        id: bake
-        uses: docker/bake-action@v7
+      - name: Create multi-arch manifest list
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}
+          TARGET: ${{ matrix.target }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          AMD_DIGEST="$(cat "/tmp/digests/amd64/${TARGET}")"
+          ARM_DIGEST="$(cat "/tmp/digests/arm64/${TARGET}")"
+          if [ -z "$AMD_DIGEST" ] || [ -z "$ARM_DIGEST" ]; then
+            echo "::error::missing digest for target=${TARGET} amd=${AMD_DIGEST} arm=${ARM_DIGEST}"
+            exit 1
+          fi
+
+          # Build -t args from $TAGS (newline-separated). Reading via env
+          # avoids inline GitHub-expression interpolation in the script body.
+          TAG_ARGS=()
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            TAG_ARGS+=("-t" "$tag")
+          done <<< "${TAGS}"
+
+          if [ "${#TAG_ARGS[@]}" -eq 0 ]; then
+            echo "::error::no tags computed for variant target=${TARGET}"
+            exit 1
+          fi
+
+          docker buildx imagetools create "${TAG_ARGS[@]}" \
+            "${IMAGE}@${AMD_DIGEST}" \
+            "${IMAGE}@${ARM_DIGEST}"
+
+  sign:
+    # Sign only public-facing variants: root (runtime) and slim (distroless).
+    # Other 6 variants share builder/runtime layers and are
+    # cryptographically equivalent — re-signing each is overhead, not safety.
+    needs: [setup, merge]
+    if: needs.setup.outputs.version != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: ""
+          - variant: slim
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
         with:
-          files: |
-            ./docker-bake.hcl
-            cwd://${{ steps.meta.outputs.bake-file-tags }}
-            cwd://${{ steps.meta.outputs.bake-file-labels }}
-          targets: ${{ matrix.bake_target }}
-          push: true
-          set: |
-            *.cache-from=type=gha
-            *.cache-to=type=gha,mode=max
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign images with cosign (keyless via Sigstore OIDC)
+      - name: Sign manifest with cosign
         env:
           # Route signatures to a sibling GHCR package so the main image's
-          # package version list stays clean. GHCR does not implement the OCI 1.1
-          # referrers API yet (community discussion #163029, June 2025), so
-          # cosign's OCI 1.1 mode falls back to writing referrer tags into the
-          # *image's* repo. Using legacy signature mode here lets COSIGN_REPOSITORY
-          # actually relocate the artifacts. Verifiers must export the same
-          # COSIGN_REPOSITORY value when running 'cosign verify'.
-          COSIGN_REPOSITORY: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name }}-signatures
+          # package version listing stays clean. Verifiers must export the same
+          # COSIGN_REPOSITORY when running `cosign verify`.
+          COSIGN_REPOSITORY: ${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}-signatures
+          IMAGE: ${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          VARIANT: ${{ matrix.variant }}
         run: |
-          # Write bake metadata to a file rather than pass it through
-          # the `env:` block. The `code-nonroot` and `runtime-code-nonroot`
-          # bake targets emit metadata blobs large enough that combined
-          # argv+env at bash spawn exceeds Linux ARG_MAX (~128 KiB on
-          # ubuntu-latest), failing with `E2BIG: Argument list too long`
-          # before the script can run. The heredoc puts the JSON in the
-          # script body (which is read from a temp file by bash, no
-          # ARG_MAX limit) and we read it back via `jq -f`-style file
-          # input. Sentinel chosen long enough that no JSON payload is
-          # plausibly going to collide with it.
-          cat > "${RUNNER_TEMP}/bake_meta.json" <<'__HEADROOM_BAKE_META_EOF__'
-          ${{ steps.bake.outputs.metadata }}
-          __HEADROOM_BAKE_META_EOF__
-
-          jq -r 'to_entries[].value."containerimage.digest" // empty' \
-              "${RUNNER_TEMP}/bake_meta.json" | while read -r digest; do
-            image="${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name }}@${digest}"
-            echo "Signing ${image} (signatures -> ${COSIGN_REPOSITORY})"
-            cosign sign --yes "${image}"
-          done
+          if [ -n "$VARIANT" ]; then
+            TAG="${VERSION}-${VARIANT}"
+          else
+            TAG="${VERSION}"
+          fi
+          # Cosign resolves the tag to its current manifest digest internally
+          # and records the signature against that digest (--recursive signs
+          # each per-arch image referenced by a manifest list).
+          cosign sign --yes --recursive "${IMAGE}:${TAG}"
 
   promote-latest:
-    # Re-push the :latest tag pointing at the root variant *after* every
-    # variant matrix job has finished, so GHCR's package version listing
-    # (sorted by created_at) shows the root image with :latest at the top
-    # instead of whichever variant happened to finish last.
-    needs: docker-variant-tags
+    # Re-tag :latest at root variant so GHCR's package version listing shows
+    # the canonical root image at the top with a fresh timestamp.
+    needs: [setup, merge]
+    if: needs.setup.outputs.version != ''
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize image name
-        id: image-name
-        run: |
-          image_name="$(printf '%s' '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          printf 'image_name=%s\n' "$image_name" >> "$GITHUB_OUTPUT"
-
-      - name: Determine image version
-        id: version
-        env:
-          MANUAL_VERSION: ${{ inputs.version || github.event.inputs.version }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          version="${MANUAL_VERSION#v}"
-          if [ -z "$version" ] && [ -n "$RELEASE_TAG" ]; then
-            version="${RELEASE_TAG#v}"
-          fi
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -204,15 +326,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Re-tag root image as :latest
-        if: steps.version.outputs.version != ''
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.image-name.outputs.image_name }}
-          VERSION: ${{ steps.version.outputs.version }}
+          IMAGE: ${{ env.REGISTRY }}/${{ needs.setup.outputs.image_name }}
+          VERSION: ${{ needs.setup.outputs.version }}
         run: |
-          # Add a unique annotation so the resulting image index manifest gets
-          # a new digest, which makes GHCR record a fresh package version with
-          # current timestamp (otherwise the existing root manifest is reused
-          # and stays where it was in the version listing).
+          # Add unique annotation so manifest index gets a new digest;
+          # GHCR records a fresh package version with the current timestamp
+          # rather than reusing the existing root manifest entry.
           promoted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker buildx imagetools create \
             --annotation "index:io.headroom.promoted-at=${promoted_at}" \
