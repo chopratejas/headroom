@@ -19,6 +19,7 @@ from headroom.integrations.mcp import (
     compress_tool_result_with_metrics,
 )
 from headroom.providers import OpenAIProvider
+from headroom.transforms.smart_crusher import strip_ccr_sentinels
 
 # ============================================================================
 # Test Fixtures
@@ -280,7 +281,9 @@ class TestMCPErrorPreservation:
 
         compressed_data = json.loads(result.compressed_content)
         compressed_errors = [
-            e for e in compressed_data["entries"] if e["level"] in ["ERROR", "FATAL"]
+            e
+            for e in strip_ccr_sentinels(compressed_data["entries"])
+            if e["level"] in ["ERROR", "FATAL"]
         ]
 
         # CRITICAL: 100% of errors must be preserved
@@ -306,7 +309,7 @@ class TestMCPErrorPreservation:
         # Should preserve some messages with error keywords (SmartCrusher detects these)
         error_msgs = [
             m
-            for m in compressed_data["messages"]
+            for m in strip_ccr_sentinels(compressed_data["messages"])
             if any(kw in m["text"].lower() for kw in ["error", "failed", "exception"])
         ]
         assert len(error_msgs) > 0, "Should preserve some error messages"
@@ -327,7 +330,9 @@ class TestMCPErrorPreservation:
 
         compressed_data = json.loads(result.compressed_content)
         compressed_errors = [
-            r for r in compressed_data["rows"] if "error" in str(r["status"]).lower()
+            r
+            for r in strip_ccr_sentinels(compressed_data["rows"])
+            if "error" in str(r["status"]).lower()
         ]
 
         # Should preserve most error rows
@@ -350,7 +355,7 @@ class TestMCPErrorPreservation:
         # Should preserve at least some bugs
         compressed_bugs = [
             i
-            for i in compressed_data["issues"]
+            for i in strip_ccr_sentinels(compressed_data["issues"])
             if any(label in ["bug", "critical", "urgent", "blocker"] for label in i["labels"])
         ]
 

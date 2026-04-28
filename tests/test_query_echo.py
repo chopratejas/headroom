@@ -8,22 +8,15 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
 import pytest
 
 from headroom.transforms.query_echo import extract_user_query, inject_query_echo
+from tests._dotenv import autouse_apply_env, load_env_overrides
 
-# Load .env for integration tests
-env_path = Path(__file__).parent.parent / ".env"
-if env_path.exists():
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
-
-ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_env_overrides = load_env_overrides()
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY") or _env_overrides.get("ANTHROPIC_API_KEY", "")
+apply_dotenv = autouse_apply_env(_env_overrides)
 
 
 # =============================================================================

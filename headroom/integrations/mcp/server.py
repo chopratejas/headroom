@@ -245,13 +245,23 @@ class HeadroomMCPCompressor:
         items_after = 0
         errors_preserved = 0
 
-        # Create SmartCrusher with profile settings
+        # Create SmartCrusher with profile settings.
+        #
+        # The MCP integration emits JSON-shaped output that downstream
+        # tool consumers parse and iterate. The PR4 lossless path
+        # substitutes a CSV+schema STRING in place of arrays — great
+        # for LLM prompts but wire-format-incompatible with consumers
+        # that expect JSON arrays. So we keep the runtime MCP wrapper
+        # on the lossy + CCR-Dropped path: the LLM sees row-level
+        # subsets inline, with the full payload retrievable via CCR
+        # cache. (Same retention semantics as Python's pre-PR4
+        # SmartCrusher behavior.)
         smart_config = SmartCrusherConfig(
             enabled=True,
             min_tokens_to_crush=profile.min_tokens_to_compress,
             max_items_after_crush=profile.max_items,
         )
-        crusher = SmartCrusher(config=smart_config)  # type: ignore[arg-type]
+        crusher = SmartCrusher(config=smart_config, with_compaction=False)  # type: ignore[arg-type]
 
         # Build messages for SmartCrusher (it expects conversation format)
         messages = [

@@ -2,6 +2,7 @@
 
 import os
 import sys
+from typing import Any
 
 import click
 
@@ -57,6 +58,17 @@ from .main import main
 @click.option("--no-optimize", is_flag=True, help="Disable optimization (passthrough mode)")
 @click.option("--no-cache", is_flag=True, help="Disable semantic caching")
 @click.option("--no-rate-limit", is_flag=True, help="Disable rate limiting")
+@click.option(
+    "--proxy-extension",
+    "proxy_extension",
+    multiple=True,
+    envvar="HEADROOM_PROXY_EXTENSIONS",
+    help=(
+        "Enable a registered proxy extension by entry-point name (opt-in). "
+        "Repeat the flag or pass a comma-separated list. Use '*' to enable "
+        "every discovered extension. Env: HEADROOM_PROXY_EXTENSIONS."
+    ),
+)
 @click.option(
     "--no-subscription-tracking",
     is_flag=True,
@@ -190,6 +202,37 @@ from .main import main
     default=10,
     help="Number of memories to inject as context (default: 10)",
 )
+@click.option(
+    "--memory-qdrant-url",
+    default=None,
+    help=(
+        "Full Qdrant URL for the qdrant-neo4j backend "
+        "(e.g. https://xyz.cloud.qdrant.io:6333). When set, takes precedence over "
+        "--memory-qdrant-host/--memory-qdrant-port. "
+        "Also reads HEADROOM_QDRANT_URL."
+    ),
+)
+@click.option(
+    "--memory-qdrant-host",
+    default=None,
+    help=(
+        "Qdrant host for the qdrant-neo4j backend "
+        "(default: localhost, also reads HEADROOM_QDRANT_HOST)"
+    ),
+)
+@click.option(
+    "--memory-qdrant-port",
+    type=int,
+    default=None,
+    help=(
+        "Qdrant port for the qdrant-neo4j backend (default: 6333, also reads HEADROOM_QDRANT_PORT)"
+    ),
+)
+@click.option(
+    "--memory-qdrant-api-key",
+    default=None,
+    help=("API key for hosted Qdrant (e.g. Qdrant Cloud). Also reads HEADROOM_QDRANT_API_KEY."),
+)
 # Traffic Learning (live pattern extraction from proxy traffic)
 @click.option(
     "--learn",
@@ -274,6 +317,7 @@ def proxy(
     no_optimize: bool,
     no_cache: bool,
     no_rate_limit: bool,
+    proxy_extension: tuple[str, ...],
     no_subscription_tracking: bool,
     subscription_poll_interval: int | None,
     retry_max_attempts: int | None,
@@ -294,6 +338,10 @@ def proxy(
     no_memory_tools: bool,
     no_memory_context: bool,
     memory_top_k: int,
+    memory_qdrant_url: str | None,
+    memory_qdrant_host: str | None,
+    memory_qdrant_port: int | None,
+    memory_qdrant_api_key: str | None,
     learn: bool,
     no_learn: bool,
     backend: str,
@@ -392,6 +440,19 @@ def proxy(
     # License key for managed/enterprise deployments (optional)
     license_key = os.environ.get("HEADROOM_LICENSE_KEY")
 
+    # Qdrant connection for the qdrant-neo4j backend. CLI flags default
+    # to None; when omitted we let ProxyConfig's default_factory resolve
+    # HEADROOM_QDRANT_* env vars. Explicit CLI values win over env.
+    qdrant_overrides: dict[str, Any] = {}
+    if memory_qdrant_url is not None:
+        qdrant_overrides["memory_qdrant_url"] = memory_qdrant_url
+    if memory_qdrant_host is not None:
+        qdrant_overrides["memory_qdrant_host"] = memory_qdrant_host
+    if memory_qdrant_port is not None:
+        qdrant_overrides["memory_qdrant_port"] = memory_qdrant_port
+    if memory_qdrant_api_key is not None:
+        qdrant_overrides["memory_qdrant_api_key"] = memory_qdrant_api_key
+
     config = ProxyConfig(
         host=host,
         port=port,
@@ -403,6 +464,13 @@ def proxy(
         optimize=not no_optimize,
         cache_enabled=not no_cache,
         rate_limit_enabled=not no_rate_limit,
+        # Flatten repeat-flag tuple AND any comma-separated values inside it.
+        # `--proxy-extension a,b --proxy-extension c` and `HEADROOM_PROXY_EXTENSIONS=a,b,c`
+        # both yield ["a", "b", "c"]. None when nothing was supplied.
+        proxy_extensions=(
+            [part.strip() for chunk in proxy_extension for part in chunk.split(",") if part.strip()]
+            or None
+        ),
         subscription_tracking_enabled=not no_subscription_tracking,
         subscription_poll_interval_s=(
             subscription_poll_interval if subscription_poll_interval is not None else 300
@@ -431,6 +499,7 @@ def proxy(
         memory_inject_tools=not no_memory_tools,
         memory_inject_context=not no_memory_context,
         memory_top_k=memory_top_k,
+        **qdrant_overrides,
         # Traffic Learning: only with --learn, never with --no-learn
         # Stateless mode disables learning (requires filesystem)
         traffic_learning_enabled=False if is_stateless else (learn and not no_learn),
@@ -536,6 +605,33 @@ Memory (Multi-Provider):
     else:
         telemetry_line = "  Telemetry:    DISABLED"
 
+    # Discover proxy extensions (third-party packages registered via the
+    # `headroom.proxy_extension` entry-point group). Surfaced in the banner
+    # so operators can see what's available + what's currently opted-in.
+    # Discovery does NOT run extension code; only the explicitly-enabled
+    # set in config.proxy_extensions actually installs.
+    try:
+        from headroom.proxy.extensions import discover as _discover_extensions
+
+        _ext_available = sorted(name for name, _ in _discover_extensions())
+    except Exception:  # noqa: BLE001 — banner must never crash startup
+        _ext_available = []
+    _ext_enabled = config.proxy_extensions or []
+    if not _ext_available:
+        extensions_line = "  Extensions:   (none discovered)"
+    elif not _ext_enabled:
+        extensions_line = (
+            f"  Extensions:   discovered={','.join(_ext_available)} "
+            f"(opt-in: --proxy-extension <name> or HEADROOM_PROXY_EXTENSIONS=<n>)"
+        )
+    elif "*" in _ext_enabled:
+        extensions_line = f"  Extensions:   ENABLED (wildcard) {','.join(_ext_available)}"
+    else:
+        extensions_line = (
+            f"  Extensions:   ENABLED {','.join(sorted(_ext_enabled))} "
+            f"(available: {','.join(_ext_available)})"
+        )
+
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                         HEADROOM PROXY                                 ║
@@ -551,6 +647,7 @@ Starting proxy server...
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
   License:      {license_status}
+{extensions_line}
 {stateless_line}{telemetry_line}
 {backend_section}
 Routing:

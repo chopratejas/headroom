@@ -1,20 +1,27 @@
 """Embedding-based relevance scorer for Headroom SDK.
 
-This module provides semantic relevance scoring using sentence embeddings.
-Requires the optional `sentence-transformers` dependency.
+This module provides semantic relevance scoring using `fastembed`
+(BAAI/bge-small-en-v1.5 by default — 33M params, 384 dims, ~30 MB
+int8-quantized ONNX). Same library + same model used by the Rust
+SmartCrusher (fastembed-rs crate) so embeddings agree byte-for-byte
+across the language boundary.
 
 Key features:
 - Semantic understanding ("errors" matches "failed", "issues")
 - Handles paraphrases and synonyms
-- Uses lightweight all-MiniLM-L6-v2 model by default (22M params)
-- Batch encoding for efficiency
+- ONNX-backed inference (no PyTorch / no CUDA required)
+- ~2-3x faster than sentence-transformers' all-MiniLM-L6-v2
+- Outranks all-MiniLM-L6-v2 by ~6 MTEB points
 
 Install with: pip install headroom[relevance]
 
-Limitations:
-- Requires ~500MB for model download on first use
-- ~5-10ms per batch (slower than BM25)
-- May miss exact ID matches that BM25 catches
+History: this module previously wrapped `sentence-transformers`
+(PyTorch). Switched to fastembed in Stage 3c.1 of the Rust port to:
+1. Match the Rust embedding scorer byte-for-byte (both call into
+   ONNX Runtime over the identical ONNX file).
+2. Remove the torch dependency from the relevance/ path
+   (Phase 6: "drop torch from Python").
+3. Get a better default model (bge-small-en-v1.5 vs MiniLM-L6-v2).
 """
 
 from __future__ import annotations
@@ -45,9 +52,12 @@ def _get_numpy():
 
 
 if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
+    from fastembed import TextEmbedding
 
 logger = logging.getLogger(__name__)
+
+# Default model name. Same string used by the Rust embedding scorer.
+DEFAULT_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 
 def _cosine_similarity(a, b) -> float:
@@ -73,10 +83,11 @@ def _cosine_similarity(a, b) -> float:
 
 
 class EmbeddingScorer(RelevanceScorer):
-    """Semantic relevance scorer using sentence embeddings.
+    """Semantic relevance scorer using fastembed (ONNX-backed).
 
-    Uses sentence-transformers to compute dense embeddings and cosine similarity.
-    The default model (all-MiniLM-L6-v2) offers a good balance of speed and quality.
+    Default model: BAAI/bge-small-en-v1.5 (33M params, 384 dims).
+    Auto-downloads from HuggingFace Hub on first use (~30 MB
+    int8-quantized ONNX).
 
     Example:
         scorer = EmbeddingScorer()
@@ -87,88 +98,78 @@ class EmbeddingScorer(RelevanceScorer):
         # score.score > 0.5 (semantic match between "failed"/"error" and "errors")
 
     Note:
-        Requires sentence-transformers: pip install headroom[relevance]
+        Requires fastembed: pip install headroom[relevance]
     """
 
     def __init__(
         self,
         model_name: str | None = None,
-        device: str | None = None,
-        cache_model: bool = True,  # Kept for API compatibility, always uses registry now
+        cache_model: bool = True,  # Kept for API compatibility
     ):
         """Initialize embedding scorer.
 
         Args:
-            model_name: Sentence transformer model name. If None, uses config default.
-                Recommended models:
-                - "all-MiniLM-L6-v2": Fast, good quality (default)
-                - "all-mpnet-base-v2": Best quality, slower
-                - "paraphrase-MiniLM-L6-v2": Good for paraphrase detection
-            device: Device to use ('cpu', 'cuda', 'mps', or None for auto).
-            cache_model: Deprecated, models are always cached via MLModelRegistry.
+            model_name: Sentence-embedding model name. Default
+                "BAAI/bge-small-en-v1.5". See fastembed's catalog for
+                supported models (BGE, E5, MiniLM, jina, etc.).
+            cache_model: Deprecated, models are always cached via
+                fastembed's HF Hub cache.
         """
-        from headroom.models.config import ML_MODEL_DEFAULTS
-
-        self.model_name = model_name or ML_MODEL_DEFAULTS.sentence_transformer
-        self.device = device
+        self.model_name = model_name or DEFAULT_MODEL_NAME
         self.cache_model = cache_model
-        self._available: bool | None = None
+        self._model: TextEmbedding | None = None
 
     @classmethod
     def is_available(cls) -> bool:
-        """Check if sentence-transformers is installed.
+        """Check if fastembed is installed.
 
         Returns:
             True if the package is available.
         """
         try:
-            import sentence_transformers  # noqa: F401
+            import fastembed  # noqa: F401
 
             return True
         except ImportError:
             return False
 
-    def _get_model(self) -> SentenceTransformer:
-        """Get or load the sentence transformer model.
+    def _get_model(self) -> TextEmbedding:
+        """Get or load the fastembed text embedding model.
 
         Returns:
-            Loaded SentenceTransformer model.
+            Loaded TextEmbedding model.
 
         Raises:
-            RuntimeError: If sentence-transformers is not installed.
+            RuntimeError: If fastembed is not installed.
         """
         if not self.is_available():
             raise RuntimeError(
-                "EmbeddingScorer requires sentence-transformers. "
-                "Install with: pip install headroom[relevance]"
+                "EmbeddingScorer requires fastembed. Install with: pip install headroom[relevance]"
             )
 
-        # Use centralized registry for shared model instances
-        from headroom.models.ml_models import MLModelRegistry
+        if self._model is None:
+            from fastembed import TextEmbedding
 
-        model: SentenceTransformer = MLModelRegistry.get_sentence_transformer(
-            self.model_name, self.device
-        )
-        return model
+            self._model = TextEmbedding(model_name=self.model_name)
+        return self._model
 
     def _encode(self, texts: list[str]):
-        """Encode texts to embeddings.
+        """Encode texts to embeddings via fastembed.
+
+        fastembed's `embed` returns an iterator yielding numpy arrays
+        (one per text). We materialize to a list/np.array for the
+        cosine-similarity downstream.
 
         Args:
             texts: List of texts to encode.
 
         Returns:
-            Array of embeddings, shape (len(texts), embedding_dim).
+            numpy array of embeddings, shape (len(texts), embedding_dim).
         """
+        np = _get_numpy()
         model = self._get_model()
-        # normalize_embeddings=True ensures unit vectors for fast cosine via dot product
-        embeddings = model.encode(
-            texts,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return embeddings
+        embeddings = list(model.embed(texts))
+        return np.array(embeddings)
 
     def score(self, item: str, context: str) -> RelevanceScore:
         """Score item relevance to context using embeddings.
@@ -194,9 +195,9 @@ class EmbeddingScorer(RelevanceScorer):
     def score_batch(self, items: list[str], context: str) -> list[RelevanceScore]:
         """Score multiple items efficiently using batch encoding.
 
-        This is much faster than scoring items individually since:
-        1. Context is encoded only once
-        2. Items are encoded in a single batch
+        Encodes items + context in a single fastembed call. Mirrors the
+        Rust scorer's batch behavior so both languages do the same
+        amount of work for the same input.
 
         Args:
             items: List of items to score.
@@ -238,6 +239,6 @@ def embedding_available() -> bool:
     """Check if embedding scorer is available.
 
     Returns:
-        True if sentence-transformers is installed.
+        True if fastembed is installed.
     """
     return EmbeddingScorer.is_available()

@@ -98,9 +98,15 @@ memory-stack = [
     "qdrant-client>=1.9.0",
     "neo4j>=5.20.0",
 ]
-# Semantic relevance scoring with embeddings
+# Semantic relevance scoring with embeddings.
+# Uses `fastembed` (BAAI/bge-small-en-v1.5 by default — 33M params,
+# 384 dims, ~30 MB int8-quantized ONNX). Same library + model used by
+# the Rust SmartCrusher (`fastembed` crate), giving byte-equal embeddings
+# across the language boundary. Replaced sentence-transformers in
+# Stage 3c.1 — fastembed is faster (~2-3x), smaller (no torch
+# dependency), and outranks all-MiniLM-L6-v2 on MTEB by ~6 points.
 relevance = [
-    "sentence-transformers>=2.2.0",
+    "fastembed>=0.4.0",
     "numpy>=1.24.0",
 ]
 # Image compression (ML-based routing + OCR)

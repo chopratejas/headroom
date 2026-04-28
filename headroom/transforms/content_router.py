@@ -1197,14 +1197,13 @@ class ContentRouter(Transform):
         return self._log_compressor
 
     def _get_diff_compressor(self) -> Any:
-        """Get DiffCompressor (lazy load)."""
+        """Get DiffCompressor (lazy load). Rust-only — Python implementation
+        retired in Stage 3b. The wheel (`headroom._core`) is a hard import.
+        """
         if self._diff_compressor is None:
-            try:
-                from .diff_compressor import DiffCompressor
+            from .diff_compressor import DiffCompressor
 
-                self._diff_compressor = DiffCompressor()
-            except ImportError:
-                logger.debug("DiffCompressor not available")
+            self._diff_compressor = DiffCompressor()
         return self._diff_compressor
 
     def _get_html_extractor(self) -> Any:

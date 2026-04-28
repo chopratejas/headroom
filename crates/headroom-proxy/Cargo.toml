@@ -1,0 +1,55 @@
+[package]
+name = "headroom-proxy"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Headroom transparent reverse proxy (Rust, axum). Phase 1: drop-in passthrough in front of the Python proxy."
+
+[[bin]]
+name = "headroom-proxy"
+path = "src/main.rs"
+
+[lib]
+name = "headroom_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { workspace = true, features = ["ws", "http2", "macros"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net", "io-util", "time"] }
+tower = { workspace = true }
+tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "fmt"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+clap = { workspace = true, features = ["derive", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+bytes = { workspace = true }
+futures = "0.3"
+futures-util = "0.3"
+pin-project-lite = "0.2"
+http = "1"
+http-body-util = "0.1"
+hyper = "1"
+url = "2"
+humantime = "2"
+bytesize = "1"
+tokio-util = { version = "0.7" }
+headroom-core = { path = "../headroom-core" }
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+wiremock = "0.6"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2", "json"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net", "io-util", "time", "test-util", "process"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+http-body-util = "0.1"
+tokio-stream = "0.1"

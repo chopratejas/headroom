@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from headroom.memory import qdrant_env
 from headroom.memory.models import Memory
 from headroom.memory.ports import MemoryFilter, VectorFilter, VectorSearchResult
 
@@ -25,14 +26,24 @@ from headroom.memory.ports import MemoryFilter, VectorFilter, VectorSearchResult
 class Mem0Config:
     """Configuration for Mem0 backend.
 
+    Qdrant connection fields default to values read from ``HEADROOM_QDRANT_*``
+    environment variables (see :mod:`headroom.memory.qdrant_env`). Passing an
+    explicit value to the constructor always wins over the environment.
+
     Attributes:
         mode: Operating mode - "local" for embedded or "cloud" for Mem0 API.
-        api_key: API key for cloud mode.
+        api_key: API key for Mem0 cloud mode.
         neo4j_uri: Neo4j connection URI for local mode.
         neo4j_user: Neo4j username for local mode.
         neo4j_password: Neo4j password for local mode.
+        qdrant_url: Full Qdrant URL (e.g. ``https://xyz.cloud.qdrant.io:6333``).
+            When set, takes precedence over ``qdrant_host``/``qdrant_port``.
         qdrant_host: Qdrant host for local mode.
         qdrant_port: Qdrant port for local mode.
+        qdrant_api_key: API key for hosted Qdrant (e.g. Qdrant Cloud).
+        qdrant_https: Force HTTPS on/off. ``None`` lets the Qdrant client decide.
+        qdrant_prefer_grpc: Use gRPC transport instead of HTTP.
+        qdrant_grpc_port: gRPC port (only used when ``qdrant_prefer_grpc`` is True).
         llm_model: LLM model for entity extraction.
         embedder_model: Embedding model for vector search.
         collection_name: Name of the collection/namespace in Mem0.
@@ -47,8 +58,14 @@ class Mem0Config:
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    # Qdrant settings (defaults resolve from HEADROOM_QDRANT_* env vars)
+    qdrant_url: str | None = field(default_factory=qdrant_env.qdrant_env_url)
+    qdrant_host: str = field(default_factory=qdrant_env.qdrant_env_host)
+    qdrant_port: int = field(default_factory=qdrant_env.qdrant_env_port)
+    qdrant_api_key: str | None = field(default_factory=qdrant_env.qdrant_env_api_key)
+    qdrant_https: bool | None = field(default_factory=qdrant_env.qdrant_env_https)
+    qdrant_prefer_grpc: bool = field(default_factory=qdrant_env.qdrant_env_prefer_grpc)
+    qdrant_grpc_port: int = field(default_factory=qdrant_env.qdrant_env_grpc_port)
 
     # Common settings
     llm_model: str = "gpt-4o-mini"  # For entity extraction
@@ -117,14 +134,21 @@ class Mem0Backend:
                 self._client = await asyncio.to_thread(Mem0Memory, api_key=self._config.api_key)
             else:
                 # Local mode with configuration
+                qdrant_provider_cfg: dict[str, Any] = {
+                    "collection_name": self._config.collection_name,
+                }
+                if self._config.qdrant_url:
+                    qdrant_provider_cfg["url"] = self._config.qdrant_url
+                else:
+                    qdrant_provider_cfg["host"] = self._config.qdrant_host
+                    qdrant_provider_cfg["port"] = self._config.qdrant_port
+                if self._config.qdrant_api_key:
+                    qdrant_provider_cfg["api_key"] = self._config.qdrant_api_key
+
                 config: dict[str, Any] = {
                     "vector_store": {
                         "provider": "qdrant",
-                        "config": {
-                            "host": self._config.qdrant_host,
-                            "port": self._config.qdrant_port,
-                            "collection_name": self._config.collection_name,
-                        },
+                        "config": qdrant_provider_cfg,
                     },
                     "llm": {
                         "provider": "openai",

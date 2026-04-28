@@ -1,0 +1,27 @@
+[package]
+name = "headroom-py"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PyO3 bindings exposing headroom-core to Python as headroom._core."
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+# Disable the default test harness — Rust `cargo test` can't run a cdylib that
+# links against libpython without LD/DYLD setup. Tests for this crate happen
+# on the Python side (via `maturin develop` + pytest/smoke).
+test = false
+doctest = false
+bench = false
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+headroom-core = { path = "../headroom-core" }
+pyo3 = { workspace = true }
+serde_json = { workspace = true }

@@ -1289,8 +1289,10 @@ async def test_ensure_initialized_fast_paths_and_qdrant_variants(
     assert qdrant_handler.initialized is True
     assert seen["initialized"] is True
     assert seen["config"] == {
+        "qdrant_url": None,
         "qdrant_host": "localhost",
         "qdrant_port": 6333,
+        "qdrant_api_key": None,
         "neo4j_uri": "neo4j://localhost:7687",
         "neo4j_user": "neo4j",
         "neo4j_password": "password",

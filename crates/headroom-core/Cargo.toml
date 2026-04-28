@@ -1,0 +1,68 @@
+[package]
+name = "headroom-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core Headroom types and compression transform traits (Rust)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tiktoken-rs = "0.11"
+# `tokenizers` is the HuggingFace pure-Rust tokenizer crate. Default features
+# pull in `onig` for the BPE pre-tokenizer regex; that vendors oniguruma so it
+# builds without a system dep on macOS/Linux.
+tokenizers = "0.21"
+# `hf-hub` is the HuggingFace Hub client. We use the blocking `ureq` transport
+# with `rustls` (no system OpenSSL dep — keeps the binary static-linkable for
+# AWS deploys). `from_pretrained` is called once at startup, so blocking is
+# fine; if a tokio caller needs it later we can wrap in `spawn_blocking`.
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+# `md5` for the CCR cache_key. Python's compression_store hashes the original
+# diff with MD5 truncated to 24 hex chars; we must match byte-for-byte.
+md-5 = "0.10"
+# `sha2` for `_hash_field_name` in smart_crusher (SHA256 truncated to 16
+# hex chars). Python uses `hashlib.sha256` so we need byte-exact parity.
+sha2 = "0.10"
+# `dashmap` for the CCR storage backend. Concurrent HashMap with sharded
+# locking — distinct keys hashed to different shards never contend, so
+# multi-worker proxy load doesn't queue on a single Mutex. Lock-free
+# reads inside each shard via RwLock semantics.
+dashmap = "6"
+# `regex` is already a transitive dep of tokenizers; depend on it directly so
+# our hunk-header parser and priority-pattern matcher have a stable surface.
+regex = "1"
+# `flate2` for `_validate_with_zlib` in `adaptive_sizer`. Python's adaptive
+# sizing pipeline uses `zlib.compress(..., level=1)` to validate the chosen
+# K against compression-ratio diversity. We use the default `miniz_oxide`
+# backend (pure Rust) which produces DEFLATE output of similar length to
+# CPython's libz at level=1 for typical inputs. The check only triggers on
+# >15% ratio divergence so small per-byte differences don't change the
+# outcome — but if a parity fixture flakes here, swap to
+# `features = ["zlib"]` to link against system libz for byte-equal output.
+flate2 = "1"
+# `fastembed` is the Rust port of the Python fastembed library. Used by
+# `relevance::EmbeddingScorer` for sentence embeddings in semantic relevance
+# scoring. Default features pull in `ort` (ONNX Runtime) with auto-download
+# of the runtime binary; the model file (BAAI/bge-small-en-v1.5, ~30 MB
+# int8-quantized ONNX) auto-downloads from HuggingFace Hub on first use.
+# Same library + same model = byte-equal embeddings between Python and Rust
+# (both call into ONNX Runtime over the identical ONNX file).
+fastembed = "5"
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "tokenizer"
+harness = false
+
+[[bench]]
+name = "ccr_store"
+harness = false

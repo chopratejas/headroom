@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from headroom.memory import qdrant_env
 from headroom.providers.registry import ProviderApiOverrides
 
 # =============================================================================
@@ -176,6 +177,12 @@ class ProxyConfig:
     log_file: str | None = None
     log_full_messages: bool = False
 
+    # Third-party proxy extensions (opt-in only). List of entry-point names
+    # to enable from the `headroom.proxy_extension` group, or `["*"]` for
+    # wildcard. Empty/None means no extensions run, even if installed.
+    # CLI: --proxy-extension <name1,name2>; env: HEADROOM_PROXY_EXTENSIONS.
+    proxy_extensions: list[str] | None = None
+
     # Fallback
     fallback_enabled: bool = False
     fallback_provider: str | None = None
@@ -200,8 +207,11 @@ class ProxyConfig:
     memory_inject_context: bool = True
     memory_top_k: int = 10
     memory_min_similarity: float = 0.3
-    memory_qdrant_host: str = "localhost"
-    memory_qdrant_port: int = 6333
+    # Qdrant connection (defaults resolve from HEADROOM_QDRANT_* env vars)
+    memory_qdrant_url: str | None = field(default_factory=qdrant_env.qdrant_env_url)
+    memory_qdrant_host: str = field(default_factory=qdrant_env.qdrant_env_host)
+    memory_qdrant_port: int = field(default_factory=qdrant_env.qdrant_env_port)
+    memory_qdrant_api_key: str | None = field(default_factory=qdrant_env.qdrant_env_api_key)
     memory_neo4j_uri: str = "neo4j://localhost:7687"
     memory_neo4j_user: str = "neo4j"
     memory_neo4j_password: str = "password"

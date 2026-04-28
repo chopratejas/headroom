@@ -1,3 +1,8 @@
+# fastembed model cache (auto-downloaded ONNX weights, ~30 MB+).
+# Should NEVER be committed — bloats the repo significantly.
+.fastembed_cache/
+**/.fastembed_cache/
+
 # Private scripts (contain credentials). Allowlist checked-in helpers below.
 scripts/
 !scripts/
@@ -13,6 +18,14 @@ scripts/*
 !scripts/repro_codex_replay.py
 !scripts/fixtures/
 !scripts/fixtures/*.json
+!scripts/record_fixtures.py
+!scripts/build_rust_extension.sh
+!scripts/install-git-hooks.sh
+
+# Rust / Cargo build artifacts
+/target/
+**/target/
+Cargo.lock.bak
 
 # Swift SDK (separate repo)
 swift/
@@ -217,3 +230,11 @@ headroom-managed/
 
 # uv lockfile: regenerated locally; not committed
 uv.lock
+
+# Rust extension `.so` symlinks placed by `scripts/build_rust_extension.sh`
+# into the `headroom/` package dir for local development. The real binary
+# lives in `crates/headroom-py/python/headroom/`; this is the dev overlay
+# that lets `import headroom._core` resolve when the source `headroom/`
+# package shadows the maturin overlay on sys.path.
+/headroom/_core.*.so
+/headroom/_core.so

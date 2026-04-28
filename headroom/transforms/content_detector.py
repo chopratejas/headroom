@@ -47,7 +47,21 @@ _SEARCH_RESULT_PATTERN = re.compile(
     r"^[^\s:]+:\d+:"  # file:line: format (grep -n style)
 )
 
-_DIFF_HEADER_PATTERN = re.compile(r"^(diff --git|--- a/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@)")
+# Bug-fix (2026-04-25): extended to recognize merge-commit headers
+# (`diff --combined <path>`, `diff --cc <path>`) and combined-diff hunk
+# headers (`@@@`+ ranges). Previously only `git diff` shape was detected,
+# so merge-commit diffs from `git log -p` got misrouted away from
+# DiffCompressor entirely.
+_DIFF_HEADER_PATTERN = re.compile(
+    r"^("
+    r"diff --git"
+    r"|diff --combined "
+    r"|diff --cc "
+    r"|--- a/"
+    r"|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@"
+    r"|@@@+\s+-\d+(?:,\d+)?\s+(?:-\d+(?:,\d+)?\s+)+\+\d+(?:,\d+)?\s+@@@+"
+    r")"
+)
 
 _DIFF_CHANGE_PATTERN = re.compile(r"^[+-][^+-]")
 
@@ -184,8 +198,18 @@ def _try_detect_json(content: str) -> DetectionResult | None:
 
 
 def _try_detect_diff(content: str) -> DetectionResult | None:
-    """Try to detect git diff format."""
-    lines = content.split("\n")[:50]  # Check first 50 lines
+    """Try to detect git diff format.
+
+    Bug-fix (2026-04-25): widened the scan window from 50 to 500 lines.
+    `git log -p` and `git format-patch` outputs commonly have multi-line
+    commit messages or email headers ahead of the actual diff; with the
+    50-line cap, those long preambles pushed the `diff --git` header out
+    of the detection window, and the input was misrouted to a
+    plain-text/code compressor instead of DiffCompressor. 500 lines
+    covers commit messages of ~500 lines (rare; if longer, you've got
+    bigger problems).
+    """
+    lines = content.split("\n")[:500]
 
     header_matches = 0
     change_matches = 0

@@ -390,7 +390,14 @@ class TestSmartCrusherTextIntegration:
         assert result.compression_ratio < 1.0  # Some compression occurred
 
     def test_smart_crusher_json_still_works(self):
-        """SmartCrusher still handles JSON correctly."""
+        """SmartCrusher still handles JSON correctly.
+
+        Asserts the legacy lossy + JSON-shape behavior: output is a
+        JSON-parseable array. The PR4 lossless default substitutes a
+        CSV+schema STRING for tabular arrays, which doesn't round-trip
+        as a JSON array — that's tested separately in
+        `test_smart_crusher_lossless_default.py`.
+        """
         import json
         import re
 
@@ -413,8 +420,11 @@ class TestSmartCrusherTextIntegration:
             {"role": "tool", "content": json_content},
         ]
 
+        # Use without_compaction to exercise the legacy lossy + JSON-shape
+        # path. Lossless default would substitute a non-JSON string.
         crusher = SmartCrusher(
-            config=SmartCrusherConfig(min_tokens_to_crush=10, min_items_to_analyze=5)
+            config=SmartCrusherConfig(min_tokens_to_crush=10, min_items_to_analyze=5),
+            with_compaction=False,
         )
         tokenizer = self._get_tokenizer()
 
