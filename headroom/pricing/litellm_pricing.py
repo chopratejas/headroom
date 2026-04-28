@@ -11,8 +11,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+# litellm calls `dotenv.load_dotenv()` during its own import, which loads
+# the project `.env` into `os.environ`. We don't want that side effect —
+# importing a pricing helper should not silently leak API keys into the
+# process. Snapshot `os.environ` around the import and undo any keys
+# litellm added. The module itself is fully imported and cached in
+# `sys.modules`; subsequent `import litellm` calls hit the cache and
+# don't re-run the dotenv side effect.
 try:
+    import os as _os
+
+    _env_snapshot = set(_os.environ)
     import litellm
+
+    for _leaked_key in set(_os.environ) - _env_snapshot:
+        del _os.environ[_leaked_key]
+    del _env_snapshot, _os
 
     LITELLM_AVAILABLE = True
 except ImportError:

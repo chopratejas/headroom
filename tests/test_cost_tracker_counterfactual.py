@@ -6,22 +6,16 @@ This is simple, monotonic, and transparent.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from tests._dotenv import (
+    autouse_apply_env,
+    importorskip_no_env_leak,
+    load_env_overrides,
+)
 
-import pytest
+_env_overrides = load_env_overrides()
+apply_dotenv = autouse_apply_env(_env_overrides)
 
-# Load .env for live test
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-if _env_path.exists():
-    for line in _env_path.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
-
-
-pytest.importorskip("litellm")
+importorskip_no_env_leak("litellm")
 
 
 def test_savings_at_list_price():

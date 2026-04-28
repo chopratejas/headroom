@@ -73,32 +73,52 @@ class Memory:
             - "qdrant-neo4j": External Qdrant + Neo4j. Requires Docker.
         db_path: Path for local database (only for "local" backend).
             Defaults to ~/.headroom/memory.db
-        qdrant_host: Qdrant host (only for "qdrant-neo4j" backend).
+        qdrant_url: Full Qdrant URL (only for "qdrant-neo4j" backend). When set,
+            takes precedence over ``qdrant_host``/``qdrant_port``. Useful for
+            hosted Qdrant (Qdrant Cloud) and non-default container stacks.
+            Defaults to the ``HEADROOM_QDRANT_URL`` env var if unset.
+        qdrant_host: Qdrant host (only for "qdrant-neo4j" backend). Defaults
+            to the ``HEADROOM_QDRANT_HOST`` env var or ``localhost``.
+        qdrant_port: Qdrant port (only for "qdrant-neo4j" backend). Defaults
+            to the ``HEADROOM_QDRANT_PORT`` env var or ``6333``.
+        qdrant_api_key: API key for hosted Qdrant. Defaults to
+            ``HEADROOM_QDRANT_API_KEY`` if unset.
         neo4j_uri: Neo4j URI (only for "qdrant-neo4j" backend).
 
     Examples:
         # Simplest usage - no config needed
         memory = Memory()
         await memory.save("User likes Python", user_id="alice")
-        results = await memory.search("programming", user_id="alice")
 
         # With custom database path
         memory = Memory(db_path="./my_app.db")
 
-        # Production mode with Docker services
+        # Production mode with local Docker services
         memory = Memory(backend="qdrant-neo4j")
+
+        # Hosted Qdrant via URL + API key (or set HEADROOM_QDRANT_URL /
+        # HEADROOM_QDRANT_API_KEY in the environment)
+        memory = Memory(
+            backend="qdrant-neo4j",
+            qdrant_url="https://xyz.cloud.qdrant.io:6333",
+            qdrant_api_key="...",
+        )
     """
 
     def __init__(
         self,
         backend: str = "local",
         db_path: str | Path | None = None,
-        qdrant_host: str = "localhost",
-        qdrant_port: int = 6333,
+        qdrant_url: str | None = None,
+        qdrant_host: str | None = None,
+        qdrant_port: int | None = None,
+        qdrant_api_key: str | None = None,
         neo4j_uri: str = "neo4j://localhost:7687",
         neo4j_user: str = "neo4j",
         neo4j_password: str = "password",
     ) -> None:
+        from headroom.memory import qdrant_env
+
         self._backend_type = backend
         self._backend: Any = None
         self._initialized = False
@@ -113,9 +133,16 @@ class Memory:
             db_path = default_db
         self._db_path = Path(db_path)
 
-        # Config for qdrant-neo4j backend
-        self._qdrant_host = qdrant_host
-        self._qdrant_port = qdrant_port
+        # Config for qdrant-neo4j backend.
+        # ``None`` sentinels fall back to HEADROOM_QDRANT_* env vars so that
+        # ``Memory(backend="qdrant-neo4j")`` picks up hosted/custom Qdrant
+        # deployments without any code changes. Explicit values always win.
+        self._qdrant_url = qdrant_url if qdrant_url is not None else qdrant_env.qdrant_env_url()
+        self._qdrant_host = qdrant_host if qdrant_host is not None else qdrant_env.qdrant_env_host()
+        self._qdrant_port = qdrant_port if qdrant_port is not None else qdrant_env.qdrant_env_port()
+        self._qdrant_api_key = (
+            qdrant_api_key if qdrant_api_key is not None else qdrant_env.qdrant_env_api_key()
+        )
         self._neo4j_uri = neo4j_uri
         self._neo4j_user = neo4j_user
         self._neo4j_password = neo4j_password
@@ -139,8 +166,10 @@ class Memory:
                 )
 
                 mem0_config = Mem0Config(
+                    qdrant_url=self._qdrant_url,
                     qdrant_host=self._qdrant_host,
                     qdrant_port=self._qdrant_port,
+                    qdrant_api_key=self._qdrant_api_key,
                     neo4j_uri=self._neo4j_uri,
                     neo4j_user=self._neo4j_user,
                     neo4j_password=self._neo4j_password,

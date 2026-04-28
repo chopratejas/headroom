@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-pytest.importorskip("litellm")
+from tests._dotenv import importorskip_no_env_leak
 
-from headroom.backends.litellm import (
+importorskip_no_env_leak("litellm")
+
+from headroom.backends.litellm import (  # noqa: E402  (must follow importorskip)
     _VERTEX_MODEL_MAP,
     LiteLLMBackend,
     _convert_anthropic_tool,

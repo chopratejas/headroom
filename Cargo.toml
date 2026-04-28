@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/headroom-core",
+    "crates/headroom-proxy",
+    "crates/headroom-py",
+    "crates/headroom-parity",
+]
+# headroom-py is a Python extension module — it must be built via maturin, not
+# plain cargo (the "extension-module" feature tells pyo3 not to link libpython,
+# which is required for `import` to work). `cargo build --workspace` without
+# explicit members skips it; `cargo test --workspace` still runs its tests
+# because pyo3 can dynamically link here for the cdylib used by tests.
+default-members = [
+    "crates/headroom-core",
+    "crates/headroom-proxy",
+    "crates/headroom-parity",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+repository = "https://github.com/chopratejas/headroom"
+authors = ["Headroom Maintainers"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` makes `serde_json::Value::Object` use IndexMap so JSON
+# parse order is preserved through Value→string→Value round-trips. The
+# smart_crusher port relies on this to match Python's `str(dict)` output,
+# which preserves insertion order; otherwise BTreeMap's sorted-key default
+# would diverge from Python on every multi-key object.
+serde_json = { version = "1", features = ["preserve_order"] }
+bytes = "1"
+thiserror = "1"
+tracing = "0.1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+axum = "0.7"
+tower = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+pyo3 = "0.22"

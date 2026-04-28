@@ -19,10 +19,12 @@ import os
 
 import pytest
 
-# Load .env file
-from dotenv import load_dotenv
+# Load .env values into a local dict and apply per-test (not at module
+# level) — see tests/_dotenv.py for why.
+from tests._dotenv import autouse_apply_env, load_env_overrides
 
-load_dotenv()
+_env_overrides = load_env_overrides()
+apply_dotenv = autouse_apply_env(_env_overrides)
 
 # Check HNSW availability for skipping tests
 try:

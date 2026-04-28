@@ -56,7 +56,7 @@ class TestErrorRetention:
 
         config = SmartCrusherConfig(max_items_after_crush=20)
         content = json.dumps(items)
-        compressed_str, _, _ = smart_crush_tool_output(content, config)
+        compressed_str, _, _ = smart_crush_tool_output(content, config, with_compaction=False)
         compressed = json.loads(compressed_str)
 
         # Count errors before and after
@@ -75,7 +75,9 @@ class TestErrorRetention:
         items[50]["msg"] = f"This contains {keyword} keyword"
 
         config = SmartCrusherConfig(max_items_after_crush=15)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         matching = [x for x in compressed if keyword in str(x).lower()]
@@ -88,7 +90,9 @@ class TestErrorRetention:
         items[50]["data"]["error"] = "Nested error"
 
         config = SmartCrusherConfig(max_items_after_crush=15)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         nested_errors = [x for x in compressed if x.get("data", {}).get("error")]
@@ -110,7 +114,9 @@ class TestErrorRetention:
 
         # Compress with max 20 items
         config = SmartCrusherConfig(max_items_after_crush=20)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         error_count_after = sum(1 for x in compressed if x.get("error"))
@@ -148,7 +154,9 @@ class TestAnomalyRetention:
             anomaly_indices.append(idx)
 
         config = SmartCrusherConfig(max_items_after_crush=20)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         anomalies_after = sum(1 for x in compressed if x.get("is_anomaly"))
@@ -165,7 +173,9 @@ class TestAnomalyRetention:
         items[50]["is_anomaly"] = True
 
         config = SmartCrusherConfig(max_items_after_crush=15)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         anomalies = [x for x in compressed if x.get("is_anomaly")]
@@ -186,7 +196,7 @@ class TestRelevanceRetention:
 
         # Use SmartCrusher with query context (via message-based API)
         config = SmartCrusherConfig(max_items_after_crush=15)
-        crusher = SmartCrusher(config)
+        crusher = SmartCrusher(config, with_compaction=False)
 
         # Create tokenizer with proper counter
         model = "claude-3-5-sonnet-20241022"
@@ -215,7 +225,9 @@ class TestFirstLastRetention:
         items = [{"id": i, "value": i} for i in range(100)]
 
         config = SmartCrusherConfig(max_items_after_crush=15)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         ids = [x["id"] for x in compressed]
@@ -228,7 +240,9 @@ class TestFirstLastRetention:
         items = [{"id": i, "value": i} for i in range(100)]
 
         config = SmartCrusherConfig(max_items_after_crush=15)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         ids = [x["id"] for x in compressed]
@@ -249,7 +263,9 @@ class TestCombinedRetention:
         items[50]["is_both"] = True
 
         config = SmartCrusherConfig(max_items_after_crush=10)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         both = [x for x in compressed if x.get("is_both")]
@@ -277,7 +293,9 @@ class TestCombinedRetention:
             items.append(item)
 
         config = SmartCrusherConfig(max_items_after_crush=30)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         # Count retained critical items
@@ -316,7 +334,9 @@ class TestCompressionRatio:
         original_size = len(json.dumps(items))
 
         config = SmartCrusherConfig(max_items_after_crush=50)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         compressed_size = len(json.dumps(compressed))
@@ -334,7 +354,7 @@ class TestEdgeCases:
 
     def test_empty_array(self):
         """Empty array should return empty."""
-        compressed_str, was_modified, _ = smart_crush_tool_output("[]")
+        compressed_str, was_modified, _ = smart_crush_tool_output("[]", with_compaction=False)
         assert compressed_str == "[]"
         assert not was_modified
 
@@ -343,7 +363,7 @@ class TestEdgeCases:
         items = [{"id": i} for i in range(3)]
         original = json.dumps(items)
 
-        compressed_str, was_modified, _ = smart_crush_tool_output(original)
+        compressed_str, was_modified, _ = smart_crush_tool_output(original, with_compaction=False)
 
         # Small arrays shouldn't be modified
         assert json.loads(compressed_str) == items
@@ -353,7 +373,9 @@ class TestEdgeCases:
         items = [{"id": i, "error": f"Error {i}"} for i in range(50)]
 
         config = SmartCrusherConfig(max_items_after_crush=20)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         # All 50 errors should be retained (errors override max_items)
@@ -367,7 +389,9 @@ class TestEdgeCases:
         items[50]["error"] = "错误: Unicode error message"
 
         config = SmartCrusherConfig(max_items_after_crush=15)
-        compressed_str, _, _ = smart_crush_tool_output(json.dumps(items), config)
+        compressed_str, _, _ = smart_crush_tool_output(
+            json.dumps(items), config, with_compaction=False
+        )
         compressed = json.loads(compressed_str)
 
         errors = [x for x in compressed if x.get("error")]

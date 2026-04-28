@@ -273,33 +273,6 @@ class TestEmbeddingAvailable:
 class TestSmartCrusherIntegration:
     """Integration tests for SmartCrusher with RelevanceScorer."""
 
-    def test_crusher_uses_scorer(self):
-        """SmartCrusher uses relevance scorer for context matching."""
-        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
-
-        config = SmartCrusherConfig(
-            min_items_to_analyze=3,
-            min_tokens_to_crush=0,
-            max_items_after_crush=5,
-        )
-        crusher = SmartCrusher(config=config)
-
-        # Verify scorer is initialized
-        assert hasattr(crusher, "_scorer")
-        assert hasattr(crusher, "_relevance_threshold")
-
-    def test_custom_scorer_injection(self):
-        """Custom scorer can be injected."""
-        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
-
-        custom_scorer = BM25Scorer(k1=2.0)
-        crusher = SmartCrusher(
-            config=SmartCrusherConfig(),
-            scorer=custom_scorer,
-        )
-
-        assert crusher._scorer is custom_scorer
-
     def test_context_extraction(self):
         """Context is extracted from messages."""
         from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig

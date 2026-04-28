@@ -21,16 +21,17 @@ from pathlib import Path
 
 import pytest
 
-try:
-    from dotenv import load_dotenv
+# See tests/_dotenv.py for why we don't call dotenv.load_dotenv() at module
+# level (it pollutes os.environ during pytest collection and breaks
+# @pytest.mark.skipif evaluation in unrelated test modules).
+from tests._dotenv import autouse_apply_env, load_env_overrides
 
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-except ImportError:
-    pass
+_env_overrides = load_env_overrides()
+apply_dotenv = autouse_apply_env(_env_overrides)
 
-import tiktoken
+import tiktoken  # noqa: E402  (must follow .env-overrides setup)
 
-from headroom import binaries
+from headroom import binaries  # noqa: E402  (must follow .env-overrides setup)
 
 # ---------- Fixtures ------------------------------------------------------ #
 

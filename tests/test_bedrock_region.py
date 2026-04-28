@@ -7,11 +7,11 @@ AWS API call fails.
 
 from unittest.mock import MagicMock, patch
 
-import pytest
+from tests._dotenv import importorskip_no_env_leak
 
-pytest.importorskip("litellm")
+importorskip_no_env_leak("litellm")
 
-from headroom.backends.litellm import (
+from headroom.backends.litellm import (  # noqa: E402  (must follow importorskip)
     LiteLLMBackend,
     _bedrock_profiles_cache,
     _bedrock_region_prefix,

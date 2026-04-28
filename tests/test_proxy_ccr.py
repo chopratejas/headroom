@@ -441,7 +441,11 @@ class TestEndToEndTOINIntegration:
             },
         ]
 
-        # Create pipeline with SmartCrusher (same as proxy does)
+        # Create pipeline with SmartCrusher (same as proxy does).
+        # Use with_compaction=False so we exercise the lossy + CCR
+        # caching path that this test asserts. The PR4 lossless
+        # default substitutes a CSV+schema string and skips CCR
+        # caching (nothing dropped → no cache entry).
         pipeline = TransformPipeline(
             transforms=[
                 SmartCrusher(
@@ -455,6 +459,7 @@ class TestEndToEndTOINIntegration:
                         inject_retrieval_marker=True,
                         min_items_to_cache=10,
                     ),
+                    with_compaction=False,
                 ),
             ],
             provider=AnthropicProvider(),

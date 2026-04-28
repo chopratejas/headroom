@@ -98,6 +98,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LIKE on the raw JSON string, so rows survive metadata rewrites.
 
 ### Added
+- **`HEADROOM_QDRANT_*` environment variables for memory Qdrant configuration**
+  (#31) — `Memory(backend="qdrant-neo4j")`, `Mem0Config`, `MemoryConfig`, and
+  `ProxyConfig` now resolve their Qdrant connection from
+  `HEADROOM_QDRANT_URL`, `HEADROOM_QDRANT_HOST`, `HEADROOM_QDRANT_PORT`,
+  `HEADROOM_QDRANT_API_KEY`, `HEADROOM_QDRANT_HTTPS`,
+  `HEADROOM_QDRANT_PREFER_GRPC`, and `HEADROOM_QDRANT_GRPC_PORT`. Explicit
+  constructor arguments still win; unset env keeps the existing
+  `localhost:6333` defaults. Adds matching `--memory-qdrant-{url,host,port,api-key}`
+  CLI flags. Enables hosted Qdrant (Qdrant Cloud) and shared/remote Qdrant
+  stacks without code changes. New helper:
+  [`headroom/memory/qdrant_env.py`](headroom/memory/qdrant_env.py).
 - **Telemetry stack & install-mode identity fields** — anonymous beacon now
   reports `headroom_stack` (how Headroom is invoked: `proxy`, `wrap_claude`,
   `adapter_ts_openai`, ...) and `install_mode` (`wrapped` / `persistent` /

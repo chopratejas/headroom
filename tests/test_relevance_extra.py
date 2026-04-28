@@ -90,7 +90,7 @@ def test_embedding_numpy_and_model_error_paths(monkeypatch) -> None:
     assert embedding._cosine_similarity([1, 0], [0, 1]) == 0.0
 
     monkeypatch.setattr(EmbeddingScorer, "is_available", classmethod(lambda cls: False))
-    with pytest.raises(RuntimeError, match="requires sentence-transformers"):
+    with pytest.raises(RuntimeError, match="requires fastembed"):
         EmbeddingScorer()._get_model()
 
 

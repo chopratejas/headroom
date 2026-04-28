@@ -447,11 +447,7 @@ class TestQueryAnchorExtraction:
         """If user asks for 'Alice', item with Alice should be preserved."""
         import json
 
-        from headroom.transforms.smart_crusher import (
-            SmartCrusher,
-            SmartCrusherConfig,
-            extract_query_anchors,
-        )
+        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
 
         # User is searching for 'Alice'
         messages = [
@@ -478,38 +474,31 @@ class TestQueryAnchorExtraction:
             },
         ]
 
-        # Verify anchor extraction works
-        anchors = extract_query_anchors("Find the user named 'Alice' in the system.")
-        assert "alice" in anchors
-
-        # Verify crushing preserves Alice
+        # End-to-end behavior: the relevance scorer (HybridScorer in
+        # the Rust port — BM25 + embedding) should pick up "Alice"
+        # from the user message and preserve the matching tool item
+        # even though it sits at index 50.
         config = SmartCrusherConfig(
             enabled=True,
             min_items_to_analyze=5,
             min_tokens_to_crush=100,
-            max_items_after_crush=10,  # Should normally drop Alice at index 50
+            max_items_after_crush=10,
         )
         crusher = SmartCrusher(config)
         tokenizer = get_tokenizer()
 
         result = crusher.apply(messages, tokenizer)
 
-        # Find the crushed tool output
         tool_msg = next(m for m in result.messages if m.get("role") == "tool")
         crushed_content = tool_msg["content"]
 
-        # Alice should be preserved even though she's at index 50
         assert "Alice" in crushed_content
 
     def test_preserves_needle_by_uuid(self):
         """If user asks for a UUID, item with that UUID should be preserved."""
         import json
 
-        from headroom.transforms.smart_crusher import (
-            SmartCrusher,
-            SmartCrusherConfig,
-            extract_query_anchors,
-        )
+        from headroom.transforms.smart_crusher import SmartCrusher, SmartCrusherConfig
 
         target_uuid = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -537,10 +526,6 @@ class TestQueryAnchorExtraction:
             },
         ]
 
-        # Verify anchor extraction
-        anchors = extract_query_anchors(f"Get details for request {target_uuid}")
-        assert target_uuid.lower() in anchors
-
         config = SmartCrusherConfig(
             enabled=True,
             min_items_to_analyze=5,
@@ -555,7 +540,6 @@ class TestQueryAnchorExtraction:
         tool_msg = next(m for m in result.messages if m.get("role") == "tool")
         crushed_content = tool_msg["content"]
 
-        # UUID should be preserved
         assert target_uuid in crushed_content
 
 

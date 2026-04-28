@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from headroom.memory import qdrant_env
+
 if TYPE_CHECKING:
     from headroom.memory.backends.local import LocalBackend
 
@@ -59,7 +61,12 @@ STARTUP_INIT_TIMEOUT_SECONDS = 30.0
 
 @dataclass
 class MemoryConfig:
-    """Configuration for memory handler."""
+    """Configuration for memory handler.
+
+    Qdrant connection fields default to values read from ``HEADROOM_QDRANT_*``
+    environment variables (see :mod:`headroom.memory.qdrant_env`). Passing an
+    explicit value to the constructor always wins over the environment.
+    """
 
     enabled: bool = False
     backend: Literal["local", "qdrant-neo4j"] = "local"
@@ -71,9 +78,11 @@ class MemoryConfig:
     # Native memory tool (Anthropic's built-in memory_20250818)
     use_native_tool: bool = False
     native_memory_dir: str = ""  # Directory for native memory files (default: ~/.headroom/memories)
-    # Qdrant+Neo4j config
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    # Qdrant+Neo4j config (Qdrant defaults resolve from HEADROOM_QDRANT_* env vars)
+    qdrant_url: str | None = field(default_factory=qdrant_env.qdrant_env_url)
+    qdrant_host: str = field(default_factory=qdrant_env.qdrant_env_host)
+    qdrant_port: int = field(default_factory=qdrant_env.qdrant_env_port)
+    qdrant_api_key: str | None = field(default_factory=qdrant_env.qdrant_env_api_key)
     neo4j_uri: str = "neo4j://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
@@ -275,8 +284,10 @@ class MemoryHandler:
                 )
 
                 mem0_config = Mem0Config(
+                    qdrant_url=self.config.qdrant_url,
                     qdrant_host=self.config.qdrant_host,
                     qdrant_port=self.config.qdrant_port,
+                    qdrant_api_key=self.config.qdrant_api_key,
                     neo4j_uri=self.config.neo4j_uri,
                     neo4j_user=self.config.neo4j_user,
                     neo4j_password=self.config.neo4j_password,
@@ -284,10 +295,10 @@ class MemoryHandler:
                 )
                 self._backend = DirectMem0Adapter(mem0_config)
                 await self._backend.ensure_initialized()
-                logger.info(
-                    f"Memory: Initialized Qdrant+Neo4j backend "
-                    f"({self.config.qdrant_host}:{self.config.qdrant_port})"
+                qdrant_target = (
+                    self.config.qdrant_url or f"{self.config.qdrant_host}:{self.config.qdrant_port}"
                 )
+                logger.info(f"Memory: Initialized Qdrant+Neo4j backend ({qdrant_target})")
             except ImportError as e:
                 logger.error(
                     f"Memory: Failed to import qdrant-neo4j dependencies: {e}. "
