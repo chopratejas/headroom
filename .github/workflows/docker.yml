@@ -165,7 +165,7 @@ jobs:
           ls -la /tmp/digests/
 
       - name: Upload digests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -207,13 +207,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download amd64 digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: digests-amd64
           path: /tmp/digests/amd64
 
       - name: Download arm64 digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: digests-arm64
           path: /tmp/digests/arm64
@@ -289,7 +289,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        # cosign-installer does not publish a floating `v4` tag; pin minor.
+        uses: sigstore/cosign-installer@v4.1.1
 
       - name: Sign manifest with cosign
         env:
