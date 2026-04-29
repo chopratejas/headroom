@@ -48,59 +48,37 @@ from typing import Any
 from ..config import DEFAULT_EXCLUDE_TOOLS, ReadLifecycleConfig, TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
-from .content_detector import ContentType, DetectionResult, detect_content_type
+from .content_detector import ContentType, DetectionResult
 
 logger = logging.getLogger(__name__)
 
-_magika_detector: Any | None = None
-_magika_status: bool | None = None
-
-
-def _get_magika_detector() -> Any | None:
-    """Load the Magika detector only when router detection actually runs."""
-    global _magika_detector, _magika_status
-
-    if _magika_status is False:
-        return None
-    if _magika_detector is not None:
-        return _magika_detector
-
-    try:
-        from ..compression.detector import get_detector
-
-        _magika_detector = get_detector(prefer_magika=True)
-        _magika_status = True
-        logger.info("ContentRouter: Using Magika ML-based content detection")
-    except ImportError:
-        _magika_status = False
-        logger.debug("Magika not available, using regex-based detection")
-
-    return _magika_detector
-
 
 def _detect_content(content: str) -> DetectionResult:
-    """Detect content type using Magika if available, else regex fallback."""
-    magika_detector = _get_magika_detector()
-    if magika_detector is not None:
-        result = magika_detector.detect(content)
-        # Map Magika ContentType to router's expected format
-        type_map = {
-            "json": ContentType.JSON_ARRAY,
-            "code": ContentType.SOURCE_CODE,
-            "log": ContentType.BUILD_OUTPUT,
-            "diff": ContentType.GIT_DIFF,
-            "markdown": ContentType.PLAIN_TEXT,
-            "text": ContentType.PLAIN_TEXT,
-            "unknown": ContentType.PLAIN_TEXT,
-        }
-        mapped_type = type_map.get(result.content_type.value, ContentType.PLAIN_TEXT)
-        return DetectionResult(
-            content_type=mapped_type,
-            confidence=result.confidence,
-            metadata={"language": result.language, "raw_label": result.raw_label},
-        )
-    else:
-        return detect_content_type(content)
+    """Detect content type via the Rust detection chain.
+
+    Stage-3d (PR5) wired this through `headroom._core.detect_content_type`,
+    which runs the magika→unidiff→PlainText chain. The Python-side
+    Magika+regex fallback path was retired here — single detection
+    surface, no parallel paths. The Rust extension is a hard dep
+    (no Python fallback) per `feedback_no_silent_fallbacks.md`.
+
+    The Rust binding returns the legacy `DetectionResult` shape with
+    `confidence=1.0` and an empty metadata dict. Existing callers
+    only consumed `.content_type` from it; the strategy mapping in
+    `_strategy_from_detection` keys off that field alone.
+    """
+    from headroom._core import detect_content_type as _rust_detect
+
+    rust_result = _rust_detect(content)
+    # Rust's `content_type` is the lowercase string tag (e.g.
+    # "json_array"); translate to the Python `ContentType` enum so
+    # downstream mapping keys match.
+    content_type = ContentType(rust_result.content_type)
+    return DetectionResult(
+        content_type=content_type,
+        confidence=rust_result.confidence,
+        metadata={},
+    )
 
 
 def _create_content_signature(

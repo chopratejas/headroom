@@ -101,30 +101,36 @@ def test_router_result_helpers_and_summary() -> None:
 
 
 def test_content_signature_and_detection_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stage-3d (PR5) wired `_detect_content` through the Rust chain
+    (`headroom._core.detect_content_type` → magika → unidiff →
+    PlainText). The pre-PR5 Python-side `_get_magika_detector`
+    fallback path is gone.
+
+    This test asserts the new contract:
+    1. The detection helper delegates to the Rust binding.
+    2. Whatever `ContentType` the Rust side returns flows back as a
+       Python `DetectionResult` with that same `content_type`.
+    """
     signature = _create_content_signature("search", "file.py:10:match", language="python")
     assert signature is not None
     assert len(signature.structure_hash) == 24
 
-    fake_detector = SimpleNamespace(
-        detect=lambda content: SimpleNamespace(
-            content_type=SimpleNamespace(value="code"),
-            confidence=0.91,
-            language="python",
-            raw_label="python",
-        )
-    )
-    monkeypatch.setattr(content_router_module, "_get_magika_detector", lambda: fake_detector)
-    magika_result = _detect_content("def main(): pass")
-    assert magika_result == DetectionResult(
-        content_type=ContentType.SOURCE_CODE,
-        confidence=0.91,
-        metadata={"language": "python", "raw_label": "python"},
-    )
+    # Monkeypatch the Rust binding to return a deterministic fake
+    # result; verify _detect_content propagates the content_type
+    # tag back as the Python ContentType enum.
+    import headroom._core as _core
 
-    fallback = DetectionResult(ContentType.PLAIN_TEXT, 0.6, {"kind": "fallback"})
-    monkeypatch.setattr(content_router_module, "_get_magika_detector", lambda: None)
-    monkeypatch.setattr(content_router_module, "detect_content_type", lambda content: fallback)
-    assert _detect_content("plain") is fallback
+    fake_rust_result = SimpleNamespace(
+        content_type="source_code",
+        confidence=1.0,
+        metadata={},
+    )
+    monkeypatch.setattr(_core, "detect_content_type", lambda content: fake_rust_result)
+
+    result = _detect_content("def main(): pass")
+    assert result.content_type is ContentType.SOURCE_CODE
+    assert result.confidence == 1.0
+    assert result.metadata == {}
 
 
 def test_mixed_content_section_splitting_and_json_extraction() -> None:
