@@ -181,22 +181,38 @@ def test_detect_content_type_respects_priority_order() -> None:
 
 def test_error_detection_keywords_patterns_and_indicator_helper() -> None:
     assert {"error", "failed", "critical"} <= ERROR_KEYWORDS
+    # fixed_in_3e1: ERROR_KEYWORDS canonically had timeout/abort/denied/rejected
+    # but the regex omitted them; the Rust port + Python shim now align.
+    assert {"timeout", "abort", "denied", "rejected"} <= ERROR_KEYWORDS
     assert {"warning", "todo", "fix"} <= IMPORTANCE_KEYWORDS
-    assert {"security", "password", "token"} <= SECURITY_KEYWORDS
+    # fixed_in_3e1: 'token' was dropped from SECURITY_KEYWORDS because it
+    # false-positived on every LLM-token reference (input_tokens, etc.) in
+    # an LLM-proxy product. 'auth' carries the real security signal.
+    assert {"security", "password", "auth", "secret"} <= SECURITY_KEYWORDS
+    assert "token" not in SECURITY_KEYWORDS
     assert ERROR_INDICATOR_KEYWORDS[0] == "error"
 
     assert ERROR_PATTERN.search("Fatal error occurred")
+    # fixed_in_3e1: timeout now matched by ERROR_PATTERN regex.
+    assert ERROR_PATTERN.search("Connection timeout occurred")
     assert WARNING_PATTERN.search("warning: be careful")
     assert IMPORTANCE_PATTERN.search("TODO fix this hack")
-    assert SECURITY_PATTERN.search("rotate the auth token")
+    # fixed_in_3e1: pre-3e1 this matched via 'token'; now matches via 'auth'.
+    assert SECURITY_PATTERN.search("rotate the auth header")
+    # fixed_in_3e1: lone 'token' references no longer trigger security routing.
+    assert SECURITY_PATTERN.search("input_tokens=512 output_tokens=128") is None
 
     assert PRIORITY_PATTERNS_SEARCH[:3] == [ERROR_PATTERN, WARNING_PATTERN, IMPORTANCE_PATTERN]
     assert PRIORITY_PATTERNS_DIFF == [ERROR_PATTERN, IMPORTANCE_PATTERN, SECURITY_PATTERN]
     assert PRIORITY_PATTERNS_TEXT[0] is ERROR_PATTERN
     assert PRIORITY_PATTERNS_TEXT[1] is IMPORTANCE_PATTERN
-    assert PRIORITY_PATTERNS_TEXT[2].match("## Header")
-    assert PRIORITY_PATTERNS_TEXT[3].match("**Bold")
-    assert PRIORITY_PATTERNS_TEXT[4].match("> quote")
+    # The Rust-supplied markdown_prefixes order is `# `, `## `, `### `, `#### `,
+    # `**`, `> ` (see KeywordRegistry::default_set). Index 2 is `# ` not `## `,
+    # so anchor each assertion on the prefix it actually owns.
+    assert PRIORITY_PATTERNS_TEXT[2].match("# Top-level heading")
+    assert PRIORITY_PATTERNS_TEXT[3].match("## Subheading")
+    assert PRIORITY_PATTERNS_TEXT[6].match("**Bold")
+    assert PRIORITY_PATTERNS_TEXT[7].match("> quote")
 
     assert content_has_error_indicators("TRACEBACK: Fatal crash in worker") is True
     assert content_has_error_indicators("Everything completed successfully") is False
