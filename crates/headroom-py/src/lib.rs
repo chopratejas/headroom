@@ -27,7 +27,9 @@ use headroom_core::transforms::{
     detect_content_type as rust_detect_content_type,
     is_json_array_of_dicts as rust_is_json_array_of_dicts, ContentType as RustContentType,
     DetectionResult as RustDetectionResult, DiffCompressionResult, DiffCompressor,
-    DiffCompressorConfig, DiffCompressorStats,
+    DiffCompressorConfig, DiffCompressorStats, SearchCompressionResult as RustSearchResult,
+    SearchCompressor as RustSearchCompressor, SearchCompressorConfig as RustSearchConfig,
+    SearchCompressorStats as RustSearchStats,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString};
@@ -1000,6 +1002,206 @@ fn keyword_registry_snapshot(py: Python<'_>) -> Py<PyDict> {
     dict.unbind()
 }
 
+// ─── search_compressor bridge (Phase 3e.2) ────────────────────────────
+//
+// Mirrors `headroom.transforms.search_compressor.SearchCompressor` so the
+// Python shim can swap in via PyO3. The Rust implementation consumes the
+// `signals::LineImportanceDetector` trait for priority scoring (instead of
+// the regex registry the Python original used) and fixes the Windows-path
+// + dashes-in-filename parser bugs.
+//
+// CCR persistence is exposed via a callback hook because the proxy's
+// `CompressionStore` already lives Python-side. The Rust crate holds no
+// long-lived store reference; instead the caller passes the dict back
+// through the result and the Python shim writes it to the existing
+// store. This avoids dragging a second CCR backend into Rust before the
+// Phase 3g pipeline formalization owns CCR end-to-end.
+
+#[pyclass(name = "SearchCompressorConfig", module = "headroom._core")]
+#[derive(Clone)]
+struct PySearchCompressorConfig {
+    inner: RustSearchConfig,
+}
+
+#[pymethods]
+impl PySearchCompressorConfig {
+    #[new]
+    #[pyo3(signature = (
+        max_matches_per_file = 5,
+        always_keep_first = true,
+        always_keep_last = true,
+        max_total_matches = 30,
+        max_files = 15,
+        context_keywords = vec![],
+        boost_errors = true,
+        enable_ccr = true,
+        min_matches_for_ccr = 10,
+        min_compression_ratio_for_ccr = 0.8,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        max_matches_per_file: usize,
+        always_keep_first: bool,
+        always_keep_last: bool,
+        max_total_matches: usize,
+        max_files: usize,
+        context_keywords: Vec<String>,
+        boost_errors: bool,
+        enable_ccr: bool,
+        min_matches_for_ccr: usize,
+        min_compression_ratio_for_ccr: f64,
+    ) -> Self {
+        Self {
+            inner: RustSearchConfig {
+                max_matches_per_file,
+                always_keep_first,
+                always_keep_last,
+                max_total_matches,
+                max_files,
+                context_keywords,
+                boost_errors,
+                enable_ccr,
+                min_matches_for_ccr,
+                min_compression_ratio_for_ccr,
+            },
+        }
+    }
+}
+
+#[pyclass(name = "SearchCompressionResult", module = "headroom._core")]
+struct PySearchCompressionResult {
+    inner: RustSearchResult,
+    stats: RustSearchStats,
+}
+
+#[pymethods]
+impl PySearchCompressionResult {
+    #[getter]
+    fn compressed(&self) -> &str {
+        &self.inner.compressed
+    }
+    #[getter]
+    fn original(&self) -> &str {
+        &self.inner.original
+    }
+    #[getter]
+    fn original_match_count(&self) -> usize {
+        self.inner.original_match_count
+    }
+    #[getter]
+    fn compressed_match_count(&self) -> usize {
+        self.inner.compressed_match_count
+    }
+    #[getter]
+    fn files_affected(&self) -> usize {
+        self.inner.files_affected
+    }
+    #[getter]
+    fn compression_ratio(&self) -> f64 {
+        self.inner.compression_ratio
+    }
+    #[getter]
+    fn cache_key(&self) -> Option<&str> {
+        self.inner.cache_key.as_deref()
+    }
+    #[getter]
+    fn summaries<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let dict = PyDict::new_bound(py);
+        for (k, v) in &self.inner.summaries {
+            dict.set_item(k, v).unwrap();
+        }
+        dict
+    }
+    /// Sidecar stats — same shape every Rust transform uses for OTel.
+    #[getter]
+    fn lines_unparsed(&self) -> usize {
+        self.stats.lines_unparsed
+    }
+    #[getter]
+    fn files_dropped(&self) -> usize {
+        self.stats.files_dropped
+    }
+    #[getter]
+    fn ccr_emitted(&self) -> bool {
+        self.stats.ccr_emitted
+    }
+    #[getter]
+    fn ccr_skip_reason(&self) -> Option<&str> {
+        self.stats.ccr_skip_reason
+    }
+}
+
+#[pyclass(name = "SearchCompressor", module = "headroom._core")]
+struct PySearchCompressor {
+    inner: RustSearchCompressor,
+}
+
+#[pymethods]
+impl PySearchCompressor {
+    #[new]
+    #[pyo3(signature = (config = None))]
+    fn new(config: Option<PySearchCompressorConfig>) -> Self {
+        let cfg = config.map(|c| c.inner).unwrap_or_default();
+        Self {
+            inner: RustSearchCompressor::new(cfg),
+        }
+    }
+
+    /// Compress `content`. CCR persistence is the caller's responsibility
+    /// — the Rust side never writes to the store. If the result needs a
+    /// CCR marker, `cache_key` will be populated and the Python shim
+    /// writes the original to the existing `CompressionStore`. This
+    /// matches Python's existing CCR plumbing and avoids dragging a
+    /// second backend into the Rust crate.
+    ///
+    /// (Internally the Rust CcrStore trait is used for unit tests; the
+    /// PyO3 surface stays Python-CCR-friendly.)
+    #[pyo3(signature = (content, context = "", bias = 1.0))]
+    fn compress(
+        &self,
+        py: Python<'_>,
+        content: &str,
+        context: &str,
+        bias: f64,
+    ) -> PySearchCompressionResult {
+        // Synthesize a tiny in-memory store so the Rust path can
+        // populate `cache_key`; the Python side reads `cache_key` and
+        // writes the original to its own `CompressionStore` if it
+        // wants persistence beyond the request lifecycle.
+        let owned = content.to_string();
+        let owned_ctx = context.to_string();
+        let (result, stats) = py.allow_threads(move || {
+            let store = headroom_core::ccr::InMemoryCcrStore::new();
+            let (r, s) = self
+                .inner
+                .compress_with_store(&owned, &owned_ctx, bias, Some(&store));
+            (r, s)
+        });
+        PySearchCompressionResult {
+            inner: result,
+            stats,
+        }
+    }
+}
+
+/// Parse one grep/ripgrep line into `(file, line_number, content)`. Used
+/// by the Python shim's `_parse_search_results` so the bug-fixed parser
+/// runs even when callers use the legacy internal helpers (which exist
+/// only for backwards-compat with the existing test surface).
+#[pyfunction]
+fn parse_search_lines(content: &str) -> Vec<(String, u64, String)> {
+    let compressor = RustSearchCompressor::new(RustSearchConfig::default());
+    let mut stats = RustSearchStats::default();
+    let parsed = compressor.parse_search_results(content, &mut stats);
+    let mut out = Vec::new();
+    for fm in parsed.values() {
+        for m in &fm.matches {
+            out.push((m.file.clone(), m.line_number, m.content.clone()));
+        }
+    }
+    out
+}
+
 // ─── Module init ───────────────────────────────────────────────────────────
 
 #[pymodule]
@@ -1009,6 +1211,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDiffCompressionResult>()?;
     m.add_class::<PyDiffCompressorStats>()?;
     m.add_class::<PyDiffCompressor>()?;
+    m.add_class::<PySearchCompressorConfig>()?;
+    m.add_class::<PySearchCompressionResult>()?;
+    m.add_class::<PySearchCompressor>()?;
+    m.add_function(wrap_pyfunction!(parse_search_lines, m)?)?;
     m.add_class::<PySmartCrusherConfig>()?;
     m.add_class::<PyCrushResult>()?;
     m.add_class::<PySmartCrusher>()?;
