@@ -308,8 +308,6 @@ class GeminiHandlerMixin:
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
 
-        # Query Echo: disabled — hurts prefix caching in long conversations.
-
         # Memory: inject context for Gemini requests
         if self.memory_handler and memory_user_id:
             try:

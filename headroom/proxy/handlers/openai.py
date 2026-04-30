@@ -513,7 +513,6 @@ class OpenAIHandlerMixin:
                         f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
                     )
 
-        # Query Echo: disabled — hurts prefix caching in long conversations.
         if is_cache_mode(self.config.mode):
             optimized_messages, restored_count = self._restore_frozen_prefix(
                 original_client_messages,

@@ -1198,10 +1198,6 @@ class AnthropicHandlerMixin:
                 if remembered_event.headers is not None:
                     headers = remembered_event.headers
 
-            # Query Echo: disabled — hurts prefix caching in long conversations.
-            # The echo changes every turn, invalidating the cached prefix.
-            # To re-enable, uncomment and set query_echo_enabled on ProxyConfig.
-
             # Update body
             body["messages"] = optimized_messages
             if tools is not None:
