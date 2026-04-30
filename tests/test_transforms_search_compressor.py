@@ -68,7 +68,12 @@ def test_parse_score_select_and_format_search_results(monkeypatch: pytest.Monkey
     assert summaries["src/db.py"] == "[... and 1 more matches in src/db.py]"
 
 
-def test_search_compressor_compress_paths_and_ccr(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_compressor_compress_paths_and_ccr() -> None:
+    """Phase 3e.2: `compress()` is now a single Rust call, so this test
+    exercises end-to-end behavior instead of monkeypatching internal
+    helpers (which the old orchestration relied on). The CCR plumbing
+    is verified via `cache_key` presence + the marker string format
+    Rust emits."""
     compressor = SearchCompressor(
         SearchCompressorConfig(enable_ccr=True, min_matches_for_ccr=2, context_keywords=["auth"])
     )
@@ -76,52 +81,48 @@ def test_search_compressor_compress_paths_and_ccr(monkeypatch: pytest.MonkeyPatc
     assert no_match.original_match_count == 0
     assert no_match.compressed == "plain text only"
 
-    parsed = {
-        "src/auth.py": FileMatches(
-            file="src/auth.py",
-            matches=[
-                SearchMatch(file="src/auth.py", line_number=1, content="auth error"),
-                SearchMatch(file="src/auth.py", line_number=2, content="auth ok"),
-            ],
-        )
-    }
-    monkeypatch.setattr(compressor, "_parse_search_results", lambda content: parsed)
-    monkeypatch.setattr(compressor, "_score_matches", lambda file_matches, context: None)
-    monkeypatch.setattr(compressor, "_select_matches", lambda file_matches, bias=1.0: parsed)
-    monkeypatch.setattr(
-        compressor,
-        "_format_output",
-        lambda selected, original: ("short", {"src/auth.py": "summary"}),
-    )
-    monkeypatch.setattr(compressor, "_store_in_ccr", lambda original, compressed, count: "abc123")
-
-    result = compressor.compress("raw search", context="auth", bias=0.8)
-    assert result.original_match_count == 2
-    assert result.compressed_match_count == 2
-    assert result.cache_key == "abc123"
-    assert result.summaries == {"src/auth.py": "summary"}
-    assert result.compressed.endswith("[2 matches compressed to 2. Retrieve more: hash=abc123]")
-
-    monkeypatch.setattr(compressor, "_store_in_ccr", lambda original, compressed, count: None)
-    no_cache = compressor.compress("raw search", context="auth")
-    assert no_cache.cache_key is None
-    assert no_cache.compressed == "short"
+    # Build a large input so compute_optimal_k's min_k=5 floor doesn't
+    # absorb everything and compression actually fires (must drop the
+    # ratio below `min_compression_ratio_for_ccr=0.8`).
+    lines = [f"src/auth.py:{i}:auth event {i}" for i in range(1, 51)]
+    lines += [f"src/db.py:{i}:db query {i}" for i in range(1, 31)]
+    content = "\n".join(lines)
+    result = compressor.compress(content, context="auth", bias=0.5)  # low bias = drop more
+    assert result.original_match_count == 80
+    assert result.files_affected == 2
+    assert result.compressed_match_count < result.original_match_count
+    assert result.cache_key is not None
+    assert result.compressed.endswith(f". Retrieve more: hash={result.cache_key}]")
+    # Summaries appear for any file whose matches were dropped.
+    assert isinstance(result.summaries, dict)
+    assert len(result.summaries) >= 1
 
 
-def test_store_in_ccr_and_result_properties(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_compressor_persist_to_python_ccr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 3e.2: CCR persistence is now in `_persist_to_python_ccr`,
+    which delegates to the production `CompressionStore`. Failures are
+    logged (not silently swallowed) — this pins both paths."""
     compressor = SearchCompressor()
+
+    seen: dict[str, tuple[str, str]] = {}
     monkeypatch.setitem(
         __import__("sys").modules,
         "headroom.cache.compression_store",
         SimpleNamespace(
             get_compression_store=lambda: SimpleNamespace(
-                store=lambda original, compressed, original_item_count=0: "stored-key"
+                store=lambda original, compressed, original_item_count=0: seen.setdefault(
+                    "call", (original, compressed)
+                )
+                or "stored-key"
             )
         ),
     )
-    assert compressor._store_in_ccr("orig", "comp", 5) == "stored-key"
+    compressor._persist_to_python_ccr("orig", "comp", "abc123")
+    assert seen["call"] == ("orig", "comp")
 
-    def broken_store():
+    # Loud failure: the store raises, but persist swallows + logs (no
+    # exception propagates to the compress callsite).
+    def broken_store() -> SimpleNamespace:
         raise RuntimeError("boom")
 
     monkeypatch.setitem(
@@ -129,8 +130,11 @@ def test_store_in_ccr_and_result_properties(monkeypatch: pytest.MonkeyPatch) -> 
         "headroom.cache.compression_store",
         SimpleNamespace(get_compression_store=broken_store),
     )
-    assert compressor._store_in_ccr("orig", "comp", 5) is None
+    compressor._persist_to_python_ccr("orig", "comp", "abc123")  # must not raise
 
+
+def test_search_compression_result_properties() -> None:
+    """Result-property contract preserved across the port."""
     result = SearchCompressionResult(
         compressed="tiny",
         original="this is a much longer original string",
