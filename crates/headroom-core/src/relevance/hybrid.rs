@@ -37,7 +37,7 @@ use regex::Regex;
 
 use super::base::{RelevanceScore, RelevanceScorer};
 use super::bm25::BM25Scorer;
-use super::embedding::EmbeddingScorer;
+use super::EmbeddingScorer;
 
 // Regex patterns that indicate exact-match is important.
 // Translated literally from Python `hybrid.py:53-60`. The `[A-Z|a-z]`

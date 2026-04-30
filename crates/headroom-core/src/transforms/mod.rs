@@ -17,17 +17,24 @@
 
 pub mod adaptive_sizer;
 pub mod anchor_selector;
+pub mod cache_aligner;
 pub mod content_detector;
 pub mod detection;
 pub mod diff_compressor;
 pub mod log_compressor;
+#[cfg(feature = "magika")]
+pub mod magika_detector;
+#[cfg(not(feature = "magika"))]
+#[path = "magika_detector_stub.rs"]
 pub mod magika_detector;
 pub mod pipeline;
 pub mod search_compressor;
 pub mod smart_crusher;
 pub mod tag_protector;
+pub mod text_compressor;
 pub mod unidiff_detector;
 
+pub use cache_aligner::{CacheAligner, CacheAlignerConfig, CacheAlignerResult, CachePrefixMetrics};
 pub use content_detector::{
     detect_content_type, is_json_array_of_dicts, ContentType, DetectionResult,
 };
@@ -50,4 +57,5 @@ pub use search_compressor::{
     SearchCompressorStats, SearchMatch,
 };
 pub use tag_protector::{is_known_html_tag, protect_tags, restore_tags, ProtectStats};
+pub use text_compressor::{TextCompressionResult, TextCompressor, TextCompressorConfig};
 pub use unidiff_detector::{detect_diff, is_diff};

@@ -192,7 +192,7 @@ async fn e2e_health_through_full_chain() {
         .unwrap();
     assert_eq!(r.status(), 200);
 
-    // /livez is forwarded to Python.
+    // /livez is intercepted by Rust and remains available regardless of upstream.
     let r = reqwest::get(format!("{}/livez", proxy.url()))
         .await
         .unwrap();
@@ -367,6 +367,174 @@ async fn e2e_openai_non_streaming() {
     assert!(
         content.to_uppercase().contains("PONG"),
         "expected PONG, got: {content}"
+    );
+
+    proxy.shutdown().await;
+    drop(py);
+}
+
+/// Full chain streaming: Rust proxy → Python proxy → OpenAI. Validates
+/// that SSE flows end-to-end with the production stack.
+#[tokio::test]
+async fn e2e_openai_streaming() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set {E2E_GUARD}=1 to run)");
+        return;
+    }
+    load_dotenv();
+    let Ok(api_key) = std::env::var("OPENAI_API_KEY") else {
+        eprintln!("skipping: OPENAI_API_KEY not set");
+        return;
+    };
+
+    let py = PythonProxy::spawn().await;
+    let proxy = start_proxy(&py.upstream_url()).await;
+
+    let body = json!({
+        "model": "gpt-4o-mini",
+        "max_tokens": 32,
+        "stream": true,
+        "messages": [{"role": "user", "content": "Count: 1, 2, 3."}],
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", proxy.url()))
+        .bearer_auth(&api_key)
+        .json(&body)
+        .send()
+        .await
+        .expect("openai stream request");
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        ct.starts_with("text/event-stream"),
+        "expected SSE content-type, got: {ct}"
+    );
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    let mut chunks = 0usize;
+    let mut last_err: Option<String> = None;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while let Some(item) = stream.next().await {
+        if Instant::now() > deadline {
+            panic!("stream did not complete within 60s. chunks={chunks} buf:\n{buf}");
+        }
+        match item {
+            Ok(c) => {
+                chunks += 1;
+                buf.push_str(&String::from_utf8_lossy(&c));
+                if buf.contains("[DONE]") {
+                    break;
+                }
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+                break;
+            }
+        }
+    }
+    eprintln!(
+        "[debug] chunks={chunks} bytes={} last_err={last_err:?}",
+        buf.len()
+    );
+    let has_delta = buf.contains("\"delta\"") || buf.contains("\"content\"");
+    let has_done = buf.contains("[DONE]");
+    assert!(
+        has_delta && has_done,
+        "stream missing expected events (delta={has_delta} done={has_done}). buf:\n{}",
+        &buf.chars().take(2000).collect::<String>()
+    );
+    assert!(
+        chunks >= 1,
+        "expected at least one SSE chunk (got {chunks})"
+    );
+
+    proxy.shutdown().await;
+    drop(py);
+}
+
+#[tokio::test]
+async fn e2e_gemini_generate_content_non_streaming() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set {E2E_GUARD}=1 to run)");
+        return;
+    }
+    load_dotenv();
+    let Ok(api_key) = std::env::var("GEMINI_API_KEY") else {
+        eprintln!("skipping: GEMINI_API_KEY not set");
+        return;
+    };
+
+    let py = PythonProxy::spawn().await;
+    let proxy = start_proxy(&py.upstream_url()).await;
+
+    let body = json!({
+        "contents": [{"parts": [{"text": "Reply with exactly: PONG"}]}],
+    });
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+            proxy.url()
+        ))
+        .json(&body)
+        .send()
+        .await
+        .expect("gemini generateContent request");
+    let status = resp.status();
+    let text = resp.text().await.unwrap();
+    assert_eq!(status, 200, "non-200 from gemini: {text}");
+    let v: Value = serde_json::from_str(&text).expect("response is JSON");
+    let content = v["candidates"][0]["content"]["parts"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        content.to_uppercase().contains("PONG"),
+        "expected PONG, got: {content}"
+    );
+
+    proxy.shutdown().await;
+    drop(py);
+}
+
+#[tokio::test]
+async fn e2e_gemini_count_tokens() {
+    if !e2e_enabled() {
+        eprintln!("skipping (set {E2E_GUARD}=1 to run)");
+        return;
+    }
+    load_dotenv();
+    let Ok(api_key) = std::env::var("GEMINI_API_KEY") else {
+        eprintln!("skipping: GEMINI_API_KEY not set");
+        return;
+    };
+
+    let py = PythonProxy::spawn().await;
+    let proxy = start_proxy(&py.upstream_url()).await;
+
+    let body = json!({
+        "contents": [{"parts": [{"text": "Count the tokens in this short prompt."}]}],
+    });
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "{}/v1beta/models/gemini-2.0-flash:countTokens?key={api_key}",
+            proxy.url()
+        ))
+        .json(&body)
+        .send()
+        .await
+        .expect("gemini countTokens request");
+    let status = resp.status();
+    let text = resp.text().await.unwrap();
+    assert_eq!(status, 200, "non-200 from gemini countTokens: {text}");
+    let v: Value = serde_json::from_str(&text).expect("response is JSON");
+    let total_tokens = v["totalTokens"].as_u64().unwrap_or(0);
+    assert!(
+        total_tokens > 0,
+        "expected positive totalTokens, got: {text}"
     );
 
     proxy.shutdown().await;

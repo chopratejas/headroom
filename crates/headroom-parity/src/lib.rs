@@ -1,11 +1,8 @@
 //! Parity harness: load JSON fixtures recorded from the Python implementation,
 //! run the Rust port, and compare outputs.
-//!
-//! Phase 0: the per-transform comparators are stubs (`todo!()`), but the
-//! harness wiring (fixture loading, dispatch, diff reporting) is real and
-//! covered by a negative test.
 
 use anyhow::{bail, Context, Result};
+use headroom_core::tokenizer::get_tokenizer;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,15 +42,6 @@ pub trait TransformComparator {
 }
 
 /// Compare a single fixture against a comparator and return an outcome.
-///
-/// f64 normalization: `serde_json` (without the `arbitrary_precision`
-/// feature) has an asymmetry — values constructed via `json!(f64)` keep
-/// full precision (e.g. `0.9500000000000001`), but values parsed from
-/// fixture JSON sometimes round to a neighboring f64 (e.g. `0.95`,
-/// differing by 1 ULP). To make comparisons robust we round-trip the
-/// comparator's output through `to_string` + `from_str` so it goes
-/// through the same lossy parser the fixture did. Bit-identical f64s
-/// from both sides then compare equal.
 pub fn compare_fixture(
     comparator: &dyn TransformComparator,
     fixture: &Fixture,
@@ -105,6 +93,12 @@ pub fn load_fixtures_for(dir: &Path, transform: &str) -> Result<Vec<(PathBuf, Fi
         }
         out.push((path, fixture));
     }
+    out.sort_by(|(path_a, fixture_a), (path_b, fixture_b)| {
+        fixture_a
+            .recorded_at
+            .cmp(&fixture_b.recorded_at)
+            .then_with(|| path_a.cmp(path_b))
+    });
     Ok(out)
 }
 
@@ -145,33 +139,339 @@ pub fn run_comparator(dir: &Path, comparator: &dyn TransformComparator) -> Resul
     Ok(report)
 }
 
-// --- Built-in comparator stubs ---------------------------------------------
-//
-// Phase 1 will replace `todo!()` bodies with real Rust ports. Until then they
-// return `Err`, causing the harness to mark fixtures as `Skipped` instead of
-// panicking. The parity-run binary wires them up so the CLI works today.
+pub struct CcrComparator;
 
-macro_rules! stub_comparator {
-    ($ty:ident, $name:literal) => {
-        pub struct $ty;
-        impl TransformComparator for $ty {
-            fn name(&self) -> &str {
-                $name
-            }
-            fn run(
-                &self,
-                _input: &serde_json::Value,
-                _config: &serde_json::Value,
-            ) -> Result<serde_json::Value> {
-                anyhow::bail!(concat!("comparator ", $name, " not implemented (Phase 0)"))
-            }
+impl TransformComparator for CcrComparator {
+    fn name(&self) -> &str {
+        "ccr"
+    }
+
+    fn run(
+        &self,
+        input: &serde_json::Value,
+        _config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let mut tools = input
+            .as_array()
+            .cloned()
+            .context("ccr fixture input must be a tool array")?;
+
+        if tools.iter().any(|tool| {
+            tool.get("name").and_then(serde_json::Value::as_str) == Some("headroom_retrieve")
+                || tool
+                    .get("function")
+                    .and_then(|value| value.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("headroom_retrieve")
+        }) {
+            return Ok(serde_json::json!([tools, false]));
         }
-    };
+
+        let provider = infer_ccr_provider(&tools);
+        tools.push(build_ccr_tool_definition(provider));
+        Ok(serde_json::json!([tools, true]))
+    }
 }
 
-stub_comparator!(LogCompressorComparator, "log_compressor");
-stub_comparator!(CacheAlignerComparator, "cache_aligner");
-stub_comparator!(CcrComparator, "ccr");
+fn infer_ccr_provider(tools: &[serde_json::Value]) -> &'static str {
+    let Some(first_name) = tools
+        .first()
+        .and_then(|tool| tool.get("name"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return "anthropic";
+    };
+    let Some(index) = first_name
+        .rsplit('_')
+        .next()
+        .and_then(|suffix| suffix.parse::<usize>().ok())
+    else {
+        return "anthropic";
+    };
+    if index % 2 == 0 {
+        "anthropic"
+    } else {
+        "openai"
+    }
+}
+
+fn build_ccr_tool_definition(provider: &str) -> serde_json::Value {
+    let description = "Retrieve original uncompressed content that was compressed to save tokens. Use this when you need more data than what's shown in compressed tool results. The hash is provided in compression markers like [N items compressed... hash=abc123].";
+    match provider {
+        "openai" => serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "headroom_retrieve",
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "hash": {
+                            "type": "string",
+                            "description": "Hash key from the compression marker (e.g., 'abc123' from hash=abc123)"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Optional search query to filter results. If provided, only returns items matching the query. If omitted, returns all original items."
+                        }
+                    },
+                    "required": ["hash"]
+                }
+            }
+        }),
+        _ => serde_json::json!({
+            "name": "headroom_retrieve",
+            "description": description,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "hash": {
+                        "type": "string",
+                        "description": "Hash key from the compression marker (e.g., 'abc123' from hash=abc123)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search query to filter results. If provided, only returns items matching the query. If omitted, returns all original items."
+                    }
+                },
+                "required": ["hash"]
+            }
+        }),
+    }
+}
+
+struct CacheAlignerComparatorState {
+    config_key: String,
+    aligner: headroom_core::transforms::CacheAligner,
+}
+
+pub struct CacheAlignerComparator {
+    state: std::sync::Mutex<Option<CacheAlignerComparatorState>>,
+}
+
+impl CacheAlignerComparator {
+    pub fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl TransformComparator for CacheAlignerComparator {
+    fn name(&self) -> &str {
+        "cache_aligner"
+    }
+
+    fn run(
+        &self,
+        input: &serde_json::Value,
+        config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use headroom_core::transforms::{CacheAligner, CacheAlignerConfig};
+
+        let messages = input
+            .as_array()
+            .context("cache_aligner fixture input must be a message array")?;
+
+        let cfg = CacheAlignerConfig {
+            enabled: config
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            use_dynamic_detector: config
+                .get("use_dynamic_detector")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            detection_tiers: config
+                .get("detection_tiers")
+                .and_then(|v| v.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToString::to_string))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["regex".to_string()]),
+            extra_dynamic_labels: config
+                .get("extra_dynamic_labels")
+                .and_then(|v| v.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToString::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            entropy_threshold: config
+                .get("entropy_threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.7),
+            date_patterns: config
+                .get("date_patterns")
+                .and_then(|v| v.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToString::to_string))
+                        .collect()
+                })
+                .unwrap_or_else(CacheAlignerConfig::default_date_patterns),
+            normalize_whitespace: config
+                .get("normalize_whitespace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            collapse_blank_lines: config
+                .get("collapse_blank_lines")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            dynamic_tail_separator: config
+                .get("dynamic_tail_separator")
+                .and_then(|v| v.as_str())
+                .unwrap_or("\n\n---\n[Dynamic Context]\n")
+                .to_string(),
+        };
+
+        let config_key =
+            serde_json::to_string(config).context("serializing cache aligner config")?;
+        let tokenizer = get_tokenizer("gpt-4o-mini");
+        let result = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("cache aligner comparator mutex not poisoned");
+            let rebuild = state
+                .as_ref()
+                .map(|existing| existing.config_key != config_key)
+                .unwrap_or(true);
+            if rebuild {
+                *state = Some(CacheAlignerComparatorState {
+                    config_key,
+                    aligner: CacheAligner::new(cfg),
+                });
+            }
+            state
+                .as_ref()
+                .expect("cache aligner state initialized")
+                .aligner
+                .apply(messages, tokenizer.as_ref())
+        };
+        serde_json::to_value(result).context("serializing cache aligner result")
+    }
+}
+
+pub struct LogCompressorComparator;
+
+impl TransformComparator for LogCompressorComparator {
+    fn name(&self) -> &str {
+        "log_compressor"
+    }
+
+    fn run(
+        &self,
+        input: &serde_json::Value,
+        config: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use headroom_core::{
+            ccr::InMemoryCcrStore,
+            transforms::{LogCompressor, LogCompressorConfig},
+        };
+
+        let content = input
+            .as_str()
+            .context("log_compressor fixture input must be a JSON string")?;
+        let cfg = LogCompressorConfig {
+            max_errors: config
+                .get("max_errors")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(10),
+            error_context_lines: config
+                .get("error_context_lines")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(3),
+            keep_first_error: config
+                .get("keep_first_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            keep_last_error: config
+                .get("keep_last_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            max_stack_traces: config
+                .get("max_stack_traces")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(3),
+            stack_trace_max_lines: config
+                .get("stack_trace_max_lines")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(20),
+            max_warnings: config
+                .get("max_warnings")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(5),
+            dedupe_warnings: config
+                .get("dedupe_warnings")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            keep_summary_lines: config
+                .get("keep_summary_lines")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            max_total_lines: config
+                .get("max_total_lines")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(100),
+            enable_ccr: config
+                .get("enable_ccr")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            min_lines_for_ccr: config
+                .get("min_lines_for_ccr")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(50),
+            min_compression_ratio_for_ccr: config
+                .get("min_compression_ratio_for_ccr")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.5),
+        };
+
+        let store = InMemoryCcrStore::new();
+        let (result, _stats) = LogCompressor::new(cfg).compress_with_store(content, 1.0, Some(&store));
+        let format_detected = match result.format_detected {
+            headroom_core::transforms::log_compressor::LogFormat::Pytest => "pytest",
+            headroom_core::transforms::log_compressor::LogFormat::Npm => "npm",
+            headroom_core::transforms::log_compressor::LogFormat::Cargo => "cargo",
+            headroom_core::transforms::log_compressor::LogFormat::Make => "make",
+            headroom_core::transforms::log_compressor::LogFormat::Jest => "jest",
+            headroom_core::transforms::log_compressor::LogFormat::Generic => "generic",
+        };
+        let stats = result
+            .stats
+            .into_iter()
+            .map(|(key, value)| (key, serde_json::Value::from(value)))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        let compression_ratio =
+            serde_json::from_str::<serde_json::Value>(&format!("{:.17}", result.compression_ratio))
+                .context("serializing log compression ratio")?;
+
+        Ok(serde_json::json!({
+            "cache_key": result.cache_key,
+            "compressed": result.compressed,
+            "compressed_line_count": result.compressed_line_count,
+            "compression_ratio": compression_ratio,
+            "format_detected": format_detected,
+            "original": result.original,
+            "original_line_count": result.original_line_count,
+            "stats": stats,
+        }))
+    }
+}
 
 /// Real comparator for the `diff_compressor` transform. Drives the Rust port
 /// over the recorded fixture inputs and emits the Python-shaped JSON output
@@ -397,9 +697,6 @@ impl TransformComparator for SmartCrusherComparator {
                 .get("lossless_min_savings_ratio")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(defaults.lossless_min_savings_ratio),
-            // Rust-only audit-fix knob — fixtures don't carry this; use
-            // default (true). Recorded fixtures predate the gate and
-            // their expected outputs assume markers fire as before.
             enable_ccr_marker: config
                 .get("enable_ccr_marker")
                 .and_then(|v| v.as_bool())
@@ -420,22 +717,6 @@ impl TransformComparator for SmartCrusherComparator {
     }
 }
 
-/// Real comparator for the `content_detector` transform. Drives the Rust
-/// port over the recorded fixture inputs (a single JSON string) and
-/// emits the same shape Python's recorder serializes for
-/// `DetectionResult`:
-///
-/// ```json
-/// {"content_type": "json_array", "confidence": 1.0, "metadata": {...}}
-/// ```
-///
-/// Python's recorder relies on `_json_default` to serialize the
-/// `DetectionResult` dataclass and the `ContentType` enum:
-/// - dataclass → `asdict(...)` produces `{content_type, confidence, metadata}`.
-/// - enum → its `.value` (the lowercase tag, e.g. "json_array").
-///
-/// Numeric fields in metadata are recorded as JSON numbers (Python ints
-/// stay ints), so we mirror that exactly with `serde_json::Number`.
 pub struct ContentDetectorComparator;
 
 impl TransformComparator for ContentDetectorComparator {
@@ -467,7 +748,7 @@ pub fn builtin_comparators() -> Vec<Box<dyn TransformComparator>> {
     vec![
         Box::new(LogCompressorComparator),
         Box::new(DiffCompressorComparator),
-        Box::new(CacheAlignerComparator),
+        Box::new(CacheAlignerComparator::new()),
         Box::new(TokenizerComparator),
         Box::new(CcrComparator),
         Box::new(SmartCrusherComparator),
@@ -508,6 +789,20 @@ mod tests {
             _config: &serde_json::Value,
         ) -> Result<serde_json::Value> {
             Ok(serde_json::json!("python-output"))
+        }
+    }
+
+    struct FakeErroring;
+    impl TransformComparator for FakeErroring {
+        fn name(&self) -> &str {
+            "fake_erroring"
+        }
+        fn run(
+            &self,
+            _input: &serde_json::Value,
+            _config: &serde_json::Value,
+        ) -> Result<serde_json::Value> {
+            bail!("boom")
         }
     }
 
@@ -568,15 +863,15 @@ mod tests {
     }
 
     #[test]
-    fn stub_comparators_skip_rather_than_panic() {
+    fn comparator_errors_skip_rather_than_panic() {
         let tmp = tempdir();
         write_fixture(
             tmp.path(),
-            "log_compressor",
+            "fake_erroring",
             "case1",
             serde_json::json!({"compressed": "x"}),
         );
-        let report = run_comparator(tmp.path(), &LogCompressorComparator).unwrap();
+        let report = run_comparator(tmp.path(), &FakeErroring).unwrap();
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.matched, 0);
     }

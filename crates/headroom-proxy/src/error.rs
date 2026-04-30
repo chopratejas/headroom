@@ -15,6 +15,19 @@ pub enum ProxyError {
     #[error("invalid header: {0}")]
     InvalidHeader(String),
 
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
+    #[error("request too large: content-length {actual_bytes} exceeds max {max_bytes}")]
+    RequestTooLarge { actual_bytes: u64, max_bytes: u64 },
+
+    #[error("invalid request: array field `{field}` exceeds max length {max_length} (got {actual_length})")]
+    RequestArrayTooLarge {
+        field: &'static str,
+        actual_length: usize,
+        max_length: usize,
+    },
+
     #[error("websocket error: {0}")]
     WebSocket(String),
 
@@ -36,6 +49,9 @@ impl IntoResponse for ProxyError {
             ProxyError::Upstream(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             ProxyError::InvalidUpstream(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             ProxyError::InvalidHeader(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ProxyError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ProxyError::RequestTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, self.to_string()),
+            ProxyError::RequestArrayTooLarge { .. } => (StatusCode::BAD_REQUEST, self.to_string()),
             ProxyError::WebSocket(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             ProxyError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };

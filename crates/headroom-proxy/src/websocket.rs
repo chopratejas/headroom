@@ -4,7 +4,10 @@
 //! upstream (rewriting scheme http->ws / https->wss), and bidirectionally
 //! pumps messages until either side closes.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::ws::{CloseFrame, Message as AxMsg, WebSocket, WebSocketUpgrade};
@@ -17,12 +20,158 @@ use tokio_tungstenite::tungstenite::Message as TgMsg;
 use crate::headers::build_forward_request_headers;
 use crate::proxy::{join_upstream_path, AppState};
 
+#[derive(Clone, Default)]
+pub struct WebSocketSessionRegistry {
+    sessions: Arc<Mutex<HashMap<String, WebSocketSessionHandle>>>,
+}
+
+#[derive(Clone)]
+struct WebSocketSessionHandle {
+    session_id: String,
+    request_id: String,
+    client_addr: String,
+    upstream_url: String,
+    started_at: Instant,
+    last_activity_at: Instant,
+    relay_task_names: Vec<String>,
+    termination_cause: Option<String>,
+}
+
+impl WebSocketSessionRegistry {
+    pub fn register(
+        &self,
+        session_id: String,
+        request_id: String,
+        client_addr: String,
+        upstream_url: String,
+    ) {
+        let now = Instant::now();
+        self.sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .insert(
+                session_id.clone(),
+                WebSocketSessionHandle {
+                    session_id,
+                    request_id,
+                    client_addr,
+                    upstream_url,
+                    started_at: now,
+                    last_activity_at: now,
+                    relay_task_names: Vec::new(),
+                    termination_cause: None,
+                },
+            );
+    }
+
+    pub fn attach_task_names<I>(&self, session_id: &str, task_names: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        if let Some(handle) = self
+            .sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .get_mut(session_id)
+        {
+            handle.relay_task_names.extend(task_names);
+            handle.last_activity_at = Instant::now();
+        }
+    }
+
+    pub fn deregister(&self, session_id: &str, cause: &str) {
+        if let Some(mut handle) = self
+            .sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .remove(session_id)
+        {
+            handle.termination_cause = Some(cause.to_string());
+        }
+    }
+
+    pub fn active_count(&self) -> usize {
+        self.sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .len()
+    }
+
+    pub fn active_relay_task_count(&self) -> usize {
+        self.sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .values()
+            .map(|handle| handle.relay_task_names.len())
+            .sum()
+    }
+
+    pub fn snapshot(&self) -> Vec<serde_json::Value> {
+        self.sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .values()
+            .map(|handle| {
+                serde_json::json!({
+                    "session_id": handle.session_id,
+                    "request_id": handle.request_id,
+                    "client_addr": handle.client_addr,
+                    "upstream_url": handle.upstream_url,
+                    "age_seconds": handle.started_at.elapsed().as_secs_f64(),
+                    "idle_seconds": handle.last_activity_at.elapsed().as_secs_f64(),
+                    "relay_task_count": handle.relay_task_names.len(),
+                    "relay_task_names": handle.relay_task_names.clone(),
+                    "termination_cause": handle.termination_cause,
+                })
+            })
+            .collect()
+    }
+
+    pub fn debug_tasks_snapshot(&self) -> Vec<serde_json::Value> {
+        let mut entries = self
+            .sessions
+            .lock()
+            .expect("ws session registry poisoned")
+            .values()
+            .flat_map(|handle| {
+                handle.relay_task_names.iter().map(|name| {
+                    serde_json::json!({
+                        "name": name,
+                        "coro_qualname": "headroom_proxy::websocket::run_ws_pump",
+                        "age_seconds": handle.started_at.elapsed().as_secs_f64(),
+                        "stack_depth": serde_json::Value::Null,
+                        "done": false,
+                    })
+                }).collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| {
+            b["age_seconds"]
+                .as_f64()
+                .partial_cmp(&a["age_seconds"].as_f64())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        entries
+    }
+}
+
 /// Entry point invoked from the catch-all when an upgrade is detected.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     state: AppState,
     client_addr: SocketAddr,
     req: Request<Body>,
+) -> Response<Body> {
+    let upstream_base = state.config.upstream.clone();
+    ws_handler_with_base(ws, state, client_addr, req, upstream_base).await
+}
+
+pub async fn ws_handler_with_base(
+    ws: WebSocketUpgrade,
+    state: AppState,
+    client_addr: SocketAddr,
+    req: Request<Body>,
+    upstream_base: url::Url,
 ) -> Response<Body> {
     let request_id = req
         .headers()
@@ -32,7 +181,7 @@ pub async fn ws_handler(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // Build the upstream WS URL.
-    let upstream_url = match build_upstream_ws_url(&state.config.upstream, req.uri()) {
+    let upstream_url = match build_upstream_ws_url(&upstream_base, req.uri()) {
         Ok(u) => u,
         Err(e) => {
             tracing::warn!(error = %e, "failed to build upstream ws url");
@@ -66,11 +215,13 @@ pub async fn ws_handler(
     let path = req.uri().path().to_string();
     ws.on_upgrade(move |client_ws| async move {
         if let Err(e) = run_ws_pump(
+            state,
             client_ws,
             upstream_url,
             forward_headers,
             subprotocols,
             request_id,
+            client_addr,
             path,
         )
         .await
@@ -107,11 +258,13 @@ fn build_upstream_ws_url(base: &url::Url, req_uri: &http::Uri) -> Result<url::Ur
 }
 
 async fn run_ws_pump(
+    state: AppState,
     client_ws: WebSocket,
     upstream_url: url::Url,
     forward_headers: http::HeaderMap,
     subprotocols: Option<String>,
     request_id: String,
+    client_addr: SocketAddr,
     path: String,
 ) -> Result<(), String> {
     // Build the upstream handshake request manually so we can inject headers.
@@ -162,12 +315,25 @@ async fn run_ws_pump(
         "ws session opened"
     );
 
+    let session_id = request_id.clone();
+    state.ws_sessions.register(
+        session_id.clone(),
+        request_id.clone(),
+        client_addr.to_string(),
+        upstream_url.to_string(),
+    );
+
     // Each direction runs in its own task. We use a cancel token so that when
     // either side closes/errors, the other is aborted immediately rather than
     // blocking forever on next().await (the half-close hang bug).
     let cancel = tokio_util::sync::CancellationToken::new();
     let cancel_c2u = cancel.clone();
     let cancel_u2c = cancel.clone();
+    let c2u_task_name = format!("codex-ws-c2u-{session_id}");
+    let u2c_task_name = format!("codex-ws-u2c-{session_id}");
+    state
+        .ws_sessions
+        .attach_task_names(&session_id, [c2u_task_name, u2c_task_name]);
 
     // Pump client -> upstream.
     let c2u = tokio::spawn(async move {
@@ -208,6 +374,7 @@ async fn run_ws_pump(
     });
 
     let _ = tokio::join!(c2u, u2c);
+    state.ws_sessions.deregister(&session_id, "unknown");
     tracing::info!(request_id = %request_id, path = %path, protocol = "ws", "ws session closed");
     Ok(())
 }

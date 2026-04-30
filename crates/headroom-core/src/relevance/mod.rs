@@ -22,12 +22,18 @@
 
 mod base;
 mod bm25;
+#[cfg(feature = "fastembed")]
 mod embedding;
+#[cfg(not(feature = "fastembed"))]
+mod embedding_stub;
 mod hybrid;
 
 pub use base::{default_batch_score, RelevanceScore, RelevanceScorer};
 pub use bm25::BM25Scorer;
+#[cfg(feature = "fastembed")]
 pub use embedding::EmbeddingScorer;
+#[cfg(not(feature = "fastembed"))]
+pub use embedding_stub::EmbeddingScorer;
 pub use hybrid::HybridScorer;
 
 /// Factory mirroring Python's `relevance.create_scorer` (`__init__.py:72`).
@@ -38,9 +44,9 @@ pub use hybrid::HybridScorer;
 /// - `"hybrid"` (default) — `HybridScorer` (BM25 + embedding fusion;
 ///   gracefully falls back to BM25 + boost when embeddings stubbed).
 /// - `"bm25"` — `BM25Scorer` (pure keyword).
-/// - `"embedding"` — `EmbeddingScorer` (currently a stub; returns
-///   `Err` to mirror Python's `RuntimeError` when the underlying ONNX
-///   backend isn't ready).
+/// - `"embedding"` — `EmbeddingScorer` (available only when the
+///   `fastembed` feature is enabled; otherwise returns `Err` to mirror
+///   Python's optional-backend behavior).
 pub fn create_scorer(tier: &str) -> Result<Box<dyn RelevanceScorer + Send + Sync>, String> {
     match tier.to_lowercase().as_str() {
         "bm25" => Ok(Box::new(BM25Scorer::default())),
