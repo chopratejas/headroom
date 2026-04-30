@@ -2294,7 +2294,8 @@ async fn forward_native_openai_chat(
         body_bytes
     };
     let optimization_started = Instant::now();
-    let optimized = optimize_openai_chat_body(&state.compression_cache, &body_bytes, &model)?;
+    let optimized =
+        optimize_openai_chat_body(&state.compression_cache, &state.product, &body_bytes, &model)?;
     let optimization_latency_ms = optimization_started.elapsed().as_secs_f64() * 1000.0;
     validate_request_array_length("messages", messages_count)?;
 
@@ -2482,8 +2483,12 @@ async fn forward_native_anthropic_messages(
     let (model, messages_count, max_tokens, streaming) =
         parse_anthropic_messages_request(&body_bytes)?;
     let optimization_started = Instant::now();
-    let optimized =
-        optimize_anthropic_messages_body(&state.compression_cache, &body_bytes, &model)?;
+    let optimized = optimize_anthropic_messages_body(
+        &state.compression_cache,
+        &state.product,
+        &body_bytes,
+        &model,
+    )?;
     let optimization_latency_ms = optimization_started.elapsed().as_secs_f64() * 1000.0;
     validate_request_array_length("messages", messages_count)?;
 
@@ -2562,7 +2567,8 @@ async fn forward_native_anthropic_batch_create(
         .await
         .map_err(std::io::Error::other)?
         .to_bytes();
-    let optimized = optimize_anthropic_batch_create_body(&state.compression_cache, &body_bytes)?;
+    let optimized =
+        optimize_anthropic_batch_create_body(&state.compression_cache, &state.product, &body_bytes)?;
     let req = Request::from_parts(parts, Body::from(optimized.primary_body_bytes));
 
     let mut route_metadata = anthropic_passthrough_metadata("messages/batches");
@@ -2738,7 +2744,11 @@ async fn forward_native_openai_batch_create(
         .await;
     };
 
-    let optimized = optimize_openai_batch_jsonl_content(&state.compression_cache, &file_content)?;
+    let optimized = optimize_openai_batch_jsonl_content(
+        &state.compression_cache,
+        &state.product,
+        &file_content,
+    )?;
     if optimized.stats.total_requests == 0 {
         return local_json_route(
             state,
@@ -3197,8 +3207,12 @@ async fn forward_native_gemini_generate_content(
     validate_request_array_length("contents", contents_count)?;
     let streaming = is_gemini_streaming_query(parts.uri.query())
         || is_gemini_stream_generate_content_path(parts.uri.path());
-    let optimized =
-        optimize_gemini_generate_content_body(&state.compression_cache, &body_bytes, &model)?;
+    let optimized = optimize_gemini_generate_content_body(
+        &state.compression_cache,
+        &state.product,
+        &body_bytes,
+        &model,
+    )?;
     let req = Request::from_parts(parts, Body::from(optimized.primary_body_bytes.clone()));
 
     let mut route_metadata = PipelineMetadata::new();
@@ -3274,8 +3288,12 @@ async fn forward_native_gemini_count_tokens(
     let (contents_count, system_instruction_present) =
         parse_gemini_generate_content_request(&body_bytes)?;
     validate_request_array_length("contents", contents_count)?;
-    let optimized =
-        optimize_gemini_count_tokens_body(&state.compression_cache, &body_bytes, &model)?;
+    let optimized = optimize_gemini_count_tokens_body(
+        &state.compression_cache,
+        &state.product,
+        &body_bytes,
+        &model,
+    )?;
     let req = Request::from_parts(parts, Body::from(optimized.primary_body_bytes.clone()));
 
     let mut route_metadata = PipelineMetadata::new();
@@ -3351,6 +3369,7 @@ async fn forward_native_google_cloudcode_stream(
     validate_request_array_length("request.contents", request_contents_count)?;
     let optimized = optimize_google_cloudcode_stream_body(
         &state.compression_cache,
+        &state.product,
         &body_bytes,
         &model,
         antigravity,
@@ -3933,7 +3952,7 @@ async fn native_compress_messages(
         .await;
     }
 
-    match build_compress_response(&state.compression_cache, object, messages, model) {
+    match build_compress_response(&state.compression_cache, &state.product, object, messages, model) {
         Ok(result) => {
             log_native_compress_request(
                 &state,
@@ -4309,8 +4328,12 @@ async fn forward_native_gemini_generate_content_with_shadow(
                 .record_request_failed(start.elapsed().as_secs_f64());
         })?
         .to_bytes();
-    let optimized =
-        optimize_gemini_generate_content_body(&state.compression_cache, &body_bytes, &model)?;
+        let optimized = optimize_gemini_generate_content_body(
+            &state.compression_cache,
+            &state.product,
+            &body_bytes,
+            &model,
+        )?;
     let gemini_base_url = normalize_provider_base_url(state.config.gemini_api_url.clone());
     let provider = provider_from_path(&path_for_log);
     let context = ExecutionContext::new("proxy.gemini_generate_content", request_id.clone())
@@ -4801,6 +4824,7 @@ async fn forward_native_google_cloudcode_stream_with_shadow(
         .to_bytes();
     let optimized = optimize_google_cloudcode_stream_body(
         &state.compression_cache,
+        &state.product,
         &body_bytes,
         &model,
         antigravity,
@@ -7149,6 +7173,7 @@ struct AnthropicBatchCreateOptimization {
 
 fn optimize_openai_chat_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<OpenAiChatOptimization, ProxyError> {
@@ -7179,7 +7204,7 @@ fn optimize_openai_chat_body(
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
     let Ok(result) =
-        build_compress_response(compression_cache, &compression_body, &messages, model)
+        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
     else {
         return Ok(OpenAiChatOptimization {
             primary_body_bytes: body_bytes.clone(),
@@ -7209,6 +7234,7 @@ fn optimize_openai_chat_body(
 
 fn optimize_anthropic_messages_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<AnthropicMessagesOptimization, ProxyError> {
@@ -7239,7 +7265,7 @@ fn optimize_anthropic_messages_body(
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
     let Ok(result) =
-        build_compress_response(compression_cache, &compression_body, &messages, model)
+        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
     else {
         return Ok(AnthropicMessagesOptimization {
             primary_body_bytes: body_bytes.clone(),
@@ -7269,6 +7295,7 @@ fn optimize_anthropic_messages_body(
 
 fn optimize_anthropic_batch_create_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
 ) -> Result<AnthropicBatchCreateOptimization, ProxyError> {
     let mut payload: Value = serde_json::from_slice(body_bytes)
@@ -7324,7 +7351,13 @@ fn optimize_anthropic_batch_create_body(
         compression_config.insert("compress_user_messages".to_string(), Value::Bool(true));
         compression_body.insert("config".to_string(), Value::Object(compression_config));
 
-        match build_compress_response(compression_cache, &compression_body, &messages, model) {
+        match build_compress_response(
+            compression_cache,
+            product_store,
+            &compression_body,
+            &messages,
+            model,
+        ) {
             Ok(result) => {
                 let compressed_messages = result.body["messages"]
                     .as_array()
@@ -7361,6 +7394,7 @@ fn optimize_anthropic_batch_create_body(
 
 fn optimize_openai_batch_jsonl_content(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     content: &str,
 ) -> Result<OpenAiBatchJsonlOptimization, ProxyError> {
     let mut compressed_lines = Vec::new();
@@ -7404,7 +7438,13 @@ fn optimize_openai_batch_jsonl_content(
         compression_config.insert("compress_user_messages".to_string(), Value::Bool(true));
         compression_body.insert("config".to_string(), Value::Object(compression_config));
 
-        match build_compress_response(compression_cache, &compression_body, &messages, model) {
+        match build_compress_response(
+            compression_cache,
+            product_store,
+            &compression_body,
+            &messages,
+            model,
+        ) {
             Ok(result) => {
                 total_original_tokens += result.body["tokens_before"].as_u64().unwrap_or(0);
                 total_compressed_tokens += result.body["tokens_after"].as_u64().unwrap_or(0);
@@ -7822,6 +7862,7 @@ fn request_log_input_tokens(provider: &str, model: &str, body_bytes: &Bytes) -> 
 
 fn build_compress_response(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body: &serde_json::Map<String, Value>,
     messages: &[Value],
     model: &str,
@@ -7835,8 +7876,6 @@ fn build_compress_response(
     let mut compressed_messages = Vec::with_capacity(messages.len());
     let mut ccr_hashes = Vec::new();
     let mut cache_hit = false;
-    let product_store = ProductStore::default();
-
     for (index, message) in messages.iter().enumerate() {
         let (compressed, message_transforms, message_hashes) = compress_message_value(
             message,
@@ -9682,22 +9721,25 @@ struct GoogleCloudCodeStreamOptimization {
 
 fn optimize_gemini_generate_content_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<GeminiRequestOptimization, ProxyError> {
-    optimize_gemini_request_body(compression_cache, body_bytes, model)
+    optimize_gemini_request_body(compression_cache, product_store, body_bytes, model)
 }
 
 fn optimize_gemini_count_tokens_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<GeminiRequestOptimization, ProxyError> {
-    optimize_gemini_request_body(compression_cache, body_bytes, model)
+    optimize_gemini_request_body(compression_cache, product_store, body_bytes, model)
 }
 
 fn optimize_gemini_request_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<GeminiRequestOptimization, ProxyError> {
@@ -9730,7 +9772,7 @@ fn optimize_gemini_request_body(
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
     let Ok(result) =
-        build_compress_response(compression_cache, &compression_body, &messages, model)
+        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
     else {
         return Ok(GeminiRequestOptimization {
             primary_body_bytes: body_bytes.clone(),
@@ -9776,6 +9818,7 @@ fn optimize_gemini_request_body(
 
 fn optimize_google_cloudcode_stream_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
+    product_store: &ProductStore,
     body_bytes: &Bytes,
     model: &str,
     antigravity: bool,
@@ -9817,7 +9860,7 @@ fn optimize_google_cloudcode_stream_body(
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
     let Ok(result) =
-        build_compress_response(compression_cache, &compression_body, &messages, model)
+        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
     else {
         return Ok(GoogleCloudCodeStreamOptimization {
             primary_body_bytes: body_bytes.clone(),
@@ -10402,6 +10445,7 @@ mod tests {
 
         let optimization = optimize_openai_chat_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
             "gpt-4o-mini",
         )
@@ -10766,6 +10810,7 @@ mod tests {
 
         let optimization = optimize_anthropic_batch_create_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
         )
         .unwrap();
@@ -10804,6 +10849,7 @@ mod tests {
 
         let optimization = optimize_anthropic_messages_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
             "claude-3-5-sonnet-20241022",
         )
@@ -10857,6 +10903,7 @@ mod tests {
 
         let optimization = optimize_openai_batch_jsonl_content(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &jsonl,
         )
         .unwrap();
@@ -10988,6 +11035,7 @@ mod tests {
 
         let optimization = optimize_gemini_count_tokens_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
             "gemini-2.0-flash",
         )
@@ -11037,6 +11085,7 @@ mod tests {
 
         let optimization = optimize_gemini_generate_content_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
             "gemini-2.0-flash",
         )
@@ -11084,6 +11133,7 @@ mod tests {
 
         let optimization = optimize_google_cloudcode_stream_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
             "gemini-3.1-pro-high",
             false,
@@ -11133,6 +11183,7 @@ mod tests {
 
         let optimization = optimize_google_cloudcode_stream_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
+            &ProductStore::default(),
             &body,
             "gemini-3.1-pro-high",
             true,

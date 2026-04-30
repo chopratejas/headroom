@@ -459,6 +459,17 @@ impl Accumulator {
         .unwrap()
         .contains("Retrieve more: hash="));
     assert_eq!(search_compressed["ccr_hashes"].as_array().unwrap().len(), 1);
+    let search_hash = search_compressed["ccr_hashes"][0].as_str().unwrap().to_string();
+    let retrieved_search = client
+        .post(format!("{}/v1/retrieve", proxy.url()))
+        .json(&serde_json::json!({"hash": search_hash}))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(retrieved_search["original_content"], serde_json::json!(search_content));
 
     let build_content = (1..=60)
         .map(|line| match line {
