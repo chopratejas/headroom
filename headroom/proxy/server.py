@@ -269,6 +269,7 @@ class HeadroomProxy(
                     compress_threshold=0.10 if config.intelligent_context_compress_first else 0.0,
                 ),
                 toin=toin,
+                observer=self.metrics,
             )
             self._context_manager_status = "intelligent"
         else:

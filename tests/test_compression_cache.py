@@ -252,9 +252,24 @@ class TestCompressionCacheFrozenCount:
         assert hb not in cache._stable_hashes  # msg[2] not included
 
     def test_should_defer_compression_new_content(self, cache: CompressionCache) -> None:
-        """First-time content should be deferred."""
+        """First-time content should NOT be deferred — there is no
+        prefix-cache entry to preserve, so compression carries no bust
+        cost. Issue #327: prior behavior deferred first-sight, which
+        marked every fresh tool_result as stable and disabled
+        compression for typical Claude Code workloads.
+        """
         h = CompressionCache.content_hash("brand new content")
+        assert cache.should_defer_compression(h, ttl_seconds=300, batch_window=30) is False
+        # Subsequent sightings within TTL should defer (batch window).
         assert cache.should_defer_compression(h, ttl_seconds=300, batch_window=30) is True
+
+    def test_should_defer_compression_records_first_seen(self, cache: CompressionCache) -> None:
+        """First-sight call must record the timestamp so subsequent
+        in-window calls can defer. Without this the deferral pathway
+        for genuinely-repeated content stops working."""
+        h = CompressionCache.content_hash("seen-twice content")
+        cache.should_defer_compression(h)  # first sight
+        assert h in cache._first_seen
 
     def test_should_defer_compression_near_ttl(self, cache: CompressionCache) -> None:
         """Content near TTL boundary should NOT be deferred."""

@@ -339,3 +339,63 @@ def test_router_with_prometheus_observer_increments_counters():
         "smart_crusher": (300 - 80) + (100 - 40),  # 280
         "code_aware": (200 - 120),  # 80
     }
+
+
+# ─── IntelligentContextManager wiring ──────────────────────────────────
+
+
+def test_intelligent_context_manager_forwards_observer_to_inner_router():
+    """COMPRESS_FIRST path must fire the observer.
+
+    Regression guard for the bug introduced in PR #302 (commit
+    cf979958, 2026-04-28): the observer was wired onto the outer
+    ContentRouter in `proxy/server.py` but NOT onto the inner
+    ContentRouter inside `IntelligentContextManager._get_content_router`.
+    On Anthropic/Claude Code traffic — where most compression happens
+    inside `_apply_compress_first` walking `tool_result` blocks — that
+    silently zero'd the per-strategy counters even when 1M+ tokens were
+    being compressed (see issue #327).
+
+    The fix threads `observer=` through the IntelligentContextManager
+    constructor into the inner router. This test asserts the wiring at
+    the construction boundary; the observer fires when the inner router
+    actually compresses content (covered indirectly by the existing
+    `test_content_router_records_observer_call_per_routing_decision`).
+    """
+    from headroom.config import IntelligentContextConfig
+    from headroom.transforms.intelligent_context import IntelligentContextManager
+
+    spy = SpyObserver()
+    icm = IntelligentContextManager(
+        config=IntelligentContextConfig(enabled=True),
+        observer=spy,
+    )
+
+    # Force the lazy router to materialize.
+    inner_router = icm._get_content_router()
+
+    assert inner_router is not None, (
+        "IntelligentContextManager could not construct its inner ContentRouter; "
+        "fixture setup is broken"
+    )
+    assert inner_router._observer is spy, (
+        "Inner ContentRouter is missing the observer reference. "
+        "IntelligentContextManager must forward `observer=` to "
+        "ContentRouter(...) at intelligent_context.py:_get_content_router."
+    )
+
+
+def test_intelligent_context_manager_observer_defaults_to_none():
+    """Default constructor (no observer kwarg) leaves the inner router
+    unobserved. Lock the default behavior so SDK callers that don't
+    have a metrics object aren't forced to plumb one through."""
+    from headroom.config import IntelligentContextConfig
+    from headroom.transforms.intelligent_context import IntelligentContextManager
+
+    icm = IntelligentContextManager(
+        config=IntelligentContextConfig(enabled=True),
+    )
+    assert icm._observer is None
+    inner_router = icm._get_content_router()
+    assert inner_router is not None
+    assert inner_router._observer is None
