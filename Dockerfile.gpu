@@ -1,0 +1,83 @@
+# GPU-enabled image for headroom-ai.
+#
+# Base: NVIDIA CUDA 12.4.1 + cuDNN 9 runtime on Ubuntu 22.04.
+# Includes the full ML extra set (torch, sentence-transformers, SigLIP,
+# fastembed, onnxruntime-gpu) so Kompress, semantic relevance, image
+# routing, and memory reranking can run on GPU.
+#
+# Run with: docker run --gpus all -p 8787:8787 ghcr.io/orq-ai/headroom-internal:gpu
+
+ARG CUDA_VERSION=12.4.1
+ARG UBUNTU_VERSION=22.04
+ARG PYTHON_VERSION=3.11
+ARG UV_VERSION=0.6.17
+
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+
+ARG PYTHON_VERSION
+ARG UV_VERSION
+ARG HEADROOM_EXTRAS="proxy,code,ml,memory,image,relevance"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HEADROOM_HOST=0.0.0.0
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        software-properties-common \
+        curl \
+        ca-certificates \
+        build-essential \
+        g++ && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} \
+        python${PYTHON_VERSION}-dev \
+        python${PYTHON_VERSION}-venv \
+        python3-pip && \
+    ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python && \
+    ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip && \
+    python -m pip install uv==${UV_VERSION}
+
+WORKDIR /build
+
+COPY pyproject.toml uv.lock README.md ./
+RUN mkdir -p headroom && touch headroom/__init__.py
+
+# Install deps with full GPU-relevant extras.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system ".[${HEADROOM_EXTRAS}]"
+
+# Swap CPU onnxruntime for the CUDA build. headroom-ai pins onnxruntime in
+# [proxy]; we drop it and install the GPU variant so Kompress and any other
+# ONNX inference path uses CUDA EP when available.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip uninstall --system onnxruntime || true && \
+    uv pip install --system "onnxruntime-gpu>=1.19.0"
+
+# Real source.
+COPY headroom/ headroom/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --no-deps --reinstall-package headroom-ai .
+
+RUN groupadd --gid 1000 nonroot && \
+    useradd --uid 1000 --gid nonroot --create-home nonroot && \
+    mkdir -p /home/nonroot/.headroom /data && \
+    chown -R nonroot:nonroot /home/nonroot /data
+
+USER nonroot
+WORKDIR /home/nonroot
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8787/readyz || exit 1
+
+ENTRYPOINT ["headroom", "proxy"]
+CMD ["--host", "0.0.0.0", "--port", "8787"]
