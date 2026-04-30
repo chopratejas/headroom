@@ -27,6 +27,9 @@ use headroom_core::transforms::{
     detect as rust_detect_chain, is_json_array_of_dicts as rust_is_json_array_of_dicts,
     ContentType as RustContentType, DetectionResult as RustDetectionResult, DiffCompressionResult,
     DiffCompressor, DiffCompressorConfig, DiffCompressorStats,
+    LogCompressionResult as RustLogResult, LogCompressor as RustLogCompressor,
+    LogCompressorConfig as RustLogConfig, LogCompressorStats as RustLogStats,
+    LogFormat as RustLogFormat, LogLevel as RustLogLevel,
     SearchCompressionResult as RustSearchResult, SearchCompressor as RustSearchCompressor,
     SearchCompressorConfig as RustSearchConfig, SearchCompressorStats as RustSearchStats,
 };
@@ -1216,6 +1219,189 @@ fn parse_search_lines(content: &str) -> Vec<(String, u64, String)> {
     out
 }
 
+// ─── log_compressor bridge (Phase 3e.5) ───────────────────────────────
+//
+// Mirrors `headroom.transforms.log_compressor.LogCompressor`. Same CCR
+// pattern as search_compressor: Rust emits a `cache_key`, Python shim
+// writes the original to the production `CompressionStore`.
+
+#[pyclass(name = "LogCompressorConfig", module = "headroom._core")]
+#[derive(Clone)]
+struct PyLogCompressorConfig {
+    inner: RustLogConfig,
+}
+
+#[pymethods]
+impl PyLogCompressorConfig {
+    #[new]
+    #[pyo3(signature = (
+        max_errors = 10,
+        error_context_lines = 3,
+        keep_first_error = true,
+        keep_last_error = true,
+        max_stack_traces = 3,
+        stack_trace_max_lines = 20,
+        max_warnings = 5,
+        dedupe_warnings = true,
+        keep_summary_lines = true,
+        max_total_lines = 100,
+        enable_ccr = true,
+        min_lines_for_ccr = 50,
+        min_compression_ratio_for_ccr = 0.5,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        max_errors: usize,
+        error_context_lines: usize,
+        keep_first_error: bool,
+        keep_last_error: bool,
+        max_stack_traces: usize,
+        stack_trace_max_lines: usize,
+        max_warnings: usize,
+        dedupe_warnings: bool,
+        keep_summary_lines: bool,
+        max_total_lines: usize,
+        enable_ccr: bool,
+        min_lines_for_ccr: usize,
+        min_compression_ratio_for_ccr: f64,
+    ) -> Self {
+        Self {
+            inner: RustLogConfig {
+                max_errors,
+                error_context_lines,
+                keep_first_error,
+                keep_last_error,
+                max_stack_traces,
+                stack_trace_max_lines,
+                max_warnings,
+                dedupe_warnings,
+                keep_summary_lines,
+                max_total_lines,
+                enable_ccr,
+                min_lines_for_ccr,
+                min_compression_ratio_for_ccr,
+            },
+        }
+    }
+}
+
+#[pyclass(name = "LogCompressionResult", module = "headroom._core")]
+struct PyLogCompressionResult {
+    inner: RustLogResult,
+    stats: RustLogStats,
+}
+
+#[pymethods]
+impl PyLogCompressionResult {
+    #[getter]
+    fn compressed(&self) -> &str {
+        &self.inner.compressed
+    }
+    #[getter]
+    fn original(&self) -> &str {
+        &self.inner.original
+    }
+    #[getter]
+    fn original_line_count(&self) -> usize {
+        self.inner.original_line_count
+    }
+    #[getter]
+    fn compressed_line_count(&self) -> usize {
+        self.inner.compressed_line_count
+    }
+    #[getter]
+    fn format_detected(&self) -> &'static str {
+        self.inner.format_detected.as_str()
+    }
+    #[getter]
+    fn compression_ratio(&self) -> f64 {
+        self.inner.compression_ratio
+    }
+    #[getter]
+    fn cache_key(&self) -> Option<&str> {
+        self.inner.cache_key.as_deref()
+    }
+    #[getter]
+    fn stats<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let dict = PyDict::new_bound(py);
+        for (k, v) in &self.inner.stats {
+            dict.set_item(k, v).unwrap();
+        }
+        dict
+    }
+    // Sidecar diagnostics
+    #[getter]
+    fn stack_traces_seen(&self) -> usize {
+        self.stats.stack_traces_seen
+    }
+    #[getter]
+    fn stack_traces_kept(&self) -> usize {
+        self.stats.stack_traces_kept
+    }
+    #[getter]
+    fn warnings_dropped_by_dedupe(&self) -> usize {
+        self.stats.warnings_dropped_by_dedupe
+    }
+    #[getter]
+    fn ccr_emitted(&self) -> bool {
+        self.stats.ccr_emitted
+    }
+    #[getter]
+    fn ccr_skip_reason(&self) -> Option<&str> {
+        self.stats.ccr_skip_reason
+    }
+}
+
+#[pyclass(name = "LogCompressor", module = "headroom._core")]
+struct PyLogCompressor {
+    inner: RustLogCompressor,
+}
+
+#[pymethods]
+impl PyLogCompressor {
+    #[new]
+    #[pyo3(signature = (config = None))]
+    fn new(config: Option<PyLogCompressorConfig>) -> Self {
+        let cfg = config.map(|c| c.inner).unwrap_or_default();
+        Self {
+            inner: RustLogCompressor::new(cfg),
+        }
+    }
+
+    /// Compress `content`. Same CCR pattern as search_compressor: Rust
+    /// emits the `cache_key`; the Python shim is responsible for
+    /// writing the original to the production `CompressionStore`.
+    #[pyo3(signature = (content, bias = 1.0))]
+    fn compress(&self, py: Python<'_>, content: &str, bias: f64) -> PyLogCompressionResult {
+        let owned = content.to_string();
+        let (result, stats) = py.allow_threads(move || {
+            let store = headroom_core::ccr::InMemoryCcrStore::new();
+            let (r, s) = self.inner.compress_with_store(&owned, bias, Some(&store));
+            (r, s)
+        });
+        PyLogCompressionResult {
+            inner: result,
+            stats,
+        }
+    }
+}
+
+/// Helper for the Python shim's `_detect_format`.
+#[pyfunction]
+fn detect_log_format(lines: Vec<String>) -> &'static str {
+    let compressor = RustLogCompressor::new(RustLogConfig::default());
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    compressor.detect_format(&refs).as_str()
+}
+
+/// Suppress unused-import warnings for the LogLevel/LogFormat imports
+/// kept for future expansion (the Python shim consumes them via
+/// detect_log_format and the result format_detected getter).
+const _: fn() = || {
+    let _ = RustLogFormat::Generic;
+    let _ = RustLogLevel::Unknown;
+};
+
 // ─── Module init ───────────────────────────────────────────────────────────
 
 #[pymodule]
@@ -1233,6 +1419,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCrushResult>()?;
     m.add_class::<PySmartCrusher>()?;
     m.add_class::<PyDetectionResult>()?;
+    m.add_class::<PyLogCompressorConfig>()?;
+    m.add_class::<PyLogCompressionResult>()?;
+    m.add_class::<PyLogCompressor>()?;
+    m.add_function(wrap_pyfunction!(detect_log_format, m)?)?;
     m.add_function(wrap_pyfunction!(detect_content_type, m)?)?;
     m.add_function(wrap_pyfunction!(is_json_array_of_dicts, m)?)?;
     m.add_function(wrap_pyfunction!(score_line, m)?)?;

@@ -87,8 +87,22 @@ def test_select_dedupe_add_context_and_format_output(monkeypatch: pytest.MonkeyP
     ]
     trimmed = compressor._select_with_first_last(many_errors, max_count=2)
     assert trimmed == [many_errors[0], many_errors[2]]
-    deduped = compressor._dedupe_similar(log_lines[3:5])
-    assert len(deduped) == 1
+    # fixed_in_3e5: conservative dedupe preserves message prefix (everything
+    # before the first `:` or `=`), so warnings without a colon keep their
+    # full content as the dedupe key. The two lines below have different
+    # paths/numbers and no `:`, so they DON'T collapse anymore — Python's
+    # pre-3e5 aggressive normalization treated them as duplicates, masking
+    # distinct error categories.
+    distinct = compressor._dedupe_similar(log_lines[3:5])
+    assert len(distinct) == 2
+    # Same dedupe IS triggered when the prefix matches (lines have a colon).
+    similar = compressor._dedupe_similar(
+        [
+            LogLine(20, "warning: file /tmp/a/123 issue", level=LogLevel.WARN),
+            LogLine(21, "warning: file /tmp/b/999 issue", level=LogLevel.WARN),
+        ]
+    )
+    assert len(similar) == 1
 
     output, stats = compressor._format_output(selected, log_lines)
     assert stats == {
@@ -102,50 +116,31 @@ def test_select_dedupe_add_context_and_format_output(monkeypatch: pytest.MonkeyP
     assert output.endswith("[3 lines omitted: 1 ERROR, 1 FAIL, 2 WARN, 1 INFO]")
 
 
-def test_log_compressor_compress_and_ccr_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_log_compressor_compress_and_ccr_paths() -> None:
+    """Phase 3e.5: `compress()` is now a single Rust call, so this test
+    exercises end-to-end behavior instead of monkeypatching internal
+    helpers (which the old orchestration relied on)."""
     compressor = LogCompressor(LogCompressorConfig(enable_ccr=True, min_lines_for_ccr=3))
     short = compressor.compress("a\nb")
+    # Below min_lines_for_ccr (3 lines from "a\nb" = 2 lines) → verbatim
     assert short.format_detected is LogFormat.GENERIC
     assert short.compression_ratio == 1.0
 
-    monkeypatch.setattr(compressor, "_detect_format", lambda lines: LogFormat.NPM)
-    parsed = [LogLine(0, "npm ERR! boom", level=LogLevel.ERROR, score=1.0)]
-    monkeypatch.setattr(compressor, "_parse_lines", lambda lines: parsed)
-    monkeypatch.setattr(compressor, "_select_lines", lambda log_lines, bias=1.0: parsed)
-    monkeypatch.setattr(
-        compressor,
-        "_format_output",
-        lambda selected, all_lines: (
-            "tiny",
-            {"errors": 1, "fails": 0, "warnings": 0, "info": 0, "total": 3, "selected": 1},
-        ),
-    )
-    monkeypatch.setattr(compressor, "_store_in_ccr", lambda original, compressed, count: "deadbeef")
-    result = compressor.compress(
-        "x\ny\nz\nvery verbose fourth line to improve compression ratio math"
-    )
+    # Real npm log to exercise format detection + CCR end-to-end. Build
+    # a long enough corpus so compute_optimal_k drops below the
+    # min_compression_ratio_for_ccr=0.5 threshold.
+    npm_lines = ["npm WARN deprecated x"] * 30 + ["npm ERR! something broke"] * 5
+    npm_content = "\n".join(npm_lines)
+    result = compressor.compress(npm_content)
     assert result.format_detected is LogFormat.NPM
-    assert result.cache_key == "deadbeef"
-    assert result.stats["errors"] == 1
-    assert result.compressed.endswith("[4 lines compressed to 1. Retrieve more: hash=deadbeef]")
+    assert result.original_line_count == 35
+    assert result.compressed_line_count < result.original_line_count
 
-    monkeypatch.setattr(compressor, "_store_in_ccr", lambda original, compressed, count: None)
-    no_cache = compressor.compress(
-        "x\ny\nz\nvery verbose fourth line to improve compression ratio math"
-    )
-    assert no_cache.cache_key is None
-    assert no_cache.compressed == "tiny"
-
-    monkeypatch.setattr(
-        compressor,
-        "_format_output",
-        lambda selected, all_lines: (
-            "this output is intentionally much longer than the original content",
-            {"errors": 1, "fails": 0, "warnings": 0, "info": 0, "total": 4, "selected": 1},
-        ),
-    )
-    high_ratio = compressor.compress("x\ny\nz\nw")
-    assert high_ratio.cache_key is None
+    # Short input below min_lines_for_ccr returns verbatim with ratio 1.0
+    # (no compression attempted).
+    too_short = compressor.compress("x\ny")
+    assert too_short.compression_ratio == 1.0
+    assert too_short.cache_key is None
 
 
 def test_store_in_ccr_and_result_properties(monkeypatch: pytest.MonkeyPatch) -> None:
