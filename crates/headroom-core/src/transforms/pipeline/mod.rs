@@ -55,6 +55,7 @@ pub mod json_minifier;
 pub mod line_importance_filter;
 pub mod orchestrator;
 pub mod traits;
+pub mod wrappers;
 
 pub use json_minifier::JsonMinifier;
 pub use line_importance_filter::{LineImportanceFilter, LineImportanceFilterConfig};
@@ -64,3 +65,4 @@ pub use orchestrator::{
 pub use traits::{
     CompressionContext, LosslessTransform, LossyTransform, TransformError, TransformResult,
 };
+pub use wrappers::{DiffCompressorWrapper, LogCompressorWrapper, SearchCompressorWrapper};
