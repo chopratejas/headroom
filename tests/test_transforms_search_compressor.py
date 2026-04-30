@@ -110,10 +110,9 @@ def test_search_compressor_persist_to_python_ccr(monkeypatch: pytest.MonkeyPatch
         "headroom.cache.compression_store",
         SimpleNamespace(
             get_compression_store=lambda: SimpleNamespace(
-                store=lambda original, compressed, original_item_count=0: seen.setdefault(
-                    "call", (original, compressed)
+                store=lambda original, compressed, original_item_count=0: (
+                    seen.setdefault("call", (original, compressed)) or "stored-key"
                 )
-                or "stored-key"
             )
         ),
     )
