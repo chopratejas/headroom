@@ -34,6 +34,8 @@ if TYPE_CHECKING:
         ModelCapabilities,
         OpenAICompatibleProvider,
         create_anyscale_provider,
+        create_astraflow_cn_provider,
+        create_astraflow_provider,
         create_fireworks_provider,
         create_groq_provider,
         create_lmstudio_provider,
@@ -64,6 +66,8 @@ __all__ = [
     "create_anyscale_provider",
     "create_vllm_provider",
     "create_lmstudio_provider",
+    "create_astraflow_provider",
+    "create_astraflow_cn_provider",
     "create_litellm_provider",
 ]
 
@@ -103,6 +107,14 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "create_lmstudio_provider": (
         "headroom.providers.openai_compatible",
         "create_lmstudio_provider",
+    ),
+    "create_astraflow_provider": (
+        "headroom.providers.openai_compatible",
+        "create_astraflow_provider",
+    ),
+    "create_astraflow_cn_provider": (
+        "headroom.providers.openai_compatible",
+        "create_astraflow_cn_provider",
     ),
     "create_litellm_provider": ("headroom.providers.litellm", "create_litellm_provider"),
 }
