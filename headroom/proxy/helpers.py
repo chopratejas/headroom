@@ -59,23 +59,31 @@ def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
     return capped * (0.5 + random.random())
 
 
-# Image compression (lazy-loaded to avoid heavy dependencies at startup)
-_image_compressor = None
+# Image compression availability (do not retain a global compressor instance)
+_image_compressor_available: bool | None = None
 
 
 def _get_image_compressor():
-    """Lazy load image compressor to avoid startup overhead."""
-    global _image_compressor
-    if _image_compressor is None:
-        try:
-            from headroom.image import ImageCompressor
+    """Create a short-lived image compressor on demand."""
+    global _image_compressor_available
+    if _image_compressor_available is False:
+        return None
 
-            _image_compressor = ImageCompressor()
+    try:
+        from headroom.image import ImageCompressor
+
+        # Callers own closing the compressor; this helper only memoizes whether
+        # the optional image stack is importable.
+        compressor = ImageCompressor()
+        if _image_compressor_available is None:
             logger.info("Image compression enabled (model: chopratejas/technique-router)")
-        except ImportError as e:
+        _image_compressor_available = True
+        return compressor
+    except ImportError as e:
+        if _image_compressor_available is not False:
             logger.warning(f"Image compression not available: {e}")
-            _image_compressor = False  # Mark as unavailable
-    return _image_compressor if _image_compressor else None
+        _image_compressor_available = False
+        return None
 
 
 # Always-on file logging to the workspace logs directory for `headroom perf` analysis.

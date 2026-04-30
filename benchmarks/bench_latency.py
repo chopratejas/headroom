@@ -28,7 +28,7 @@ Usage:
 Scenarios:
     json     - JSON arrays via SmartCrusher (100-5K items)
     code     - Python source via CodeCompressor (50-1000 lines)
-    text     - Plain text/RAG via TextCompressor (1K-50K tokens)
+    text     - Plain text/RAG via Kompress fallback (1K-50K tokens)
     logs     - Structured logs via LogCompressor (100-5K entries)
     agentic  - Multi-turn agent conversations (10-100 turns)
     rag      - RAG conversations with large context (5K-50K tokens)
@@ -536,7 +536,7 @@ def generate_scenarios(content_types: list[str] | None = None) -> list[Scenario]
                 )
             )
 
-    # --- Plain text (TextCompressor path) ---
+    # --- Plain text (Kompress fallback path) ---
     if "text" in types:
         for tokens, label in [
             (1_000, "1K tokens"),

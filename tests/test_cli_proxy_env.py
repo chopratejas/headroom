@@ -220,6 +220,66 @@ class TestCLIProxyEnvVars:
         assert captured_config["config"].retry_max_attempts == 1
         assert captured_config["config"].connect_timeout_seconds == 3
 
+    def test_production_scaling_env_vars(self, runner):
+        captured = {}
+
+        def mock_run_server(config, **kwargs):
+            captured["config"] = config
+            captured["kwargs"] = kwargs
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={
+                    "HEADROOM_WORKERS": "4",
+                    "HEADROOM_LIMIT_CONCURRENCY": "250",
+                    "HEADROOM_MAX_CONNECTIONS": "200",
+                    "HEADROOM_MAX_KEEPALIVE": "50",
+                },
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured["config"].max_connections == 200
+        assert captured["config"].max_keepalive_connections == 50
+        assert captured["kwargs"] == {"workers": 4, "limit_concurrency": 250}
+
+    def test_production_scaling_cli_flags_override_env_vars(self, runner):
+        captured = {}
+
+        def mock_run_server(config, **kwargs):
+            captured["config"] = config
+            captured["kwargs"] = kwargs
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                [
+                    "proxy",
+                    "--workers",
+                    "3",
+                    "--limit-concurrency",
+                    "125",
+                    "--max-connections",
+                    "150",
+                    "--max-keepalive",
+                    "25",
+                ],
+                env={
+                    "HEADROOM_WORKERS": "4",
+                    "HEADROOM_LIMIT_CONCURRENCY": "250",
+                    "HEADROOM_MAX_CONNECTIONS": "200",
+                    "HEADROOM_MAX_KEEPALIVE": "50",
+                },
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured["config"].max_connections == 150
+        assert captured["config"].max_keepalive_connections == 25
+        assert captured["kwargs"] == {"workers": 3, "limit_concurrency": 125}
+
 
 class TestCLIProxyBackend:
     """Test that litellm-* backends are accepted by the CLI."""

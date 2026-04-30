@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backup is missing, strips only the Headroom-managed block and leaves
   surrounding user content intact). Safe no-op when run without a prior
   wrap. Reported by @raenaryl in Discord.
+- **Image compressors now release shared router models after use and proxy shutdown** —
+  the proxy/image compression path no longer keeps global `technique-router`
+  and `SigLIP` model instances pinned in memory after one-off image
+  optimization work. The `get_compressor()` helper now returns a fresh,
+  caller-owned compressor instead of a process-lifetime singleton.
 - **`headroom learn` no longer clobbers prior recommendations on re-run** —
   the marker block in `CLAUDE.md` / `MEMORY.md` is now merged with the
   prior block instead of wholesale-replaced. Sections re-surfaced by the

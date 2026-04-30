@@ -28,6 +28,38 @@ from .main import main
     help="Port to bind to (default: 8787, env: HEADROOM_PORT)",
 )
 @click.option(
+    "--workers",
+    default=1,
+    type=click.IntRange(min=1),
+    envvar="HEADROOM_WORKERS",
+    help="Number of Uvicorn worker processes (default: 1, env: HEADROOM_WORKERS)",
+)
+@click.option(
+    "--limit-concurrency",
+    default=1000,
+    type=click.IntRange(min=1),
+    envvar="HEADROOM_LIMIT_CONCURRENCY",
+    help=(
+        "Maximum concurrent connections before Uvicorn returns 503 "
+        "(default: 1000, env: HEADROOM_LIMIT_CONCURRENCY)"
+    ),
+)
+@click.option(
+    "--max-connections",
+    default=500,
+    type=click.IntRange(min=1),
+    envvar="HEADROOM_MAX_CONNECTIONS",
+    help="Maximum upstream HTTP connections (default: 500, env: HEADROOM_MAX_CONNECTIONS)",
+)
+@click.option(
+    "--max-keepalive",
+    "max_keepalive_connections",
+    default=100,
+    type=click.IntRange(min=0),
+    envvar="HEADROOM_MAX_KEEPALIVE",
+    help="Maximum upstream keep-alive connections (default: 100, env: HEADROOM_MAX_KEEPALIVE)",
+)
+@click.option(
     "--mode",
     default=None,
     type=click.Choice(
@@ -313,6 +345,10 @@ def proxy(
     mode: str | None,
     host: str,
     port: int,
+    workers: int,
+    limit_concurrency: int,
+    max_connections: int,
+    max_keepalive_connections: int,
     intercept_tool_results: bool,
     no_optimize: bool,
     no_cache: bool,
@@ -479,6 +515,8 @@ def proxy(
         connect_timeout_seconds=connect_timeout_seconds
         if connect_timeout_seconds is not None
         else 10,
+        max_connections=max_connections,
+        max_keepalive_connections=max_keepalive_connections,
         log_file=None if is_stateless else log_file,
         log_full_messages=log_messages
         or os.environ.get("HEADROOM_LOG_MESSAGES", "").lower() in ("true", "1", "yes", "on"),
@@ -672,6 +710,11 @@ Press Ctrl+C to stop.
 """)
 
     try:
-        run_server(config)
+        run_kwargs: dict[str, int] = {}
+        if workers != 1:
+            run_kwargs["workers"] = workers
+        if limit_concurrency != 1000:
+            run_kwargs["limit_concurrency"] = limit_concurrency
+        run_server(config, **run_kwargs)
     except KeyboardInterrupt:
         click.echo("\nShutting down...")

@@ -48,59 +48,37 @@ from typing import Any
 from ..config import DEFAULT_EXCLUDE_TOOLS, ReadLifecycleConfig, TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
-from .content_detector import ContentType, DetectionResult, detect_content_type
+from .content_detector import ContentType, DetectionResult
 
 logger = logging.getLogger(__name__)
 
-_magika_detector: Any | None = None
-_magika_status: bool | None = None
-
-
-def _get_magika_detector() -> Any | None:
-    """Load the Magika detector only when router detection actually runs."""
-    global _magika_detector, _magika_status
-
-    if _magika_status is False:
-        return None
-    if _magika_detector is not None:
-        return _magika_detector
-
-    try:
-        from ..compression.detector import get_detector
-
-        _magika_detector = get_detector(prefer_magika=True)
-        _magika_status = True
-        logger.info("ContentRouter: Using Magika ML-based content detection")
-    except ImportError:
-        _magika_status = False
-        logger.debug("Magika not available, using regex-based detection")
-
-    return _magika_detector
-
 
 def _detect_content(content: str) -> DetectionResult:
-    """Detect content type using Magika if available, else regex fallback."""
-    magika_detector = _get_magika_detector()
-    if magika_detector is not None:
-        result = magika_detector.detect(content)
-        # Map Magika ContentType to router's expected format
-        type_map = {
-            "json": ContentType.JSON_ARRAY,
-            "code": ContentType.SOURCE_CODE,
-            "log": ContentType.BUILD_OUTPUT,
-            "diff": ContentType.GIT_DIFF,
-            "markdown": ContentType.PLAIN_TEXT,
-            "text": ContentType.PLAIN_TEXT,
-            "unknown": ContentType.PLAIN_TEXT,
-        }
-        mapped_type = type_map.get(result.content_type.value, ContentType.PLAIN_TEXT)
-        return DetectionResult(
-            content_type=mapped_type,
-            confidence=result.confidence,
-            metadata={"language": result.language, "raw_label": result.raw_label},
-        )
-    else:
-        return detect_content_type(content)
+    """Detect content type via the Rust detection chain.
+
+    Stage-3d (PR5) wired this through `headroom._core.detect_content_type`,
+    which runs the magika→unidiff→PlainText chain. The Python-side
+    Magika+regex fallback path was retired here — single detection
+    surface, no parallel paths. The Rust extension is a hard dep
+    (no Python fallback) per `feedback_no_silent_fallbacks.md`.
+
+    The Rust binding returns the legacy `DetectionResult` shape with
+    `confidence=1.0` and an empty metadata dict. Existing callers
+    only consumed `.content_type` from it; the strategy mapping in
+    `_strategy_from_detection` keys off that field alone.
+    """
+    from headroom._core import detect_content_type as _rust_detect
+
+    rust_result = _rust_detect(content)
+    # Rust's `content_type` is the lowercase string tag (e.g.
+    # "json_array"); translate to the Python `ContentType` enum so
+    # downstream mapping keys match.
+    content_type = ContentType(rust_result.content_type)
+    return DetectionResult(
+        content_type=content_type,
+        confidence=rust_result.confidence,
+        metadata={},
+    )
 
 
 def _create_content_signature(
@@ -643,13 +621,26 @@ class ContentRouter(Transform):
 
     name: str = "content_router"
 
-    def __init__(self, config: ContentRouterConfig | None = None):
+    def __init__(
+        self,
+        config: ContentRouterConfig | None = None,
+        observer: Any = None,
+    ):
         """Initialize content router.
 
         Args:
             config: Router configuration. Uses defaults if None.
+            observer: Optional `CompressionObserver` (see
+                `headroom.transforms.observability`) called once per
+                routing decision after `compress()` finishes. The
+                proxy's `PrometheusMetrics` is the production
+                implementation — it increments per-strategy counters
+                so silent regressions become visible. `None` disables
+                observation; pick one explicitly per the no-fallback
+                rule in the audit doc.
         """
         self.config = config or ContentRouterConfig()
+        self._observer = observer
 
         # Lazy-loaded compressors
         self._code_compressor: Any = None
@@ -659,7 +650,6 @@ class ContentRouter(Transform):
         self._diff_compressor: Any = None
         self._html_extractor: Any = None
         self._kompress: Any = None
-        self._image_optimizer: Any = None
 
         # TOIN integration for cross-strategy learning
         self._toin: Any = None
@@ -766,20 +756,46 @@ class ContentRouter(Transform):
             RouterCompressionResult with compressed content and routing metadata.
         """
         if not content or not content.strip():
-            return RouterCompressionResult(
+            result = RouterCompressionResult(
                 compressed=content,
                 original=content,
                 strategy_used=CompressionStrategy.PASSTHROUGH,
                 routing_log=[],
             )
-
-        # Determine strategy from content analysis
-        strategy = self._determine_strategy(content)
-
-        if strategy == CompressionStrategy.MIXED:
-            return self._compress_mixed(content, context, question, bias=bias)
         else:
-            return self._compress_pure(content, strategy, context, question, bias=bias)
+            # Determine strategy from content analysis
+            strategy = self._determine_strategy(content)
+
+            if strategy == CompressionStrategy.MIXED:
+                result = self._compress_mixed(content, context, question, bias=bias)
+            else:
+                result = self._compress_pure(content, strategy, context, question, bias=bias)
+
+        # One observer call per routing decision; the observer is the
+        # forcing function for catching strategy-level regressions.
+        # Empty routing_log (passthrough fast path) → no calls.
+        self._observe(result)
+        return result
+
+    def _observe(self, result: RouterCompressionResult) -> None:
+        """Forward each `RoutingDecision` in `result.routing_log` to the
+        configured `CompressionObserver`. No-op when no observer is set.
+
+        Observers MUST NOT raise per the protocol contract; if one does
+        anyway, swallow at debug level. Compression already succeeded;
+        a buggy observer must not turn a 200 into a 500.
+        """
+        if self._observer is None:
+            return
+        for d in result.routing_log:
+            try:
+                self._observer.record_compression(
+                    strategy=d.strategy.value,
+                    original_tokens=d.original_tokens,
+                    compressed_tokens=d.compressed_tokens,
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("CompressionObserver raised (non-fatal): %s", e)
 
     def _determine_strategy(self, content: str) -> CompressionStrategy:
         """Determine the compression strategy from content analysis.
@@ -1338,21 +1354,20 @@ class ContentRouter(Transform):
         return self._kompress
 
     def _get_image_optimizer(self) -> Any:
-        """Get ImageCompressor (lazy load).
+        """Create an ImageCompressor for one optimization pass.
 
         The ImageCompressor handles image token compression using:
         - Trained MiniLM classifier from HuggingFace (chopratejas/technique-router)
         - SigLIP for image analysis
         - Provider-specific compression (OpenAI detail, Anthropic/Google resize)
         """
-        if self._image_optimizer is None:
-            try:
-                from ..image import ImageCompressor
+        try:
+            from ..image import ImageCompressor
 
-                self._image_optimizer = ImageCompressor()
-            except ImportError:
-                logger.debug("ImageCompressor not available")
-        return self._image_optimizer
+            return ImageCompressor()
+        except ImportError:
+            logger.debug("ImageCompressor not available")
+            return None
 
     def optimize_images_in_messages(
         self,
@@ -1385,28 +1400,32 @@ class ContentRouter(Transform):
         if compressor is None:
             return messages, {"images_optimized": 0, "tokens_saved": 0}
 
-        # Check if there are images to compress
-        if not compressor.has_images(messages):
-            return messages, {"images_optimized": 0, "tokens_saved": 0}
+        try:
+            # Check if there are images to compress
+            if not compressor.has_images(messages):
+                return messages, {"images_optimized": 0, "tokens_saved": 0}
 
-        # Compress images (query is auto-extracted from messages)
-        optimized = compressor.compress(messages, provider=provider)
+            # Compress images (query is auto-extracted from messages)
+            optimized = compressor.compress(messages, provider=provider)
 
-        # Get metrics from last compression
-        result = compressor.last_result
-        if result:
-            metrics = {
-                "images_optimized": result.compressed_tokens < result.original_tokens,
-                "tokens_before": result.original_tokens,
-                "tokens_after": result.compressed_tokens,
-                "tokens_saved": result.original_tokens - result.compressed_tokens,
-                "technique": result.technique.value,
-                "confidence": result.confidence,
-            }
-        else:
-            metrics = {"images_optimized": 0, "tokens_saved": 0}
+            # Get metrics from last compression
+            result = compressor.last_result
+            if result:
+                metrics = {
+                    "images_optimized": result.compressed_tokens < result.original_tokens,
+                    "tokens_before": result.original_tokens,
+                    "tokens_after": result.compressed_tokens,
+                    "tokens_saved": result.original_tokens - result.compressed_tokens,
+                    "technique": result.technique.value,
+                    "confidence": result.confidence,
+                }
+            else:
+                metrics = {"images_optimized": 0, "tokens_saved": 0}
 
-        return optimized, metrics
+            return optimized, metrics
+        finally:
+            if hasattr(compressor, "close"):
+                compressor.close()
 
     # Transform interface
 

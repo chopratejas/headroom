@@ -4,6 +4,9 @@ These tests verify connection pooling, HTTP/2, and worker configuration.
 """
 
 import asyncio
+import json
+import os
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -241,3 +244,29 @@ class TestWorkerConfiguration:
 
         config = uvicorn.Config(app="app:app")
         assert config.workers is None or config.workers == 1
+
+    def test_run_server_uses_import_string_for_multiple_workers(self, monkeypatch):
+        from headroom.proxy.models import ProxyConfig
+        from headroom.proxy.server import _MULTI_WORKER_CONFIG_ENV, run_server
+
+        captured = {}
+        config = ProxyConfig(host="0.0.0.0", port=8787, max_connections=200)
+
+        def fake_run(app, **kwargs):
+            captured["app"] = app
+            captured["kwargs"] = kwargs
+
+        monkeypatch.delenv(_MULTI_WORKER_CONFIG_ENV, raising=False)
+
+        with patch("headroom.proxy.server.uvicorn.run", fake_run):
+            run_server(config, workers=4, limit_concurrency=250)
+
+        assert captured["app"] == "headroom.proxy.server:create_app_from_env"
+        assert captured["kwargs"]["workers"] == 4
+        assert captured["kwargs"]["limit_concurrency"] == 250
+        assert captured["kwargs"]["factory"] is True
+        payload = json.loads(os.environ[_MULTI_WORKER_CONFIG_ENV])
+        assert payload["host"] == "0.0.0.0"
+        assert payload["port"] == 8787
+        assert payload["max_connections"] == 200
+        monkeypatch.delenv(_MULTI_WORKER_CONFIG_ENV, raising=False)

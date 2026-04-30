@@ -660,13 +660,20 @@ impl SmartCrusher {
         );
         let result = self.execute_plan(&plan, items);
 
-        // Emit CCR-Dropped marker iff rows were actually dropped.
-        // **This is the cornerstone of CCR's no-data-loss guarantee:**
-        // we hash the full original, stash it in the configured store,
-        // and emit a marker pointing at that hash. The runtime later
-        // serves the original back via retrieval tool calls.
+        // Emit CCR-Dropped marker iff rows were actually dropped AND
+        // the marker gate is on. **The marker is the cornerstone of
+        // CCR's no-data-loss guarantee:** we hash the full original,
+        // stash it in the configured store, and emit a marker pointing
+        // at that hash. The runtime later serves the original back via
+        // retrieval tool calls.
+        //
+        // When `enable_ccr_marker` is false (Python shim's path for
+        // `ccr_config.enabled=False` or `inject_retrieval_marker=False`)
+        // we keep the row drops (compression is still requested) but
+        // skip the marker text and the store write — there's no point
+        // storing a payload that nothing in the prompt can reference.
         let dropped_count = items.len().saturating_sub(result.len());
-        let (ccr_hash, dropped_summary) = if dropped_count > 0 {
+        let (ccr_hash, dropped_summary) = if dropped_count > 0 && self.config.enable_ccr_marker {
             // Serialize the original array exactly ONCE. The hash is
             // taken over those bytes, and (if a store is configured) the
             // same bytes get stored — eliminating a redundant tree clone
@@ -1438,5 +1445,85 @@ mod tests {
         assert!(try_parse_json_container("\"hello\"").is_none()); // bare string
         assert!(try_parse_json_container("not json").is_none());
         assert!(try_parse_json_container("{malformed").is_none());
+    }
+
+    // ---------- enable_ccr_marker gate (PR #301 re-land) ----------
+
+    #[test]
+    fn enable_ccr_marker_false_suppresses_marker_and_store() {
+        // The Rust-side gate. Compression still runs (rows drop) but
+        // the result carries no marker text, no hash, and the CCR
+        // store does NOT grow — there's no point storing what nothing
+        // in the prompt can reference.
+        use crate::ccr::InMemoryCcrStore;
+        use crate::transforms::smart_crusher::SmartCrusherBuilder;
+        use std::sync::Arc;
+
+        let store: Arc<dyn CcrStore> = Arc::new(InMemoryCcrStore::new());
+        let cfg = SmartCrusherConfig {
+            lossless_min_savings_ratio: 0.99, // force lossy path
+            enable_ccr_marker: false,
+            ..SmartCrusherConfig::default()
+        };
+        let c = SmartCrusherBuilder::new(cfg)
+            .with_ccr_store(Arc::clone(&store))
+            .build();
+        let items: Vec<Value> = (0..50).map(|_| json!({"status": "ok"})).collect();
+
+        let store_len_before = store.len();
+        let result = c.crush_array(&items, "", 1.0);
+        let store_len_after = store.len();
+
+        // Rows were dropped (we built 50, kept fewer).
+        assert!(result.items.len() < items.len(), "lossy path didn't fire");
+        // Gate held: no marker, no hash.
+        assert!(result.ccr_hash.is_none(), "ccr_hash should be None");
+        assert!(
+            result.dropped_summary.is_empty(),
+            "dropped_summary should be empty, got: {:?}",
+            result.dropped_summary
+        );
+        // Store did NOT grow.
+        assert_eq!(
+            store_len_after, store_len_before,
+            "ccr_store grew despite enable_ccr_marker=false"
+        );
+    }
+
+    #[test]
+    fn enable_ccr_marker_true_is_default_behavior() {
+        // Default config still emits markers + stores when rows drop.
+        // Sanity: the gate is opt-out, not opt-in.
+        use crate::ccr::InMemoryCcrStore;
+        use crate::transforms::smart_crusher::SmartCrusherBuilder;
+        use std::sync::Arc;
+
+        let store: Arc<dyn CcrStore> = Arc::new(InMemoryCcrStore::new());
+        let cfg = SmartCrusherConfig {
+            lossless_min_savings_ratio: 0.99, // force lossy path
+            ..SmartCrusherConfig::default()
+        };
+        // Default: enable_ccr_marker = true.
+        assert!(cfg.enable_ccr_marker);
+        let c = SmartCrusherBuilder::new(cfg)
+            .with_ccr_store(Arc::clone(&store))
+            .build();
+        let items: Vec<Value> = (0..50).map(|_| json!({"status": "ok"})).collect();
+
+        let store_len_before = store.len();
+        let result = c.crush_array(&items, "", 1.0);
+        let store_len_after = store.len();
+
+        assert!(result.items.len() < items.len(), "lossy path didn't fire");
+        assert!(result.ccr_hash.is_some(), "default should produce a hash");
+        assert!(
+            result.dropped_summary.contains("<<ccr:"),
+            "default should produce a marker: {:?}",
+            result.dropped_summary
+        );
+        assert!(
+            store_len_after > store_len_before,
+            "default should write to ccr_store"
+        );
     }
 }

@@ -96,11 +96,14 @@ class CodexAdapter(AgentMemoryAdapter):
         return len(memories)
 
     def fingerprint(self) -> str:
-        """Hash of AGENTS.md mtime."""
+        """Hash of AGENTS.md contents."""
         if not self._path.exists():
             return "empty"
         try:
-            stat = self._path.stat()
-            return hashlib.sha256(f"{self._path.name}:{stat.st_mtime_ns}".encode()).hexdigest()[:16]
+            hasher = hashlib.sha256()
+            hasher.update(self._path.name.encode())
+            hasher.update(b"\0")
+            hasher.update(self._path.read_bytes())
+            return hasher.hexdigest()[:16]
         except OSError:
             return "error"

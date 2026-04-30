@@ -204,21 +204,25 @@ class ClaudeCodeAdapter(AgentMemoryAdapter):
         memory_md.write_text(content, encoding="utf-8")
 
     def fingerprint(self) -> str:
-        """Hash of all .md filenames + mtimes for fast change detection."""
+        """Hash of all .md filenames + contents for change detection."""
         if not self._memory_dir.exists():
             return "empty"
 
-        parts: list[str] = []
+        hasher = hashlib.sha256()
+        found = False
         for md_file in sorted(self._memory_dir.glob("*.md")):
             try:
-                stat = md_file.stat()
-                parts.append(f"{md_file.name}:{stat.st_mtime_ns}")
+                hasher.update(md_file.name.encode())
+                hasher.update(b"\0")
+                hasher.update(md_file.read_bytes())
+                hasher.update(b"\0")
+                found = True
             except OSError:
                 continue
 
-        if not parts:
+        if not found:
             return "empty"
-        return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+        return hasher.hexdigest()[:16]
 
 
 def get_claude_memory_dir(project_path: Path | None = None) -> Path:

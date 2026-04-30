@@ -44,6 +44,30 @@ _INTERVAL_SECONDS = 300
 _OFF_VALUES = frozenset(("off", "false", "0", "no", "disable", "disabled"))
 
 
+def _build_pipeline_timing(stats: dict) -> dict[str, object]:
+    """Project the /stats `pipeline_timing` JSONB payload for Supabase.
+
+    Flattens transform timing to {name: avg_ms} and, when present, nests
+    ContentRouter strategy counts and per-strategy tokens-saved totals
+    under a `_strategies` sub-key. The Supabase column is JSONB, so the
+    nested shape lands without a schema change.
+    """
+    raw_timing = stats.get("pipeline_timing", {}) or {}
+    pipeline_timing: dict[str, object] = {
+        name: round(info.get("average_ms", 0), 2)
+        for name, info in raw_timing.items()
+        if isinstance(info, dict)
+    }
+    strategies = stats.get("compressions_by_strategy", {}) or {}
+    tokens_by_strategy = stats.get("tokens_saved_by_strategy", {}) or {}
+    if strategies or tokens_by_strategy:
+        pipeline_timing["_strategies"] = {
+            "compressions": dict(strategies),
+            "tokens_saved": dict(tokens_by_strategy),
+        }
+    return pipeline_timing
+
+
 def is_telemetry_enabled() -> bool:
     """Check if telemetry is enabled (on by default, opt out with env var)."""
     val = os.environ.get("HEADROOM_TELEMETRY", "on").lower().strip()
@@ -245,17 +269,13 @@ class TelemetryBeacon:
             logger.debug("Beacon: failed to extract TTFB metrics", exc_info=True)
 
         # --- Pipeline timing breakdown (where is time spent?) ---
-        # Stored as JSONB — variable-shape dict of transform_name → avg_ms.
-        # This is the most valuable data for optimising Headroom internals.
+        # Stored as JSONB — variable-shape dict of transform_name → avg_ms,
+        # plus an optional `_strategies` sub-key carrying ContentRouter strategy
+        # counts and per-strategy tokens-saved totals (zero schema change — the
+        # JSONB column absorbs the nested shape).
         try:
-            raw_timing = stats.get("pipeline_timing", {})
-            if raw_timing:
-                # Flatten to {name: avg_ms} for compact storage
-                pipeline_timing = {
-                    name: round(info.get("average_ms", 0), 2)
-                    for name, info in raw_timing.items()
-                    if isinstance(info, dict)
-                }
+            pipeline_timing = _build_pipeline_timing(stats)
+            if pipeline_timing:
                 payload["pipeline_timing"] = pipeline_timing
         except Exception:
             logger.debug("Beacon: failed to extract pipeline timing", exc_info=True)

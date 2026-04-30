@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import sys
 import time
+from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -185,8 +187,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("headroom.proxy")
 
-# Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis
-_setup_file_logging()
+_MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
 
 
 # Compression pipeline timeout in seconds
@@ -236,6 +237,22 @@ class HeadroomProxy(
         self.anthropic_provider = self.provider_runtime.pipeline_provider("anthropic")
         self.openai_provider = self.provider_runtime.pipeline_provider("openai")
 
+        # `metrics` is hoisted ahead of transform construction so the
+        # transforms can receive `self.metrics` as their compression
+        # observer at __init__ time. The forcing function for catching
+        # silent strategy regressions: per-strategy counters increment
+        # only when wired up here, so the wiring is mandatory, not
+        # something we patch in later. (See `RUST_DEV.md` audit notes.)
+        self.cost_tracker = (
+            CostTracker(
+                budget_limit_usd=config.budget_limit_usd,
+                budget_period=config.budget_period,
+            )
+            if config.cost_tracking_enabled
+            else None
+        )
+        self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker)
+
         # Initialize transforms based on routing mode
         # Choose context manager: IntelligentContextManager (smart) or RollingWindow (legacy)
         context_manager: Transform  # Can be either IntelligentContextManager or RollingWindow
@@ -277,7 +294,7 @@ class HeadroomProxy(
                 router_config.protect_recent_reads_fraction = 0.3
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=False)),
-                ContentRouter(router_config),
+                ContentRouter(router_config, observer=self.metrics),
                 context_manager,
             ]
             self._code_aware_status = "lazy" if config.code_aware_enabled else "disabled"
@@ -295,6 +312,7 @@ class HeadroomProxy(
                         enabled=config.ccr_inject_tool,
                         inject_retrieval_marker=config.ccr_inject_tool,  # Add CCR markers
                     ),
+                    observer=self.metrics,
                 ),
                 context_manager,
             ]
@@ -329,16 +347,9 @@ class HeadroomProxy(
             else None
         )
 
-        self.cost_tracker = (
-            CostTracker(
-                budget_limit_usd=config.budget_limit_usd,
-                budget_period=config.budget_period,
-            )
-            if config.cost_tracking_enabled
-            else None
-        )
-
-        self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker)
+        # `cost_tracker` and `metrics` were hoisted to before transforms so
+        # ContentRouter / SmartCrusher could take `self.metrics` as their
+        # compression observer at __init__ time.
 
         # Prefix cache tracking: freeze already-cached messages to avoid
         # invalidating the provider's prefix cache with our transforms
@@ -844,6 +855,15 @@ class HeadroomProxy(
         if self.memory_handler and hasattr(self.memory_handler, "close"):
             await self.memory_handler.close()
 
+        with contextlib.suppress(Exception):
+            from headroom.models.ml_models import MLModelRegistry
+
+            released_models = []
+            released_models.extend(MLModelRegistry.unload_prefix("technique_router:"))
+            released_models.extend(MLModelRegistry.unload_prefix("siglip:"))
+            if released_models:
+                logger.info("Released image optimizer models: %s", ", ".join(released_models))
+
         # Stop all quota trackers via the registry
         await get_quota_registry().stop_all()
 
@@ -1060,6 +1080,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         raise ImportError("FastAPI required. Install: pip install fastapi uvicorn httpx")
 
     from contextlib import asynccontextmanager
+
+    # Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis.
+    # Installed here (not at module import) so importing headroom.proxy.server
+    # in tests or library contexts does not silently attach a RotatingFileHandler
+    # to the user's live proxy.log.
+    _setup_file_logging()
 
     config = config or ProxyConfig()
     proxy = HeadroomProxy(config)
@@ -1592,6 +1618,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             }
             if m.transform_timing_sum
             else {},
+            "compressions_by_strategy": dict(m.compressions_by_strategy),
+            "tokens_saved_by_strategy": dict(m.tokens_saved_by_strategy),
             "waste_signals": dict(m.waste_signals_total) if m.waste_signals_total else {},
             "savings_history": m.savings_history[-100:],  # Last 100 data points
             "display_session": display_session,
@@ -2259,6 +2287,58 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     return app
 
 
+def _json_ready(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _json_ready(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def _proxy_config_payload(config: ProxyConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for field in fields(config):
+        value = _json_ready(getattr(config, field.name))
+        try:
+            json.dumps(value)
+        except TypeError:
+            continue
+        payload[field.name] = value
+    return payload
+
+
+def _proxy_config_from_env() -> ProxyConfig:
+    raw_config = os.environ.get(_MULTI_WORKER_CONFIG_ENV)
+    if raw_config:
+        try:
+            return ProxyConfig(**json.loads(raw_config))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "Invalid %s; falling back to HEADROOM_* env vars", _MULTI_WORKER_CONFIG_ENV
+            )
+
+    return ProxyConfig(
+        host=_get_env_str("HEADROOM_HOST", "127.0.0.1"),
+        port=_get_env_int("HEADROOM_PORT", 8787),
+        openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
+        anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
+        backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
+        bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
+        bedrock_profile=os.environ.get("AWS_PROFILE"),
+        anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", "openai"),
+        max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", 500),
+        max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", 100),
+        http2=_get_env_bool("HEADROOM_HTTP2", True),
+        mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
+    )
+
+
+def create_app_from_env() -> FastAPI:
+    return create_app(_proxy_config_from_env())
+
+
 def _get_code_aware_banner_status(config: ProxyConfig) -> str:
     """Get code-aware compression status line for banner."""
     if config.code_aware_enabled:
@@ -2289,8 +2369,6 @@ def run_server(
         sys.exit(1)
 
     config = config or ProxyConfig()
-    app = create_app(config)
-
     code_aware_status = _get_code_aware_banner_status(config)
 
     # Format connection pool info
@@ -2347,8 +2425,17 @@ def run_server(
 ╚══════════════════════════════════════════════════════════════════════╝
 """)
 
+    app_target: Any
+    uvicorn_kwargs: dict[str, Any] = {}
+    if workers > 1:
+        os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))
+        app_target = "headroom.proxy.server:create_app_from_env"
+        uvicorn_kwargs["factory"] = True
+    else:
+        app_target = create_app(config)
+
     uvicorn.run(
-        app,
+        app_target,
         host=config.host,
         port=config.port,
         log_level="warning",
@@ -2360,6 +2447,7 @@ def run_server(
         # default. Disabling proxy_headers here guarantees the guard sees the
         # real peer address regardless of env.
         proxy_headers=False,
+        **uvicorn_kwargs,
     )
 
 

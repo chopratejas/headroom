@@ -81,6 +81,17 @@ class PrometheusMetrics:
         self.tokens_output_total = 0
         self.tokens_saved_total = 0
 
+        # Per-strategy compression counters. Populated lazily as we see
+        # each strategy tag — no hardcoded list of strategies; the keys
+        # come from ContentRouter's `CompressionStrategy.value` and
+        # SmartCrusher's literal `"smart_crusher"`. The forcing
+        # function for catching strategy-level silent regressions:
+        # if SmartCrusher events drop to zero in production, the
+        # `headroom_compressions_total{strategy="smart_crusher"}`
+        # counter shows it on day 1, not week 3.
+        self.compressions_by_strategy: dict[str, int] = defaultdict(int)
+        self.tokens_saved_by_strategy: dict[str, int] = defaultdict(int)
+
         self.latency_sum_ms = 0.0
         self.latency_min_ms = float("inf")
         self.latency_max_ms = 0.0
@@ -241,6 +252,36 @@ class PrometheusMetrics:
         ):
             return
         self.requests_by_stack[slug] += 1
+
+    def record_compression(
+        self,
+        strategy: str,
+        original_tokens: int,
+        compressed_tokens: int,
+    ) -> None:
+        """Implements `headroom.transforms.observability.CompressionObserver`.
+
+        Called once per real compression event by the configured
+        transforms (ContentRouter at routing-decision granularity;
+        SmartCrusher at message granularity in the legacy direct-
+        pipeline path). Increments the per-strategy counters that
+        get exported as labelled Prometheus metrics, so silent
+        regressions in any single strategy become visible in the
+        scrape.
+
+        Synchronous + lock-free: `defaultdict(int)` writes are
+        atomic under the GIL for these key types; the proxy serves
+        many requests concurrently and the contention here would be
+        a single dict write per routing decision.
+
+        Tokens saved is `max(0, original - compressed)` — the
+        observer never records "negative savings" even if a
+        compressor goofs and emits more tokens than it received.
+        """
+        self.compressions_by_strategy[strategy] += 1
+        saved = original_tokens - compressed_tokens
+        if saved > 0:
+            self.tokens_saved_by_strategy[strategy] += saved
 
     async def record_request(
         self,
@@ -523,6 +564,15 @@ class PrometheusMetrics:
                 help_text="Tokens saved by optimization",
                 value=self.tokens_saved_total,
             )
+            # NOTE: per-strategy compression breakdown is tracked
+            # internally on `self.compressions_by_strategy` and
+            # `self.tokens_saved_by_strategy` (populated by
+            # `record_compression`) but **deliberately not exported
+            # here**. The proxy's metric→Supabase pipeline treats
+            # each metric name as a column, and we cannot add new
+            # columns. The state is still observable for tests +
+            # programmatic introspection; if/when a non-column-
+            # adding export path exists, surface it there.
             _append_metric(
                 lines,
                 name="headroom_latency_ms_sum",

@@ -2,6 +2,7 @@
 
 pub mod ccr;
 pub mod relevance;
+pub mod signals;
 pub mod tokenizer;
 pub mod transforms;
 

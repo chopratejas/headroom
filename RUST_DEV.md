@@ -159,6 +159,76 @@ The recorder monkey-patches the in-process transform classes (see
 `record_all()` in `tests/parity/recorder.py`). It does **not** modify any
 file under `headroom/`.
 
+## Known regressions in retired-Python components
+
+The Stage 3b/3c.1b retirements deleted Python source for `DiffCompressor`
+and `SmartCrusher` and replaced them with PyO3-delegating shims. The
+2026-04-28 audit found that the retirements shipped with subsystems
+silently disconnected. This section tracks each gap and its disposition
+so they don't regress further or get forgotten.
+
+### SmartCrusher
+
+| Subsystem | State | Tracked by |
+|---|---|---|
+| TOIN learning loop | **Re-attached 2026-04-28.** Shim's `crush()` and `_smart_crush_content()` now call `toin.record_compression()` after a real compression. Filtered on `strategy != "passthrough"` to ignore JSON re-canonicalization. Best-effort: TOIN failures are logged at debug level and don't break compression. | `tests/test_smart_crusher_toin_attachment.py` |
+| CCR marker emission knob | **Honored end-to-end 2026-04-29.** New `enable_ccr_marker: bool` field on Rust `SmartCrusherConfig`; `crush_array` checks it before emitting the `<<ccr:HASH>>` marker text and the CCR store write. Python shim flips it from `ccr_config.enabled and ccr_config.inject_retrieval_marker` — both flags collapse to the same Rust gate, since storing payloads under either off-switch makes no sense. Scope: gates only the row-drop sentinel path; Stage-3c.2 opaque-string CCR substitutions still emit always (no Python equivalent, no production caller asks for suppression). | `tests/test_smart_crusher_toin_attachment.py` + `crates/headroom-core/.../crusher.rs::tests::enable_ccr_marker_*` |
+| Custom relevance scorer | **Closed (fail-loud) 2026-04-29.** `relevance_config` and `scorer` constructor args remain in the signature for source compat, but the shim raises `NotImplementedError` when either is non-None — silently dropping a user-supplied scorer is a textbook silent-fallback bug. Full plumbing waits on Stage-3c.2's relevance-crate Python bridge. | `tests/test_smart_crusher_toin_attachment.py::test_custom_*_arg_raises_not_implemented` |
+| Per-tool TOIN learning hook | **Re-attached partially.** `_smart_crush_content` accepts `tool_name` and now threads it into the TOIN record. The hook is best-effort — it improves `query_context` aggregation but doesn't drive per-tool overrides yet. | `tests/test_smart_crusher_toin_attachment.py::test_smart_crush_content_records_to_toin` |
+
+### DiffCompressor
+
+| Subsystem | State |
+|---|---|
+| Adaptive context windows | Honored byte-for-byte (parity fixture-locked). |
+| TOIN integration | Never had one — DiffCompressor records via `_record_to_toin` in ContentRouter, which already runs for non-SmartCrusher strategies. No regression. |
+
+### Phase 3e.1 — `signals/` trait module + KeywordDetector (2026-04-29)
+
+The Python `error_detection.py` regex registry was retired and reborn as a
+trait + tier system in `crates/headroom-core/src/signals/`. See
+`signals/README.md` for the full architecture; the highlights:
+
+- **Per-granularity traits.** `LineImportanceDetector` ships today; future
+  `ContentTypeDetector` and `ItemImportanceDetector<I>` will follow as their
+  consumers get touched.
+- **`Tiered<T>` combinator.** Composition, not inheritance. Future ML
+  detectors slot in as new tiers without changes to `KeywordDetector` or
+  any caller.
+- **One concrete impl.** `KeywordDetector` (aho-corasick) is the only tier
+  registered today. **No NoOp/stub impls** — per project no-silent-fallbacks
+  rule, future tiers land with their real implementations.
+- **Bug fixes baked in.** `ERROR_KEYWORDS` regex now includes
+  `timeout|abort|denied|rejected` (previously drifted from the keyword set);
+  `token` dropped from `SECURITY_KEYWORDS` (false-positived on every LLM
+  metric reference). Both fixed in the Python regex too via the shim that
+  recompiles patterns from the Rust-exposed keyword tables.
+- **Companion canonical extension path.** `signals/README.md` documents
+  the BGE classifier head — a 384-dim → 4-class softmax on top of the
+  already-loaded `bge-small-en-v1.5` embedder — as the natural ML tier.
+  Two alternatives kept open: distilled tinyBERT in ONNX, logistic
+  regression on lexical features.
+
+### Phase 3g (queued) — Compression Pipeline Formalization (issue #315)
+
+Strategic decision 2026-04-29: after Phase 3e (compressor ports) and
+Phase 3f (Rust MCP scaffold) wrap, formalize the lossless-then-lossy-
+then-CCR ordering as a cross-cutting `CompressionPipeline` orchestrator
++ `LosslessTransform` / `LossyTransform` traits in
+`crates/headroom-core/src/pipeline/`. Existing compressors get
+refactored as compositions of pluggable transforms. The crucial design
+choice — **parsers for structure, models at the prose/structure
+boundary** — is captured in issue #315 and
+`memory/project_lossless_first_pipeline.md`. Do NOT start coding before
+3e/3f finish.
+
+### Watch list (potential regressions, not yet audited)
+
+- `CCRConfig.enabled=False` end-to-end — **closed 2026-04-29**. Both `enabled=False` and `inject_retrieval_marker=False` collapse to the same Rust `enable_ccr_marker=False` gate (no marker, no store write). See the SmartCrusher table above.
+- `SmartCrusherConfig.use_feedback_hints=False` — config field is forwarded to Rust but its honoring inside the Rust crusher hasn't been verified against a parity fixture for the disabled path.
+
+When any item above changes, update both this section and the test file. The shim's docstring also references this section — keep them aligned.
+
 ## Phase 0 Blockers
 
 These are known limitations for Phase 0. They are tracked here so Phase 1

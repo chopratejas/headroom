@@ -1,6 +1,6 @@
 """Tests for text-based compressors (coding task support).
 
-Tests content detection, search compressor, log compressor, and text compressor.
+Tests content detection, search compressor, and log compressor.
 """
 
 from headroom.transforms import (
@@ -11,7 +11,6 @@ from headroom.transforms import (
     SearchCompressorConfig,
     detect_content_type,
 )
-from headroom.transforms.text_compressor import TextCompressor, TextCompressorConfig
 
 
 class TestContentDetector:
@@ -241,55 +240,14 @@ INFO: Done
         assert result.compression_ratio == 1.0
 
 
-class TestTextCompressor:
-    """Tests for generic text compression."""
-
-    def test_compress_large_text(self):
-        """Large text is compressed."""
-        lines = [f"Line {i}: This is some content that repeats" for i in range(200)]
-        content = "\n".join(lines)
-
-        compressor = TextCompressor()
-        result = compressor.compress(content)
-
-        assert result.compression_ratio < 0.5
-        assert "Line 0:" in result.compressed  # First line kept
-        assert "lines omitted" in result.compressed
-
-    def test_preserves_context_matches(self):
-        """Lines matching context are preserved."""
-        lines = [f"Line {i}: normal content" for i in range(100)]
-        lines[50] = "Line 50: IMPORTANT error message"
-        content = "\n".join(lines)
-
-        compressor = TextCompressor(
-            config=TextCompressorConfig(
-                anchor_keywords=["error", "important"],
-            )
-        )
-        result = compressor.compress(content, context="find errors")
-
-        assert "IMPORTANT error message" in result.compressed
-
-    def test_small_text_unchanged(self):
-        """Small text passes through unchanged."""
-        content = "Short text\nthat fits easily"
-
-        compressor = TextCompressor()
-        result = compressor.compress(content)
-
-        assert result.compression_ratio == 1.0
-        assert result.compressed == content
-
-
 class TestSmartCrusherTextIntegration:
     """Tests for SmartCrusher behavior with different content types.
 
     NOTE: SmartCrusher is designed for JSON compression only.
     Plain text content (search results, logs, etc.) passes through UNCHANGED.
 
-    Text compression utilities (SearchCompressor, LogCompressor, TextCompressor)
-    are available as standalone tools for applications to use explicitly.
+    Text compression utilities (SearchCompressor, LogCompressor) are
+    available as standalone tools for applications to use explicitly.
     This is intentional - text compression is opt-in, not automatic.
     """
 

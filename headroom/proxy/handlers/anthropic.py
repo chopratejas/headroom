@@ -709,16 +709,21 @@ class AnthropicHandlerMixin:
                 and not _bypass
                 and not is_cache_mode(self.config.mode)
             ):
-                compressor = _get_image_compressor()
-                if compressor and compressor.has_images(messages):
-                    messages = compressor.compress(messages, provider="anthropic")
-                    if compressor.last_result:
-                        logger.info(
-                            f"Image compression: {compressor.last_result.technique.value} "
-                            f"({compressor.last_result.savings_percent:.0f}% saved, "
-                            f"{compressor.last_result.original_tokens} -> "
-                            f"{compressor.last_result.compressed_tokens} tokens)"
-                        )
+                compressor = None
+                try:
+                    compressor = _get_image_compressor()
+                    if compressor and compressor.has_images(messages):
+                        messages = compressor.compress(messages, provider="anthropic")
+                        if compressor.last_result:
+                            logger.info(
+                                f"Image compression: {compressor.last_result.technique.value} "
+                                f"({compressor.last_result.savings_percent:.0f}% saved, "
+                                f"{compressor.last_result.original_tokens} -> "
+                                f"{compressor.last_result.compressed_tokens} tokens)"
+                            )
+                finally:
+                    if compressor and hasattr(compressor, "close"):
+                        compressor.close()
 
             _compression_failed = False
             original_messages = messages  # Preserve for 400-retry fallback
@@ -791,6 +796,7 @@ class AnthropicHandlerMixin:
                                         context=extract_user_query(working_messages),
                                         frozen_message_count=frozen_message_count,
                                         biases=biases,
+                                        request_id=request_id,
                                     )
                                 ),
                                 timeout=COMPRESSION_TIMEOUT_SECONDS,
@@ -819,6 +825,7 @@ class AnthropicHandlerMixin:
                                         context=extract_user_query(messages),
                                         frozen_message_count=frozen_message_count,
                                         biases=biases,
+                                        request_id=request_id,
                                     )
                                 ),
                                 timeout=COMPRESSION_TIMEOUT_SECONDS,
@@ -850,6 +857,7 @@ class AnthropicHandlerMixin:
                                             context=extract_user_query(delta_messages),
                                             frozen_message_count=0,
                                             biases=biases,
+                                            request_id=request_id,
                                         )
                                     ),
                                     timeout=COMPRESSION_TIMEOUT_SECONDS,
@@ -872,7 +880,9 @@ class AnthropicHandlerMixin:
                     if result and result.waste_signals:
                         waste_signals_dict = result.waste_signals.to_dict()
                 except Exception as e:
-                    logger.warning(f"Optimization failed: {e}")
+                    # Include type so TimeoutError vs other failures is distinguishable
+                    # in bug reports — str(asyncio.TimeoutError()) is empty otherwise.
+                    logger.warning(f"[{request_id}] Optimization failed: {type(e).__name__}: {e}")
                     # Flag compression failure for observability
                     _compression_failed = True
 
@@ -2073,6 +2083,7 @@ class AnthropicHandlerMixin:
                         model_limit=context_limit,
                         context=extract_user_query(messages),
                         frozen_message_count=frozen_message_count,
+                        request_id=request_id,
                     )
 
                     optimized_messages = result.messages

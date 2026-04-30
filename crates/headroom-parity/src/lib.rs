@@ -397,6 +397,13 @@ impl TransformComparator for SmartCrusherComparator {
                 .get("lossless_min_savings_ratio")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(defaults.lossless_min_savings_ratio),
+            // Rust-only audit-fix knob — fixtures don't carry this; use
+            // default (true). Recorded fixtures predate the gate and
+            // their expected outputs assume markers fire as before.
+            enable_ccr_marker: config
+                .get("enable_ccr_marker")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(defaults.enable_ccr_marker),
         };
 
         // Use without_compaction so the legacy fixtures (recorded

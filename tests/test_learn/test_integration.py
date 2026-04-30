@@ -137,6 +137,8 @@ class TestClaudeCodeIntegration:
 
         scanner = ClaudeCodeScanner()
         projects = scanner.discover_projects()
+        if not projects:
+            pytest.skip("No Claude Code projects found")
         assert len(projects) > 0
         for p in projects:
             assert p.name
@@ -148,8 +150,12 @@ class TestClaudeCodeIntegration:
 
         scanner = ClaudeCodeScanner()
         projects = scanner.discover_projects()
+        if not projects:
+            pytest.skip("No Claude Code projects found")
         best = max(projects, key=lambda p: len(list(p.data_path.glob("*.jsonl"))))
         sessions = scanner.scan_project(best)
+        if not sessions:
+            pytest.skip("No Claude Code sessions found")
         assert len(sessions) > 0
 
         # At least some sessions should have events
@@ -163,8 +169,12 @@ class TestClaudeCodeIntegration:
 
         scanner = ClaudeCodeScanner()
         projects = scanner.discover_projects()
+        if not projects:
+            pytest.skip("No Claude Code projects found")
         best = max(projects, key=lambda p: len(list(p.data_path.glob("*.jsonl"))))
         sessions = scanner.scan_project(best)
+        if not sessions:
+            pytest.skip("No Claude Code sessions found")
         assert len(sessions) > 0
 
         analyzer = SessionAnalyzer()
@@ -180,6 +190,8 @@ class TestClaudeCodeIntegration:
 
         scanner = ClaudeCodeScanner()
         projects = scanner.discover_projects()
+        if not projects:
+            pytest.skip("No Claude Code projects found")
         best = max(projects, key=lambda p: len(list(p.data_path.glob("*.jsonl"))))
 
         # Use mock LLM to avoid needing API key
@@ -252,6 +264,8 @@ class TestCodexIntegration:
 
         scanner = CodexScanner()
         projects = scanner.discover_projects()
+        if not projects:
+            pytest.skip("No Codex projects found")
         assert len(projects) == 1  # Codex returns one "project"
 
     def test_full_pipeline(self):
@@ -260,6 +274,8 @@ class TestCodexIntegration:
 
         scanner = CodexScanner()
         projects = scanner.discover_projects()
+        if not projects:
+            pytest.skip("No Codex projects found")
         sessions = scanner.scan_project(projects[0])
 
         assert len(sessions) > 0

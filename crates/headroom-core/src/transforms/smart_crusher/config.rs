@@ -62,6 +62,21 @@ pub struct SmartCrusherConfig {
     /// lossless when available; set to `1.0` to effectively disable
     /// the lossless path (lossy + CCR always).
     pub lossless_min_savings_ratio: f64,
+    /// Master gate for CCR-Dropped row-drop sentinels. When `false`,
+    /// the lossy `crush_array` path skips both the `<<ccr:HASH>>`
+    /// marker text AND the CCR-store write (no point storing a
+    /// payload nothing in the prompt can reference).
+    ///
+    /// The Python shim flips this from
+    /// `ccr_config.enabled and ccr_config.inject_retrieval_marker`,
+    /// so either off-switch on the Python side disables the gate.
+    /// Default `true` — preserves prior behavior.
+    ///
+    /// Scope: gates only the `crush_array` row-drop path. Stage-3c.2
+    /// opaque-string CCR substitutions (in `walker::process_value`)
+    /// still emit always; they have no Python equivalent and no
+    /// production caller has asked for them to be suppressed.
+    pub enable_ccr_marker: bool,
 }
 
 impl Default for SmartCrusherConfig {
@@ -87,6 +102,7 @@ impl Default for SmartCrusherConfig {
             last_fraction: 0.15,
             relevance_threshold: 0.3,
             lossless_min_savings_ratio: 0.30,
+            enable_ccr_marker: true,
         }
     }
 }
@@ -118,5 +134,6 @@ mod tests {
         assert_eq!(c.last_fraction, 0.15);
         assert_eq!(c.relevance_threshold, 0.3);
         assert_eq!(c.lossless_min_savings_ratio, 0.30);
+        assert!(c.enable_ccr_marker);
     }
 }

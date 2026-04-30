@@ -253,10 +253,14 @@ class TransformPipeline:
 
             pipeline_start = time.perf_counter()
 
+            request_id = kwargs.get("request_id", "")
+            log_prefix = f"[{request_id}] " if request_id else ""
+
             frozen_count = kwargs.get("frozen_message_count", 0)
             if frozen_count > 0:
                 logger.info(
-                    "Pipeline: freezing first %d/%d messages (prefix cached by provider)",
+                    "%sPipeline: freezing first %d/%d messages (prefix cached by provider)",
+                    log_prefix,
                     frozen_count,
                     len(messages),
                 )
@@ -364,7 +368,8 @@ class TransformPipeline:
             timing_parts = " ".join(f"{k}={v:.0f}ms" for k, v in all_timing.items())
             if total_saved > 0:
                 logger.info(
-                    "Pipeline complete: %d -> %d tokens (saved %d, %.1f%% reduction) [%s]",
+                    "%sPipeline complete: %d -> %d tokens (saved %d, %.1f%% reduction) [%s]",
+                    log_prefix,
                     tokens_before,
                     tokens_after,
                     total_saved,
@@ -372,7 +377,7 @@ class TransformPipeline:
                     timing_parts,
                 )
             else:
-                logger.debug("Pipeline complete: no token savings [%s]", timing_parts)
+                logger.debug("%sPipeline complete: no token savings [%s]", log_prefix, timing_parts)
 
             # Build diff artifact if enabled
             diff_artifact = None

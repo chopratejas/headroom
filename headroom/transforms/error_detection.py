@@ -1,89 +1,114 @@
-"""Centralized error/importance detection for all transforms.
+"""Centralized error/importance detection — thin Python shim over Rust.
 
-Design principle: Keywords serve as a FALLBACK safety net for error detection.
-When TOIN field semantics are available, they take priority over keywords.
+Phase 3e.1 ported the keyword data + scoring logic to
+``crates/headroom-core/src/signals/`` (see the trait architecture in
+``signals/README.md``). This module is now a compatibility surface that:
 
-This module prevents each transform from maintaining its own hardcoded keyword
-list, ensuring consistency and a single place to evolve detection logic.
+1. Pulls the keyword tables out of Rust via
+   ``headroom._core.keyword_registry_snapshot()`` so the Python side
+   never re-declares them and cannot drift from the Rust source of
+   truth.
+2. Re-exports the legacy ``frozenset`` and compiled-regex names
+   (``ERROR_KEYWORDS``, ``ERROR_PATTERN``, ``PRIORITY_PATTERNS_TEXT``,
+   …) so the existing callers in ``search_compressor``,
+   ``diff_compressor``, and ``intelligent_context`` keep working
+   without same-PR refactors.
+3. Delegates ``content_has_error_indicators`` to the Rust
+   aho-corasick automaton.
+
+Caller migration to the trait API happens in the per-compressor port
+PRs that follow (Phase 3e.2 onward); this shim is the bridge until
+those land.
+
+# Bug fixes baked in
+
+The Rust implementation fixes two bugs the Python originals carried:
+
+* ``ERROR_KEYWORDS`` listed ``timeout``/``abort``/``denied``/
+  ``rejected`` but ``ERROR_PATTERN`` regex omitted them. The
+  recompiled pattern below now includes all four — lines like
+  ``"FATAL: timeout connecting upstream"`` now flag as errors via
+  the regex too.
+* ``token`` was dropped from ``SECURITY_KEYWORDS`` (it false-positived
+  on every reference to LLM tokens — input_tokens, tokens_saved, …).
 """
 
 from __future__ import annotations
 
 import re
+from typing import cast
 
-# ─── Canonical keyword sets ──────────────────────────────────────────────────
-# These are the FALLBACK when TOIN semantics aren't available yet.
-# They are intentionally broad to avoid missing errors.
-
-ERROR_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "error",
-        "exception",
-        "failed",
-        "failure",
-        "critical",
-        "fatal",
-        "crash",
-        "panic",
-        "abort",
-        "timeout",
-        "denied",
-        "rejected",
-    }
+from headroom._core import (
+    content_has_error_indicators as _rust_content_has_error_indicators,
+)
+from headroom._core import (
+    keyword_registry_snapshot as _rust_keyword_registry_snapshot,
+)
+from headroom._core import (
+    score_line as _rust_score_line,
 )
 
-# Broader importance keywords (for line-level scoring, not item preservation)
+
+def score_line(line: str, context: str = "text") -> tuple[str | None, float, float]:
+    """Score `line` against the default Rust keyword detector.
+
+    Returns ``(category | None, priority, confidence)``. ``category`` is
+    one of ``error|warning|importance|security|markdown`` or ``None`` if
+    nothing matched.
+
+    Raises :class:`ValueError` for unknown context names. The Rust
+    binding returns ``None`` for unknown contexts to dodge a
+    pyo3-0.22 + clippy false positive on ``PyResult``-returning
+    ``#[pyfunction]``s; this shim translates that into the explicit
+    Python error every caller would expect.
+    """
+    result = _rust_score_line(line, context)
+    if result is None:
+        raise ValueError(f"unknown importance context: {context}")
+    return cast("tuple[str | None, float, float]", result)
+
+
+_REGISTRY: dict[str, list[str]] = _rust_keyword_registry_snapshot()
+
+
+def _alternation(words: list[str]) -> str:
+    """Compile a `\b(w1|w2|…)\b` regex source from the Rust-supplied list.
+
+    The keywords are static (compiled once on import) so we don't need
+    `re.escape` for the current set, but using it keeps the shim
+    correct if a future Rust update adds a regex meta-character.
+    """
+    escaped = [re.escape(w) for w in words]
+    return r"\b(" + "|".join(escaped) + r")\b"
+
+
+# ─── Canonical keyword sets (pulled from Rust at import time) ───────────────
+
+ERROR_KEYWORDS: frozenset[str] = frozenset(_REGISTRY["error"])
+
+# Importance keywords historically included the error set — preserve that
+# union so consumers iterating the set get the same membership as before.
 IMPORTANCE_KEYWORDS: frozenset[str] = frozenset(
-    ERROR_KEYWORDS
-    | {
-        "warning",
-        "warn",
-        "todo",
-        "fixme",
-        "hack",
-        "xxx",
-        "bug",
-        "fix",
-        "important",
-        "note",
-    }
+    list(_REGISTRY["error"]) + list(_REGISTRY["importance"]) + list(_REGISTRY["warning"])
 )
 
-# Security-related keywords (for diff/search prioritization)
-SECURITY_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "security",
-        "auth",
-        "password",
-        "secret",
-        "token",
-    }
-)
+SECURITY_KEYWORDS: frozenset[str] = frozenset(_REGISTRY["security"])
 
-# ─── Compiled patterns (for line-level matching) ────────────────────────────
-# Shared across text_compressor, diff_compressor, search_compressor
+ERROR_INDICATOR_KEYWORDS: tuple[str, ...] = tuple(_REGISTRY["error_indicators"])
 
-ERROR_PATTERN: re.Pattern[str] = re.compile(
-    r"\b(error|exception|fail(?:ed|ure)?|fatal|critical|crash|panic)\b",
-    re.IGNORECASE,
-)
 
-WARNING_PATTERN: re.Pattern[str] = re.compile(
-    r"\b(warn(?:ing)?)\b",
-    re.IGNORECASE,
-)
+# ─── Compiled patterns ──────────────────────────────────────────────────────
 
+ERROR_PATTERN: re.Pattern[str] = re.compile(_alternation(_REGISTRY["error"]), re.IGNORECASE)
+WARNING_PATTERN: re.Pattern[str] = re.compile(_alternation(_REGISTRY["warning"]), re.IGNORECASE)
 IMPORTANCE_PATTERN: re.Pattern[str] = re.compile(
-    r"\b(important|note|todo|fixme|hack|xxx|bug|fix)\b",
-    re.IGNORECASE,
+    _alternation(_REGISTRY["importance"]), re.IGNORECASE
 )
+SECURITY_PATTERN: re.Pattern[str] = re.compile(_alternation(_REGISTRY["security"]), re.IGNORECASE)
 
-SECURITY_PATTERN: re.Pattern[str] = re.compile(
-    r"\b(security|auth|password|secret|token)\b",
-    re.IGNORECASE,
-)
 
-# Pre-built pattern lists for each compressor context
+# ─── Per-context priority pattern lists ─────────────────────────────────────
+
 PRIORITY_PATTERNS_SEARCH: list[re.Pattern[str]] = [
     ERROR_PATTERN,
     WARNING_PATTERN,
@@ -96,33 +121,42 @@ PRIORITY_PATTERNS_DIFF: list[re.Pattern[str]] = [
     SECURITY_PATTERN,
 ]
 
+# Markdown structural prefixes: matched on whole lines, anchored with `^`.
+# Pulled from Rust so the prefix table can't drift either.
 PRIORITY_PATTERNS_TEXT: list[re.Pattern[str]] = [
     ERROR_PATTERN,
     IMPORTANCE_PATTERN,
-    re.compile(r"^#+\s"),  # Markdown headers
-    re.compile(r"^\*\*"),  # Bold text
-    re.compile(r"^>\s"),  # Quotes
+    *(re.compile("^" + re.escape(prefix)) for prefix in _REGISTRY["markdown_prefixes"]),
 ]
 
-# ─── Quick check for message-level error indicators ─────────────────────────
-# Used by intelligent_context.py for message signature creation
 
-ERROR_INDICATOR_KEYWORDS: tuple[str, ...] = (
-    "error",
-    "fail",
-    "exception",
-    "traceback",
-    "fatal",
-    "panic",
-    "crash",
-)
+# ─── Triage helper ──────────────────────────────────────────────────────────
 
 
 def content_has_error_indicators(text: str) -> bool:
-    """Check if text contains error indicators (fast keyword check).
+    """Fast keyword check — does `text` contain any error indicator?
 
-    Used for message signature creation and quick triage, NOT for
-    compression decisions (those should use TOIN when available).
+    Substring match (no word boundary). Distinct from the strict line
+    scoring in :mod:`headroom._core.score_line` because the triage
+    callsite (e.g. message-signature classification) cares about
+    Python tracebacks and similar substrings more than connection
+    states.
     """
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in ERROR_INDICATOR_KEYWORDS)
+    return bool(_rust_content_has_error_indicators(text))
+
+
+__all__ = [
+    "ERROR_KEYWORDS",
+    "IMPORTANCE_KEYWORDS",
+    "SECURITY_KEYWORDS",
+    "ERROR_INDICATOR_KEYWORDS",
+    "ERROR_PATTERN",
+    "WARNING_PATTERN",
+    "IMPORTANCE_PATTERN",
+    "SECURITY_PATTERN",
+    "PRIORITY_PATTERNS_SEARCH",
+    "PRIORITY_PATTERNS_DIFF",
+    "PRIORITY_PATTERNS_TEXT",
+    "content_has_error_indicators",
+    "score_line",
+]

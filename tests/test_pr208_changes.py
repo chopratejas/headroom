@@ -371,6 +371,39 @@ class TestSetupFileLogging:
         # Should not raise
         _setup_file_logging()
 
+    def test_importing_server_does_not_install_file_handler(self, tmp_path: Path) -> None:
+        """Importing headroom.proxy.server must NOT attach a RotatingFileHandler
+        to the user's live proxy.log. The handler is installed by create_app()
+        instead, so test runs and library imports do not pollute logs.
+        """
+        import os
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(
+            """
+            import logging
+            from logging.handlers import RotatingFileHandler
+            import headroom.proxy.server  # noqa: F401
+            hr = logging.getLogger("headroom")
+            installed = any(isinstance(h, RotatingFileHandler) for h in hr.handlers)
+            print("INSTALLED" if installed else "CLEAN")
+            """
+        ).strip()
+        env = {**os.environ, "HEADROOM_WORKSPACE_DIR": str(tmp_path)}
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        assert result.stdout.strip() == "CLEAN", (
+            f"Importing headroom.proxy.server attached a file handler: {result.stdout!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Repro script URL helpers and stats tests
