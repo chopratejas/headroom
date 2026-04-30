@@ -47,7 +47,7 @@ dependencies = [
     # Core: lightweight compression (SmartCrusher, ContentRouter, CCR, TOIN)
     "tiktoken>=0.5.0",            # Tokenizer for all compressors
     "pydantic>=2.0.0",            # Config and data models
-    "litellm==1.82.3",            # Model registry, pricing, and provider support
+    "litellm==1.83.14",            # Model registry, pricing, and provider support
     "click>=8.1.0",               # CLI framework
     "rich>=13.0.0",               # Rich terminal output
     "opentelemetry-api>=1.24.0",  # Safe no-op OTEL API for instrumentation
@@ -191,7 +191,7 @@ dev = [
     "pre-commit>=3.0.0",
     "openai>=1.0.0",
     "anthropic>=0.18.0",
-    "litellm==1.82.3",
+    "litellm==1.83.14",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
     "httpx[http2]>=0.24.0",
