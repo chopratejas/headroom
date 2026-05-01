@@ -442,7 +442,8 @@ impl TransformComparator for LogCompressorComparator {
         };
 
         let store = InMemoryCcrStore::new();
-        let (result, _stats) = LogCompressor::new(cfg).compress_with_store(content, 1.0, Some(&store));
+        let (result, _stats) =
+            LogCompressor::new(cfg).compress_with_store(content, 1.0, Some(&store));
         let format_detected = match result.format_detected {
             headroom_core::transforms::log_compressor::LogFormat::Pytest => "pytest",
             headroom_core::transforms::log_compressor::LogFormat::Npm => "npm",

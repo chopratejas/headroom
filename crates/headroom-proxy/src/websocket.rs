@@ -134,15 +134,19 @@ impl WebSocketSessionRegistry {
             .expect("ws session registry poisoned")
             .values()
             .flat_map(|handle| {
-                handle.relay_task_names.iter().map(|name| {
-                    serde_json::json!({
-                        "name": name,
-                        "coro_qualname": "headroom_proxy::websocket::run_ws_pump",
-                        "age_seconds": handle.started_at.elapsed().as_secs_f64(),
-                        "stack_depth": serde_json::Value::Null,
-                        "done": false,
+                handle
+                    .relay_task_names
+                    .iter()
+                    .map(|name| {
+                        serde_json::json!({
+                            "name": name,
+                            "coro_qualname": "headroom_proxy::websocket::run_ws_pump",
+                            "age_seconds": handle.started_at.elapsed().as_secs_f64(),
+                            "stack_depth": serde_json::Value::Null,
+                            "done": false,
+                        })
                     })
-                }).collect::<Vec<_>>()
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
         entries.sort_by(|a, b| {

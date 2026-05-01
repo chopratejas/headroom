@@ -53,7 +53,9 @@ pub fn magika_detect(content: &str) -> Result<ContentType, MagikaDetectorError> 
     Ok(match detected {
         ContentType::SearchResults | ContentType::BuildOutput => ContentType::PlainText,
         ContentType::PlainText
-            if SOURCE_CODE_HINTS.iter().any(|pattern| pattern.is_match(content))
+            if SOURCE_CODE_HINTS
+                .iter()
+                .any(|pattern| pattern.is_match(content))
                 || looks_like_yaml(content) =>
         {
             ContentType::SourceCode

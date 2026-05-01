@@ -459,7 +459,10 @@ impl Accumulator {
         .unwrap()
         .contains("Retrieve more: hash="));
     assert_eq!(search_compressed["ccr_hashes"].as_array().unwrap().len(), 1);
-    let search_hash = search_compressed["ccr_hashes"][0].as_str().unwrap().to_string();
+    let search_hash = search_compressed["ccr_hashes"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let retrieved_search = client
         .post(format!("{}/v1/retrieve", proxy.url()))
         .json(&serde_json::json!({"hash": search_hash}))
@@ -469,7 +472,10 @@ impl Accumulator {
         .json::<serde_json::Value>()
         .await
         .unwrap();
-    assert_eq!(retrieved_search["original_content"], serde_json::json!(search_content));
+    assert_eq!(
+        retrieved_search["original_content"],
+        serde_json::json!(search_content)
+    );
 
     let build_content = (1..=60)
         .map(|line| match line {
@@ -871,6 +877,556 @@ async fn ccr_and_toin_routes_are_native() {
 }
 
 #[tokio::test]
+async fn ccr_feedback_and_toin_track_native_compression_activity() {
+    let upstream = MockServer::start().await;
+    let proxy = common::start_proxy(&upstream.uri()).await;
+    let client = reqwest::Client::new();
+
+    let search_content = (1..=40)
+        .map(|line| {
+            format!(
+                "src/lib.rs:{line}:{}",
+                if line == 7 || line == 24 {
+                    "error handler for status validation"
+                } else {
+                    "regular helper match"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let compressed = client
+        .post(format!("{}/v1/compress", proxy.url()))
+        .json(&serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "find status:error entries"},
+                {"role": "tool", "content": search_content}
+            ],
+            "config": {"protect_recent": 0, "compress_user_messages": false}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let hash = compressed["ccr_hashes"][0].as_str().unwrap().to_string();
+
+    let retrieved = client
+        .post(format!("{}/v1/retrieve", proxy.url()))
+        .json(&serde_json::json!({"hash": hash}))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(retrieved["tool_name"], "search");
+
+    let searched = client
+        .post(format!("{}/v1/retrieve", proxy.url()))
+        .json(&serde_json::json!({"hash": retrieved["hash"], "query": "status:error"}))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(searched["count"], 0);
+
+    let stats = client
+        .get(format!("{}/v1/retrieve/stats", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(stats["store"]["entry_count"], 1);
+    assert_eq!(stats["store"]["event_count"], 2);
+
+    let feedback = client
+        .get(format!("{}/v1/feedback", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(feedback["feedback"]["tools_tracked"], 1);
+    assert_eq!(
+        feedback["feedback"]["tool_patterns"]["search"]["compressions"],
+        1
+    );
+    assert_eq!(
+        feedback["feedback"]["tool_patterns"]["search"]["retrievals"],
+        2
+    );
+    assert_eq!(
+        feedback["feedback"]["tool_patterns"]["search"]["common_queries"],
+        serde_json::json!(["find status:error entries", "status:error"])
+    );
+    assert!(
+        feedback["feedback"]["tool_patterns"]["search"]["queried_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "status")
+    );
+
+    let feedback_tool = client
+        .get(format!("{}/v1/feedback/search", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(feedback_tool["tool_name"], "search");
+    assert_eq!(feedback_tool["hints"]["max_items"], 50);
+    assert_eq!(feedback_tool["hints"]["aggressiveness"], 0.3);
+    assert_eq!(feedback_tool["hints"]["skip_compression"], false);
+    assert!(feedback_tool["hints"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("High retrieval rate"));
+
+    let toin_stats = client
+        .get(format!("{}/v1/toin/stats", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(toin_stats["patterns_tracked"], 1);
+    assert_eq!(toin_stats["total_compressions"], 1);
+    assert_eq!(toin_stats["total_retrievals"], 2);
+
+    let toin_patterns = client
+        .get(format!("{}/v1/toin/patterns", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(toin_patterns.as_array().unwrap().len(), 1);
+    let pattern_hash = toin_patterns[0]["hash"].as_str().unwrap().to_string();
+    assert_eq!(toin_patterns[0]["compressions"], 1);
+    assert_eq!(toin_patterns[0]["retrievals"], 2);
+    assert_eq!(toin_patterns[0]["skip_recommended"], false);
+    assert_eq!(toin_patterns[0]["optimal_max_items"], 50);
+
+    let toin_detail = client
+        .get(format!("{}/v1/toin/pattern/{pattern_hash}", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(toin_detail["total_compressions"], 1);
+    assert_eq!(toin_detail["total_retrievals"], 2);
+    assert!(toin_detail["preserve_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "status"));
+
+    let telemetry_stats = client
+        .get(format!("{}/v1/telemetry", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_stats["total_compressions"], 1);
+    assert_eq!(telemetry_stats["total_retrievals"], 2);
+    assert_eq!(telemetry_stats["tool_signatures_tracked"], 1);
+
+    let telemetry_tools = client
+        .get(format!("{}/v1/telemetry/tools", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let tools = telemetry_tools["tools"].as_object().unwrap();
+    assert_eq!(tools.len(), 1);
+    let (signature_hash, tool_stats) = tools.iter().next().unwrap();
+    assert_eq!(tool_stats["tool_name"], "search");
+    assert_eq!(tool_stats["compressions"], 1);
+    assert_eq!(tool_stats["retrievals"], 2);
+
+    let telemetry_detail = client
+        .get(format!(
+            "{}/v1/telemetry/tools/{signature_hash}",
+            proxy.url()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_detail["stats"]["tool_name"], "search");
+    assert_eq!(
+        telemetry_detail["recommendations"]["recommended_max_items"],
+        50
+    );
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn product_and_telemetry_state_survive_proxy_restart() {
+    let upstream = MockServer::start().await;
+    let unique = format!(
+        "headroom-restart-persistence-{}.json",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let savings_path = std::env::temp_dir().join(unique);
+    let product_path = savings_path.with_extension("product.json");
+    let telemetry_path = savings_path.with_extension("telemetry.json");
+
+    let mut config = Config::for_test(Url::parse(&upstream.uri()).unwrap());
+    config.savings_path = Some(savings_path.clone());
+
+    let first = common::start_proxy_with_config(config.clone()).await;
+    let client = reqwest::Client::new();
+
+    let search_content = (1..=40)
+        .map(|line| {
+            format!(
+                "src/lib.rs:{line}:{}",
+                if line == 7 || line == 24 {
+                    "error handler for status validation"
+                } else {
+                    "regular helper match"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let compressed = client
+        .post(format!("{}/v1/compress", first.url()))
+        .json(&serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "find status:error entries"},
+                {"role": "tool", "content": search_content}
+            ],
+            "config": {"protect_recent": 0, "compress_user_messages": false}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let hash = compressed["ccr_hashes"][0].as_str().unwrap().to_string();
+
+    let _ = client
+        .post(format!("{}/v1/retrieve", first.url()))
+        .json(&serde_json::json!({"hash": hash, "query": "status:error"}))
+        .send()
+        .await
+        .unwrap();
+
+    let imported = client
+        .post(format!("{}/v1/telemetry/import", first.url()))
+        .json(&serde_json::json!({
+            "summary": {
+                "total_compressions": 2,
+                "total_retrievals": 1,
+                "total_tokens_saved": 12
+            },
+            "tool_stats": {
+                "persisted-tool": {
+                    "sample_size": 4,
+                    "avg_compression_ratio": 0.5,
+                    "avg_token_reduction": 0.5
+                }
+            },
+            "recommendations": {
+                "persisted-tool": {
+                    "confidence": 0.9
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(imported["status"], "imported");
+
+    first.shutdown().await;
+
+    let second = common::start_proxy_with_config(config).await;
+
+    let stats = client
+        .get(format!("{}/v1/retrieve/stats", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(stats["store"]["entry_count"], 1);
+    assert_eq!(stats["store"]["event_count"], 1);
+    assert_eq!(stats["store"]["backend"]["backend_type"], "json_file");
+    assert_eq!(
+        stats["store"]["backend"]["path"],
+        serde_json::json!(product_path.display().to_string())
+    );
+    assert!(
+        stats["store"]["backend"]["bytes_used"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+
+    let feedback = client
+        .get(format!("{}/v1/feedback/search", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(feedback["pattern"]["total_compressions"], 1);
+    assert_eq!(feedback["pattern"]["total_retrievals"], 1);
+    assert!(feedback["pattern"]["queried_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "status"));
+
+    let retrieved = client
+        .post(format!("{}/v1/retrieve", second.url()))
+        .json(&serde_json::json!({"hash": hash}))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(retrieved["tool_name"], "search");
+
+    let toin_stats = client
+        .get(format!("{}/v1/toin/stats", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(toin_stats["patterns_tracked"], 1);
+    assert_eq!(toin_stats["total_retrievals"], 2);
+
+    let telemetry_stats = client
+        .get(format!("{}/v1/telemetry", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_stats["total_compressions"], 3);
+    assert_eq!(telemetry_stats["total_retrievals"], 3);
+    assert_eq!(telemetry_stats["tool_signatures_tracked"], 2);
+
+    let telemetry_tools = client
+        .get(format!("{}/v1/telemetry/tools", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_tools["tool_count"], 2);
+
+    let telemetry_detail = client
+        .get(format!(
+            "{}/v1/telemetry/tools/persisted-tool",
+            second.url()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_detail["recommendations"]["confidence"], 0.9);
+
+    second.shutdown().await;
+    let _ = std::fs::remove_file(savings_path);
+    let _ = std::fs::remove_file(product_path);
+    let _ = std::fs::remove_file(telemetry_path);
+}
+
+#[tokio::test]
+async fn product_and_telemetry_state_survive_restart_with_sqlite_backend() {
+    let upstream = MockServer::start().await;
+    let unique = format!(
+        "headroom-restart-persistence-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let savings_path = std::env::temp_dir().join(unique);
+
+    let mut config = Config::for_test(Url::parse(&upstream.uri()).unwrap());
+    config.savings_path = Some(savings_path.clone());
+
+    let first = common::start_proxy_with_config(config.clone()).await;
+    let client = reqwest::Client::new();
+
+    let search_content = (1..=40)
+        .map(|line| {
+            format!(
+                "src/lib.rs:{line}:{}",
+                if line == 7 || line == 24 {
+                    "error handler for status validation"
+                } else {
+                    "regular helper match"
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let compressed = client
+        .post(format!("{}/v1/compress", first.url()))
+        .json(&serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "find status:error entries"},
+                {"role": "tool", "content": search_content}
+            ],
+            "config": {"protect_recent": 0, "compress_user_messages": false}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let hash = compressed["ccr_hashes"][0].as_str().unwrap().to_string();
+
+    let _ = client
+        .post(format!("{}/v1/retrieve", first.url()))
+        .json(&serde_json::json!({"hash": hash, "query": "status:error"}))
+        .send()
+        .await
+        .unwrap();
+
+    let imported = client
+        .post(format!("{}/v1/telemetry/import", first.url()))
+        .json(&serde_json::json!({
+            "summary": {
+                "total_compressions": 2,
+                "total_retrievals": 1,
+                "total_tokens_saved": 12
+            },
+            "tool_stats": {
+                "persisted-tool": {
+                    "sample_size": 4,
+                    "avg_compression_ratio": 0.5,
+                    "avg_token_reduction": 0.5
+                }
+            },
+            "recommendations": {
+                "persisted-tool": {
+                    "confidence": 0.9
+                }
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(imported["status"], "imported");
+
+    first.shutdown().await;
+
+    let second = common::start_proxy_with_config(config).await;
+
+    let stats = client
+        .get(format!("{}/v1/retrieve/stats", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(stats["store"]["entry_count"], 1);
+    assert_eq!(stats["store"]["event_count"], 1);
+    assert_eq!(stats["store"]["backend"]["backend_type"], "sqlite");
+    assert_eq!(
+        stats["store"]["backend"]["path"],
+        serde_json::json!(savings_path.display().to_string())
+    );
+    assert!(
+        stats["store"]["backend"]["bytes_used"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+
+    let feedback = client
+        .get(format!("{}/v1/feedback/search", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(feedback["pattern"]["total_compressions"], 1);
+    assert_eq!(feedback["pattern"]["total_retrievals"], 1);
+
+    let telemetry_stats = client
+        .get(format!("{}/v1/telemetry", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_stats["total_compressions"], 3);
+    assert_eq!(telemetry_stats["total_retrievals"], 2);
+    assert_eq!(telemetry_stats["tool_signatures_tracked"], 2);
+
+    let telemetry_detail = client
+        .get(format!(
+            "{}/v1/telemetry/tools/persisted-tool",
+            second.url()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(telemetry_detail["recommendations"]["confidence"], 0.9);
+
+    second.shutdown().await;
+    let _ = std::fs::remove_file(savings_path);
+}
+
+#[tokio::test]
 async fn telemetry_routes_are_native() {
     let upstream = MockServer::start().await;
     let proxy = common::start_proxy(&upstream.uri()).await;
@@ -1057,7 +1613,8 @@ async fn compress_cache_can_be_cleared() {
 #[tokio::test]
 async fn compress_honors_explicit_token_budget_with_dropped_context_marker() {
     let upstream = MockServer::start().await;
-    let proxy = start_proxy_with_runtime(&upstream.uri(), Arc::new(PipelineDispatcher::new())).await;
+    let proxy =
+        start_proxy_with_runtime(&upstream.uri(), Arc::new(PipelineDispatcher::new())).await;
     let client = reqwest::Client::new();
     let request = serde_json::json!({
         "model": "gpt-4o",
@@ -1088,7 +1645,10 @@ async fn compress_honors_explicit_token_budget_with_dropped_context_marker() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|value| value.as_str().unwrap_or_default().starts_with("window_cap:")));
+        .any(|value| value
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("window_cap:")));
     assert!(body["messages"]
         .as_array()
         .unwrap()
@@ -1105,7 +1665,8 @@ async fn compress_honors_explicit_token_budget_with_dropped_context_marker() {
 #[tokio::test]
 async fn compress_applies_model_context_limit_without_explicit_token_budget() {
     let upstream = MockServer::start().await;
-    let proxy = start_proxy_with_runtime(&upstream.uri(), Arc::new(PipelineDispatcher::new())).await;
+    let proxy =
+        start_proxy_with_runtime(&upstream.uri(), Arc::new(PipelineDispatcher::new())).await;
     let client = reqwest::Client::new();
     let messages = (0..80)
         .flat_map(|index| {
@@ -1141,7 +1702,10 @@ async fn compress_applies_model_context_limit_without_explicit_token_budget() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|value| value.as_str().unwrap_or_default().starts_with("window_cap:")));
+        .any(|value| value
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("window_cap:")));
     assert!(body["messages"]
         .as_array()
         .unwrap()

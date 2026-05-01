@@ -41,6 +41,7 @@ url = "2"
 humantime = "2"
 bytesize = "1"
 tokio-util = { version = "0.7" }
+rusqlite = { version = "0.32", features = ["bundled"] }
 headroom-core = { path = "../headroom-core" }
 headroom-runtime = { path = "../headroom-runtime" }
 

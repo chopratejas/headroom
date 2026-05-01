@@ -9,6 +9,7 @@ pub mod metrics;
 mod product_store;
 pub mod proxy;
 mod request_log_store;
+mod state_store;
 mod telemetry_store;
 pub mod websocket;
 

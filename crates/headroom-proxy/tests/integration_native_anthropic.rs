@@ -132,7 +132,10 @@ async fn native_anthropic_messages_compress_large_messages_before_forwarding() {
         .and(path("/v1/messages"))
         .respond_with(move |req: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json body");
-            assert_ne!(body["messages"][0]["content"], serde_json::json!(original_text));
+            assert_ne!(
+                body["messages"][0]["content"],
+                serde_json::json!(original_text)
+            );
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({

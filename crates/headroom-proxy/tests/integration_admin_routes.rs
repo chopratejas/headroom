@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
-use common::start_proxy_with_runtime;
+use common::{start_proxy_with_config, start_proxy_with_runtime};
 use headroom_proxy::{build_app, AppState, Config};
 use headroom_runtime::{
     MetadataValue, PipelineDispatcher, PipelineEvent, PipelinePlugin, PipelineStage,
@@ -43,6 +43,18 @@ async fn admin_stats_routes_are_local() {
         .unwrap();
     assert_eq!(stats["compression"]["ccr_entries"], 0);
     assert_eq!(stats["requests"]["total"], 0);
+    assert_eq!(
+        stats["local_state_backends"]["request_log"]["backend_type"],
+        "memory"
+    );
+    assert_eq!(
+        stats["local_state_backends"]["product"]["backend_type"],
+        "memory"
+    );
+    assert_eq!(
+        stats["local_state_backends"]["telemetry"]["backend_type"],
+        "memory"
+    );
 
     let history = client
         .get(format!("{}/stats-history", proxy.url()))
@@ -108,8 +120,14 @@ async fn admin_stats_routes_are_local() {
         .json::<serde_json::Value>()
         .await
         .unwrap();
-    assert_eq!(debug_warmup["runtime"]["websocket_sessions"]["active_sessions"], 0);
-    assert_eq!(debug_warmup["runtime"]["websocket_sessions"]["active_relay_tasks"], 0);
+    assert_eq!(
+        debug_warmup["runtime"]["websocket_sessions"]["active_sessions"],
+        0
+    );
+    assert_eq!(
+        debug_warmup["runtime"]["websocket_sessions"]["active_relay_tasks"],
+        0
+    );
 
     let dashboard = client
         .get(format!("{}/dashboard", proxy.url()))
@@ -124,8 +142,92 @@ async fn admin_stats_routes_are_local() {
         .to_str()
         .unwrap()
         .starts_with("text/html"));
-    assert!(dashboard.text().await.unwrap().contains("Headroom Dashboard"));
+    assert!(dashboard
+        .text()
+        .await
+        .unwrap()
+        .contains("Headroom Dashboard"));
     proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn sqlite_request_log_survives_restart_for_stats_and_feed() {
+    let upstream = MockServer::start().await;
+    let unique = format!(
+        "headroom-admin-request-log-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let savings_path = std::env::temp_dir().join(unique);
+    let mut config = Config::for_test(Url::parse(&upstream.uri()).unwrap());
+    config.savings_path = Some(savings_path.clone());
+
+    let first = start_proxy_with_config(config.clone()).await;
+    let client = reqwest::Client::new();
+    let big_content = serde_json::to_string(&serde_json::Value::Array(
+        (0..24)
+            .map(|index| {
+                serde_json::json!({
+                    "id": index,
+                    "status": if index % 5 == 0 { "warn" } else { "ok" },
+                    "service": "billing-api",
+                    "duration_ms": 120 + index,
+                    "message": format!("request {} completed with verbose payload", index),
+                })
+            })
+            .collect(),
+    ))
+    .unwrap();
+
+    let compressed = client
+        .post(format!("{}/v1/compress", first.url()))
+        .json(&serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "tool", "content": big_content}],
+            "config": {"protect_recent": 0}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert!(compressed["tokens_saved"].as_u64().unwrap_or(0) > 0);
+
+    first.shutdown().await;
+
+    let second = start_proxy_with_config(config).await;
+
+    let stats = client
+        .get(format!("{}/stats", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(
+        stats["local_state_backends"]["request_log"]["backend_type"],
+        "sqlite"
+    );
+    assert_eq!(stats["recent_requests"].as_array().unwrap().len(), 1);
+    assert_eq!(stats["recent_requests"][0]["provider"], "headroom");
+
+    let feed = client
+        .get(format!("{}/transformations/feed?limit=1", second.url()))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    assert_eq!(feed["transformations"].as_array().unwrap().len(), 1);
+    assert_eq!(feed["transformations"][0]["provider"], "headroom");
+
+    second.shutdown().await;
+    let _ = std::fs::remove_file(savings_path);
 }
 
 #[tokio::test]
@@ -279,16 +381,16 @@ async fn stats_cached_query_reuses_short_ttl_snapshot() {
         .oneshot(
             Request::builder()
                 .uri("/stats?cached=1")
-                .extension(ConnectInfo("127.0.0.1:4123".parse::<std::net::SocketAddr>().unwrap()))
+                .extension(ConnectInfo(
+                    "127.0.0.1:4123".parse::<std::net::SocketAddr>().unwrap(),
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    let first_json: serde_json::Value = serde_json::from_slice(
-        &first.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .unwrap();
+    let first_json: serde_json::Value =
+        serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
 
     state.metrics.record_request_started();
     state.metrics.record_request_failed(0.01);
@@ -298,31 +400,31 @@ async fn stats_cached_query_reuses_short_ttl_snapshot() {
         .oneshot(
             Request::builder()
                 .uri("/stats?cached=1")
-                .extension(ConnectInfo("127.0.0.1:4123".parse::<std::net::SocketAddr>().unwrap()))
+                .extension(ConnectInfo(
+                    "127.0.0.1:4123".parse::<std::net::SocketAddr>().unwrap(),
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    let second_json: serde_json::Value = serde_json::from_slice(
-        &second.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .unwrap();
+    let second_json: serde_json::Value =
+        serde_json::from_slice(&second.into_body().collect().await.unwrap().to_bytes()).unwrap();
 
     let uncached = app
         .oneshot(
             Request::builder()
                 .uri("/stats")
-                .extension(ConnectInfo("127.0.0.1:4123".parse::<std::net::SocketAddr>().unwrap()))
+                .extension(ConnectInfo(
+                    "127.0.0.1:4123".parse::<std::net::SocketAddr>().unwrap(),
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    let uncached_json: serde_json::Value = serde_json::from_slice(
-        &uncached.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .unwrap();
+    let uncached_json: serde_json::Value =
+        serde_json::from_slice(&uncached.into_body().collect().await.unwrap().to_bytes()).unwrap();
 
     assert_eq!(first_json["summary"]["errors"], 0);
     assert_eq!(second_json["summary"]["errors"], 0);

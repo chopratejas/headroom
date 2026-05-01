@@ -37,6 +37,7 @@ use crate::health::{health, healthz, healthz_upstream, livez, readyz};
 use crate::metrics::{metrics, ProxyMetrics};
 use crate::product_store::ProductStore;
 use crate::request_log_store::RequestLogStore;
+use crate::state_store::{file_backend, sqlite_backend, uses_sqlite_backend};
 use crate::telemetry_store::{telemetry_enabled, TelemetryStore};
 use crate::websocket::{ws_handler, WebSocketSessionRegistry};
 
@@ -106,6 +107,14 @@ impl AppState {
         let response_cache_ttl_seconds = config.response_cache_ttl.as_secs();
         let response_cache_max_entries = config.response_cache_max_entries;
         let savings_path = config.savings_path.clone();
+        let request_log_backend = savings_path
+            .clone()
+            .map(|path| build_state_backend(path, "request_log", None));
+        let product_backend = savings_path
+            .clone()
+            .map(|path| build_state_backend(path, "product", Some(derive_product_store_path)));
+        let telemetry_backend = savings_path
+            .map(|path| build_state_backend(path, "telemetry", Some(derive_telemetry_store_path)));
         let client = reqwest::Client::builder()
             .connect_timeout(config.upstream_connect_timeout)
             .timeout(config.upstream_timeout)
@@ -121,9 +130,9 @@ impl AppState {
             client,
             metrics: Arc::new(ProxyMetrics::default()),
             runtime,
-            product: ProductStore::default(),
-            telemetry: TelemetryStore::default(),
-            request_logs: RequestLogStore::new(savings_path),
+            product: ProductStore::new_with_backend(product_backend),
+            telemetry: TelemetryStore::new_with_backend(telemetry_backend),
+            request_logs: RequestLogStore::new_with_backend(request_log_backend),
             compression_cache: Arc::new(Mutex::new(CompressionCache::default())),
             response_cache: Arc::new(Mutex::new(ResponseCache::new(
                 response_cache_ttl_seconds,
@@ -133,6 +142,35 @@ impl AppState {
             ws_sessions: WebSocketSessionRegistry::default(),
             started_at: Instant::now(),
         })
+    }
+
+    pub fn local_state_backends(&self) -> Value {
+        serde_json::json!({
+            "request_log": self.request_logs.backend_info(),
+            "product": self.product.backend_info(),
+            "telemetry": self.telemetry.backend_info(),
+        })
+    }
+}
+
+fn derive_product_store_path(path: &std::path::PathBuf) -> std::path::PathBuf {
+    path.with_extension("product.json")
+}
+
+fn derive_telemetry_store_path(path: &std::path::PathBuf) -> std::path::PathBuf {
+    path.with_extension("telemetry.json")
+}
+
+fn build_state_backend(
+    path: std::path::PathBuf,
+    sqlite_key: &'static str,
+    file_path_mapper: Option<fn(&std::path::PathBuf) -> std::path::PathBuf>,
+) -> crate::state_store::SharedStateBackend {
+    if uses_sqlite_backend(&path) {
+        sqlite_backend(path, sqlite_key)
+    } else {
+        let storage_path = file_path_mapper.map(|mapper| mapper(&path)).unwrap_or(path);
+        file_backend(storage_path)
     }
 }
 
@@ -909,8 +947,14 @@ async fn ccr_retrieve(
         return ProxyError::InvalidRequest("hash required".to_string()).into_response();
     };
     let response = if let Some(query) = payload.get("query").and_then(Value::as_str) {
+        if let Some(tool_name) = state.product.tool_name_for_hash(hash_key) {
+            state.telemetry.record_retrieval(&tool_name, "search");
+        }
         (StatusCode::OK, state.product.search(hash_key, query))
     } else if let Some(entry) = state.product.retrieve(hash_key) {
+        if let Some(tool_name) = entry.get("tool_name").and_then(Value::as_str) {
+            state.telemetry.record_retrieval(tool_name, "full");
+        }
         (StatusCode::OK, entry)
     } else {
         (
@@ -970,8 +1014,14 @@ async fn ccr_retrieve_get_with_hash(
 ) -> Response<Body> {
     let query = uri_query_param(req.uri(), "query");
     let response = if let Some(query) = query.as_deref() {
+        if let Some(tool_name) = state.product.tool_name_for_hash(&hash_key) {
+            state.telemetry.record_retrieval(&tool_name, "search");
+        }
         (StatusCode::OK, state.product.search(&hash_key, query))
     } else if let Some(entry) = state.product.retrieve(&hash_key) {
+        if let Some(tool_name) = entry.get("tool_name").and_then(Value::as_str) {
+            state.telemetry.record_retrieval(tool_name, "full");
+        }
         (StatusCode::OK, entry)
     } else {
         (
@@ -1032,8 +1082,14 @@ async fn ccr_retrieve_tool_call(
         .into_response();
     };
     let retrieval_data = if let Some(query) = query.as_deref() {
+        if let Some(tool_name) = state.product.tool_name_for_hash(&hash_key) {
+            state.telemetry.record_retrieval(&tool_name, "search");
+        }
         state.product.search(&hash_key, query)
     } else if let Some(entry) = state.product.retrieve(&hash_key) {
+        if let Some(tool_name) = entry.get("tool_name").and_then(Value::as_str) {
+            state.telemetry.record_retrieval(tool_name, "full");
+        }
         entry
     } else {
         serde_json::json!({
@@ -1510,7 +1566,7 @@ async fn catch_all(
                     req,
                     upstream_base,
                 )
-                    .await;
+                .await;
             }
         }
         return forward_http_with_route_target(
@@ -2294,8 +2350,13 @@ async fn forward_native_openai_chat(
         body_bytes
     };
     let optimization_started = Instant::now();
-    let optimized =
-        optimize_openai_chat_body(&state.compression_cache, &state.product, &body_bytes, &model)?;
+    let optimized = optimize_openai_chat_body(
+        &state.compression_cache,
+        &state.product,
+        &state.telemetry,
+        &body_bytes,
+        &model,
+    )?;
     let optimization_latency_ms = optimization_started.elapsed().as_secs_f64() * 1000.0;
     validate_request_array_length("messages", messages_count)?;
 
@@ -2486,6 +2547,7 @@ async fn forward_native_anthropic_messages(
     let optimized = optimize_anthropic_messages_body(
         &state.compression_cache,
         &state.product,
+        &state.telemetry,
         &body_bytes,
         &model,
     )?;
@@ -2567,8 +2629,12 @@ async fn forward_native_anthropic_batch_create(
         .await
         .map_err(std::io::Error::other)?
         .to_bytes();
-    let optimized =
-        optimize_anthropic_batch_create_body(&state.compression_cache, &state.product, &body_bytes)?;
+    let optimized = optimize_anthropic_batch_create_body(
+        &state.compression_cache,
+        &state.product,
+        &state.telemetry,
+        &body_bytes,
+    )?;
     let req = Request::from_parts(parts, Body::from(optimized.primary_body_bytes));
 
     let mut route_metadata = anthropic_passthrough_metadata("messages/batches");
@@ -2747,6 +2813,7 @@ async fn forward_native_openai_batch_create(
     let optimized = optimize_openai_batch_jsonl_content(
         &state.compression_cache,
         &state.product,
+        &state.telemetry,
         &file_content,
     )?;
     if optimized.stats.total_requests == 0 {
@@ -3210,6 +3277,7 @@ async fn forward_native_gemini_generate_content(
     let optimized = optimize_gemini_generate_content_body(
         &state.compression_cache,
         &state.product,
+        &state.telemetry,
         &body_bytes,
         &model,
     )?;
@@ -3291,6 +3359,7 @@ async fn forward_native_gemini_count_tokens(
     let optimized = optimize_gemini_count_tokens_body(
         &state.compression_cache,
         &state.product,
+        &state.telemetry,
         &body_bytes,
         &model,
     )?;
@@ -3370,6 +3439,7 @@ async fn forward_native_google_cloudcode_stream(
     let optimized = optimize_google_cloudcode_stream_body(
         &state.compression_cache,
         &state.product,
+        &state.telemetry,
         &body_bytes,
         &model,
         antigravity,
@@ -3952,7 +4022,14 @@ async fn native_compress_messages(
         .await;
     }
 
-    match build_compress_response(&state.compression_cache, &state.product, object, messages, model) {
+    match build_compress_response(
+        &state.compression_cache,
+        &state.product,
+        &state.telemetry,
+        object,
+        messages,
+        model,
+    ) {
         Ok(result) => {
             log_native_compress_request(
                 &state,
@@ -4328,12 +4405,13 @@ async fn forward_native_gemini_generate_content_with_shadow(
                 .record_request_failed(start.elapsed().as_secs_f64());
         })?
         .to_bytes();
-        let optimized = optimize_gemini_generate_content_body(
-            &state.compression_cache,
-            &state.product,
-            &body_bytes,
-            &model,
-        )?;
+    let optimized = optimize_gemini_generate_content_body(
+        &state.compression_cache,
+        &state.product,
+        &state.telemetry,
+        &body_bytes,
+        &model,
+    )?;
     let gemini_base_url = normalize_provider_base_url(state.config.gemini_api_url.clone());
     let provider = provider_from_path(&path_for_log);
     let context = ExecutionContext::new("proxy.gemini_generate_content", request_id.clone())
@@ -4825,6 +4903,7 @@ async fn forward_native_google_cloudcode_stream_with_shadow(
     let optimized = optimize_google_cloudcode_stream_body(
         &state.compression_cache,
         &state.product,
+        &state.telemetry,
         &body_bytes,
         &model,
         antigravity,
@@ -5843,6 +5922,7 @@ fn build_stats_payload(state: &AppState) -> Value {
     let ccr_stats = state.product.ccr_stats();
     let feedback_stats = state.product.feedback_stats();
     let toin_stats = state.product.toin_stats();
+    let local_state_backends = state.local_state_backends();
     serde_json::json!({
         "summary": {
             "requests": metrics.requests_total,
@@ -5961,6 +6041,7 @@ fn build_stats_payload(state: &AppState) -> Value {
             "tools_with_high_retrieval": 0,
         },
         "toin": toin_stats,
+        "local_state_backends": local_state_backends,
         "cli_filtering": {},
         "cache": Value::Null,
         "rate_limiter": Value::Null,
@@ -6000,7 +6081,10 @@ struct RequestLogStats {
     persistent_savings: Value,
 }
 
-fn aggregate_request_log_stats(entries: &[Value], storage_path: Option<&std::path::Path>) -> RequestLogStats {
+fn aggregate_request_log_stats(
+    entries: &[Value],
+    storage_path: Option<&std::path::Path>,
+) -> RequestLogStats {
     let mut total_input_tokens = 0_u64;
     let mut total_input_tokens_before_compression = 0_u64;
     let mut total_output_tokens = 0_u64;
@@ -6103,16 +6187,11 @@ fn aggregate_request_log_stats(entries: &[Value], storage_path: Option<&std::pat
 
     if savings_history.len() > 100 {
         let keep_from = savings_history.len().saturating_sub(100);
-        savings_history = savings_history
-            .into_iter()
-            .skip(keep_from)
-            .collect();
+        savings_history = savings_history.into_iter().skip(keep_from).collect();
     }
 
     let savings_percent = if total_input_tokens_before_compression > 0 {
-        round2(
-            total_tokens_saved as f64 / total_input_tokens_before_compression as f64 * 100.0,
-        )
+        round2(total_tokens_saved as f64 / total_input_tokens_before_compression as f64 * 100.0)
     } else {
         0.0
     };
@@ -6213,24 +6292,26 @@ fn aggregate_request_log_stats(entries: &[Value], storage_path: Option<&std::pat
             .collect(),
         cost_per_model: cost_per_model
             .into_iter()
-            .map(|(model, (requests, tokens_saved, tokens_sent, savings_usd))| {
-                let denominator = tokens_saved.saturating_add(tokens_sent);
-                let reduction_pct = if denominator > 0 {
-                    round2(tokens_saved as f64 / denominator as f64 * 100.0)
-                } else {
-                    0.0
-                };
-                (
-                    model,
-                    serde_json::json!({
-                        "requests": requests,
-                        "tokens_saved": tokens_saved,
-                        "tokens_sent": tokens_sent,
-                        "savings_usd": round6(savings_usd),
-                        "reduction_pct": reduction_pct,
-                    }),
-                )
-            })
+            .map(
+                |(model, (requests, tokens_saved, tokens_sent, savings_usd))| {
+                    let denominator = tokens_saved.saturating_add(tokens_sent);
+                    let reduction_pct = if denominator > 0 {
+                        round2(tokens_saved as f64 / denominator as f64 * 100.0)
+                    } else {
+                        0.0
+                    };
+                    (
+                        model,
+                        serde_json::json!({
+                            "requests": requests,
+                            "tokens_saved": tokens_saved,
+                            "tokens_sent": tokens_sent,
+                            "savings_usd": round6(savings_usd),
+                            "reduction_pct": reduction_pct,
+                        }),
+                    )
+                },
+            )
             .collect(),
         savings_history,
         raw_history,
@@ -6425,13 +6506,20 @@ fn build_history_rollup(history: &[Value], bucket: TimeBucket) -> Vec<Value> {
                 "total_input_cost_usd": round6(total_input_cost_usd),
             })
         });
-        entry["tokens_saved"] = Value::from(entry["tokens_saved"].as_u64().unwrap_or(0) + delta_tokens);
-        entry["compression_savings_usd_delta"] =
-            Value::from(round6(entry["compression_savings_usd_delta"].as_f64().unwrap_or(0.0) + delta_usd));
-        entry["total_input_tokens_delta"] =
-            Value::from(entry["total_input_tokens_delta"].as_u64().unwrap_or(0) + delta_input_tokens);
-        entry["total_input_cost_usd_delta"] =
-            Value::from(round6(entry["total_input_cost_usd_delta"].as_f64().unwrap_or(0.0) + delta_input_cost_usd));
+        entry["tokens_saved"] =
+            Value::from(entry["tokens_saved"].as_u64().unwrap_or(0) + delta_tokens);
+        entry["compression_savings_usd_delta"] = Value::from(round6(
+            entry["compression_savings_usd_delta"]
+                .as_f64()
+                .unwrap_or(0.0)
+                + delta_usd,
+        ));
+        entry["total_input_tokens_delta"] = Value::from(
+            entry["total_input_tokens_delta"].as_u64().unwrap_or(0) + delta_input_tokens,
+        );
+        entry["total_input_cost_usd_delta"] = Value::from(round6(
+            entry["total_input_cost_usd_delta"].as_f64().unwrap_or(0.0) + delta_input_cost_usd,
+        ));
         entry["total_tokens_saved"] = Value::from(total_tokens_saved);
         entry["compression_savings_usd"] = Value::from(round6(total_usd));
         entry["total_input_tokens"] = Value::from(total_input_tokens);
@@ -6584,9 +6672,7 @@ fn timestamp_to_iso(timestamp: u64) -> String {
     let minute = (seconds_of_day % 3_600) / 60;
     let second = seconds_of_day % 60;
     let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 fn parse_iso_timestamp(value: &str) -> Option<u64> {
@@ -7174,6 +7260,7 @@ struct AnthropicBatchCreateOptimization {
 fn optimize_openai_chat_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<OpenAiChatOptimization, ProxyError> {
@@ -7203,9 +7290,14 @@ fn optimize_openai_chat_body(
     compression_config.insert("compress_user_messages".to_string(), Value::Bool(true));
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
-    let Ok(result) =
-        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
-    else {
+    let Ok(result) = build_compress_response(
+        compression_cache,
+        product_store,
+        telemetry_store,
+        &compression_body,
+        &messages,
+        model,
+    ) else {
         return Ok(OpenAiChatOptimization {
             primary_body_bytes: body_bytes.clone(),
             compression_status: "failed",
@@ -7235,6 +7327,7 @@ fn optimize_openai_chat_body(
 fn optimize_anthropic_messages_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<AnthropicMessagesOptimization, ProxyError> {
@@ -7264,9 +7357,14 @@ fn optimize_anthropic_messages_body(
     compression_config.insert("compress_user_messages".to_string(), Value::Bool(true));
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
-    let Ok(result) =
-        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
-    else {
+    let Ok(result) = build_compress_response(
+        compression_cache,
+        product_store,
+        telemetry_store,
+        &compression_body,
+        &messages,
+        model,
+    ) else {
         return Ok(AnthropicMessagesOptimization {
             primary_body_bytes: body_bytes.clone(),
             compression_status: "failed",
@@ -7296,6 +7394,7 @@ fn optimize_anthropic_messages_body(
 fn optimize_anthropic_batch_create_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
 ) -> Result<AnthropicBatchCreateOptimization, ProxyError> {
     let mut payload: Value = serde_json::from_slice(body_bytes)
@@ -7354,6 +7453,7 @@ fn optimize_anthropic_batch_create_body(
         match build_compress_response(
             compression_cache,
             product_store,
+            telemetry_store,
             &compression_body,
             &messages,
             model,
@@ -7395,6 +7495,7 @@ fn optimize_anthropic_batch_create_body(
 fn optimize_openai_batch_jsonl_content(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     content: &str,
 ) -> Result<OpenAiBatchJsonlOptimization, ProxyError> {
     let mut compressed_lines = Vec::new();
@@ -7441,6 +7542,7 @@ fn optimize_openai_batch_jsonl_content(
         match build_compress_response(
             compression_cache,
             product_store,
+            telemetry_store,
             &compression_body,
             &messages,
             model,
@@ -7863,6 +7965,7 @@ fn request_log_input_tokens(provider: &str, model: &str, body_bytes: &Bytes) -> 
 fn build_compress_response(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body: &serde_json::Map<String, Value>,
     messages: &[Value],
     model: &str,
@@ -7883,6 +7986,7 @@ fn build_compress_response(
             messages.len(),
             compression_cache,
             &product_store,
+            telemetry_store,
             &options,
             &query,
             tokenizer.as_ref(),
@@ -8021,6 +8125,7 @@ fn compress_message_value(
     total_messages: usize,
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     options: &CompressOptions,
     query: &str,
     tokenizer: &dyn Tokenizer,
@@ -8040,8 +8145,14 @@ fn compress_message_value(
         return (message.clone(), Vec::new(), Vec::new());
     }
 
-    let (compressed_content, transforms, ccr_hashes) =
-        compress_content_value(content, compression_cache, product_store, query, options);
+    let (compressed_content, transforms, ccr_hashes) = compress_content_value(
+        content,
+        compression_cache,
+        product_store,
+        telemetry_store,
+        query,
+        options,
+    );
     if transforms.is_empty() {
         return (message.clone(), Vec::new(), Vec::new());
     }
@@ -8096,24 +8207,37 @@ fn compress_content_value(
     content: &Value,
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     query: &str,
     options: &CompressOptions,
 ) -> (Value, Vec<String>, Vec<String>) {
     match content {
-        Value::String(text) => route_string_content(text, compression_cache, product_store, query, options)
-            .map_or_else(
-                || (content.clone(), Vec::new(), Vec::new()),
-                |result| result,
-            ),
+        Value::String(text) => route_string_content(
+            text,
+            compression_cache,
+            product_store,
+            telemetry_store,
+            query,
+            options,
+        )
+        .map_or_else(
+            || (content.clone(), Vec::new(), Vec::new()),
+            |result| result,
+        ),
         Value::Array(parts) => {
             let mut updated = Vec::with_capacity(parts.len());
             let mut changed = false;
             let mut ccr_hashes = Vec::new();
             let mut transforms = Vec::new();
             for part in parts {
-                if let Some((updated_part, part_transforms, hashes)) =
-                    compress_content_part(part, compression_cache, product_store, query, options)
-                {
+                if let Some((updated_part, part_transforms, hashes)) = compress_content_part(
+                    part,
+                    compression_cache,
+                    product_store,
+                    telemetry_store,
+                    query,
+                    options,
+                ) {
                     updated.push(updated_part);
                     changed = true;
                     for transform in part_transforms {
@@ -8144,6 +8268,7 @@ fn compress_content_part(
     part: &Value,
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     query: &str,
     options: &CompressOptions,
 ) -> Option<(Value, Vec<String>, Vec<String>)> {
@@ -8153,8 +8278,14 @@ fn compress_content_part(
         return None;
     }
     let text = object.get("text").and_then(Value::as_str)?;
-    let (compressed, transforms, ccr_hashes) =
-        route_string_content(text, compression_cache, product_store, query, options)?;
+    let (compressed, transforms, ccr_hashes) = route_string_content(
+        text,
+        compression_cache,
+        product_store,
+        telemetry_store,
+        query,
+        options,
+    )?;
 
     let mut updated = object.clone();
     updated.insert("text".to_string(), compressed);
@@ -8165,6 +8296,7 @@ fn route_string_content(
     text: &str,
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     query: &str,
     options: &CompressOptions,
 ) -> Option<(Value, Vec<String>, Vec<String>)> {
@@ -8192,11 +8324,13 @@ fn route_string_content(
     }
 
     if is_mixed_content(text) {
-        if let Some(result) = route_mixed_string_content(text, product_store, query, options) {
+        if let Some(result) =
+            route_mixed_string_content(text, product_store, telemetry_store, query, options)
+        {
             return cache_compression_result(compression_cache, cache_key, min_ratio, result);
         }
     }
-    let result = route_pure_string_content(text, product_store, query, options);
+    let result = route_pure_string_content(text, product_store, telemetry_store, query, options);
     if result.is_none() {
         compression_cache
             .lock()
@@ -8210,12 +8344,15 @@ fn route_string_content(
 fn route_pure_string_content(
     text: &str,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     query: &str,
     options: &CompressOptions,
 ) -> Option<(Value, Vec<String>, Vec<String>)> {
     match detect_text_content_kind(text) {
         CompressContentKind::AlreadyCompressed | CompressContentKind::SourceCode => None,
-        CompressContentKind::Html => compress_with_html_strategy(text),
+        CompressContentKind::Html => {
+            compress_with_html_strategy(text, product_store, telemetry_store, query)
+        }
         CompressContentKind::Diff => {
             let compressor = build_diff_compressor(options);
             let result = compressor.compress(text, query);
@@ -8223,6 +8360,20 @@ fn route_pure_string_content(
                 let ccr_hashes = result.cache_key.into_iter().collect::<Vec<_>>();
                 let ratio =
                     result.compressed_line_count as f64 / result.original_line_count.max(1) as f64;
+                product_store.record_compression(
+                    ccr_hashes.first().map(String::as_str),
+                    "diff_compressor",
+                    result.original_line_count as u64,
+                    result.compressed_line_count as u64,
+                    Some(query),
+                );
+                telemetry_store.record_compression(
+                    "diff_compressor",
+                    result.original_line_count as u64,
+                    result.compressed_line_count as u64,
+                    (text.len() / 4).max(1) as i64,
+                    (result.compressed.len() / 4).max(1) as i64,
+                );
                 Some((
                     Value::String(result.compressed),
                     routing_transforms("diff_compressor", ratio),
@@ -8234,13 +8385,32 @@ fn route_pure_string_content(
         }
         CompressContentKind::SearchResults => {
             let compressor = build_search_compressor();
-            let (result, _stats) =
-                compressor.compress_with_store(text, query, compression_bias(options), Some(product_store));
+            let (result, _stats) = compressor.compress_with_store(
+                text,
+                query,
+                compression_bias(options),
+                Some(product_store),
+            );
             if result.compressed != text {
+                let ccr_hashes = result.cache_key.into_iter().collect::<Vec<_>>();
+                product_store.record_compression(
+                    ccr_hashes.first().map(String::as_str),
+                    "search",
+                    result.original_match_count as u64,
+                    result.compressed_match_count as u64,
+                    Some(query),
+                );
+                telemetry_store.record_compression(
+                    "search",
+                    result.original_match_count as u64,
+                    result.compressed_match_count as u64,
+                    (result.original.len() / 4).max(1) as i64,
+                    (result.compressed.len() / 4).max(1) as i64,
+                );
                 Some((
                     Value::String(result.compressed),
                     routing_transforms("search", result.compression_ratio),
-                    result.cache_key.into_iter().collect(),
+                    ccr_hashes,
                 ))
             } else {
                 None
@@ -8248,29 +8418,67 @@ fn route_pure_string_content(
         }
         CompressContentKind::BuildOutput => {
             let compressor = build_log_compressor();
-            let (result, _stats) =
-                compressor.compress_with_store(text, compression_bias(options), Some(product_store));
+            let (result, _stats) = compressor.compress_with_store(
+                text,
+                compression_bias(options),
+                Some(product_store),
+            );
             if result.compressed != text {
+                let ccr_hashes = result.cache_key.into_iter().collect::<Vec<_>>();
+                product_store.record_compression(
+                    ccr_hashes.first().map(String::as_str),
+                    "log",
+                    result.original_line_count as u64,
+                    result.compressed_line_count as u64,
+                    Some(query),
+                );
+                telemetry_store.record_compression(
+                    "log",
+                    result.original_line_count as u64,
+                    result.compressed_line_count as u64,
+                    (result.original.len() / 4).max(1) as i64,
+                    (result.compressed.len() / 4).max(1) as i64,
+                );
                 Some((
                     Value::String(result.compressed),
                     routing_transforms("log", result.compression_ratio),
-                    result.cache_key.into_iter().collect(),
+                    ccr_hashes,
                 ))
             } else {
                 None
             }
         }
-        CompressContentKind::StructuredJson => {
-            compress_with_smart_crusher_strategy(text, query, options, "smart_crusher")
-        }
+        CompressContentKind::StructuredJson => compress_with_smart_crusher_strategy(
+            text,
+            product_store,
+            telemetry_store,
+            query,
+            options,
+            "smart_crusher",
+        ),
         CompressContentKind::PlainText => {
             let compressor = build_text_compressor(text, options);
             let result = compressor.compress(text, query);
             if result.compressed != text {
+                let ccr_hashes = result.cache_key.into_iter().collect::<Vec<_>>();
+                product_store.record_compression(
+                    ccr_hashes.first().map(String::as_str),
+                    "text",
+                    result.original_line_count as u64,
+                    result.compressed_line_count as u64,
+                    Some(query),
+                );
+                telemetry_store.record_compression(
+                    "text",
+                    result.original_line_count as u64,
+                    result.compressed_line_count as u64,
+                    (result.original.len() / 4).max(1) as i64,
+                    (result.compressed.len() / 4).max(1) as i64,
+                );
                 Some((
                     Value::String(result.compressed),
                     routing_transforms("text", result.compression_ratio),
-                    result.cache_key.into_iter().collect(),
+                    ccr_hashes,
                 ))
             } else {
                 None
@@ -8282,6 +8490,7 @@ fn route_pure_string_content(
 fn route_mixed_string_content(
     text: &str,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     query: &str,
     options: &CompressOptions,
 ) -> Option<(Value, Vec<String>, Vec<String>)> {
@@ -8309,9 +8518,13 @@ fn route_mixed_string_content(
             }
             MixedContentSection::CodeBlock(content) => (content, Vec::new(), false),
             MixedContentSection::Raw(content) => {
-                if let Some((Value::String(compressed), _, ccr_hashes)) =
-                    route_pure_string_content(&content, product_store, query, options)
-                {
+                if let Some((Value::String(compressed), _, ccr_hashes)) = route_pure_string_content(
+                    &content,
+                    product_store,
+                    telemetry_store,
+                    query,
+                    options,
+                ) {
                     let did_change = compressed != content;
                     (compressed, ccr_hashes, did_change)
                 } else {
@@ -8374,6 +8587,8 @@ fn cache_compression_result(
 
 fn compress_with_smart_crusher_strategy(
     text: &str,
+    product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     query: &str,
     options: &CompressOptions,
     strategy: &str,
@@ -8383,6 +8598,20 @@ fn compress_with_smart_crusher_strategy(
     if modified {
         let ccr_hashes = extract_ccr_hashes(&compressed);
         let ratio = compute_compression_ratio(&compressed, text);
+        product_store.record_compression(
+            ccr_hashes.first().map(String::as_str),
+            strategy,
+            count_compression_items(text),
+            count_compression_items(&compressed),
+            Some(query),
+        );
+        telemetry_store.record_compression(
+            strategy,
+            count_compression_items(text),
+            count_compression_items(&compressed),
+            (text.len() / 4).max(1) as i64,
+            (compressed.len() / 4).max(1) as i64,
+        );
         Some((
             Value::String(compressed),
             routing_transforms(strategy, ratio),
@@ -8393,7 +8622,12 @@ fn compress_with_smart_crusher_strategy(
     }
 }
 
-fn compress_with_html_strategy(text: &str) -> Option<(Value, Vec<String>, Vec<String>)> {
+fn compress_with_html_strategy(
+    text: &str,
+    product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
+    query: &str,
+) -> Option<(Value, Vec<String>, Vec<String>)> {
     let compressed = extract_html_text(text);
     if compressed.is_empty() || compressed == text {
         return None;
@@ -8402,11 +8636,35 @@ fn compress_with_html_strategy(text: &str) -> Option<(Value, Vec<String>, Vec<St
     if ratio >= 1.0 {
         return None;
     }
+    product_store.record_compression(
+        None,
+        "html",
+        count_compression_items(text),
+        count_compression_items(&compressed),
+        Some(query),
+    );
+    telemetry_store.record_compression(
+        "html",
+        count_compression_items(text),
+        count_compression_items(&compressed),
+        (text.len() / 4).max(1) as i64,
+        (compressed.len() / 4).max(1) as i64,
+    );
     Some((
         Value::String(compressed),
         routing_transforms("html", ratio),
         Vec::new(),
     ))
+}
+
+fn count_compression_items(text: &str) -> u64 {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| match value {
+            Value::Array(items) => Some(items.len() as u64),
+            _ => None,
+        })
+        .unwrap_or_else(|| text.lines().count().max(1) as u64)
 }
 
 fn routing_transforms(strategy: &str, ratio: f64) -> Vec<String> {
@@ -9455,7 +9713,10 @@ fn apply_token_budget_window(
         if current_tokens <= available {
             break;
         }
-        if candidate.iter().any(|index| protected.contains(index) || indices_to_drop.contains(index)) {
+        if candidate
+            .iter()
+            .any(|index| protected.contains(index) || indices_to_drop.contains(index))
+        {
             continue;
         }
         let tokens_saved = candidate
@@ -9551,9 +9812,7 @@ fn protected_window_indices(messages: &[Value]) -> HashSet<usize> {
             {
                 protected.insert(other_index);
             }
-            if role == Some("user")
-                && user_message_has_tool_result(other_message, &tool_call_ids)
-            {
+            if role == Some("user") && user_message_has_tool_result(other_message, &tool_call_ids) {
                 protected.insert(other_index);
             }
         }
@@ -9722,24 +9981,39 @@ struct GoogleCloudCodeStreamOptimization {
 fn optimize_gemini_generate_content_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<GeminiRequestOptimization, ProxyError> {
-    optimize_gemini_request_body(compression_cache, product_store, body_bytes, model)
+    optimize_gemini_request_body(
+        compression_cache,
+        product_store,
+        telemetry_store,
+        body_bytes,
+        model,
+    )
 }
 
 fn optimize_gemini_count_tokens_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<GeminiRequestOptimization, ProxyError> {
-    optimize_gemini_request_body(compression_cache, product_store, body_bytes, model)
+    optimize_gemini_request_body(
+        compression_cache,
+        product_store,
+        telemetry_store,
+        body_bytes,
+        model,
+    )
 }
 
 fn optimize_gemini_request_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
     model: &str,
 ) -> Result<GeminiRequestOptimization, ProxyError> {
@@ -9771,9 +10045,14 @@ fn optimize_gemini_request_body(
     compression_config.insert("compress_user_messages".to_string(), Value::Bool(true));
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
-    let Ok(result) =
-        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
-    else {
+    let Ok(result) = build_compress_response(
+        compression_cache,
+        product_store,
+        telemetry_store,
+        &compression_body,
+        &messages,
+        model,
+    ) else {
         return Ok(GeminiRequestOptimization {
             primary_body_bytes: body_bytes.clone(),
             compression_status: "failed",
@@ -9819,6 +10098,7 @@ fn optimize_gemini_request_body(
 fn optimize_google_cloudcode_stream_body(
     compression_cache: &Arc<Mutex<CompressionCache>>,
     product_store: &ProductStore,
+    telemetry_store: &TelemetryStore,
     body_bytes: &Bytes,
     model: &str,
     antigravity: bool,
@@ -9859,9 +10139,14 @@ fn optimize_google_cloudcode_stream_body(
     compression_config.insert("compress_user_messages".to_string(), Value::Bool(true));
     compression_body.insert("config".to_string(), Value::Object(compression_config));
 
-    let Ok(result) =
-        build_compress_response(compression_cache, product_store, &compression_body, &messages, model)
-    else {
+    let Ok(result) = build_compress_response(
+        compression_cache,
+        product_store,
+        telemetry_store,
+        &compression_body,
+        &messages,
+        model,
+    ) else {
         return Ok(GoogleCloudCodeStreamOptimization {
             primary_body_bytes: body_bytes.clone(),
             compression_status: "failed",
@@ -10446,6 +10731,7 @@ mod tests {
         let optimization = optimize_openai_chat_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
             "gpt-4o-mini",
         )
@@ -10516,17 +10802,16 @@ mod tests {
         assert_eq!(transforms.len(), 1);
         assert!(transforms[0].starts_with("window_cap:"));
         assert!(!windowed.iter().any(|message| {
-            message
-                .get("tool_call_id")
-                .and_then(Value::as_str)
-                == Some("call_old")
+            message.get("tool_call_id").and_then(Value::as_str) == Some("call_old")
         }));
         assert!(!windowed.iter().any(|message| {
             message
                 .get("tool_calls")
                 .and_then(Value::as_array)
                 .map(|calls| {
-                    calls.iter().any(|call| call.get("id").and_then(Value::as_str) == Some("call_old"))
+                    calls
+                        .iter()
+                        .any(|call| call.get("id").and_then(Value::as_str) == Some("call_old"))
                 })
                 .unwrap_or(false)
         }));
@@ -10627,7 +10912,10 @@ mod tests {
             stats.display_session["last_activity_at"],
             serde_json::json!("1970-01-01T00:05:00Z")
         );
-        assert_eq!(stats.display_session["total_input_tokens"], serde_json::json!(160));
+        assert_eq!(
+            stats.display_session["total_input_tokens"],
+            serde_json::json!(160)
+        );
         assert_eq!(
             stats.display_session["compression_savings_usd"],
             serde_json::json!(0.000011)
@@ -10704,12 +10992,30 @@ mod tests {
         assert_eq!(payload["schema_version"], serde_json::json!(2));
         assert_eq!(payload["lifetime"]["requests"], serde_json::json!(4));
         assert_eq!(payload["lifetime"]["tokens_saved"], serde_json::json!(75));
-        assert_eq!(payload["lifetime"]["total_input_tokens"], serde_json::json!(195));
-        assert_eq!(payload["lifetime"]["compression_savings_usd"], serde_json::json!(0.000011));
-        assert_eq!(payload["lifetime"]["total_input_cost_usd"], serde_json::json!(0.000257));
-        assert_eq!(payload["display_session"]["savings_percent"], serde_json::json!(27.78));
-        assert_eq!(payload["history_summary"]["stored_points"], serde_json::json!(3));
-        assert_eq!(payload["history_summary"]["returned_points"], serde_json::json!(3));
+        assert_eq!(
+            payload["lifetime"]["total_input_tokens"],
+            serde_json::json!(195)
+        );
+        assert_eq!(
+            payload["lifetime"]["compression_savings_usd"],
+            serde_json::json!(0.000011)
+        );
+        assert_eq!(
+            payload["lifetime"]["total_input_cost_usd"],
+            serde_json::json!(0.000257)
+        );
+        assert_eq!(
+            payload["display_session"]["savings_percent"],
+            serde_json::json!(27.78)
+        );
+        assert_eq!(
+            payload["history_summary"]["stored_points"],
+            serde_json::json!(3)
+        );
+        assert_eq!(
+            payload["history_summary"]["returned_points"],
+            serde_json::json!(3)
+        );
         assert_eq!(payload["series"]["daily"].as_array().unwrap().len(), 2);
         assert_eq!(
             payload["series"]["daily"][0]["total_input_tokens_delta"],
@@ -10755,7 +11061,10 @@ mod tests {
 
         assert_eq!(full["history"].as_array().unwrap().len(), 2);
         assert_eq!(none["history"], serde_json::json!([]));
-        assert_eq!(none["history_summary"]["compacted"], serde_json::json!(true));
+        assert_eq!(
+            none["history_summary"]["compacted"],
+            serde_json::json!(true)
+        );
     }
 
     #[test]
@@ -10763,7 +11072,10 @@ mod tests {
         let prefix_cache = empty_prefix_cache_stats();
 
         assert_eq!(prefix_cache["totals"]["requests"], serde_json::json!(0));
-        assert_eq!(prefix_cache["totals"]["net_savings_usd"], serde_json::json!(0.0));
+        assert_eq!(
+            prefix_cache["totals"]["net_savings_usd"],
+            serde_json::json!(0.0)
+        );
         assert_eq!(
             prefix_cache["totals"]["observed_ttl_buckets"]["5m"]["tokens"],
             serde_json::json!(0)
@@ -10811,6 +11123,7 @@ mod tests {
         let optimization = optimize_anthropic_batch_create_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
         )
         .unwrap();
@@ -10850,6 +11163,7 @@ mod tests {
         let optimization = optimize_anthropic_messages_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
             "claude-3-5-sonnet-20241022",
         )
@@ -10904,6 +11218,7 @@ mod tests {
         let optimization = optimize_openai_batch_jsonl_content(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &jsonl,
         )
         .unwrap();
@@ -11036,6 +11351,7 @@ mod tests {
         let optimization = optimize_gemini_count_tokens_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
             "gemini-2.0-flash",
         )
@@ -11086,6 +11402,7 @@ mod tests {
         let optimization = optimize_gemini_generate_content_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
             "gemini-2.0-flash",
         )
@@ -11134,6 +11451,7 @@ mod tests {
         let optimization = optimize_google_cloudcode_stream_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
             "gemini-3.1-pro-high",
             false,
@@ -11184,6 +11502,7 @@ mod tests {
         let optimization = optimize_google_cloudcode_stream_body(
             &Arc::new(Mutex::new(CompressionCache::default())),
             &ProductStore::default(),
+            &TelemetryStore::default(),
             &body,
             "gemini-3.1-pro-high",
             true,

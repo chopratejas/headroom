@@ -92,6 +92,7 @@ async fn health_payload(state: &AppState, include_config: bool) -> Value {
     let http_client_ready = true;
     let ready = startup_ready && http_client_ready && upstream.ready;
     let route_manifest = route_manifest();
+    let local_state_backends = state.local_state_backends();
 
     let mut payload = json!({
     "service": SERVICE_NAME,
@@ -125,6 +126,7 @@ async fn health_payload(state: &AppState, include_config: bool) -> Value {
                 "active_relay_tasks": state.ws_sessions.active_relay_task_count(),
             },
             "route_manifest": route_manifest.clone(),
+            "local_state_backends": local_state_backends,
             "upstream": {
                 "base_url": state.config.upstream.as_str(),
                 "openai_api_url": state.config.openai_api_url.as_str(),
