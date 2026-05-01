@@ -933,6 +933,12 @@ fn hash_canonical(canonical: &str) -> String {
         .collect()
 }
 
+// `hash_array_for_ccr` (a test-only `canonical_array_json + hash_canonical`
+// convenience) lived here previously but had no callers — clippy flagged
+// it as dead code. Reintroduce as a test fixture if a future test wants
+// the one-liner; production callsites inline both steps so the canonical
+// bytes can be reused for the store payload.
+
 // ─── PR5 walker-integration helpers (string handling) ──────────────────────
 //
 // Parse-as-JSON-container, marker formatting, and humanize-bytes used to
