@@ -40,12 +40,14 @@ FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION} AS builde
 
 ARG PYTHON_VERSION
 ARG UV_VERSION
-# Dropped from extras: `image` (no image compression workflows on this
-# image — saves Pillow + sentencepiece + rapidocr) and `memory` (the
-# hierarchical memory feature pulls sentence-transformers; reintroduce
-# only if Kompress memory mode is turned on). Override at build time
-# with --build-arg HEADROOM_EXTRAS=... if needed.
-ARG HEADROOM_EXTRAS="proxy,code,ml,relevance"
+# Default extras enable: SmartCrusher (always, via Rust ext), CCR
+# (magika; in [proxy]), Kompress GPU compression ([ml]), AST code
+# compression ([code]), smart cache + hierarchical memory with vector
+# search ([memory] → hnswlib + sqlite-vec + sentence-transformers),
+# semantic relevance scoring / context reranking ([relevance] →
+# fastembed). Dropped: [image] (no image compression workflow). Override
+# via --build-arg HEADROOM_EXTRAS=... if needed.
+ARG HEADROOM_EXTRAS="proxy,code,ml,memory,relevance"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
