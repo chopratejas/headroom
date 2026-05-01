@@ -810,10 +810,22 @@ class AnthropicHandlerMixin:
                         optimized_messages = result.messages
                         transforms_applied = result.transforms_applied
                         pipeline_timing = result.timing
-                        # Keep original_tokens as the REAL original (pre-Zone-1-swap)
-                        # so tokens_saved captures both Zone 1 + Zone 2 savings.
-                        # original_tokens was set at line ~2183 from uncompressed messages.
-                        optimized_tokens = result.tokens_after
+                        # Issue #327 / Bug 3: pipeline.apply uses the provider-
+                        # side tokenizer (AnthropicProvider tiktoken estimator),
+                        # which counts ~25% higher than the proxy-side
+                        # EstimatingTokenCounter used to set `original_tokens`
+                        # at line 634. Reusing `result.tokens_after` here
+                        # produced an apples-vs-oranges comparison against
+                        # `original_tokens` in the inflation guard below
+                        # (line ~901): even after a real 12% compression the
+                        # provider-tokenizer figure was higher than the proxy-
+                        # tokenizer baseline, triggering a spurious revert.
+                        # Recount optimized_messages with the proxy tokenizer
+                        # so original_tokens vs optimized_tokens is self-
+                        # consistent. The recount cost (~ms on a 50K-token
+                        # request) is paid once per request and is dwarfed by
+                        # the upstream call latency.
+                        optimized_tokens = tokenizer.count_messages(optimized_messages)
                     elif not is_cache_mode(self.config.mode):
                         async with stage_timer.measure("compression_first_stage"):
                             result = await asyncio.wait_for(

@@ -154,6 +154,7 @@ class IntelligentContextManager(Transform):
         config: IntelligentContextConfig | None = None,
         toin: ToolIntelligenceNetwork | None = None,
         summarize_fn: SummarizeFn | None = None,
+        observer: Any = None,
     ):
         """
         Initialize intelligent context manager.
@@ -164,12 +165,21 @@ class IntelligentContextManager(Transform):
             summarize_fn: Optional callback for summarization.
                 If provided and summarization_enabled=True, enables SUMMARIZE strategy.
                 Signature: (messages: list[dict], context: str) -> str
+            observer: Optional `CompressionObserver` (see
+                `headroom.transforms.observability`). Forwarded to the
+                lazy-loaded inner `ContentRouter` so per-strategy
+                compression counters reflect the COMPRESS_FIRST path.
+                Without it, compressions on `tool_result` content blocks
+                are invisible to `compressions_by_strategy` /
+                `tokens_saved_by_strategy` — the silent-regression class
+                PR #302 was built to detect.
         """
         from ..config import IntelligentContextConfig
 
         self.config = config or IntelligentContextConfig()
         self.toin = toin
         self._summarize_fn = summarize_fn
+        self._observer = observer
 
         # Initialize scorer with TOIN if available
         self.scorer = MessageScorer(
@@ -522,7 +532,7 @@ class IntelligentContextManager(Transform):
                     min_section_tokens=20,
                     ccr_enabled=True,
                 )
-                self._content_router = ContentRouter(config=router_config)
+                self._content_router = ContentRouter(config=router_config, observer=self._observer)
             except ImportError:
                 logger.debug("ContentRouter not available for COMPRESS_FIRST")
         return self._content_router

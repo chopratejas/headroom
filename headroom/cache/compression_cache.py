@@ -143,20 +143,30 @@ class CompressionCache:
     ) -> bool:
         """Whether to defer compressing this content to avoid mid-TTL busts.
 
-        Returns True if the content was first seen recently enough that
-        compressing it now would bust the cached prefix with no TTL benefit.
-        Returns False near the TTL boundary (within batch_window of expiry),
-        meaning we should compress now and accept one bust.
+        Returns True if we have evidence this content has been re-sent
+        within the cache TTL window — recompressing it now would bust an
+        existing prefix-cache entry without TTL-amortizing the bust over
+        future turns. Returns False otherwise:
+
+        - **First sight** of the content. Compress now: there is no
+          prefix-cache entry to preserve yet (this byte range was not in
+          a prior request), so compression carries no bust cost. Issue
+          #327: a previous version returned True here, which marked the
+          freshest tool_result on every turn as "stable" and effectively
+          disabled compression for typical Claude Code workloads where
+          each tool_result is unique-per-turn.
+        - **Near the TTL boundary**: compress now and amortize the bust
+          across future turns (batched recompression).
         """
         now = time.time()
         first_seen = self._first_seen.get(content_hash)
         if first_seen is None:
             self._first_seen[content_hash] = now
-            return True  # First time seeing this — defer
+            return False  # First time — compress now (no cache entry to preserve)
         age = now - first_seen
         if age >= ttl_seconds - batch_window:
             return False  # Near TTL boundary — compress now (batch window)
-        return True  # Still within TTL — defer to preserve cache
+        return True  # Seen recently within TTL — defer to preserve cache
 
     def get_stats(self) -> dict:
         """Return cache statistics."""
