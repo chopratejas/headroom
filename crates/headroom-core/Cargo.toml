@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Core Headroom types and compression transform traits (Rust)."
 
+[features]
+default = []
+fastembed = ["dep:fastembed"]
+magika = ["dep:magika"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -53,14 +58,14 @@ flate2 = "1"
 # int8-quantized ONNX) auto-downloads from HuggingFace Hub on first use.
 # Same library + same model = byte-equal embeddings between Python and Rust
 # (both call into ONNX Runtime over the identical ONNX file).
-fastembed = "5"
+fastembed = { version = "5", optional = true }
 # `magika` is Google's ONNX-backed content classifier (Tier 1 of the
 # Stage-3d ContentRouter detection arch). Bundled standard-model is
 # loaded once per process via `OnceLock` and shared across calls. The
 # crate depends on `ort`, which is already in our dep tree via
 # `fastembed`, so adding it doesn't pull a new ML runtime — both
 # crates share the ONNX Runtime singleton.
-magika = "1"
+magika = { version = "1", optional = true }
 # `unidiff` is the Stage-3d Tier-2 diff detector. We use the parser
 # itself as the "is this a diff?" oracle — anything that successfully
 # parses to ≥1 PatchedFile is a diff. The deterministic parser
@@ -76,17 +81,7 @@ unidiff = "0.4"
 # happen as a post-filter on the byte offsets the automaton returns.
 # Default features (std, perf-literal) keep the build small.
 aho-corasick = "1"
-# `rayon` powers the pipeline orchestrator's parallel reformat-vs-bloat
-# evaluation: while a worker thread runs the structural reformat passes,
-# another set of threads run the per-offload bloat estimators in parallel.
-# Reformat completion + all bloat estimates need to be ready before the
-# orchestrator can decide which offloads to actually execute, so two-phase
-# join semantics (`rayon::join` + `par_iter`) are exactly what we need.
 rayon = "1"
-# `toml` reads the default pipeline configuration shipped at
-# `config/pipeline.toml`. The defaults embed via `include_str!` so a
-# stock binary needs no external file; production deployments override
-# by loading their own TOML at startup.
 toml = "0.8"
 
 [dev-dependencies]

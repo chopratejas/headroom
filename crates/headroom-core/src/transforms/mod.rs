@@ -27,7 +27,10 @@ pub mod search_compressor;
 pub mod smart_crusher;
 pub mod tag_protector;
 pub mod unidiff_detector;
+pub mod cache_aligner;
+pub mod text_compressor;
 
+pub use cache_aligner::{CacheAligner, CacheAlignerConfig, CacheAlignerResult, CachePrefixMetrics};
 pub use content_detector::{
     detect_content_type, is_json_array_of_dicts, ContentType, DetectionResult,
 };
@@ -50,4 +53,5 @@ pub use search_compressor::{
     SearchCompressorStats, SearchMatch,
 };
 pub use tag_protector::{is_known_html_tag, protect_tags, restore_tags, ProtectStats};
+pub use text_compressor::{TextCompressionResult, TextCompressor, TextCompressorConfig};
 pub use unidiff_detector::{detect_diff, is_diff};
