@@ -91,6 +91,36 @@ curl -si http://127.0.0.1:8787/v1/models
 | `--rewrite-host` / `--no-rewrite-host` | | rewrite | rewrite Host to upstream (default) |
 | `--graceful-shutdown-timeout` | | `30s` | wait for in-flight on SIGTERM/SIGINT |
 
+### Picking the next port: invocation telemetry
+
+Before porting another Python compressor to Rust, check what's actually
+running. The Python proxy already exposes per-transform telemetry on
+`/stats` (`headroom.proxy.prometheus_metrics`):
+
+```bash
+# Top compressors by invocation count (last process lifetime)
+curl -s http://127.0.0.1:8788/stats | jq '.compressions_by_strategy'
+# {
+#   "intelligent_context": 12453,
+#   "smart_crusher": 487,
+#   "search":         312,
+#   "diff":            28,
+#   "code":             0,        # ← never fires; safe to defer porting
+#   ...
+# }
+
+# Per-transform timing (avg/max/count by transform name)
+curl -s http://127.0.0.1:8788/stats | jq '.pipeline_timing'
+
+# Token savings attributable to each strategy
+curl -s http://127.0.0.1:8788/stats | jq '.tokens_saved_by_strategy'
+```
+
+This is the data the audit-cleanup PR (2026-04-30) recommended for
+prioritizing the next Python → Rust port. Strategies with zero or
+near-zero invocations are deferral candidates; strategies on the hot
+path are porting candidates regardless of LOC count.
+
 ### Reserved paths
 
 `/healthz` and `/healthz/upstream` are intercepted by the Rust proxy and

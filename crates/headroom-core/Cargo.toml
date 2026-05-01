@@ -17,7 +17,7 @@ tiktoken-rs = "0.11"
 # `tokenizers` is the HuggingFace pure-Rust tokenizer crate. Default features
 # pull in `onig` for the BPE pre-tokenizer regex; that vendors oniguruma so it
 # builds without a system dep on macOS/Linux.
-tokenizers = "0.21"
+tokenizers = "0.22"
 # `hf-hub` is the HuggingFace Hub client. We use the blocking `ureq` transport
 # with `rustls` (no system OpenSSL dep — keeps the binary static-linkable for
 # AWS deploys). `from_pretrained` is called once at startup, so blocking is

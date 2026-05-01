@@ -20,16 +20,15 @@
 //! No regex — pure byte-prefix checks. Cost: O(n) over the input
 //! (single pass, no allocations).
 //!
-//! # Bug-fix-on-port
+//! # CCR persistence
 //!
-//! [`DiffCompressor`] emits a `cache_key` in its output marker without
-//! actually persisting the original to any store (it never sees one).
-//! That's a leak the existing parity-bound port couldn't fix without
-//! breaking byte equality. As an [`OffloadTransform`] consumer we close
-//! the leak by storing the original payload under the same key after
-//! the compressor returns. The trait contract is that
-//! `cache_key MUST resolve in store`; this wrapper is what makes that
-//! true for the diff path.
+//! `DiffCompressor::compress_with_store` writes the original payload to
+//! the orchestrator-supplied store under the same `cache_key` it embeds
+//! in the wire marker. The trait contract is satisfied by the
+//! compressor itself; no double-store hack needed at the wrapper level.
+//! (Earlier revisions of this offload did the post-hoc store from here
+//! because the compressor lacked a store parameter — that's been
+//! upstreamed in the audit-cleanup PR.)
 //!
 //! [`DiffCompressor`]: crate::transforms::diff_compressor::DiffCompressor
 //! [`OffloadTransform`]: crate::transforms::pipeline::traits::OffloadTransform
@@ -134,7 +133,14 @@ impl OffloadTransform for DiffOffload {
         ctx: &CompressionContext,
         store: &dyn CcrStore,
     ) -> Result<OffloadOutput, TransformError> {
-        let result = self.compressor.compress(content, &ctx.query);
+        // `compress_with_store` (added in the audit-cleanup PR) writes
+        // the original to `store` under the same `cache_key` it embeds
+        // in the marker. Earlier versions of this offload had to
+        // double-store post-hoc because the compressor lacked a store
+        // parameter — that hack is gone.
+        let (result, _) = self
+            .compressor
+            .compress_with_store(content, &ctx.query, Some(store));
 
         let Some(key) = result.cache_key else {
             return Err(TransformError::skipped(
@@ -142,11 +148,6 @@ impl OffloadTransform for DiffOffload {
                 "diff compressor did not emit a cache_key",
             ));
         };
-
-        // Bug-fix-on-port: DiffCompressor mints a key but never stores.
-        // Persist the original here so the trait contract (key resolves
-        // in store) holds.
-        store.put(&key, content);
 
         Ok(OffloadOutput::from_lengths(
             content.len(),

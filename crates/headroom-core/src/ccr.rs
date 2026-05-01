@@ -167,19 +167,37 @@ impl CcrStore for InMemoryCcrStore {
         // Read path: shard read-lock, check TTL, clone payload out.
         // No global lock involvement at all — distinct hashes hash to
         // distinct shards and never contend.
-        let expired_at = {
-            let entry = self.map.get(hash)?;
-            if entry.inserted.elapsed() > self.ttl {
-                Some(()) // signal expired; drop guard before we remove
-            } else {
+        //
+        // Lazy expiry uses DashMap's `remove_if` so the check-and-remove
+        // is atomic on the shard. An earlier 2-step (drop read lock,
+        // then `remove`) had a TOCTOU race: between dropping the read
+        // lock and calling `remove`, a concurrent `put()` of the same
+        // hash with a fresh timestamp could land — and our `remove`
+        // would then wipe that fresh entry. Under multi-worker proxy
+        // load this manifested as "I just stored it; why is it gone?"
+        // `remove_if` closes the window because the shard write lock
+        // is held across both the predicate evaluation and the removal.
+        if let Some(entry) = self.map.get(hash) {
+            if entry.inserted.elapsed() <= self.ttl {
                 return Some(entry.payload.clone());
             }
-        };
-        if expired_at.is_some() {
-            self.map.remove(hash);
+        } else {
             return None;
         }
-        None
+        // Out-of-band path: the entry exists and looks expired. Re-check
+        // under the shard write lock; if it's still expired, evict.
+        // Otherwise (a concurrent `put` refreshed it) leave it alone
+        // and re-fetch its payload.
+        let was_removed = self
+            .map
+            .remove_if(hash, |_, entry| entry.inserted.elapsed() > self.ttl)
+            .is_some();
+        if was_removed {
+            None
+        } else {
+            // Concurrent refresh — return the fresh payload.
+            self.map.get(hash).map(|e| e.payload.clone())
+        }
     }
 
     fn len(&self) -> usize {
@@ -280,5 +298,67 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(store.len(), n_threads * per_thread);
+    }
+
+    #[test]
+    fn expired_get_does_not_wipe_concurrent_refresh() {
+        // Regression for the TOCTOU race fixed in the audit-cleanup PR.
+        // Two threads contend on the SAME key:
+        //   - Thread A: stores fresh value, then `get` it many times.
+        //   - Thread B: keeps re-storing the same key with FRESH
+        //     timestamps in a tight loop (simulating a second worker
+        //     touching the same payload).
+        // With the old 2-step check-then-remove, A's `get` could see
+        // an "expired" entry, drop the read lock, and remove B's
+        // freshly-inserted entry between drop and remove. With
+        // `remove_if`, the predicate runs under the shard write lock,
+        // so the race window is closed.
+        use std::sync::Arc;
+        use std::thread;
+
+        let store = Arc::new(InMemoryCcrStore::with_capacity_and_ttl(
+            64,
+            Duration::from_millis(20),
+        ));
+        let key = "shared_key";
+        let payload = "fresh";
+
+        // Seed.
+        store.put(key, payload);
+
+        let writer = {
+            let s = store.clone();
+            thread::spawn(move || {
+                // 200 fresh re-stores, racing the reader.
+                for _ in 0..200 {
+                    s.put(key, payload);
+                }
+            })
+        };
+
+        let reader = {
+            let s = store.clone();
+            thread::spawn(move || {
+                let mut hits = 0;
+                for _ in 0..200 {
+                    if s.get(key).as_deref() == Some(payload) {
+                        hits += 1;
+                    }
+                }
+                hits
+            })
+        };
+
+        writer.join().unwrap();
+        let hits = reader.join().unwrap();
+        // The entry must be live at the end (writer's last put won).
+        assert_eq!(store.get(key).as_deref(), Some(payload));
+        // Reader should have observed the live entry the vast majority
+        // of the time. Allow some misses on first iterations / TTL
+        // transitions but require strong majority.
+        assert!(
+            hits > 100,
+            "reader should mostly observe live entry, hits={hits}"
+        );
     }
 }
