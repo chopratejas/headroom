@@ -50,6 +50,28 @@ pub struct CliArgs {
     /// Maximum time to wait for in-flight requests to finish on shutdown.
     #[arg(long, default_value = "30s", value_parser = parse_duration)]
     pub graceful_shutdown_timeout: Duration,
+
+    /// Enable Headroom compression on LLM-shaped requests
+    /// (currently: `POST /v1/messages` for Anthropic). When off,
+    /// the proxy stays a pure streaming passthrough.
+    ///
+    /// Off by default so existing operators get unchanged behaviour
+    /// and the integration-test harness doesn't need to opt out
+    /// per-test. Operators wanting to demo the compressor pass
+    /// `--compression` (or set `HEADROOM_PROXY_COMPRESSION=1`).
+    #[arg(
+        long = "compression",
+        env = "HEADROOM_PROXY_COMPRESSION",
+        default_value_t = false
+    )]
+    pub compression: bool,
+
+    /// Maximum body size to buffer for compression. Bodies larger
+    /// than this get forwarded unchanged. Defaults to `--max-body-bytes`
+    /// when unset, so operators only need to tune one knob unless
+    /// they have a specific reason to cap compression separately.
+    #[arg(long, value_parser = parse_bytes)]
+    pub compression_max_body_bytes: Option<u64>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -73,6 +95,13 @@ pub struct Config {
     pub log_level: String,
     pub rewrite_host: bool,
     pub graceful_shutdown_timeout: Duration,
+    /// Master switch for the LLM compression interceptor. When `false`,
+    /// the proxy is pure streaming passthrough and never buffers a body.
+    pub compression: bool,
+    /// Effective ceiling for compression-time body buffering.
+    /// Inherits `max_body_bytes` when not overridden. Bodies larger
+    /// than this still forward, just unchanged.
+    pub compression_max_body_bytes: u64,
 }
 
 impl Config {
@@ -82,6 +111,9 @@ impl Config {
         } else {
             args.rewrite_host
         };
+        let compression_max_body_bytes = args
+            .compression_max_body_bytes
+            .unwrap_or(args.max_body_bytes);
         Self {
             listen: args.listen,
             upstream: args.upstream,
@@ -91,10 +123,13 @@ impl Config {
             log_level: args.log_level,
             rewrite_host,
             graceful_shutdown_timeout: args.graceful_shutdown_timeout,
+            compression: args.compression,
+            compression_max_body_bytes,
         }
     }
 
-    /// Test/library helper.
+    /// Test/library helper. Compression off by default — match
+    /// production-default behaviour so existing tests stay unchanged.
     pub fn for_test(upstream: Url) -> Self {
         Self {
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -105,6 +140,8 @@ impl Config {
             log_level: "warn".into(),
             rewrite_host: true,
             graceful_shutdown_timeout: Duration::from_secs(5),
+            compression: false,
+            compression_max_body_bytes: 100 * 1024 * 1024,
         }
     }
 }

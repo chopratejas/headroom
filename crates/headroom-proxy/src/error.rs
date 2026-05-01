@@ -20,6 +20,16 @@ pub enum ProxyError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Surfaced when `--compression` is enabled but the proxy can't
+    /// build the IntelligentContextManager at startup (e.g. the
+    /// embedded tokenizer asset failed to initialize). Bubbles up to
+    /// `main` as a fatal startup error rather than a per-request
+    /// failure — if compression is configured but the engine won't
+    /// build, the operator should know immediately, not at first
+    /// LLM request.
+    #[error("compression engine startup failed: {0}")]
+    CompressionStartup(String),
 }
 
 impl IntoResponse for ProxyError {
@@ -38,6 +48,12 @@ impl IntoResponse for ProxyError {
             ProxyError::InvalidHeader(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ProxyError::WebSocket(_) => (StatusCode::BAD_GATEWAY, self.to_string()),
             ProxyError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            // CompressionStartup is a startup-time error, not a
+            // per-request one — but if it ever surfaces in the
+            // handler path, surface as 500 rather than panic.
+            ProxyError::CompressionStartup(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
         };
         tracing::warn!(error = %msg, "proxy error");
         (status, msg).into_response()

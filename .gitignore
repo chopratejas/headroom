@@ -22,6 +22,7 @@ scripts/*
 !scripts/build_rust_extension.sh
 !scripts/install-git-hooks.sh
 !scripts/smoke_issue_327.py
+!scripts/refresh_model_limits.sh
 
 # Rust / Cargo build artifacts
 /target/

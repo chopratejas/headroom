@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
@@ -16,6 +16,9 @@ use futures_util::{StreamExt as _, TryStreamExt};
 #[cfg(test)]
 use http_body_util::BodyExt;
 
+use headroom_core::context::IntelligentContextManager;
+
+use crate::compression;
 use crate::config::Config;
 use crate::error::ProxyError;
 use crate::headers::{build_forward_request_headers, filter_response_headers};
@@ -27,6 +30,11 @@ use crate::websocket::ws_handler;
 pub struct AppState {
     pub config: Arc<Config>,
     pub client: reqwest::Client,
+    /// Optional shared `IntelligentContextManager`. Constructed only
+    /// when `config.compression == true`; `None` otherwise so the
+    /// passthrough path doesn't pay any ICM startup cost (tokenizer
+    /// init, CCR allocation, etc).
+    pub icm: Option<Arc<IntelligentContextManager>>,
 }
 
 impl AppState {
@@ -41,9 +49,22 @@ impl AppState {
             // Both HTTP/1.1 and HTTP/2 negotiated via ALPN.
             .build()
             .map_err(ProxyError::Upstream)?;
+
+        // Construct ICM only when compression is enabled. ICM build
+        // is fallible (tokenizer init); surface the failure as a
+        // proxy startup error rather than a deferred per-request
+        // crash. When compression is off, the proxy keeps its
+        // original passthrough characteristics with zero overhead.
+        let icm = if config.compression {
+            Some(compression::build_icm().map_err(ProxyError::CompressionStartup)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             config: Arc::new(config),
             client,
+            icm,
         })
     }
 }
@@ -79,6 +100,23 @@ async fn catch_all(
     forward_http(state, client_addr, req)
         .await
         .unwrap_or_else(|e| e.into_response())
+}
+
+/// True if `Content-Type` is `application/json` (with any optional
+/// parameters like `; charset=utf-8`). Compression only inspects JSON
+/// bodies — multipart uploads, form-encoded posts, and binary
+/// payloads stream through untouched.
+fn is_application_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            // Take the media-type portion before any ';'. Trim and
+            // compare case-insensitively per RFC 7231 §3.1.1.1.
+            let media_type = s.split(';').next().unwrap_or("").trim();
+            media_type.eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false)
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -166,20 +204,133 @@ async fn forward_http(
         }
     }
 
-    // Stream the request body through to reqwest. We don't buffer.
-    let body_stream =
-        TryStreamExt::map_err(req.into_body().into_data_stream(), std::io::Error::other);
-    let reqwest_body = reqwest::Body::wrap_stream(body_stream);
+    // ─── COMPRESSION GATE ──────────────────────────────────────────────
+    //
+    // Streaming-by-default is the proxy's contract for everything that
+    // isn't explicitly an LLM-shape request. To inspect a body for
+    // compression we have to buffer, which is incompatible with
+    // streaming — so we make the buffering decision *here*, on a
+    // narrow gate:
+    //
+    //   - Compression enabled in config?       (`state.config.compression`)
+    //   - Method is POST?                      (we only compress request bodies)
+    //   - Path matches a known LLM endpoint?   (`compression::is_compressible_path`)
+    //   - Content-Type is application/json?    (skip multipart, form, binary)
+    //   - ICM was successfully built?          (Some by construction when compression is on)
+    //
+    // ALL of those true → buffer + run ICM + forward modified body.
+    // ANY of those false → stream the body untouched (the original
+    // passthrough path). This keeps WebSocket upgrades, healthchecks,
+    // tool-API endpoints, and SSE streaming from paying any
+    // buffering cost.
+    let should_compress = state.config.compression
+        && method == axum::http::Method::POST
+        && compression::is_compressible_path(uri.path())
+        && is_application_json(req.headers())
+        && state.icm.is_some();
 
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| ProxyError::InvalidHeader(e.to_string()))?;
-    let upstream_resp = state
-        .client
-        .request(reqwest_method, upstream_url.clone())
-        .headers(outgoing_headers)
-        .body(reqwest_body)
-        .send()
-        .await?;
+
+    let upstream_resp = if should_compress {
+        // Buffer up to `compression_max_body_bytes`. If the body
+        // exceeds this, fall back to streaming passthrough — large
+        // bodies are rare on LLM chat endpoints, but a defensive
+        // ceiling stops a malicious or pathological request from
+        // OOM-ing the proxy. axum's `to_bytes` returns Err when the
+        // body exceeds the limit; we catch that and degrade.
+        let max = state.config.compression_max_body_bytes as usize;
+        let buffered = match to_bytes(req.into_body(), max).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    limit_bytes = max,
+                    error = %e,
+                    "compression: body exceeds limit, falling back to streaming passthrough \
+                     is impossible (body already partially consumed) — failing the request",
+                );
+                // Once `req.into_body()` is consumed by `to_bytes` we
+                // can no longer stream. The defensive choice is to
+                // fail the request loudly. Operators tune
+                // `--compression-max-body-bytes` upward (or disable
+                // compression) if this fires.
+                return Err(ProxyError::InvalidHeader(format!(
+                    "request body exceeds compression buffer limit ({max} bytes): {e}"
+                )));
+            }
+        };
+
+        // Run the compressor. Failures degrade to passthrough by
+        // returning the original buffered bytes.
+        let icm = state.icm.as_ref().expect("checked above");
+        let outcome = compression::maybe_compress(&buffered, icm);
+
+        let body_to_send = match outcome {
+            compression::Outcome::Compressed {
+                body,
+                tokens_before,
+                tokens_after,
+                strategies_applied,
+                markers_inserted,
+            } => {
+                tracing::info!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    tokens_before = tokens_before,
+                    tokens_after = tokens_after,
+                    tokens_freed = tokens_before.saturating_sub(tokens_after),
+                    strategies = ?strategies_applied,
+                    markers = markers_inserted.len(),
+                    "compression applied"
+                );
+                body
+            }
+            compression::Outcome::NoCompression { tokens_before } => {
+                tracing::debug!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    tokens_before = tokens_before,
+                    "compression: under budget, no work"
+                );
+                buffered
+            }
+            compression::Outcome::Passthrough { reason } => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    reason = ?reason,
+                    "compression: passthrough on parse/serialize"
+                );
+                buffered
+            }
+        };
+
+        // Forward the (possibly modified) body. reqwest sets its own
+        // Content-Length from the body bytes — the existing
+        // `build_forward_request_headers` already strips the
+        // client-supplied Content-Length for us.
+        state
+            .client
+            .request(reqwest_method, upstream_url.clone())
+            .headers(outgoing_headers)
+            .body(body_to_send)
+            .send()
+            .await?
+    } else {
+        // Pure streaming path — the original passthrough behaviour.
+        let body_stream =
+            TryStreamExt::map_err(req.into_body().into_data_stream(), std::io::Error::other);
+        let reqwest_body = reqwest::Body::wrap_stream(body_stream);
+        state
+            .client
+            .request(reqwest_method, upstream_url.clone())
+            .headers(outgoing_headers)
+            .body(reqwest_body)
+            .send()
+            .await?
+    };
 
     let upstream_status = upstream_resp.status();
     let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
