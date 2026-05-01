@@ -8,6 +8,7 @@ real code paths (not mocked) and assert on registry / task state.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import sys
 from types import SimpleNamespace
@@ -415,6 +416,563 @@ async def test_upstream_connect_failure_still_deregisters_cleanly():
         await handler.handle_openai_responses_ws(client_ws)
 
     assert handler.ws_sessions.active_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_websocket_handler_closes_cleanly_when_websockets_package_missing(monkeypatch):
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    handler = _DummyOpenAIHandler()
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if name == "websockets":
+            raise ImportError("missing websockets")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    await handler.handle_openai_responses_ws(client_ws)
+
+    assert client_ws.closed is True
+    assert client_ws.close_code == 1011
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_forwards_subprotocol_and_host_only_client_address():
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    client_ws.headers["sec-websocket-protocol"] = "realtime, fallback"
+    client_ws.client = SimpleNamespace(host="127.0.0.1", port=None)
+
+    handler = _DummyOpenAIHandler()
+    captured_handles = []
+    original_register = handler.ws_sessions.register
+
+    def capture_register(handle) -> None:  # noqa: ANN001
+        captured_handles.append(handle)
+        original_register(handle)
+
+    handler.ws_sessions.register = capture_register  # type: ignore[method-assign]
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert client_ws.accepted_subprotocol == "realtime"
+    assert captured_handles[0].client_addr == "127.0.0.1"
+    assert handler.metrics.active_ws_sessions_max == 1
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_injects_env_auth_and_beta_header(monkeypatch):
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    client_ws.headers = {"x-test": "value"}
+    handler = _DummyOpenAIHandler()
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    connect_kwargs = fake_ws_mod.connect.call_args.kwargs
+    assert connect_kwargs["additional_headers"]["Authorization"] == "Bearer env-key"
+    assert connect_kwargs["additional_headers"]["OpenAI-Beta"] == "responses_websockets=2026-02-06"
+    assert connect_kwargs["additional_headers"]["x-test"] == "value"
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_times_out_when_client_never_sends_first_frame(monkeypatch):
+    client_ws = _FakeWebSocket(frames=[], hold_after_initial=True)
+    handler = _DummyOpenAIHandler()
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr("headroom.proxy.handlers.openai.WS_FIRST_FRAME_TIMEOUT_SECONDS", 0.01)
+
+    await handler.handle_openai_responses_ws(client_ws)
+
+    assert client_ws.closed is True
+    assert client_ws.close_code == 1001
+    assert handler.metrics.termination_causes[-1] == "client_timeout"
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_passes_through_non_json_first_frame(monkeypatch):
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    client_ws = _FakeWebSocket(frames=["raw text frame"])
+    handler = _DummyOpenAIHandler()
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert upstream.sent[0] == "raw text frame"
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_injects_memory_context_tools_and_instruction(monkeypatch):
+    class _MemoryHandler:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(inject_context=True, inject_tools=True)
+
+        async def search_and_format_context(self, memory_user_id, messages):  # noqa: ANN001, ANN201
+            return "remembered context"
+
+        def inject_tools(self, tools, provider):
+            return (
+                tools
+                + [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "memory_search",
+                            "description": "search memory",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                True,
+            )
+
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    client_ws = _FakeWebSocket(
+        frames=[
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "model": "gpt-5.4",
+                        "input": "hi",
+                        "instructions": "base instructions",
+                        "tools": [{"type": "web_search_preview"}],
+                    },
+                }
+            )
+        ]
+    )
+    client_ws.headers["x-headroom-user-id"] = "user-1"
+    handler = _DummyOpenAIHandler()
+    handler.memory_handler = _MemoryHandler()
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    payload = json.loads(upstream.sent[0])
+    response_body = payload["response"]
+    assert "remembered context" in response_body["instructions"]
+    assert "memory_search and memory_save tools" in response_body["instructions"]
+    assert {"type": "web_search_preview"} in response_body["tools"]
+    assert {
+        "type": "function",
+        "name": "memory_search",
+        "description": "search memory",
+        "parameters": {"type": "object"},
+    } in response_body["tools"]
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_compresses_first_frame_input(monkeypatch):
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    client_ws = _FakeWebSocket(
+        frames=[
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "model": "gpt-5.4",
+                        "input": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "first"}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "second"}],
+                            },
+                        ],
+                    },
+                }
+            )
+        ]
+    )
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+    handler.openai_pipeline.apply.return_value = SimpleNamespace(
+        messages=[{"role": "user", "content": "condensed"}],
+        tokens_after=1,
+    )
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr(
+        "headroom.tokenizers.get_tokenizer",
+        lambda model: SimpleNamespace(count_messages=lambda messages: len(messages)),
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    payload = json.loads(upstream.sent[0])
+    response_body = payload["response"]
+    assert (
+        response_body["input"] != json.loads(client_ws._frames[0])["response"]["input"]
+        if client_ws._frames
+        else response_body["input"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_reverts_when_compression_inflates_tokens(monkeypatch):
+    original_payload = {
+        "type": "response.create",
+        "response": {
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "second"}],
+                },
+            ],
+        },
+    }
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    client_ws = _FakeWebSocket(frames=[json.dumps(original_payload)])
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+    handler.openai_pipeline.apply.return_value = SimpleNamespace(
+        messages=[{"role": "user", "content": "inflated"}],
+        tokens_after=99,
+    )
+    warnings: list[str] = []
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr(
+        "headroom.tokenizers.get_tokenizer",
+        lambda model: SimpleNamespace(count_messages=lambda messages: len(messages)),
+    )
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.logger",
+        SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warning=lambda message, *args: warnings.append(message % args if args else message),
+            debug=lambda *args, **kwargs: None,
+        ),
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    payload = json.loads(upstream.sent[0])
+    assert payload == original_payload
+    assert any("WS optimization inflated tokens" in line for line in warnings)
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_continues_when_compression_raises(monkeypatch):
+    original_payload = {
+        "type": "response.create",
+        "response": {
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "second"}],
+                },
+            ],
+        },
+    }
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    client_ws = _FakeWebSocket(frames=[json.dumps(original_payload)])
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+    handler.openai_pipeline.apply.side_effect = RuntimeError("compress failed")
+    warnings: list[str] = []
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr(
+        "headroom.tokenizers.get_tokenizer",
+        lambda model: SimpleNamespace(count_messages=lambda messages: len(messages)),
+    )
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.logger",
+        SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warning=lambda message, *args: warnings.append(message % args if args else message),
+            debug=lambda *args, **kwargs: None,
+        ),
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert json.loads(upstream.sent[0]) == original_payload
+    assert any("WS compression failed: compress failed" in line for line in warnings)
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_compression_updates_instructions_for_bare_response_body(monkeypatch):
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    original_payload = {
+        "model": "gpt-5.4",
+        "instructions": "base instructions",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "first"}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "second"}],
+            },
+        ],
+    }
+    client_ws = _FakeWebSocket(frames=[json.dumps(original_payload)])
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+    handler.openai_pipeline.apply.return_value = SimpleNamespace(
+        messages=[
+            {"role": "system", "content": "rewritten instructions"},
+            {"role": "user", "content": "condensed"},
+        ],
+        tokens_after=1,
+    )
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr(
+        "headroom.tokenizers.get_tokenizer",
+        lambda model: SimpleNamespace(count_messages=lambda messages: len(messages)),
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    payload = json.loads(upstream.sent[0])
+    assert payload["instructions"] == "rewritten instructions"
+    assert payload["input"] != original_payload["input"]
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_memory_context_timeout_fails_open(monkeypatch):
+    class _MemoryHandler:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(inject_context=True, inject_tools=False)
+
+        async def search_and_format_context(self, memory_user_id, messages):  # noqa: ANN001, ANN201
+            raise asyncio.TimeoutError
+
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    original_payload = {
+        "type": "response.create",
+        "response": {
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first"}],
+                }
+            ],
+        },
+    }
+    client_ws = _FakeWebSocket(frames=[json.dumps(original_payload)])
+    handler = _DummyOpenAIHandler()
+    handler.memory_handler = _MemoryHandler()
+    info_logs: list[str] = []
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.logger",
+        SimpleNamespace(
+            info=lambda message, *args: info_logs.append(message % args if args else message),
+            warning=lambda *args, **kwargs: None,
+            debug=lambda *args, **kwargs: None,
+        ),
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert json.loads(upstream.sent[0]) == original_payload
+    assert any("WS Memory: Context lookup exceeded" in line for line in info_logs)
+
+
+@pytest.mark.asyncio
+async def test_ws_handler_memory_injection_failure_is_non_fatal(monkeypatch):
+    class _MemoryHandler:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(inject_context=False, inject_tools=True)
+
+        def inject_tools(self, tools, provider):
+            raise RuntimeError("inject failed")
+
+    upstream = _FakeUpstream(
+        [
+            json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+            json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+        ]
+    )
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+    original_payload = {
+        "type": "response.create",
+        "response": {
+            "model": "gpt-5.4",
+            "input": "hi",
+            "tools": [{"type": "web_search_preview"}],
+        },
+    }
+    client_ws = _FakeWebSocket(frames=[json.dumps(original_payload)])
+    handler = _DummyOpenAIHandler()
+    handler.memory_handler = _MemoryHandler()
+    warnings: list[str] = []
+
+    async def passthrough_auth(headers, url=None):  # noqa: ANN001, ANN201
+        return headers
+
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.apply_copilot_api_auth",
+        passthrough_auth,
+    )
+    monkeypatch.setattr(
+        "headroom.proxy.handlers.openai.logger",
+        SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            warning=lambda message, *args: warnings.append(message % args if args else message),
+            debug=lambda *args, **kwargs: None,
+        ),
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert json.loads(upstream.sent[0]) == original_payload
+    assert any("WS Memory injection failed: inject failed" in line for line in warnings)
 
 
 @pytest.mark.asyncio

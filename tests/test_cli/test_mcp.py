@@ -219,11 +219,18 @@ class TestMCPInstallCommand:
         config = json.loads(mock_claude_config_path.read_text())
         assert config["mcpServers"]["headroom"]["env"]["HEADROOM_PROXY_URL"] == "http://new:9000"
 
-    @pytest.mark.skipif(MCP_AVAILABLE, reason="Test only runs when MCP SDK is NOT installed")
     def test_install_without_mcp_sdk_fails(self, mock_claude_config_path):
         """Install fails gracefully when MCP SDK is not installed."""
         runner = CliRunner()
-        result = runner.invoke(main, ["mcp", "install"])
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            if name == "mcp":
+                raise ImportError("missing test dependency")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            result = runner.invoke(main, ["mcp", "install"])
 
         # Should fail with helpful message
         assert result.exit_code == 1

@@ -184,6 +184,29 @@ def test_wrap_copilot_auto_detects_running_proxy_backend(
     assert env["COPILOT_PROVIDER_WIRE_API"] == "completions"
 
 
+def test_copilot_proxy_helper_wrappers_delegate(
+    wrap_modules: tuple[types.ModuleType, click.Group],
+) -> None:
+    wrap_cli, _main = wrap_modules
+
+    with (
+        patch.object(wrap_cli, "_copilot_resolve_provider_type", return_value="openai") as resolve,
+        patch.object(
+            wrap_cli, "_copilot_query_proxy_config", return_value={"memory": True}
+        ) as query,
+        patch.object(
+            wrap_cli, "_copilot_detect_running_proxy_backend", return_value="anyllm"
+        ) as detect,
+    ):
+        assert wrap_cli._resolve_copilot_provider_type("anyllm", "auto") == "openai"
+        assert wrap_cli._query_proxy_config(8787) == {"memory": True}
+        assert wrap_cli._detect_running_proxy_backend(8787) == "anyllm"
+
+    resolve.assert_called_once_with("anyllm", "auto")
+    query.assert_called_once_with(8787)
+    detect.assert_called_once_with(8787)
+
+
 def test_wrap_copilot_prefers_existing_oauth_session(
     runner: CliRunner,
     wrap_modules: tuple[types.ModuleType, click.Group],
@@ -239,6 +262,76 @@ def test_wrap_copilot_translated_backend_still_requires_byok(
 
     assert result.exit_code == 1
     assert "Copilot BYOK mode requires a provider API key" in result.output
+
+
+def test_wrap_copilot_rejects_mismatched_running_backend(
+    runner: CliRunner,
+    wrap_modules: tuple[types.ModuleType, click.Group],
+) -> None:
+    _wrap_cli, main = wrap_modules
+
+    with (
+        patch("headroom.cli.wrap.shutil.which", return_value="copilot"),
+        patch("headroom.cli.wrap._check_proxy", return_value=True),
+        patch("headroom.cli.wrap._detect_running_proxy_backend", return_value="anthropic"),
+    ):
+        result = runner.invoke(
+            main,
+            ["wrap", "copilot", "--no-rtk", "--backend", "anyllm", "--", "--model", "gpt-4o"],
+        )
+
+    assert result.exit_code != 0
+    assert "Proxy already running on port 8787 with backend 'anthropic'" in result.output
+
+
+def test_wrap_copilot_oauth_requires_reusable_bearer_token(
+    runner: CliRunner,
+    wrap_modules: tuple[types.ModuleType, click.Group],
+) -> None:
+    _wrap_cli, main = wrap_modules
+
+    with (
+        patch("headroom.cli.wrap.shutil.which", return_value="copilot"),
+        patch("headroom.cli.wrap.has_oauth_auth", return_value=True),
+        patch("headroom.cli.wrap.resolve_client_bearer_token", return_value=None),
+    ):
+        result = runner.invoke(main, ["wrap", "copilot", "--no-rtk", "--", "--model", "gpt-4o"])
+
+    assert result.exit_code != 0
+    assert "no reusable bearer token could be resolved" in result.output
+
+
+def test_wrap_copilot_warns_when_model_is_not_configured(
+    runner: CliRunner,
+    wrap_modules: tuple[types.ModuleType, click.Group],
+) -> None:
+    _wrap_cli, main = wrap_modules
+    captured: dict[str, object] = {}
+
+    def fake_launch_tool(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+
+    with (
+        patch("headroom.cli.wrap.shutil.which", return_value="copilot"),
+        patch("headroom.cli.wrap.has_oauth_auth", return_value=False),
+        patch(
+            "headroom.cli.wrap._build_copilot_launch_env",
+            return_value=(
+                {
+                    "COPILOT_PROVIDER_TYPE": "openai",
+                    "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:8787/v1",
+                    "COPILOT_PROVIDER_API_KEY": "sk-test-dummy",
+                },
+                ["COPILOT_PROVIDER_TYPE=openai"],
+            ),
+        ),
+        patch("headroom.cli.wrap._launch_tool", side_effect=fake_launch_tool),
+    ):
+        result = runner.invoke(main, ["wrap", "copilot", "--no-rtk"])
+
+    assert result.exit_code == 0, result.output
+    assert "Copilot BYOK requires a model" in result.output
+    assert captured["args"] == ()
 
 
 def test_wrap_copilot_rejects_wire_api_for_anthropic_provider(

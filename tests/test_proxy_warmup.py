@@ -18,6 +18,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+import headroom.proxy.server as server_module
 from headroom.proxy.warmup import WarmupRegistry, WarmupSlot
 
 # -------------------------------------------------------------------
@@ -274,5 +275,283 @@ async def test_startup_memory_backend_error_surfaced_and_health_degraded(tmp_pat
         assert proxy.warmup.memory_embedder.status == "null"
         health = handler.health_status()
         assert health["initialized"] is False
+    finally:
+        await proxy.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_logs_token_mode_disabled_features_and_preload_failures(monkeypatch):
+    pytest.importorskip("httpx")
+    from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+    config = ProxyConfig(
+        optimize=True,
+        mode="token",
+        smart_routing=False,
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        cost_tracking_enabled=False,
+        anthropic_pre_upstream_concurrency=0,
+        subscription_tracking_enabled=False,
+        ccr_inject_tool=False,
+        ccr_handle_responses=False,
+        ccr_context_tracking=False,
+        ccr_proactive_expansion=False,
+    )
+    proxy = HeadroomProxy(config)
+
+    class FailingTransform:
+        def eager_load_compressors(self):
+            raise RuntimeError("boom")
+
+    class WeirdTransform:
+        def eager_load_compressors(self):
+            return "not-a-dict"
+
+    class GoodTransform:
+        def eager_load_compressors(self):
+            return {"magika": "enabled"}
+
+    proxy.anthropic_pipeline.transforms = [FailingTransform(), WeirdTransform(), GoodTransform()]
+    proxy.openai_pipeline.transforms = []
+
+    info_logs: list[str] = []
+    warning_logs: list[str] = []
+    monkeypatch.setattr(
+        server_module.logger,
+        "info",
+        lambda message, *args: info_logs.append(message % args if args else message),
+    )
+    monkeypatch.setattr(
+        server_module.logger,
+        "warning",
+        lambda message, *args: warning_logs.append(message % args if args else message),
+    )
+
+    class _Registry:
+        def register(self, tracker) -> None:  # noqa: ANN001
+            return None
+
+        async def start_all(self) -> None:
+            return None
+
+        async def stop_all(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "get_quota_registry", lambda: _Registry())
+    monkeypatch.setattr(server_module, "reset_quota_registry", lambda: None)
+    monkeypatch.setattr(server_module, "configure_subscription_tracker", lambda **kwargs: object())
+    monkeypatch.setattr(server_module, "get_codex_rate_limit_state", lambda: object())
+    monkeypatch.setattr(
+        server_module,
+        "get_copilot_quota_tracker",
+        lambda: type("_Tracker", (), {"is_available": lambda self: False})(),
+    )
+    monkeypatch.setattr(server_module, "is_telemetry_enabled", lambda: False)
+
+    await proxy.startup()
+    try:
+        assert any("Prefix freeze: re-freeze after compression" in line for line in info_logs)
+        assert any("Read protection window: 30%" in line for line in info_logs)
+        assert any("Compression cache: active" in line for line in info_logs)
+        assert any("Anthropic pre-upstream concurrency: unbounded" in line for line in info_logs)
+        assert any("Smart Routing: DISABLED" in line for line in info_logs)
+        assert any("Magika: ENABLED" in line for line in info_logs)
+        assert any("Memory: DISABLED" in line for line in info_logs)
+        assert any("CCR: DISABLED" in line for line in info_logs)
+        assert any("Subscription tracking: DISABLED" in line for line in info_logs)
+        assert any("GitHub Copilot quota tracking: DISABLED" in line for line in info_logs)
+        assert any("Anonymous telemetry: DISABLED" in line for line in info_logs)
+        assert any(
+            "Eager preload failed for FailingTransform: boom" in line for line in warning_logs
+        )
+    finally:
+        await proxy.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_logs_cache_mode_enabled_features_and_tracker_status(monkeypatch):
+    pytest.importorskip("httpx")
+    from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+    config = ProxyConfig(
+        optimize=False,
+        mode="cache",
+        smart_routing=True,
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        cost_tracking_enabled=False,
+        subscription_tracking_enabled=True,
+        subscription_poll_interval_s=11,
+        subscription_active_window_s=22,
+        ccr_inject_tool=True,
+        ccr_handle_responses=True,
+        ccr_context_tracking=True,
+        ccr_proactive_expansion=True,
+    )
+    proxy = HeadroomProxy(config)
+
+    info_logs: list[str] = []
+    monkeypatch.setattr(
+        server_module.logger,
+        "info",
+        lambda message, *args: info_logs.append(message % args if args else message),
+    )
+
+    class _Registry:
+        def __init__(self) -> None:
+            self.registered: list[object] = []
+
+        def register(self, tracker) -> None:  # noqa: ANN001
+            self.registered.append(tracker)
+
+        async def start_all(self) -> None:
+            return None
+
+        async def stop_all(self) -> None:
+            return None
+
+    registry = _Registry()
+    monkeypatch.setattr(server_module, "get_quota_registry", lambda: registry)
+    monkeypatch.setattr(server_module, "reset_quota_registry", lambda: None)
+    monkeypatch.setattr(server_module, "configure_subscription_tracker", lambda **kwargs: object())
+    monkeypatch.setattr(server_module, "get_codex_rate_limit_state", lambda: object())
+    monkeypatch.setattr(
+        server_module,
+        "get_copilot_quota_tracker",
+        lambda: type("_Tracker", (), {"is_available": lambda self: True})(),
+    )
+    monkeypatch.setattr(server_module, "is_telemetry_enabled", lambda: True)
+
+    await proxy.startup()
+    try:
+        assert any("Prefix freeze: strict" in line for line in info_logs)
+        assert any("Mutations: latest turn only" in line for line in info_logs)
+        assert any("Smart Routing: ENABLED" in line for line in info_logs)
+        assert any("CCR (Compress-Cache-Retrieve): ENABLED" in line for line in info_logs)
+        assert any("Subscription tracking: ENABLED" in line for line in info_logs)
+        assert any("GitHub Copilot quota tracking: ENABLED" in line for line in info_logs)
+        assert any("Anonymous telemetry: ENABLED" in line for line in info_logs)
+        assert len(registry.registered) == 3
+    finally:
+        await proxy.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_marks_memory_slots_null_when_backend_not_initialized(monkeypatch):
+    pytest.importorskip("httpx")
+    from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+    proxy = HeadroomProxy(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+        )
+    )
+    proxy.memory_handler = type(
+        "_MemoryHandler",
+        (),
+        {
+            "ensure_initialized": AsyncMock(),
+            "health_status": lambda self: {"backend": "local", "initialized": False},
+            "warmup_embedder": AsyncMock(return_value=False),
+        },
+    )()
+
+    info_logs: list[str] = []
+    monkeypatch.setattr(
+        server_module.logger,
+        "info",
+        lambda message, *args: info_logs.append(message % args if args else message),
+    )
+
+    class _Registry:
+        def register(self, tracker) -> None:  # noqa: ANN001
+            return None
+
+        async def start_all(self) -> None:
+            return None
+
+        async def stop_all(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "get_quota_registry", lambda: _Registry())
+    monkeypatch.setattr(server_module, "reset_quota_registry", lambda: None)
+    monkeypatch.setattr(server_module, "configure_subscription_tracker", lambda **kwargs: object())
+    monkeypatch.setattr(server_module, "get_codex_rate_limit_state", lambda: object())
+    monkeypatch.setattr(
+        server_module,
+        "get_copilot_quota_tracker",
+        lambda: type("_Tracker", (), {"is_available": lambda self: False})(),
+    )
+    monkeypatch.setattr(server_module, "is_telemetry_enabled", lambda: False)
+
+    await proxy.startup()
+    try:
+        assert proxy.warmup.memory_backend.status == "null"
+        assert proxy.warmup.memory_embedder.status == "null"
+        assert any(
+            "Memory: ENABLED (backend=local, initialized=False)" in line for line in info_logs
+        )
+    finally:
+        await proxy.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("lazy", "Code-Aware: LAZY"),
+        ("available", "Code-Aware: available but disabled"),
+        ("unavailable", "Code-Aware: not installed"),
+    ],
+)
+async def test_startup_logs_code_aware_status_variants(monkeypatch, status: str, expected: str):
+    pytest.importorskip("httpx")
+    from headroom.proxy.server import HeadroomProxy, ProxyConfig
+
+    proxy = HeadroomProxy(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+        )
+    )
+    proxy._code_aware_status = status
+
+    info_logs: list[str] = []
+    monkeypatch.setattr(
+        server_module.logger,
+        "info",
+        lambda message, *args: info_logs.append(message % args if args else message),
+    )
+
+    class _Registry:
+        def register(self, tracker) -> None:  # noqa: ANN001
+            return None
+
+        async def start_all(self) -> None:
+            return None
+
+        async def stop_all(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "get_quota_registry", lambda: _Registry())
+    monkeypatch.setattr(server_module, "reset_quota_registry", lambda: None)
+    monkeypatch.setattr(server_module, "configure_subscription_tracker", lambda **kwargs: object())
+    monkeypatch.setattr(server_module, "get_codex_rate_limit_state", lambda: object())
+    monkeypatch.setattr(
+        server_module,
+        "get_copilot_quota_tracker",
+        lambda: type("_Tracker", (), {"is_available": lambda self: False})(),
+    )
+    monkeypatch.setattr(server_module, "is_telemetry_enabled", lambda: False)
+
+    await proxy.startup()
+    try:
+        assert any(expected in line for line in info_logs)
     finally:
         await proxy.shutdown()

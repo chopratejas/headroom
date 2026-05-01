@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
+import headroom.subscription.copilot_quota as quota_module
 from headroom.subscription.copilot_quota import (
     CopilotQuotaCategory,
     CopilotQuotaSnapshot,
+    CopilotQuotaState,
+    _CopilotQuotaTracker,
     discover_github_token,
+    get_copilot_quota_tracker,
     parse_copilot_quota,
 )
 
@@ -64,6 +71,10 @@ class TestCopilotQuotaCategory:
         # percent_remaining > 100 should not produce negative used_percent
         cat = CopilotQuotaCategory(name="chat", percent_remaining=110.0)
         assert cat.used_percent == pytest.approx(0.0)
+
+    def test_used_percent_none_when_entitlement_is_zero(self):
+        cat = CopilotQuotaCategory(name="chat", entitlement=0, remaining=0)
+        assert cat.used_percent is None
 
 
 # ---------------------------------------------------------------------------
@@ -329,3 +340,129 @@ class TestCopilotQuotaPollLoopLeak:
         assert residual <= baseline, (
             f"CopilotQuotaTracker left residual Event.wait: baseline={baseline} residual={residual}"
         )
+
+
+def test_copilot_quota_state_to_dict_and_tracker_get_stats() -> None:
+    state = CopilotQuotaState()
+    tracker = _CopilotQuotaTracker()
+
+    assert state.to_dict()["latest"] is None
+    assert tracker.get_stats() is None
+
+    state.latest = CopilotQuotaSnapshot(login="octocat")
+    state.last_error = "boom"
+    state.last_updated = 123.0
+    tracker._state = state
+
+    assert tracker.get_stats()["last_error"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_tracker_stop_cancels_when_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracker = _CopilotQuotaTracker()
+    tracker._stop_event = asyncio.Event()
+    tracker._task = asyncio.create_task(asyncio.sleep(60))
+
+    async def fake_wait_for(awaitable, timeout):  # noqa: ANN001, ANN202
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(quota_module.asyncio, "wait_for", fake_wait_for)
+
+    await tracker.stop()
+    await asyncio.sleep(0)
+
+    assert tracker._task.cancelled() is True
+
+
+def _install_fake_aiohttp(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    payload: dict | None = None,
+    status: int = 200,
+    ok: bool = True,
+    exc: Exception | None = None,
+) -> None:
+    class FakeTimeout:
+        def __init__(self, total: float) -> None:
+            self.total = total
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.status = status
+            self.ok = ok
+
+        async def __aenter__(self):
+            if exc is not None:
+                raise exc
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+            return False
+
+        async def json(self):
+            return payload or {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+            return False
+
+        def get(self, url: str, headers: dict[str, str], timeout: FakeTimeout):
+            assert url.endswith("/copilot_internal/user")
+            assert headers["Authorization"].startswith("Bearer ")
+            assert timeout.total == 10
+            return FakeResponse()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aiohttp",
+        SimpleNamespace(ClientTimeout=FakeTimeout, ClientSession=lambda: FakeSession()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_maybe_poll_covers_response_and_singleton_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _CopilotQuotaTracker()
+    monkeypatch.setattr(quota_module, "discover_github_token", lambda: "ghp-test")
+
+    _install_fake_aiohttp(monkeypatch, status=401)
+    await tracker._maybe_poll()
+    assert tracker._state.last_error == "unauthorized — check GITHUB_TOKEN"
+
+    _install_fake_aiohttp(monkeypatch, status=404)
+    await tracker._maybe_poll()
+    assert tracker._state.last_error == "endpoint not found (non-Copilot account?)"
+
+    _install_fake_aiohttp(monkeypatch, status=500, ok=False)
+    await tracker._maybe_poll()
+    assert tracker._state.last_error == "HTTP 500"
+
+    _install_fake_aiohttp(monkeypatch, exc=RuntimeError("network down"))
+    await tracker._maybe_poll()
+    assert tracker._state.last_error == "network down"
+
+    _install_fake_aiohttp(monkeypatch, payload={"quota_snapshots": {}})
+    monkeypatch.setattr(
+        quota_module,
+        "parse_copilot_quota",
+        lambda data: (_ for _ in ()).throw(ValueError("bad")),
+    )
+    await tracker._maybe_poll()
+    assert tracker._state.last_error == "parse error: bad"
+
+    monkeypatch.setattr(quota_module, "parse_copilot_quota", parse_copilot_quota)
+    _install_fake_aiohttp(monkeypatch, payload=_SAMPLE_RESPONSE)
+    await tracker._maybe_poll()
+    assert tracker._state.latest is not None
+    assert tracker._state.latest.login == "octocat"
+    assert tracker._state.last_error is None
+    assert tracker._state.last_updated is not None
+
+    quota_module._singleton = None
+    first = get_copilot_quota_tracker()
+    second = get_copilot_quota_tracker()
+    assert first is second

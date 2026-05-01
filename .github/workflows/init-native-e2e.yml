@@ -56,6 +56,11 @@ jobs:
           python-version: "3.11"
           shim-target: ${{ matrix.target }}
 
+      - name: Install coverage
+        shell: bash
+        run: |
+          python -m pip install coverage
+
       - name: Verify shim is on PATH (POSIX)
         if: runner.os != 'Windows'
         shell: bash
@@ -76,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          headroom init -g "${{ matrix.target }}"
+          coverage run --parallel-mode -m headroom.cli init -g "${{ matrix.target }}"
 
       - name: Assert settings file (POSIX)
         if: runner.os != 'Windows'
@@ -130,3 +135,17 @@ jobs:
               }
             }
           }
+
+      - name: Export coverage XML
+        shell: bash
+        run: |
+          coverage combine
+          coverage xml -o coverage-init-native.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-init-native.xml
+          flags: init-native
+          name: init-native-${{ matrix.os }}-${{ matrix.target }}
+          fail_ci_if_error: false

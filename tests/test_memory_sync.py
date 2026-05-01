@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
+import types
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,14 +24,19 @@ from typing import Any
 
 import pytest
 
+import headroom.memory.sync as sync_module
 from headroom.memory.sync import (
+    AgentMemory,
+    AgentMemoryAdapter,
     sync,
     sync_export,
     sync_import,
 )
 from headroom.memory.sync_adapters.claude_code import (
     ClaudeCodeAdapter,
+    _build_frontmatter,
     _parse_frontmatter,
+    get_claude_memory_dir,
 )
 from headroom.memory.sync_adapters.codex_agent import CodexAdapter
 
@@ -381,6 +388,165 @@ class TestLineageAndGovernance:
         assert "db_fingerprint" in state[key]
 
 
+@pytest.mark.asyncio
+async def test_agent_memory_hash_and_adapter_base_helpers() -> None:
+    class DummyAdapter(AgentMemoryAdapter):
+        async def read_memories(self) -> list[AgentMemory]:
+            return await AgentMemoryAdapter.read_memories(self)
+
+        async def write_memories(self, memories: list[dict[str, Any]]) -> int:
+            return await AgentMemoryAdapter.write_memories(self, memories)
+
+        def fingerprint(self) -> str:
+            return AgentMemoryAdapter.fingerprint(self)
+
+    auto_hash = AgentMemory(content="hello")
+    preset_hash = AgentMemory(content="hello", content_hash="preset")
+    assert len(auto_hash.content_hash) == 16
+    assert preset_hash.content_hash == "preset"
+
+    adapter = DummyAdapter()
+    assert adapter.fingerprint() is None
+    assert await adapter.read_memories() is None
+    assert await adapter.write_memories([]) is None
+
+
+def test_sync_helper_functions_handle_invalid_state(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{not valid json")
+    assert sync_module._load_sync_state(state_path) == {}
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("{}")
+
+    original_read_text = Path.read_text
+
+    def fake_read_text(self: Path, *args: Any, **kwargs: Any):
+        if self == broken:
+            raise OSError("boom")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    try:
+        assert sync_module._load_sync_state(broken) == {}
+    finally:
+        monkeypatch.setattr(Path, "read_text", original_read_text)
+
+    sync_module._save_sync_state(state_path, {"key": {"value": 1}})
+    assert json.loads(state_path.read_text()) == {"key": {"value": 1}}
+    assert sync_module._db_fingerprint([]) == "empty"
+
+
+@pytest.mark.asyncio
+async def test_sync_export_early_return_and_zero_write(tmp_path):
+    backend = FakeBackend()
+    adapter = ClaudeCodeAdapter(tmp_path / "memory")
+    assert await sync_export(backend, adapter, "tcms", existing_memories=[]) == 0
+
+    backend.add_memory("Export candidate", metadata={"source_agent": "codex"})
+
+    class ZeroWriteAdapter(ClaudeCodeAdapter):
+        async def write_memories(self, memories: list[dict[str, Any]]) -> int:
+            return 0
+
+    zero_adapter = ZeroWriteAdapter(tmp_path / "memory")
+    assert await sync_export(backend, zero_adapter, "tcms") == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_runs_when_state_mismatch_without_force(tmp_path):
+    backend = FakeBackend()
+    backend.add_memory("From codex", metadata={"source_agent": "codex"})
+    claude_dir = tmp_path / "memory"
+    claude_dir.mkdir()
+    (claude_dir / "fact.md").write_text(
+        "---\nname: Fact\ndescription: Fact\ntype: project\n---\n\nImported fact\n"
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"claude:tcms": {"agent_fingerprint": "old", "db_fingerprint": "old"}})
+    )
+
+    result = await sync(backend, ClaudeCodeAdapter(claude_dir), "tcms", state_path=state_path)
+    assert result.imported == 1
+    assert result.exported == 1
+
+
+@pytest.mark.parametrize("agent_name", ["claude", "codex"])
+def test_sync_main_runs_for_supported_agents(monkeypatch, capsys, tmp_path, agent_name):
+    calls: dict[str, Any] = {}
+
+    class FakeLocalBackendConfig:
+        def __init__(self, db_path):
+            self.db_path = db_path
+
+    class FakeLocalBackend:
+        def __init__(self, config):
+            calls["config_db"] = config.db_path
+            self.closed = False
+
+        async def _ensure_initialized(self):
+            calls["initialized"] = True
+
+        async def close(self):
+            self.closed = True
+            calls["closed"] = True
+
+    class FakeClaudeAdapter:
+        def __init__(self, memory_dir):
+            calls["adapter"] = ("claude", memory_dir)
+
+    class FakeCodexAdapter:
+        def __init__(self):
+            calls["adapter"] = ("codex", None)
+
+    local_module = types.ModuleType("headroom.memory.backends.local")
+    local_module.LocalBackend = FakeLocalBackend
+    local_module.LocalBackendConfig = FakeLocalBackendConfig
+    monkeypatch.setitem(sys.modules, "headroom.memory.backends.local", local_module)
+
+    claude_module = types.ModuleType("headroom.memory.sync_adapters.claude_code")
+    claude_module.ClaudeCodeAdapter = FakeClaudeAdapter
+    claude_module.get_claude_memory_dir = lambda: tmp_path / "claude-memory"
+    monkeypatch.setitem(sys.modules, "headroom.memory.sync_adapters.claude_code", claude_module)
+
+    codex_module = types.ModuleType("headroom.memory.sync_adapters.codex_agent")
+    codex_module.CodexAdapter = FakeCodexAdapter
+    monkeypatch.setitem(sys.modules, "headroom.memory.sync_adapters.codex_agent", codex_module)
+
+    async def fake_sync(
+        backend, adapter, user_id, state_path=sync_module._DEFAULT_STATE_PATH, force=False
+    ):
+        calls["sync"] = {"user_id": user_id, "force": force, "adapter_type": type(adapter).__name__}
+        return sync_module.SyncResult(imported=1, exported=2, duration_ms=12.4)
+
+    monkeypatch.setattr(sync_module, "sync", fake_sync)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--db",
+            "memory.db",
+            "--user",
+            "tcms",
+            "--agent",
+            agent_name,
+            "--force",
+        ],
+    )
+
+    sync_module.main()
+    output = json.loads(capsys.readouterr().out.strip())
+    assert output == {"imported": 1, "exported": 2, "ms": 12}
+    assert calls["config_db"] == "memory.db"
+    assert calls["initialized"] is True
+    assert calls["closed"] is True
+    assert calls["sync"]["user_id"] == "tcms"
+    assert calls["sync"]["force"] is True
+    assert calls["adapter"][0] == agent_name
+
+
 # ---------------------------------------------------------------------------
 # Claude Code adapter tests
 # ---------------------------------------------------------------------------
@@ -408,6 +574,14 @@ class TestClaudeCodeAdapter:
         assert fm == {}
         assert body == "Just plain content."
 
+    def test_parse_frontmatter_unclosed_and_build_frontmatter(self):
+        fm, body = _parse_frontmatter("---\nname: Test\nbody without terminator")
+        assert fm == {}
+        assert body == "---\nname: Test\nbody without terminator"
+
+        built = _build_frontmatter({"name": "Test", "empty": "", "type": "project"})
+        assert built == "---\nname: Test\ntype: project\n---"
+
     @pytest.mark.asyncio
     async def test_read_memories_skips_memory_md(self, memory_dir):
         (memory_dir / "MEMORY.md").write_text("# Index\n- entry")
@@ -421,6 +595,32 @@ class TestClaudeCodeAdapter:
         assert len(mems) == 1
         assert mems[0].content == "Important fact."
         assert mems[0].source_file == "fact.md"
+
+    @pytest.mark.asyncio
+    async def test_read_memories_handles_missing_dir_oserror_and_blank_body(
+        self, memory_dir, monkeypatch
+    ):
+        missing_adapter = ClaudeCodeAdapter(memory_dir / "missing")
+        assert await missing_adapter.read_memories() == []
+
+        blank = memory_dir / "blank.md"
+        blank.write_text("---\nname: Blank\n---\n\n   ")
+        broken = memory_dir / "broken.md"
+        broken.write_text("---\nname: Broken\n---\n\nbody")
+
+        original_read_text = Path.read_text
+
+        def fake_read_text(self: Path, *args: Any, **kwargs: Any):
+            if self == broken:
+                raise OSError("boom")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        try:
+            adapter = ClaudeCodeAdapter(memory_dir)
+            assert await adapter.read_memories() == []
+        finally:
+            monkeypatch.setattr(Path, "read_text", original_read_text)
 
     @pytest.mark.asyncio
     async def test_write_creates_valid_md(self, memory_dir):
@@ -448,14 +648,68 @@ class TestClaudeCodeAdapter:
         assert fm["source_agent"] == "codex"
         assert "FastAPI" in body
 
-    def test_fingerprint_changes_on_modification(self, memory_dir):
+    @pytest.mark.asyncio
+    async def test_write_handles_empty_input_and_duplicate_hash(self, memory_dir):
+        adapter = ClaudeCodeAdapter(memory_dir)
+        assert await adapter.write_memories([]) == 0
+
+        target = memory_dir / "headroom_project_uses_fastapi.md"
+        target.write_text(
+            "---\nname: Project uses FastAPI\n---\n\nProject uses FastAPI\n", encoding="utf-8"
+        )
+        written = await adapter.write_memories(
+            [
+                {
+                    "content": "Project uses FastAPI",
+                    "category": "architecture",
+                    "headroom_id": "mem_001",
+                    "source_agent": "codex",
+                    "content_hash": hashlib.sha256(b"Project uses FastAPI").hexdigest()[:16],
+                }
+            ]
+        )
+        assert written == 0
+        assert not (memory_dir / "MEMORY.md").exists()
+
+    def test_update_memory_md_index_paths(self, memory_dir):
+        adapter = ClaudeCodeAdapter(memory_dir)
+        memory_md = memory_dir / "MEMORY.md"
+        memory_md.write_text(
+            "# Memory\n\n## Headroom Shared Memory\n- existing\n\n## Other Section\n- keep me\n",
+            encoding="utf-8",
+        )
+        adapter._update_memory_md_index(["- added"])
+        content = memory_md.read_text(encoding="utf-8")
+        assert "- existing" in content
+        assert "- added" in content
+        assert "## Other Section" in content
+
+        memory_md.write_text(
+            "# Memory\n\n## Headroom Shared Memory\n- existing\n", encoding="utf-8"
+        )
+        adapter._update_memory_md_index(["- appended"])
+        assert "- appended" in memory_md.read_text(encoding="utf-8")
+
+    def test_fingerprint_changes_on_modification(self, memory_dir, monkeypatch):
         (memory_dir / "test.md").write_text("content 1")
 
         adapter = ClaudeCodeAdapter(memory_dir)
-        fp1 = adapter.fingerprint()
+        original_stat = Path.stat
 
-        (memory_dir / "test.md").write_text("content 2")
-        fp2 = adapter.fingerprint()
+        def fake_stat(self: Path, *args: Any, **kwargs: Any):
+            result = original_stat(self)
+            if self == memory_dir / "test.md":
+                text = self.read_text()
+                return types.SimpleNamespace(st_mtime_ns=1 if text == "content 1" else 2)
+            return result
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+        try:
+            fp1 = adapter.fingerprint()
+            (memory_dir / "test.md").write_text("content 2")
+            fp2 = adapter.fingerprint()
+        finally:
+            monkeypatch.setattr(Path, "stat", original_stat)
 
         assert fp1 != fp2
 
@@ -470,6 +724,41 @@ class TestClaudeCodeAdapter:
         empty.mkdir()
         adapter = ClaudeCodeAdapter(empty)
         assert adapter.fingerprint() == "empty"
+
+    def test_fingerprint_missing_dir_and_stat_errors(self, tmp_path, monkeypatch):
+        missing = tmp_path / "missing"
+        adapter = ClaudeCodeAdapter(missing)
+        assert adapter.fingerprint() == "empty"
+
+        memory_dir = tmp_path / "memory"
+        memory_dir.mkdir()
+        file_path = memory_dir / "test.md"
+        file_path.write_text("content")
+        adapter = ClaudeCodeAdapter(memory_dir)
+        original_stat = Path.stat
+
+        def fake_stat(self: Path, *args: Any, **kwargs: Any):
+            if self == file_path:
+                raise OSError("boom")
+            return original_stat(self)
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+        try:
+            assert adapter.fingerprint() == "empty"
+        finally:
+            monkeypatch.setattr(Path, "stat", original_stat)
+
+    def test_get_claude_memory_dir(self, monkeypatch):
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("C:\\repo\\project")))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("C:\\Users\\me")))
+        assert (
+            get_claude_memory_dir()
+            == Path("C:\\Users\\me") / ".claude" / "projects" / "C:-repo-project" / "memory"
+        )
+        assert (
+            get_claude_memory_dir(Path("/tmp/demo"))
+            == Path("C:\\Users\\me") / ".claude" / "projects" / "-tmp-demo" / "memory"
+        )
 
 
 # ---------------------------------------------------------------------------

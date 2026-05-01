@@ -6,7 +6,11 @@ import json
 from unittest.mock import patch
 
 from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
-from headroom.proxy.handlers.openai import OpenAIHandlerMixin, _decode_openai_bearer_payload
+from headroom.proxy.handlers.openai import (
+    OpenAIHandlerMixin,
+    _decode_openai_bearer_payload,
+    _resolve_codex_routing_headers,
+)
 
 
 def _jwt(payload: object) -> str:
@@ -42,6 +46,29 @@ def test_decode_openai_bearer_payload_handles_missing_and_non_mapping_payloads()
         _decode_openai_bearer_payload({"authorization": f"Bearer {_jwt(['not', 'a', 'dict'])}"})
         is None
     )
+
+
+def test_resolve_codex_routing_headers_prefers_explicit_header_and_jwt_claims() -> None:
+    explicit_headers = {
+        "Authorization": f"Bearer {_jwt({'https://api.openai.com/auth': {'chatgpt_account_id': 'jwt-account'}})}",
+        "ChatGPT-Account-ID": "explicit-account",
+    }
+    resolved, is_chatgpt_auth = _resolve_codex_routing_headers(explicit_headers)
+    assert resolved["ChatGPT-Account-ID"] == "explicit-account"
+    assert is_chatgpt_auth is True
+
+    jwt_headers = {
+        "authorization": f"Bearer {_jwt({'https://api.openai.com/auth': {'chatgpt_account_id': 'jwt-account'}})}"
+    }
+    resolved, is_chatgpt_auth = _resolve_codex_routing_headers(jwt_headers)
+    assert resolved["ChatGPT-Account-ID"] == "jwt-account"
+    assert is_chatgpt_auth is True
+
+    unresolved, is_chatgpt_auth = _resolve_codex_routing_headers(
+        {"authorization": f"Bearer {_jwt({'sub': 'user-1'})}"}
+    )
+    assert "ChatGPT-Account-ID" not in unresolved
+    assert is_chatgpt_auth is False
 
 
 def test_openai_handler_prefix_helpers_cover_edge_cases() -> None:
@@ -110,6 +137,59 @@ def test_anthropic_tool_sort_and_context_append_helpers() -> None:
         "ctx",
         frozen_message_count=0,
     ) == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+    assert AnthropicHandlerMixin._append_context_to_latest_non_frozen_user_turn(
+        [{"role": "assistant", "content": "hello"}],
+        "ctx",
+        frozen_message_count=0,
+    ) == [{"role": "assistant", "content": "hello"}]
+    assert AnthropicHandlerMixin._append_context_to_latest_non_frozen_user_turn(
+        [{"role": "user", "content": "hello"}],
+        "ctx",
+        frozen_message_count=1,
+    ) == [{"role": "user", "content": "hello"}]
+
+
+def test_anthropic_prefix_helpers_cover_restore_and_strict_frozen_edges() -> None:
+    assert AnthropicHandlerMixin._strict_previous_turn_frozen_count([], 2) == 2
+    assert (
+        AnthropicHandlerMixin._strict_previous_turn_frozen_count(
+            [{"role": "assistant"}, {"role": "user"}],
+            0,
+        )
+        == 1
+    )
+    assert (
+        AnthropicHandlerMixin._strict_previous_turn_frozen_count(
+            [{"role": "user"}, {"role": "assistant"}],
+            1,
+        )
+        == 2
+    )
+
+    original = [{"role": "system", "content": "keep"}, {"role": "user", "content": "hello"}]
+    restored, changed = AnthropicHandlerMixin._restore_frozen_prefix(
+        original,
+        [],
+        frozen_message_count=1,
+    )
+    assert restored == [{"role": "system", "content": "keep"}]
+    assert changed == 1
+
+    restored, changed = AnthropicHandlerMixin._restore_frozen_prefix(
+        original,
+        [{"role": "system", "content": "changed"}, {"role": "user", "content": "hello"}],
+        frozen_message_count=1,
+    )
+    assert restored == original
+    assert changed == 1
+
+    restored, changed = AnthropicHandlerMixin._restore_frozen_prefix(
+        original,
+        [{"role": "user", "content": "hello"}],
+        frozen_message_count=0,
+    )
+    assert restored == [{"role": "user", "content": "hello"}]
+    assert changed == 0
 
 
 def test_anthropic_image_compression_helper_only_rewrites_latest_eligible_turn() -> None:
@@ -251,6 +331,36 @@ def test_anthropic_cache_delta_helpers_cover_string_list_and_role_mismatch() -> 
         )
         is None
     )
+    assert AnthropicHandlerMixin._merge_appended_message_delta(
+        {"role": "user", "content": "A"},
+        None,
+    ) == {"role": "user", "content": "A"}
+
+
+def test_anthropic_tool_sort_key_and_cache_suffix_helpers_cover_fallbacks() -> None:
+    class _BadTool:
+        def __str__(self) -> str:
+            return "bad-tool"
+
+    fallback_key = AnthropicHandlerMixin._tool_sort_key({"name": _BadTool()})
+    assert fallback_key[0] == "bad-tool"
+
+    assert (
+        AnthropicHandlerMixin._extract_cache_stable_last_message_suffix(
+            [{"role": "user", "content": "hello"}],
+            [{"role": "assistant", "content": "hello"}],
+            [{"role": "assistant", "content": "HELLO"}],
+        )
+        is None
+    )
+    assert (
+        AnthropicHandlerMixin._extract_cache_stable_last_message_suffix(
+            [{"role": "user", "content": "hello"}],
+            [{"role": "user", "content": "world"}],
+            [{"role": "user", "content": "WORLD"}],
+        )
+        is None
+    )
 
 
 def test_anthropic_assistant_message_helper_requires_assistant_role() -> None:
@@ -259,3 +369,56 @@ def test_anthropic_assistant_message_helper_requires_assistant_role() -> None:
     assert AnthropicHandlerMixin._assistant_message_from_response_json(
         {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
     ) == {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}
+
+
+def test_anthropic_helper_guards_cover_empty_compression_and_length_mismatches() -> None:
+    image_message = {
+        "role": "user",
+        "content": [{"type": "image", "source": {"type": "base64", "data": "abc"}}],
+    }
+
+    class _EmptyCompressor:
+        def compress(self, messages, provider):  # noqa: ANN001, ANN201
+            assert provider == "anthropic"
+            return []
+
+    assert AnthropicHandlerMixin._compress_latest_user_turn_images_cache_safe(
+        [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+        frozen_message_count=0,
+        compressor=_EmptyCompressor(),
+    ) == [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+    assert AnthropicHandlerMixin._compress_latest_user_turn_images_cache_safe(
+        [image_message],
+        frozen_message_count=0,
+        compressor=_EmptyCompressor(),
+    ) == [image_message]
+
+    previous_original = [{"role": "user", "content": "hello"}]
+    previous_forwarded = [{"role": "user", "content": "HELLO"}]
+    assert (
+        AnthropicHandlerMixin._extract_cache_stable_delta(
+            [],
+            previous_original,
+            previous_forwarded,
+        )
+        is None
+    )
+    assert (
+        AnthropicHandlerMixin._extract_cache_stable_last_message_suffix(
+            [],
+            previous_original,
+            previous_forwarded,
+        )
+        is None
+    )
+    assert (
+        AnthropicHandlerMixin._extract_cache_stable_last_message_suffix(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "next"},
+            ],
+            previous_original,
+            previous_forwarded,
+        )
+        is None
+    )

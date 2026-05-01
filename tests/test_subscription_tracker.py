@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import headroom.subscription as subscription_pkg
 import headroom.subscription.tracker as tracker_module
 from headroom.subscription.models import (
     HeadroomContribution,
@@ -199,3 +201,111 @@ def test_persist_and_load_state_round_trip(tmp_path: Path) -> None:
 
     missing = SubscriptionTracker(persist_path=tmp_path / "missing.json")
     assert missing._state.poll_count == 0
+
+
+@pytest.mark.asyncio
+async def test_tracker_stop_cancels_task_when_wait_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SubscriptionTracker, "_load_persisted_state", lambda self: None)
+    tracker = SubscriptionTracker()
+    tracker._stop_event = asyncio.Event()
+    tracker._poll_task = asyncio.create_task(asyncio.sleep(60))
+
+    async def fake_wait_for(awaitable, timeout):  # noqa: ANN001, ANN202
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(tracker_module.asyncio, "wait_for", fake_wait_for)
+
+    await tracker.stop()
+    await asyncio.sleep(0)
+
+    assert tracker._poll_task.cancelled() is True
+
+
+def test_compute_window_tokens_for_snapshot_and_discrepancy_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _make_snapshot()
+    fake_session_tracking = SimpleNamespace(
+        compute_window_tokens=lambda start, end: WindowTokens(input=9)
+    )
+    monkeypatch.setitem(
+        sys.modules, "headroom.subscription.session_tracking", fake_session_tracking
+    )
+    monkeypatch.setattr(subscription_pkg, "session_tracking", fake_session_tracking, raising=False)
+
+    tokens = tracker_module._compute_window_tokens_for_snapshot(snapshot)
+    assert tokens.input == 9
+
+    snapshot.five_hour.limit = 100
+    snapshot.five_hour.utilization_pct = 90.0
+    discrepancies = tracker_module._detect_discrepancies(
+        snapshot,
+        WindowTokens(input=60_000, cache_reads=1_000, weighted_token_equivalent=55.0),
+    )
+
+    assert [item.kind for item in discrepancies] == ["surge_pricing", "cache_miss"]
+    assert discrepancies[0].severity == "alert"
+
+
+def test_compute_window_tokens_for_snapshot_handles_missing_reset_and_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _make_snapshot()
+    snapshot.five_hour.resets_at = None
+    assert tracker_module._compute_window_tokens_for_snapshot(snapshot) == WindowTokens()
+
+    def boom(start: float, end: float) -> WindowTokens:
+        raise RuntimeError("bad transcript")
+
+    fake_session_tracking = SimpleNamespace(compute_window_tokens=boom)
+    monkeypatch.setitem(
+        sys.modules, "headroom.subscription.session_tracking", fake_session_tracking
+    )
+    monkeypatch.setattr(subscription_pkg, "session_tracking", fake_session_tracking, raising=False)
+    snapshot.five_hour.resets_at = _utc_now() + timedelta(hours=5)
+
+    assert tracker_module._compute_window_tokens_for_snapshot(snapshot) == WindowTokens()
+
+
+def test_detect_discrepancies_returns_empty_for_normal_window() -> None:
+    snapshot = _make_snapshot()
+    snapshot.five_hour.limit = 100
+    snapshot.five_hour.utilization_pct = 40.0
+
+    assert (
+        tracker_module._detect_discrepancies(
+            snapshot,
+            WindowTokens(input=1000, cache_reads=500, weighted_token_equivalent=39.5),
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_configure_get_and_shutdown_tracker_singleton(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(SubscriptionTracker, "_load_persisted_state", lambda self: None)
+    tracker_module._tracker_instance = None
+
+    first = tracker_module.configure_subscription_tracker(
+        enabled=False, persist_path=tmp_path / "state-a.json"
+    )
+    second = tracker_module.configure_subscription_tracker(
+        enabled=True, persist_path=tmp_path / "state-b.json"
+    )
+    assert tracker_module.get_subscription_tracker() is first
+    assert second is first
+
+    calls: list[str] = []
+
+    async def fake_stop() -> None:
+        calls.append("stopped")
+
+    first.stop = fake_stop  # type: ignore[method-assign]
+    await tracker_module.shutdown_subscription_tracker()
+
+    assert calls == ["stopped"]
+    assert tracker_module.get_subscription_tracker() is None

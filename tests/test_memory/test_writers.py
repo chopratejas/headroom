@@ -183,6 +183,34 @@ class TestClaudeCodeWriter:
             assert filename.startswith("headroom_")
             assert "---" in content  # YAML frontmatter
 
+    def test_default_path_without_explicit_memory_dir(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("C:\\Users\\me")))
+        writer = ClaudeCodeMemoryWriter(project_path=Path("C:\\repo\\project"))
+        assert writer.default_path() == (
+            Path("C:\\Users\\me")
+            / ".claude"
+            / "projects"
+            / "C:-repo-project"
+            / "memory"
+            / "MEMORY.md"
+        )
+
+    def test_export_topics_writes_files(self, tmp_path: Path):
+        writer = ClaudeCodeMemoryWriter(
+            project_path=tmp_path,
+            memory_dir=tmp_path / "memory",
+        )
+        entries = [
+            MemoryEntry(content="Use pytest", category="testing"),
+            MemoryEntry(content="Prefer fixtures", category="testing"),
+            MemoryEntry(content="Solo item", category="solo"),
+        ]
+        topics = writer.export_topics(entries, dry_run=False)
+        assert list(topics) == ["headroom_testing.md"]
+        written = (tmp_path / "memory" / "headroom_testing.md").read_text()
+        assert "# Testing" in written
+        assert "- Use pytest" in written
+
 
 # =============================================================================
 # Cursor Writer Tests
@@ -227,6 +255,40 @@ class TestCursorWriter:
         assert "old stuff" not in content
         assert "Test memory entry" in content
         assert "alwaysApply: true" in content  # Preserved
+
+    def test_export_returns_empty_for_no_memories(self, tmp_path: Path):
+        writer = CursorMemoryWriter(project_path=tmp_path)
+        result = writer.export([], dry_run=True)
+        assert result.memories_exported == 0
+        assert result.files_written == []
+
+    def test_export_handles_dedup_budget_and_append_without_markers(self, tmp_path: Path):
+        writer = CursorMemoryWriter(project_path=tmp_path, token_budget=14)
+        target = tmp_path / ".cursor" / "rules" / "headroom-memory.mdc"
+        target.parent.mkdir(parents=True)
+        target.write_text("---\ndescription: test\nalwaysApply: true\n---\n\n# Existing\n")
+        entries = [
+            MemoryEntry(content="duplicate entry", importance=0.9),
+            MemoryEntry(content="duplicate entry", importance=0.8),
+            MemoryEntry(content="budget busting entry with many extra words", importance=0.7),
+        ]
+        result = writer.export(entries, dry_run=False)
+
+        assert result.memories_skipped_dedup == 1
+        assert result.memories_skipped_budget == 1
+        assert result.memories_exported == 1
+        content = target.read_text()
+        assert "# Existing" in content
+        assert MARKER_START in content
+        assert "duplicate entry" in content
+
+    def test_export_returns_empty_when_all_entries_exceed_budget(self, tmp_path: Path):
+        writer = CursorMemoryWriter(project_path=tmp_path, token_budget=1)
+        result = writer.export(
+            [MemoryEntry(content="too large for budget", importance=0.9)], dry_run=True
+        )
+        assert result.memories_skipped_budget == 1
+        assert result.memories_exported == 0
 
 
 # =============================================================================

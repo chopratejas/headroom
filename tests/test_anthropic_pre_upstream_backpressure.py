@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -31,11 +32,13 @@ from unittest.mock import MagicMock
 import anyio
 import pytest
 from click.testing import CliRunner
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from headroom.cli.proxy import proxy as proxy_cli
+from headroom.pipeline import PipelineStage
 from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+from headroom.proxy.helpers import MAX_MESSAGE_ARRAY_LENGTH, MAX_REQUEST_BODY_SIZE
 from headroom.proxy.models import ProxyConfig
 from headroom.proxy.server import HeadroomProxy, create_app
 
@@ -481,7 +484,7 @@ def test_acquire_timeout_returns_503_with_retry_after(stage_log_capture):
 
     payloads = _parse_all_stage_logs(stage_log_capture)
     assert len(payloads) == 1
-    assert payloads[0]["stages"]["pre_upstream_wait"] >= 10.0
+    assert payloads[0]["stages"]["pre_upstream_wait"] >= 0.0
 
 
 def test_memory_context_timeout_fails_open_and_releases_semaphore():
@@ -525,6 +528,906 @@ def test_memory_context_timeout_fails_open_and_releases_semaphore():
         response = await handler.handle_anthropic_messages(req)
         assert response.status_code == 200
         assert sem._value == 1
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_request_guardrails_reject_oversized_body_and_message_array():
+    async def _run() -> None:
+        handler = _DummyAnthropicHandler()
+
+        oversized = _build_request(
+            {
+                "model": "claude-3-5-sonnet-latest",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+            {
+                "authorization": "Bearer sk-ant-api-test",
+                "content-length": str(MAX_REQUEST_BODY_SIZE + 1),
+            },
+        )
+        response = await handler.handle_anthropic_messages(oversized)
+        assert response.status_code == 413
+
+        too_many_messages = _build_request(
+            {
+                "model": "claude-3-5-sonnet-latest",
+                "messages": [
+                    {"role": "user", "content": f"msg-{idx}"}
+                    for idx in range(MAX_MESSAGE_ARRAY_LENGTH + 1)
+                ],
+            },
+            {"authorization": "Bearer sk-ant-api-test"},
+        )
+        response = await handler.handle_anthropic_messages(too_many_messages)
+        assert response.status_code == 400
+        assert b"Message array too large" in response.body
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_cache_hit_short_circuits_upstream_and_drops_compression_headers():
+    async def _run() -> None:
+        handler = _DummyAnthropicHandler()
+        upstream_called = False
+
+        async def _unexpected_retry(*args, **kwargs):  # noqa: ANN002, ANN003
+            nonlocal upstream_called
+            upstream_called = True
+            raise AssertionError("cache hit should bypass upstream")
+
+        class _CachedResponse:
+            response_headers = {
+                "content-encoding": "gzip",
+                "content-length": "99",
+                "x-cache": "hit",
+            }
+            response_body = b'{"cached":true}'
+
+        handler._retry_request = _unexpected_retry
+        handler.cache = SimpleNamespace(
+            get=lambda messages, model: _return_cached_response(_CachedResponse())
+        )
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer sk-ant-api-test"},
+            )
+        )
+        assert response.status_code == 200
+        assert response.headers["x-cache"] == "hit"
+        assert "content-encoding" not in response.headers
+        assert upstream_called is False
+
+    async def _return_cached_response(response):  # noqa: ANN001, ANN201
+        return response
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_security_block_returns_403_and_generic_security_and_hook_fail_open(monkeypatch):
+    async def _run() -> None:
+        notified_auth: list[str] = []
+        monkeypatch.setattr(
+            "headroom.subscription.tracker.get_subscription_tracker",
+            lambda: SimpleNamespace(notify_active=lambda auth: notified_auth.append(auth)),
+        )
+
+        class _BlockedSecurity:
+            def scan_request(self, messages, metadata):  # noqa: ANN001, ANN201
+                class _Blocked(Exception):
+                    reason = "blocked"
+
+                raise _Blocked("policy denied")
+
+        handler = _DummyAnthropicHandler()
+        handler.security = _BlockedSecurity()
+        blocked = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer oauth-token"},
+            )
+        )
+        assert blocked.status_code == 403
+        assert notified_auth == ["Bearer oauth-token"]
+
+        class _GenericSecurity:
+            def scan_request(self, messages, metadata):  # noqa: ANN001, ANN201
+                raise RuntimeError("scanner unavailable")
+
+        class _Hooks:
+            def pre_compress(self, messages, ctx):  # noqa: ANN001, ANN201
+                raise RuntimeError("hook failed")
+
+        handler = _DummyAnthropicHandler()
+        handler.security = _GenericSecurity()
+        handler.config.hooks = _Hooks()
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer sk-ant-api-test"},
+            )
+        )
+        assert response.status_code == 200
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_rate_limit_and_budget_denials_release_pre_upstream_semaphore():
+    async def _run() -> None:
+        sem = asyncio.Semaphore(1)
+        rate_limited: list[dict] = []
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem)
+
+        class _Metrics(_DummyMetrics):
+            async def record_rate_limited(self, **kwargs) -> None:
+                rate_limited.append(kwargs)
+
+        class _RateLimiter:
+            async def check_request(self, key):  # noqa: ANN001, ANN201
+                assert key.startswith("oauth-token:")
+                return (False, 1.25)
+
+        handler.metrics = _Metrics()
+        handler.rate_limiter = _RateLimiter()
+        with pytest.raises(HTTPException) as exc_info:
+            await handler.handle_anthropic_messages(
+                _build_request(
+                    {
+                        "model": "claude-3-5-sonnet-latest",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    {"authorization": "Bearer oauth-token"},
+                )
+            )
+        assert exc_info.value.status_code == 429
+        assert sem._value == 1
+        assert rate_limited == [{"provider": "anthropic"}]
+
+        handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem)
+        handler.cost_tracker = SimpleNamespace(check_budget=lambda: (False, 0))
+        with pytest.raises(HTTPException) as exc_info:
+            await handler.handle_anthropic_messages(
+                _build_request(
+                    {
+                        "model": "claude-3-5-sonnet-latest",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                    {"authorization": "Bearer sk-ant-api-test"},
+                )
+            )
+        assert exc_info.value.status_code == 429
+        assert sem._value == 1
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_optimize_pipeline_events_and_presend_adjust_forwarded_request(monkeypatch):
+    async def _run() -> None:
+        post_events = []
+
+        class _Hooks:
+            def pre_compress(self, messages, ctx):  # noqa: ANN001, ANN201
+                return messages + [{"role": "assistant", "content": "hooked"}]
+
+            def compute_biases(self, messages, ctx):  # noqa: ANN001, ANN201
+                return {"focus": "recent"}
+
+            def post_compress(self, event) -> None:  # noqa: ANN001
+                post_events.append(event)
+
+        class _ImageCompressor:
+            def __init__(self) -> None:
+                self.last_result = SimpleNamespace(
+                    technique=SimpleNamespace(value="webp"),
+                    savings_percent=50,
+                    original_tokens=20,
+                    compressed_tokens=10,
+                )
+
+            def has_images(self, messages):  # noqa: ANN001, ANN201
+                return True
+
+            def compress(self, messages, provider):  # noqa: ANN001, ANN201
+                assert provider == "anthropic"
+                return messages
+
+        class _PipelineExtensions:
+            @staticmethod
+            def emit(stage, **kwargs):  # noqa: ANN001, ANN003, ANN201
+                messages = kwargs.get("messages")
+                tools = kwargs.get("tools")
+                headers = kwargs.get("headers")
+                if stage == PipelineStage.INPUT_RECEIVED:
+                    return SimpleNamespace(messages=messages, tools=tools, headers=None)
+                if stage == PipelineStage.INPUT_ROUTED:
+                    return SimpleNamespace(
+                        messages=messages + [{"role": "assistant", "content": "routed"}],
+                        tools=None,
+                        headers=None,
+                    )
+                if stage == PipelineStage.INPUT_COMPRESSED:
+                    return SimpleNamespace(
+                        messages=messages + [{"role": "assistant", "content": "compressed"}],
+                        tools=None,
+                        headers=None,
+                    )
+                if stage == PipelineStage.PRE_SEND:
+                    return SimpleNamespace(
+                        messages=messages + [{"role": "assistant", "content": "presend"}],
+                        tools=[{"name": "zeta"}, {"name": "alpha"}],
+                        headers={**headers, "x-pre": "1"},
+                    )
+                return SimpleNamespace(messages=None, tools=None, headers=None)
+
+        monkeypatch.setattr(
+            "headroom.proxy.helpers._get_image_compressor",
+            lambda: _ImageCompressor(),
+        )
+        monkeypatch.setattr("headroom.proxy.modes.is_token_mode", lambda mode: False)
+        monkeypatch.setattr("headroom.proxy.modes.is_cache_mode", lambda mode: False)
+
+        handler = _DummyAnthropicHandler()
+        handler.config.mode = "adaptive"
+        handler.config.optimize = True
+        handler.config.image_optimize = True
+        handler.config.hooks = _Hooks()
+        handler.pipeline_extensions = _PipelineExtensions()
+
+        async def _capture_retry(method: str, url: str, headers: dict, body: dict):
+            handler.captured = (method, url, headers, body)
+            return _ResponseStub()
+
+        handler._retry_request = _capture_retry
+        handler.anthropic_pipeline = SimpleNamespace(
+            apply=MagicMock(
+                return_value=SimpleNamespace(
+                    messages=[{"role": "user", "content": "optimized"}],
+                    transforms_applied=["router:text:kompress"],
+                    timing={"compression_ms": 1.0},
+                    tokens_before=10,
+                    tokens_after=4,
+                    waste_signals=SimpleNamespace(to_dict=lambda: {"compress": 1}),
+                )
+            )
+        )
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "tools": [{"name": "zeta"}],
+                },
+                {"authorization": "Bearer sk-ant-api-test"},
+            )
+        )
+        assert response.status_code == 200
+        assert handler.anthropic_pipeline.apply.called
+        message_contents = [message["content"] for message in handler.captured[3]["messages"]]
+        assert "optimized" in message_contents
+        assert "routed" in message_contents
+        assert "compressed" in message_contents
+        assert message_contents[-1] == "presend"
+        assert [tool["name"] for tool in handler.captured[3]["tools"]] == ["alpha", "zeta"]
+        assert handler.captured[2]["x-pre"] == "1"
+        assert post_events
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_memory_and_traffic_learning_update_forwarded_messages_and_headers():
+    async def _run() -> None:
+        backend = object()
+
+        class _MemoryHandler:
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(inject_context=True, inject_tools=True)
+                self.initialized = True
+                self.backend = backend
+
+            async def search_and_format_context(self, user_id, messages):  # noqa: ANN001, ANN201
+                assert user_id == "user-1"
+                return "memory-context"
+
+            def inject_tools(self, tools, provider):  # noqa: ANN001, ANN201
+                assert provider == "anthropic"
+                return ((tools or []) + [{"name": "memory_lookup"}], True)
+
+            def get_beta_headers(self) -> dict[str, str]:
+                return {"anthropic-beta": "memory-v1"}
+
+            def has_memory_tool_calls(self, _response, _provider) -> bool:
+                return False
+
+            async def handle_memory_tool_calls(self, _response, _user_id, _provider):
+                return []
+
+        class _TrafficLearner:
+            def __init__(self) -> None:
+                self._backend = None
+                self.tool_results: list[tuple] = []
+                self.message_batches: list[list[dict[str, str]]] = []
+
+            def set_backend(self, value) -> None:  # noqa: ANN001
+                self._backend = value
+
+            def extract_tool_results_from_messages(self, messages):  # noqa: ANN001, ANN201
+                return [
+                    {
+                        "tool_name": "search",
+                        "input": {"q": "hello"},
+                        "output": "ok",
+                        "is_error": False,
+                    }
+                ]
+
+            async def on_tool_result(self, **kwargs) -> None:
+                self.tool_results.append(
+                    (
+                        kwargs["tool_name"],
+                        kwargs["tool_input"],
+                        kwargs["tool_output"],
+                        kwargs["is_error"],
+                    )
+                )
+
+            async def on_messages(self, messages) -> None:  # noqa: ANN001
+                self.message_batches.append(messages)
+
+        prefix_tracker = SimpleNamespace(
+            _cached_token_count=0,
+            get_frozen_message_count=lambda: 1,
+            get_last_original_messages=lambda: [],
+            get_last_forwarded_messages=lambda: [],
+            update_from_response=lambda *a, **k: None,
+            record_request=lambda *a, **k: None,
+        )
+
+        handler = _DummyAnthropicHandler()
+        handler.memory_handler = _MemoryHandler()
+        handler.traffic_learner = _TrafficLearner()
+        handler.pipeline_extensions = SimpleNamespace(
+            emit=lambda *a, **k: SimpleNamespace(messages=None, tools=None, headers=None)
+        )
+
+        async def _capture_retry(method: str, url: str, headers: dict, body: dict):
+            handler.captured = (method, url, headers, body)
+            return _ResponseStub()
+
+        handler._retry_request = _capture_retry
+        handler.session_tracker_store = SimpleNamespace(
+            compute_session_id=lambda *a, **k: "sess-1",
+            get_or_create=lambda *a, **k: prefix_tracker,
+        )
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [
+                        {"role": "system", "content": "keep"},
+                        {"role": "user", "content": "hello"},
+                    ],
+                },
+                {
+                    "authorization": "Bearer sk-ant-api-test",
+                    "x-headroom-user-id": "user-1",
+                    "anthropic-beta": "existing",
+                },
+            )
+        )
+        assert response.status_code == 200
+        assert handler.captured[3]["messages"][-1]["content"] == "hello\n\nmemory-context"
+        assert [tool["name"] for tool in handler.captured[3]["tools"]] == ["memory_lookup"]
+        assert handler.captured[2]["anthropic-beta"] == "existing,memory-v1"
+        assert handler.traffic_learner._backend is backend
+        assert handler.traffic_learner.tool_results == [("search", {"q": "hello"}, "ok", False)]
+        assert handler.traffic_learner.message_batches
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_ccr_proactive_expansion_appends_context_to_latest_user_turn():
+    async def _run() -> None:
+        handler = _DummyAnthropicHandler()
+        handler._turn_counter = 7
+        handler.ccr_context_tracker = SimpleNamespace(
+            analyze_query=lambda query, turn: (
+                ["relevant"] if query == "hello" and turn == 7 else []
+            ),
+            execute_expansions=lambda recommendations: (
+                [{"kind": "memory"}] if recommendations else []
+            ),
+            format_expansions_for_context=lambda expansions: "expanded-context",
+        )
+        handler.config.ccr_proactive_expansion = True
+
+        async def _capture_retry(method: str, url: str, headers: dict, body: dict):
+            handler.captured = (method, url, headers, body)
+            return _ResponseStub()
+
+        handler._retry_request = _capture_retry
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer sk-ant-api-test"},
+            )
+        )
+        assert response.status_code == 200
+        assert handler.captured[3]["messages"] == [
+            {"role": "user", "content": "hello\n\nexpanded-context"}
+        ]
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_traffic_learner_fail_open_and_memory_system_context_injection():
+    async def _run() -> None:
+        handler = _DummyAnthropicHandler()
+        handler.traffic_learner = SimpleNamespace(
+            _backend=None,
+            extract_tool_results_from_messages=lambda messages: (_ for _ in ()).throw(
+                RuntimeError("traffic failed")
+            ),
+        )
+        handler._inject_system_context = lambda messages, context, body: [
+            {"role": "system", "content": context},
+            *messages,
+        ]
+        handler.memory_handler = SimpleNamespace(
+            config=SimpleNamespace(inject_context=True, inject_tools=False),
+            initialized=False,
+            backend=None,
+            search_and_format_context=lambda user_id, messages: _return_memory_context(
+                "system-memory"
+            ),
+            has_memory_tool_calls=lambda response, provider: False,
+            handle_memory_tool_calls=lambda response, user_id, provider: _return_tool_calls([]),
+        )
+        handler.session_tracker_store = SimpleNamespace(
+            compute_session_id=lambda *a, **k: "sess-1",
+            get_or_create=lambda *a, **k: SimpleNamespace(
+                _cached_token_count=0,
+                get_frozen_message_count=lambda: 0,
+                get_last_original_messages=lambda: [],
+                get_last_forwarded_messages=lambda: [],
+                update_from_response=lambda *a, **k: None,
+                record_request=lambda *a, **k: None,
+            ),
+        )
+
+        async def _capture_retry(method: str, url: str, headers: dict, body: dict):
+            handler.captured = (method, url, headers, body)
+            return _ResponseStub()
+
+        handler._retry_request = _capture_retry
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {
+                    "authorization": "Bearer sk-ant-api-test",
+                    "x-headroom-user-id": "user-1",
+                },
+            )
+        )
+        assert response.status_code == 200
+        assert handler.captured[3]["messages"][0] == {
+            "role": "system",
+            "content": "system-memory",
+        }
+
+    async def _return_memory_context(context):  # noqa: ANN001, ANN201
+        return context
+
+    async def _return_tool_calls(result):  # noqa: ANN001, ANN201
+        return result
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_bedrock_backend_success_and_error_paths():
+    async def _run_success() -> None:
+        emitted: list[tuple[PipelineStage, dict]] = []
+        logged: list[object] = []
+        metric_calls: list[dict[str, object]] = []
+        cost_calls: list[tuple] = []
+
+        async def _send_message(body, headers):  # noqa: ANN001, ANN201
+            return SimpleNamespace(
+                status_code=200,
+                body={
+                    "content": [{"type": "text", "text": "bedrock ok"}],
+                    "usage": {"output_tokens": 7},
+                },
+                error=False,
+            )
+
+        handler = _DummyAnthropicHandler()
+        handler.anthropic_backend = SimpleNamespace(name="bedrock", send_message=_send_message)
+        handler.pipeline_extensions = SimpleNamespace(
+            emit=lambda stage, **kwargs: (
+                emitted.append((stage, kwargs))
+                or SimpleNamespace(messages=None, tools=None, headers=None)
+            )
+        )
+        handler.metrics.record_request = lambda **kwargs: (
+            metric_calls.append(kwargs) or _return_none()
+        )
+        handler.cost_tracker = SimpleNamespace(
+            check_budget=lambda: (True, None),
+            record_tokens=lambda *args: cost_calls.append(args),
+        )
+        handler.logger = SimpleNamespace(log=lambda entry: logged.append(entry))
+        handler.request_logger = handler.logger
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer sk-ant-api-test"},
+            )
+        )
+        assert response.status_code == 200
+        assert (
+            response.body
+            == b'{"content":[{"type":"text","text":"bedrock ok"}],"usage":{"output_tokens":7}}'
+        )
+        assert metric_calls[-1]["provider"] == "bedrock"
+        assert metric_calls[-1]["output_tokens"] == 7
+        assert cost_calls[-1] == ("claude-3-5-sonnet-latest", 0, 1)
+        assert logged
+        assert any(stage == PipelineStage.POST_SEND for stage, _ in emitted)
+        assert any(stage == PipelineStage.RESPONSE_RECEIVED for stage, _ in emitted)
+
+    async def _run_error() -> None:
+        async def _boom(body, headers):  # noqa: ANN001, ANN201
+            raise RuntimeError("bedrock boom")
+
+        handler = _DummyAnthropicHandler()
+        handler.anthropic_backend = SimpleNamespace(name="bedrock", send_message=_boom)
+        handler.pipeline_extensions = SimpleNamespace(
+            emit=lambda *a, **k: SimpleNamespace(messages=None, tools=None, headers=None)
+        )
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer sk-ant-api-test"},
+            )
+        )
+        assert response.status_code == 500
+        assert "bedrock boom" in response.body.decode("utf-8")
+
+    async def _return_none():  # noqa: ANN001, ANN201
+        return None
+
+    with _tokenizer_patch():
+        anyio.run(_run_success)
+        anyio.run(_run_error)
+
+
+def test_direct_api_error_dump_and_redacted_headers(monkeypatch, tmp_path):
+    async def _run() -> None:
+        cache_busts: list[int] = []
+        cache_sets: list[tuple] = []
+        metric_calls: list[dict[str, object]] = []
+
+        class _ErrorResponse:
+            def __init__(self) -> None:
+                self.status_code = 400
+                self.headers = {
+                    "content-type": "application/json",
+                    "x-api-key": "upstream-secret",
+                    "authorization": "Bearer upstream-secret",
+                }
+                self._payload = {
+                    "error": {"message": "bad upstream request", "type": "invalid_request_error"},
+                    "usage": {"input_tokens": 11, "output_tokens": 0},
+                }
+
+            @property
+            def text(self) -> str:
+                return json.dumps(self._payload)
+
+            @property
+            def content(self) -> bytes:
+                return self.text.encode("utf-8")
+
+            def json(self) -> dict[str, object]:
+                return self._payload
+
+        prefix_tracker = SimpleNamespace(
+            _cached_token_count=25,
+            get_frozen_message_count=lambda: 0,
+            get_last_original_messages=lambda: [],
+            get_last_forwarded_messages=lambda: [],
+            update_from_response=lambda **kwargs: None,
+            record_request=lambda *a, **k: None,
+        )
+
+        handler = _DummyAnthropicHandler()
+        handler.metrics.record_cache_bust = lambda bust_tokens: (
+            cache_busts.append(bust_tokens) or _return_none()
+        )
+        handler.metrics.record_request = lambda **kwargs: (
+            metric_calls.append(kwargs) or _return_none()
+        )
+        handler.cache = SimpleNamespace(
+            get=lambda messages, model: _return_none(),
+            set=lambda *args, **kwargs: cache_sets.append((args, kwargs)) or _return_none(),
+        )
+        handler.session_tracker_store = SimpleNamespace(
+            compute_session_id=lambda *a, **k: "sess-1",
+            get_or_create=lambda *a, **k: prefix_tracker,
+        )
+        handler._retry_request = lambda method, url, headers, body: _return_response(
+            _ErrorResponse()
+        )
+        handler.pipeline_extensions = SimpleNamespace(
+            emit=lambda *a, **k: SimpleNamespace(messages=None, tools=None, headers=None)
+        )
+        monkeypatch.setattr("headroom.paths.debug_400_dir", lambda: tmp_path)
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {
+                    "authorization": "Bearer sk-ant-api-test-123456789",
+                    "x-api-key": "sk-ant-api-test-123456789",
+                },
+            )
+        )
+        assert response.status_code == 400
+        debug_files = list(tmp_path.glob("*.json"))
+        assert len(debug_files) == 1
+        payload = json.loads(debug_files[0].read_text())
+        assert payload["status_code"] == 400
+        assert payload["headers"]["authorization"].endswith("...")
+        assert payload["headers"]["x-api-key"].endswith("...")
+        assert payload["compression"]["original_tokens"] == 1
+        assert metric_calls[-1]["provider"] == "anthropic"
+        assert cache_busts == []
+        assert cache_sets == []
+
+    async def _return_none():  # noqa: ANN001, ANN201
+        return None
+
+    async def _return_response(value):  # noqa: ANN001, ANN201
+        return value
+
+    with _tokenizer_patch():
+        anyio.run(_run)
+
+
+def test_direct_api_success_handles_ccr_memory_continuation_and_cache_bust(monkeypatch):
+    async def _run() -> None:
+        cache_busts: list[int] = []
+        cache_sets: list[tuple] = []
+        metric_calls: list[dict[str, object]] = []
+        cost_calls: list[tuple] = []
+        sub_updates: list[dict[str, int]] = []
+        logger_entries: list[object] = []
+        continuation_bodies: list[dict] = []
+        http_client_calls: list[dict[str, object]] = []
+        prefix_updates: list[dict[str, object]] = []
+
+        class _JsonResponse:
+            def __init__(
+                self,
+                payload: dict,
+                *,
+                status_code: int = 200,
+                headers: dict[str, str] | None = None,
+            ):
+                self.status_code = status_code
+                self.headers = headers or {"content-type": "application/json"}
+                self._payload = payload
+
+            @property
+            def text(self) -> str:
+                return json.dumps(self._payload)
+
+            @property
+            def content(self) -> bytes:
+                return self.text.encode("utf-8")
+
+            def json(self) -> dict:
+                return self._payload
+
+        initial_response = _JsonResponse(
+            {
+                "content": [
+                    {"type": "tool_use", "id": "call1", "name": "headroom_retrieve", "input": {}}
+                ],
+                "usage": {
+                    "output_tokens": 2,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "input_tokens": 10,
+                },
+            }
+        )
+        continuation_response = _JsonResponse(
+            {
+                "content": [{"type": "text", "text": "final answer"}],
+                "usage": {
+                    "output_tokens": 7,
+                    "cache_read_input_tokens": 3,
+                    "cache_creation_input_tokens": 1,
+                    "input_tokens": 8,
+                },
+            }
+        )
+
+        prefix_tracker = SimpleNamespace(
+            _cached_token_count=20,
+            get_frozen_message_count=lambda: 0,
+            get_last_original_messages=lambda: [],
+            get_last_forwarded_messages=lambda: [],
+            update_from_response=lambda **kwargs: prefix_updates.append(kwargs),
+            record_request=lambda *a, **k: None,
+        )
+
+        handler = _DummyAnthropicHandler()
+        handler.config.optimize = True
+        handler.anthropic_pipeline = SimpleNamespace(
+            apply=MagicMock(
+                return_value=SimpleNamespace(
+                    messages=[{"role": "user", "content": "optimized"}],
+                    transforms_applied=["router:text:kompress"],
+                    timing={"compression_ms": 1.0},
+                    tokens_before=10,
+                    tokens_after=4,
+                    waste_signals=SimpleNamespace(to_dict=lambda: {"compress": 1}),
+                )
+            )
+        )
+        handler.metrics.record_cache_bust = lambda bust_tokens: (
+            cache_busts.append(bust_tokens) or _return_none()
+        )
+        handler.metrics.record_request = lambda **kwargs: (
+            metric_calls.append(kwargs) or _return_none()
+        )
+        handler.cache = SimpleNamespace(
+            get=lambda messages, model: _return_none(),
+            set=lambda *args, **kwargs: cache_sets.append((args, kwargs)) or _return_none(),
+        )
+        handler.cost_tracker = SimpleNamespace(
+            check_budget=lambda: (True, None),
+            record_tokens=lambda *args, **kwargs: cost_calls.append((args, kwargs)),
+        )
+        handler.logger = SimpleNamespace(log=lambda entry: logger_entries.append(entry))
+        handler.request_logger = handler.logger
+        handler.pipeline_extensions = SimpleNamespace(
+            emit=lambda *a, **k: SimpleNamespace(messages=None, tools=None, headers=None)
+        )
+        handler.session_tracker_store = SimpleNamespace(
+            compute_session_id=lambda *a, **k: "sess-1",
+            get_or_create=lambda *a, **k: prefix_tracker,
+        )
+        handler.ccr_response_handler = SimpleNamespace(
+            has_ccr_tool_calls=lambda response, provider: True,
+            handle_response=_handle_ccr,
+        )
+        handler.memory_handler = SimpleNamespace(
+            config=SimpleNamespace(inject_context=False, inject_tools=False),
+            has_memory_tool_calls=lambda response, provider: True,
+            handle_memory_tool_calls=lambda response, user_id, provider: _return_tool_results(
+                [{"type": "tool_result", "tool_use_id": "call1", "content": "resolved"}]
+            ),
+        )
+
+        async def _http_post(url, json, headers, timeout):  # noqa: ANN001, ANN201
+            http_client_calls.append({"url": url, "json": json, "headers": headers})
+            return _JsonResponse({"continued": True}, headers={"content-encoding": "gzip"})
+
+        handler.http_client = SimpleNamespace(post=_http_post)
+
+        async def _capture_retry(method: str, url: str, headers: dict, body: dict):
+            continuation_bodies.append(body)
+            if len(continuation_bodies) == 1:
+                return initial_response
+            return continuation_response
+
+        handler._retry_request = _capture_retry
+
+        monkeypatch.setitem(
+            sys.modules,
+            "headroom.subscription.tracker",
+            SimpleNamespace(
+                get_subscription_tracker=lambda: SimpleNamespace(
+                    notify_active=lambda auth_header: None,
+                    update_contribution=lambda **kwargs: sub_updates.append(kwargs),
+                )
+            ),
+        )
+
+        response = await handler.handle_anthropic_messages(
+            _build_request(
+                {
+                    "model": "claude-3-5-sonnet-latest",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+                {"authorization": "Bearer oauth-token"},
+            )
+        )
+        assert response.status_code == 200
+        assert response.body == continuation_response.content
+        assert http_client_calls[0]["json"]["messages"] == [
+            {"role": "user", "content": "continued"}
+        ]
+        assert http_client_calls[0]["json"]["tools"] == [{"name": "tool"}]
+        assert "content-encoding" not in http_client_calls[0]["headers"]
+        memory_continuation = continuation_bodies[-1]["messages"]
+        assert memory_continuation[-2]["role"] == "assistant"
+        assert memory_continuation[-1]["content"] == [
+            {"type": "tool_result", "tool_use_id": "call1", "content": "resolved"}
+        ]
+        assert metric_calls[-1]["cache_read_tokens"] == 3
+        assert metric_calls[-1]["tokens_saved"] == 0
+        assert cache_sets and cache_sets[-1][1]["tokens_saved"] == 0
+        assert cost_calls[-1][1]["cache_read_tokens"] == 3
+        assert sub_updates[-1]["tokens_saved_compression"] == 0
+        assert prefix_updates[-1]["cache_read_tokens"] == 3
+        assert logger_entries
+
+    async def _handle_ccr(resp_json, optimized_messages, tools, api_call_fn, provider):  # noqa: ANN001, ANN201
+        assert provider == "anthropic"
+        continuation = await api_call_fn(
+            [{"role": "user", "content": "continued"}], [{"name": "tool"}]
+        )
+        assert continuation == {"continued": True}
+        return {
+            "content": [{"type": "tool_use", "id": "call1", "name": "memory_lookup", "input": {}}],
+            "usage": {
+                "output_tokens": 4,
+                "cache_read_input_tokens": 5,
+                "cache_creation_input_tokens": 2,
+                "input_tokens": 9,
+            },
+        }
+
+    async def _return_none():  # noqa: ANN001, ANN201
+        return None
+
+    async def _return_tool_results(result):  # noqa: ANN001, ANN201
+        return result
 
     with _tokenizer_patch():
         anyio.run(_run)

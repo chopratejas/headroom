@@ -107,6 +107,13 @@ jobs:
           file: ./coverage.xml
           fail_ci_if_error: false
 
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-coverage-xml
+          path: coverage.xml
+
   test-extras:
     runs-on: ubuntu-latest
     steps:
@@ -157,7 +164,15 @@ jobs:
 
       - name: Run relevance tests
         run: |
-          pytest tests/test_relevance.py -v
+          pytest tests/test_relevance.py -v --cov=headroom --cov-report=xml:coverage-relevance.xml --cov-report=term-missing
+
+      - name: Upload relevance coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-relevance.xml
+          flags: relevance
+          name: relevance-${{ github.run_id }}
+          fail_ci_if_error: false
 
   test-agno:
     runs-on: ubuntu-latest
@@ -176,7 +191,15 @@ jobs:
 
       - name: Run agno tests
         run: |
-          pytest tests/test_integrations/agno/ -v
+          pytest tests/test_integrations/agno/ -v --cov=headroom --cov-report=xml:coverage-agno.xml --cov-report=term-missing
+
+      - name: Upload agno coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-agno.xml
+          flags: agno
+          name: agno-${{ github.run_id }}
+          fail_ci_if_error: false
 
   docker-native-e2e:
     runs-on: ubuntu-latest
@@ -241,11 +264,19 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          pip install pytest pytest-cov
 
       - name: Run native installer wrapper tests
         run: |
-          pytest tests/test_install/test_native_installers.py -q
+          pytest tests/test_install/test_native_installers.py --cov=headroom --cov-report=xml:coverage-native-wrapper-windows.xml --cov-report=term-missing -q
+
+      - name: Upload native wrapper coverage to Codecov (Windows)
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-native-wrapper-windows.xml
+          flags: native-wrapper-windows
+          name: native-wrapper-windows-${{ github.run_id }}
+          fail_ci_if_error: false
 
   macos-native-wrapper:
     runs-on: macos-latest
@@ -261,13 +292,55 @@ jobs:
         run: |
           brew install bash
           python -m pip install --upgrade pip
-          python -m pip install --retries 10 --timeout 60 pytest
+          python -m pip install --retries 10 --timeout 60 pytest pytest-cov
 
       - name: Run native installer wrapper tests
         run: |
           BASH_PREFIX="$(brew --prefix bash)"
           export PATH="$BASH_PREFIX/bin:$PATH"
-          pytest tests/test_install/test_native_installers.py -q
+          pytest tests/test_install/test_native_installers.py --cov=headroom --cov-report=xml:coverage-native-wrapper-macos.xml --cov-report=term-missing -q
+
+      - name: Upload native wrapper coverage to Codecov (macOS)
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-native-wrapper-macos.xml
+          flags: native-wrapper-macos
+          name: native-wrapper-macos-${{ github.run_id }}
+          fail_ci_if_error: false
+
+  coverage-total:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Download total coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: core-coverage-xml
+
+      - name: Report total coverage
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          coverage_xml = pathlib.Path("coverage.xml")
+          root = ET.parse(coverage_xml).getroot()
+          line_rate = float(root.attrib["line-rate"]) * 100
+          lines_covered = int(root.attrib["lines-covered"])
+          lines_valid = int(root.attrib["lines-valid"])
+          message = (
+              f"Total coverage: {line_rate:.2f}% "
+              f"({lines_covered}/{lines_valid} lines covered)"
+          )
+          print(message)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write("## Total coverage\n\n")
+                  summary.write(f"{message}\n")
+          PY
 
   build:
     runs-on: ubuntu-latest

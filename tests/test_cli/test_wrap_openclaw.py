@@ -564,6 +564,23 @@ def test_run_checked_raises_click_exception_on_command_errors() -> None:
             wrap_cli._run_checked(["x"], action="demo")
 
 
+def test_run_checked_success_returns_completed_process(tmp_path: Path) -> None:
+    completed = MagicMock(stdout="ok", stderr="", returncode=0)
+    with patch("headroom.cli.wrap.subprocess.run", return_value=completed) as run:
+        result = wrap_cli._run_checked(["demo"], cwd=tmp_path, action="demo")
+
+    assert result is completed
+    run.assert_called_once_with(
+        ["demo"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
 def test_resolve_openclaw_extensions_dir_empty_output_raises() -> None:
     with patch(
         "headroom.cli.wrap._run_checked",

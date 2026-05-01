@@ -37,3 +37,15 @@ def test_wrap_aider_sets_provider_envs(
     assert captured["tool_label"] == "AIDER"
     assert captured["agent_type"] == "aider"
     assert captured["args"] == ("--model", "gpt-4o")
+
+
+def test_wrap_aider_reports_missing_binary(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    with patch("headroom.cli.wrap.shutil.which", return_value=None):
+        result = runner.invoke(main, ["wrap", "aider", "--no-rtk"])
+
+    assert result.exit_code == 1
+    assert "Error: 'aider' not found in PATH." in result.output
