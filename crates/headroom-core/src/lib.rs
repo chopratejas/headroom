@@ -1,6 +1,7 @@
 //! headroom-core: foundation crate for the Rust port of Headroom.
 
 pub mod ccr;
+pub mod context;
 pub mod relevance;
 pub mod scoring;
 pub mod signals;
