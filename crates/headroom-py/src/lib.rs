@@ -15,9 +15,16 @@
 
 use std::collections::BTreeMap;
 
+use headroom_core::ccr::{CcrStore, InMemoryCcrStore};
+use headroom_core::context::{
+    ApplyCtx as RustApplyCtx, IcmConfig as RustIcmConfig,
+    IntelligentContextManager as RustIntelligentContextManager,
+};
+use headroom_core::scoring::ScoringWeights as RustScoringWeights;
 use headroom_core::signals::{
     ImportanceCategory, ImportanceContext, KeywordDetector, KeywordRegistry, LineImportanceDetector,
 };
+use headroom_core::tokenizer::{EstimatingCounter, Tokenizer};
 use headroom_core::transforms::smart_crusher::compaction::DocumentCompactor;
 use headroom_core::transforms::smart_crusher::{
     CrushResult as RustCrushResult, SmartCrusher as RustSmartCrusher,
@@ -1459,6 +1466,252 @@ fn known_html_tag_names() -> Vec<&'static str> {
 
 // ─── Module init ───────────────────────────────────────────────────────────
 
+// ─── IntelligentContextManager (Rust ICM core) — PR-C ──────────────────────
+//
+// Rust-backed `IntelligentContextManager`. The Python shim
+// `headroom.transforms.intelligent_context.IntelligentContextManager`
+// (PR-D will reshim it) constructs and calls this directly. Single
+// instance per process, reused across requests; releases the GIL on
+// `apply()` so concurrent Python threads keep running through the
+// score-and-drop work.
+
+/// Mirror of `headroom.context.config.IcmConfig`. Six fields — the
+/// simplified OSS surface. Strategy-specific knobs (compress
+/// thresholds, summarization callbacks, memory tiers) are not here;
+/// they belong to Enterprise strategies that get registered separately.
+#[pyclass(name = "IcmConfig", module = "headroom._core")]
+#[derive(Clone)]
+struct PyIcmConfig {
+    inner: RustIcmConfig,
+}
+
+#[pymethods]
+impl PyIcmConfig {
+    #[new]
+    #[pyo3(signature = (
+        enabled = true,
+        keep_system = true,
+        keep_last_turns = 2,
+        output_buffer_tokens = 4000,
+        ccr_on_drop = true,
+        // Scoring weights as separate kwargs so the shim can pass
+        // them positionally or via `**asdict(weights)`.
+        recency = 0.20,
+        semantic_similarity = 0.20,
+        toin_importance = 0.25,
+        error_indicator = 0.15,
+        forward_reference = 0.15,
+        token_density = 0.05,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        enabled: bool,
+        keep_system: bool,
+        keep_last_turns: usize,
+        output_buffer_tokens: usize,
+        ccr_on_drop: bool,
+        recency: f32,
+        semantic_similarity: f32,
+        toin_importance: f32,
+        error_indicator: f32,
+        forward_reference: f32,
+        token_density: f32,
+    ) -> Self {
+        Self {
+            inner: RustIcmConfig {
+                enabled,
+                keep_system,
+                keep_last_turns,
+                output_buffer_tokens,
+                scoring_weights: RustScoringWeights {
+                    recency,
+                    semantic_similarity,
+                    toin_importance,
+                    error_indicator,
+                    forward_reference,
+                    token_density,
+                },
+                ccr_on_drop,
+            },
+        }
+    }
+
+    #[getter]
+    fn enabled(&self) -> bool {
+        self.inner.enabled
+    }
+    #[getter]
+    fn keep_system(&self) -> bool {
+        self.inner.keep_system
+    }
+    #[getter]
+    fn keep_last_turns(&self) -> usize {
+        self.inner.keep_last_turns
+    }
+    #[getter]
+    fn output_buffer_tokens(&self) -> usize {
+        self.inner.output_buffer_tokens
+    }
+    #[getter]
+    fn ccr_on_drop(&self) -> bool {
+        self.inner.ccr_on_drop
+    }
+}
+
+/// Result of `IntelligentContextManager.apply()`. Mirrors
+/// `headroom_core::context::ApplyResult`. Messages come back as a
+/// JSON string — same wire shape as the inputs — so the Python shim
+/// can `json.loads` them straight into the dataclass world.
+#[pyclass(name = "ApplyResult", module = "headroom._core")]
+struct PyApplyResult {
+    messages_json: String,
+    tokens_before: usize,
+    tokens_after: usize,
+    strategies_applied: Vec<String>,
+    markers_inserted: Vec<String>,
+}
+
+#[pymethods]
+impl PyApplyResult {
+    #[getter]
+    fn messages_json(&self) -> &str {
+        &self.messages_json
+    }
+    #[getter]
+    fn tokens_before(&self) -> usize {
+        self.tokens_before
+    }
+    #[getter]
+    fn tokens_after(&self) -> usize {
+        self.tokens_after
+    }
+    #[getter]
+    fn strategies_applied(&self) -> Vec<String> {
+        self.strategies_applied.clone()
+    }
+    #[getter]
+    fn markers_inserted(&self) -> Vec<String> {
+        self.markers_inserted.clone()
+    }
+}
+
+/// Helper: parse a JSON-encoded message list. Panics on bad JSON to
+/// match the existing pyo3-bridge convention (see `crush_array_json`)
+/// — pyo3 0.22's `#[pymethods]` macro hits a `clippy::useless_conversion`
+/// false positive on `PyResult<MyPyclass>` return types, and rewriting
+/// every callsite to dodge it isn't worth the noise. Realistic callers
+/// always pass valid JSON; the Python shim can defensively try/except
+/// if it ever needs to.
+fn parse_messages_json(messages_json: &str) -> Vec<serde_json::Value> {
+    serde_json::from_str(messages_json)
+        .unwrap_or_else(|e| panic!("messages_json must parse as a JSON array: {e}"))
+}
+
+/// Helper: run the cascade and project to the FFI-friendly result.
+/// Panics if re-serialization fails (it can't — we just deserialized
+/// the same shape successfully).
+fn run_icm_apply(
+    icm: &RustIntelligentContextManager,
+    py: Python<'_>,
+    messages: Vec<serde_json::Value>,
+    ctx: RustApplyCtx,
+) -> PyApplyResult {
+    let result = py.allow_threads(|| icm.apply(messages, ctx));
+    let messages_json = serde_json::to_string(&result.messages)
+        .expect("re-serializing already-parsed JSON cannot fail");
+    PyApplyResult {
+        messages_json,
+        tokens_before: result.tokens_before,
+        tokens_after: result.tokens_after,
+        strategies_applied: result
+            .strategies_applied
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        markers_inserted: result.markers_inserted,
+    }
+}
+
+/// Rust-backed `IntelligentContextManager`.
+///
+/// One instance per process. The internal state (`MessageScorer`'s
+/// embedding cache, the strategy list) is `Send + Sync` and shared
+/// across all `apply()` calls. Construct once at proxy startup and
+/// reuse — same lifecycle as the Python implementation.
+///
+/// CCR store is owned internally — an `InMemoryCcrStore` by default.
+/// Sharing the proxy's existing CCR store across SmartCrusher and ICM
+/// is a follow-up; for PR-C the simplest correct contract is a
+/// per-manager store.
+#[pyclass(name = "IntelligentContextManager", module = "headroom._core")]
+struct PyIntelligentContextManager {
+    inner: RustIntelligentContextManager,
+}
+
+#[pymethods]
+impl PyIntelligentContextManager {
+    /// Construct with config + an `InMemoryCcrStore`. The store is
+    /// not surfaced to Python yet — drop persistence and retrieval
+    /// happen entirely inside Rust. PR-D's cutover may wire the
+    /// proxy's existing CCR store through a separate constructor.
+    #[new]
+    #[pyo3(signature = (config = None))]
+    fn new(config: Option<&PyIcmConfig>) -> Self {
+        let cfg = config.map(|c| c.inner.clone()).unwrap_or_default();
+        // EstimatingCounter (chars/4) is the OSS-default tokenizer for
+        // the message-list `count_messages` accounting. Production
+        // proxies that want exact tiktoken can swap via a future
+        // builder; the OSS budget gate is approximate by design.
+        let tokenizer: std::sync::Arc<dyn Tokenizer> =
+            std::sync::Arc::new(EstimatingCounter::default());
+        let store: std::sync::Arc<dyn CcrStore> = std::sync::Arc::new(InMemoryCcrStore::new());
+        Self {
+            inner: RustIntelligentContextManager::new(cfg, tokenizer, Some(store)),
+        }
+    }
+
+    /// `apply(messages_json, model_limit, output_buffer=None, frozen_message_count=0) -> ApplyResult`.
+    ///
+    /// `messages_json` is the OpenAI/Anthropic chat-shape array as a
+    /// JSON string. Returning JSON keeps the FFI surface narrow —
+    /// the Python shim parses on the way out and the proxy already
+    /// has the messages in JSON form anyway.
+    ///
+    /// Releases the GIL across the cascade. Concurrent Python threads
+    /// in the proxy keep running through the scoring + drop walk.
+    #[pyo3(signature = (messages_json, model_limit, output_buffer = None, frozen_message_count = 0))]
+    fn apply(
+        &self,
+        py: Python<'_>,
+        messages_json: &str,
+        model_limit: usize,
+        output_buffer: Option<usize>,
+        frozen_message_count: usize,
+    ) -> PyApplyResult {
+        let messages = parse_messages_json(messages_json);
+        run_icm_apply(
+            &self.inner,
+            py,
+            messages,
+            RustApplyCtx {
+                model_limit,
+                output_buffer,
+                frozen_message_count,
+            },
+        )
+    }
+
+    /// `should_apply(messages_json, model_limit, output_buffer) -> bool`.
+    /// Cheap pre-check; returns `false` when no work is needed and the
+    /// caller can pass-through. Mirrors Python's `should_apply` gate.
+    #[pyo3(signature = (messages_json, model_limit, output_buffer))]
+    fn should_apply(&self, messages_json: &str, model_limit: usize, output_buffer: usize) -> bool {
+        let messages = parse_messages_json(messages_json);
+        self.inner
+            .should_apply(&messages, model_limit, output_buffer)
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hello, m)?)?;
@@ -1487,5 +1740,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(score_line, m)?)?;
     m.add_function(wrap_pyfunction!(content_has_error_indicators, m)?)?;
     m.add_function(wrap_pyfunction!(keyword_registry_snapshot, m)?)?;
+    m.add_class::<PyIcmConfig>()?;
+    m.add_class::<PyApplyResult>()?;
+    m.add_class::<PyIntelligentContextManager>()?;
     Ok(())
 }
