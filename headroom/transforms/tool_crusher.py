@@ -19,6 +19,44 @@ from .base import Transform
 logger = logging.getLogger(__name__)
 
 
+def _build_tool_name_index(messages: list[dict[str, Any]]) -> dict[str, str]:
+    """Map tool_call_id/tool_use_id → tool name across OpenAI + Anthropic formats.
+
+    Skips entries where id or name is missing; those calls still crush, but
+    won't contribute a tool-name to the ``tool_crush`` tag.
+    """
+    index: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            tc_id = tc.get("id")
+            name = (tc.get("function") or {}).get("name")
+            if tc_id and name:
+                index[tc_id] = name
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                bid = block.get("id")
+                name = block.get("name")
+                if bid and name:
+                    index[bid] = name
+    return index
+
+
+def _format_tool_crush_transform(count: int, tool_names: list[str]) -> str:
+    """Format ``tool_crush:<count>[:<name1,name2,...>]``.
+
+    Names are included when known so consumers can show what was crushed. Empty
+    names fall back to the count-only form for backwards compatibility.
+    """
+    if tool_names:
+        return f"tool_crush:{count}:{','.join(tool_names)}"
+    return f"tool_crush:{count}"
+
+
 class ToolCrusher(Transform):
     """
     Compress tool output to reduce token usage.
@@ -102,6 +140,15 @@ class ToolCrusher(Transform):
         warnings: list[str] = []
 
         crushed_count = 0
+        crushed_tool_names: list[str] = []
+        seen_tool_names: set[str] = set()
+        tool_names_by_id = _build_tool_name_index(result_messages)
+
+        def _record(tool_id: str) -> None:
+            name = tool_names_by_id.get(tool_id)
+            if name and name not in seen_tool_names:
+                seen_tool_names.add(name)
+                crushed_tool_names.append(name)
 
         for msg in result_messages:
             # OpenAI style: role="tool"
@@ -130,6 +177,7 @@ class ToolCrusher(Transform):
                     msg["content"] = crushed + "\n" + marker
                     crushed_count += 1
                     markers_inserted.append(marker)
+                    _record(tool_call_id)
 
             # Anthropic style: role="user" with tool_result content blocks
             content = msg.get("content")
@@ -165,9 +213,12 @@ class ToolCrusher(Transform):
                         content[i]["content"] = crushed + "\n" + marker
                         crushed_count += 1
                         markers_inserted.append(marker)
+                        _record(tool_use_id)
 
         if crushed_count > 0:
-            transforms_applied.append(f"tool_crush:{crushed_count}")
+            transforms_applied.append(
+                _format_tool_crush_transform(crushed_count, crushed_tool_names)
+            )
             logger.info(
                 "ToolCrusher: compressed %d tool outputs, %d -> %d tokens",
                 crushed_count,

@@ -136,6 +136,147 @@ class TestToolCrusher:
         assert "<headroom:tool_digest" in tool_content
         assert "sha256=" in tool_content
 
+    def test_transform_tag_includes_tool_names_openai(self):
+        """Tag shape is ``tool_crush:<count>:<name1,name2>`` for OpenAI format."""
+        large_a = {"items": [{"id": i, "v": "x" * 10} for i in range(40)]}
+        large_b = {"rows": list(range(200))}
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    },
+                    {
+                        "id": "c2",
+                        "type": "function",
+                        "function": {"name": "Grep", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps(large_a)},
+            {"role": "tool", "tool_call_id": "c2", "content": json.dumps(large_b)},
+        ]
+
+        crusher = ToolCrusher(ToolCrusherConfig(min_tokens_to_crush=10, max_array_items=3))
+        result = crusher.apply(messages, get_tokenizer())
+
+        tags = [t for t in result.transforms_applied if t.startswith("tool_crush:")]
+        assert len(tags) == 1
+        parts = tags[0].split(":", 2)
+        assert parts[0] == "tool_crush"
+        assert parts[1] == "2"
+        # Order follows first-crushed-first
+        assert parts[2] == "Bash,Grep"
+
+    def test_transform_tag_includes_tool_names_anthropic(self):
+        """Anthropic tool_use blocks feed the tool-name index."""
+        large = {"items": [{"id": i, "v": "x" * 10} for i in range(40)]}
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "u1", "name": "Read", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "u1", "content": json.dumps(large)},
+                ],
+            },
+        ]
+
+        crusher = ToolCrusher(ToolCrusherConfig(min_tokens_to_crush=10, max_array_items=3))
+        result = crusher.apply(messages, get_tokenizer())
+
+        assert "tool_crush:1:Read" in result.transforms_applied
+
+    def test_transform_tag_dedupes_repeated_tool(self):
+        """Same tool crushed twice shows once in the tag."""
+        large = {"items": [{"id": i, "v": "x" * 10} for i in range(40)]}
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    },
+                    {
+                        "id": "c2",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps(large)},
+            {"role": "tool", "tool_call_id": "c2", "content": json.dumps(large)},
+        ]
+
+        crusher = ToolCrusher(ToolCrusherConfig(min_tokens_to_crush=10, max_array_items=3))
+        result = crusher.apply(messages, get_tokenizer())
+
+        assert "tool_crush:2:Bash" in result.transforms_applied
+
+    def test_tool_name_index_skips_entries_missing_id_or_name(self):
+        """Guards: tool_calls / tool_use blocks missing id or name are skipped,
+        other blocks (text, etc.) are skipped, and the crushed tag still
+        reflects the entries that DO have both."""
+        large = {"items": [{"id": i, "v": "x" * 10} for i in range(40)]}
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    # tool_use block with no id → skipped
+                    {"type": "tool_use", "name": "NamelessRead"},
+                    # tool_use block with no name → skipped
+                    {"type": "tool_use", "id": "u0"},
+                    # Non-tool_use block → skipped
+                    {"type": "text", "text": "thinking..."},
+                    # The one good entry
+                    {"type": "tool_use", "id": "u1", "name": "Grep", "input": {}},
+                ],
+                # OpenAI-style tool_calls missing id/name → skipped
+                "tool_calls": [
+                    {"id": "", "function": {"name": "Empty"}},
+                    {"id": "c1", "function": {"name": ""}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "u1", "content": json.dumps(large)},
+                ],
+            },
+        ]
+
+        crusher = ToolCrusher(ToolCrusherConfig(min_tokens_to_crush=10, max_array_items=3))
+        result = crusher.apply(messages, get_tokenizer())
+
+        # Only Grep (u1) had both id + name AND was actually crushed.
+        assert "tool_crush:1:Grep" in result.transforms_applied
+
+    def test_transform_tag_falls_back_when_no_names(self):
+        """Crushed tool with no resolvable name keeps legacy ``tool_crush:<n>`` shape."""
+        large = {"items": [{"id": i, "v": "x" * 10} for i in range(40)]}
+        # No assistant message → no name index entries.
+        messages = [
+            {"role": "tool", "tool_call_id": "orphan", "content": json.dumps(large)},
+        ]
+
+        crusher = ToolCrusher(ToolCrusherConfig(min_tokens_to_crush=10, max_array_items=3))
+        result = crusher.apply(messages, get_tokenizer())
+
+        assert "tool_crush:1" in result.transforms_applied
+
     def test_non_tool_messages_unchanged(self):
         """Non-tool messages should not be modified."""
         messages = [

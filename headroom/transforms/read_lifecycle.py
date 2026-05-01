@@ -32,6 +32,16 @@ from ..config import (
 logger = logging.getLogger(__name__)
 
 
+def _format_read_lifecycle_transform(classification: ReadClassification) -> str:
+    """Format a read_lifecycle transform tag including the source file path.
+
+    Shape: ``read_lifecycle:<state>:<file_path>``. Consumers splitting on ``:``
+    must bound the split to 3 parts so paths containing ``:`` are preserved.
+    """
+    path = classification.file_path or ""
+    return f"read_lifecycle:{classification.state.value}:{path}"
+
+
 class ReadState(str, Enum):
     """Lifecycle state of a Read output."""
 
@@ -381,7 +391,7 @@ class ReadLifecycleManager:
                     replaced, marker, ccr_hash = self._replace_content(content, classification)
                     if replaced:
                         result_messages.append({**msg, "content": marker})
-                        transforms.append(f"read_lifecycle:{classification.state.value}")
+                        transforms.append(_format_read_lifecycle_transform(classification))
                         if ccr_hash:
                             ccr_hashes.append(ccr_hash)
                         bytes_before += len(content.encode("utf-8"))
@@ -435,7 +445,7 @@ class ReadLifecycleManager:
                 replaced, marker, ccr_hash = self._replace_content(tool_content, classification)
                 if replaced:
                     new_blocks.append({**block, "content": marker})
-                    transforms.append(f"read_lifecycle:{classification.state.value}")
+                    transforms.append(_format_read_lifecycle_transform(classification))
                     if ccr_hash:
                         ccr_hashes.append(ccr_hash)
                     any_replaced = True
