@@ -563,6 +563,98 @@ def is_anthropic_auth(headers: dict[str, str]) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Internal-header stripping (PR-A5 — fixes P5-49).
+# ---------------------------------------------------------------------------
+#
+# `x-headroom-*` request headers (e.g. ``x-headroom-bypass``,
+# ``x-headroom-mode``, ``x-headroom-user-id``, ``x-headroom-stack``,
+# ``x-headroom-base-url``) are internal control flags consumed by the
+# proxy itself. They MUST NOT leak upstream — leaking them would (a)
+# fingerprint the proxy to subscription enforcers and (b) expose the
+# user-id/stack/base-url internals to whichever vendor terminates the
+# request.
+#
+# Inbound read paths (bypass gating, ``_extract_tags`` reading
+# ``x-headroom-*``, memory ``x-headroom-user-id`` lookup) keep using
+# the original dict / ``request.headers``. The stripped copy is what
+# every upstream-bound forwarder receives.
+#
+# Note: response-side ``X-Headroom-*`` injection (e.g.
+# ``x-headroom-tokens-saved``) is unrelated — the proxy is allowed to
+# tell its client about its own work. This helper only filters
+# request-side headers.
+
+_INTERNAL_HEADER_PREFIX = "x-headroom-"
+
+# Operator opt-in env var. ``enabled`` (default) strips internal
+# ``x-headroom-*`` headers from every upstream-bound forwarder.
+# ``disabled`` is an explicit operator opt-in for diagnostic shadow
+# tracing — NOT a fallback. Per realignment build constraint #4 the
+# behaviour is loud, configurable, and never silent.
+_STRIP_INTERNAL_HEADERS_ENV = "HEADROOM_STRIP_INTERNAL_HEADERS"
+StripInternalHeadersMode = Literal["enabled", "disabled"]
+_STRIP_INTERNAL_HEADERS_DEFAULT: StripInternalHeadersMode = "enabled"
+
+
+def get_strip_internal_headers_mode() -> StripInternalHeadersMode:
+    """Return the active internal-header strip mode.
+
+    Read at request time so operators can flip behaviour without a
+    restart. Unknown values raise loudly per the no-silent-fallback
+    build constraint.
+    """
+    raw = os.environ.get(_STRIP_INTERNAL_HEADERS_ENV, "").strip().lower()
+    if not raw:
+        return _STRIP_INTERNAL_HEADERS_DEFAULT
+    if raw in ("enabled", "disabled"):
+        return cast(StripInternalHeadersMode, raw)
+    raise ValueError(
+        f"Invalid {_STRIP_INTERNAL_HEADERS_ENV}={raw!r}; expected 'enabled' or 'disabled'"
+    )
+
+
+def _strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Return a copy of ``headers`` with internal ``x-headroom-*`` keys stripped.
+
+    Used at every upstream call site to prevent fingerprinting / leakage of
+    internal flags like ``x-headroom-bypass``, ``x-headroom-mode``,
+    ``x-headroom-user-id``, ``x-headroom-stack``, ``x-headroom-base-url``.
+    Case-insensitive on the prefix. Returns a NEW dict; never mutates the
+    caller's mapping. Pure function. No regex.
+
+    When the operator opt-in ``HEADROOM_STRIP_INTERNAL_HEADERS=disabled``
+    is set, returns a shallow copy unchanged. That mode is for diagnostic
+    shadow tracing only and is documented as a per-deploy choice.
+    """
+    mode = get_strip_internal_headers_mode()
+    if mode == "disabled":
+        # Always return a copy so callers can mutate without surprise.
+        return dict(headers)
+    return {k: v for k, v in headers.items() if not k.lower().startswith(_INTERNAL_HEADER_PREFIX)}
+
+
+def log_outbound_headers(
+    *,
+    forwarder: str,
+    stripped_count: int,
+    request_id: str | None,
+) -> None:
+    """Structured log line for every upstream forwarder header strip.
+
+    Emitted once per outbound request (paired with ``log_outbound_request``).
+    Per realignment build constraint #8 we log every cache-affecting
+    decision; per #8/#11 we never log header values, only the count of
+    stripped internal headers.
+    """
+    logger.info(
+        "event=outbound_headers forwarder=%s stripped_count=%d request_id=%s",
+        forwarder,
+        stripped_count,
+        request_id or "",
+    )
+
+
 async def _read_request_body_bytes(request: Request) -> bytes:
     """Read and (if needed) decompress the request body, returning raw UTF-8 bytes.
 

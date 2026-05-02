@@ -263,11 +263,27 @@ class OpenAIHandlerMixin:
         # if httpx lacks brotli support the response body is undecipherable → 502.
         headers.pop("accept-encoding", None)
         tags = self._extract_tags(headers)
+        # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
+        # headers AFTER `_extract_tags` reads them. Inbound bypass gating
+        # uses `request.headers.get(...)` above; memory user-id reads
+        # `request.headers` below. From this point on, `headers` is the
+        # upstream-bound copy.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
 
-        # Memory: Get user ID when memory is enabled
+        _pre_strip_count_chat = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_chat_completions",
+            stripped_count=_pre_strip_count_chat,
+            request_id=request_id,
+        )
+
+        # Memory: Get user ID when memory is enabled. Reads `request.headers`
+        # directly because `headers` was stripped of `x-headroom-*` for the
+        # upstream-bound copy (PR-A5).
         memory_user_id: str | None = None
         if self.memory_handler:
-            memory_user_id = headers.get(
+            memory_user_id = request.headers.get(
                 "x-headroom-user-id",
                 os.environ.get("USER", os.environ.get("USERNAME", "default")),
             )
@@ -1137,11 +1153,24 @@ class OpenAIHandlerMixin:
         # if httpx lacks brotli support the response body is undecipherable → 502.
         headers.pop("accept-encoding", None)
         tags = self._extract_tags(headers)
+        # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
+        # headers AFTER `_extract_tags` reads them. Memory user-id reads
+        # `request.headers` below.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
 
-        # Memory: Get user ID when memory is enabled
+        _pre_strip_count_resp = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_responses",
+            stripped_count=_pre_strip_count_resp,
+            request_id=request_id,
+        )
+
+        # Memory: Get user ID when memory is enabled. Reads `request.headers`
+        # directly because `headers` was stripped of `x-headroom-*` (PR-A5).
         memory_user_id: str | None = None
         if self.memory_handler:
-            memory_user_id = headers.get(
+            memory_user_id = request.headers.get(
                 "x-headroom-user-id",
                 os.environ.get("USER", os.environ.get("USERNAME", "default")),
             )
@@ -1617,10 +1646,30 @@ class OpenAIHandlerMixin:
                 "transfer-encoding",  # hop-by-hop
             }
         )
-        upstream_headers: dict[str, str] = {}
+        # PR-A5 (P5-49): also drop internal x-headroom-* from the upstream
+        # WebSocket handshake. Inbound reads on `ws_headers` (memory user-id
+        # below) keep working because we filter only when building
+        # `upstream_headers`, not when reading from `ws_headers`.
+        from headroom.proxy.helpers import (
+            _strip_internal_headers as _strip_internal,
+        )
+        from headroom.proxy.helpers import (
+            log_outbound_headers as _log_outbound_headers,
+        )
+
+        _ws_pre_strip_filtered: dict[str, str] = {}
         for k, v in ws_headers.items():
             if k.lower() not in _skip_headers:
-                upstream_headers[k] = v
+                _ws_pre_strip_filtered[k] = v
+        _ws_pre_strip_count = sum(
+            1 for k in _ws_pre_strip_filtered if k.lower().startswith("x-headroom-")
+        )
+        upstream_headers = _strip_internal(_ws_pre_strip_filtered)
+        _log_outbound_headers(
+            forwarder="openai_responses_ws",
+            stripped_count=_ws_pre_strip_count,
+            request_id=request_id,
+        )
 
         upstream_headers, is_chatgpt_auth = _resolve_codex_routing_headers(upstream_headers)
         _lower_headers = {k.lower(): v for k, v in upstream_headers.items()}
@@ -2771,6 +2820,16 @@ class OpenAIHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("accept-encoding", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_pt = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_passthrough",
+            stripped_count=_pre_strip_count_pt,
+            request_id=None,
+        )
 
         body = await request.body()
 

@@ -30,6 +30,47 @@ pub enum CompressionMode {
     LiveZone,
 }
 
+/// Policy for stripping internal `x-headroom-*` headers from upstream-bound
+/// requests (PR-A5, fixes P5-49).
+///
+/// When `enabled` (default), every header whose name starts with
+/// `x-headroom-` is dropped before the upstream call. Stops fingerprinting
+/// of the proxy via subscription-revocation flags (`x-headroom-bypass`,
+/// `x-headroom-mode`, etc.) and prevents leakage of internal user-id /
+/// stack / base-url headers.
+///
+/// When `disabled`, internal headers are forwarded verbatim. This is an
+/// explicit operator opt-in for diagnostic shadow tracing — NOT a fallback.
+/// Document the trade-off in `docs/configuration.md` before flipping this.
+///
+/// Source priority: CLI flag → `HEADROOM_PROXY_STRIP_INTERNAL_HEADERS`
+/// env var → default (`enabled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum StripInternalHeaders {
+    /// Strip every `x-headroom-*` header from upstream-bound requests.
+    /// Default. Operationally safe.
+    Enabled,
+    /// Forward `x-headroom-*` to upstream verbatim. Diagnostic-only;
+    /// exposes internal flags to the upstream and reveals the proxy.
+    Disabled,
+}
+
+impl StripInternalHeaders {
+    /// Stable snake_case name suitable for log fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StripInternalHeaders::Enabled => "enabled",
+            StripInternalHeaders::Disabled => "disabled",
+        }
+    }
+
+    /// Convenience: is the strip switched on?
+    pub fn is_enabled(self) -> bool {
+        matches!(self, StripInternalHeaders::Enabled)
+    }
+}
+
 /// Policy for automatically deriving `frozen_message_count` from the
 /// customer's `cache_control` markers (PR-A4).
 ///
@@ -195,6 +236,21 @@ pub struct CliArgs {
         default_value_t = CacheControlAutoFrozen::Enabled,
     )]
     pub cache_control_auto_frozen: CacheControlAutoFrozen,
+
+    /// Strip internal `x-headroom-*` headers from upstream-bound
+    /// requests (PR-A5, fixes P5-49). Default `enabled`. The `disabled`
+    /// path is operator opt-in for diagnostic shadow tracing only —
+    /// NOT a fallback per realignment build constraint #4.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_STRIP_INTERNAL_HEADERS`
+    /// env var → default (`enabled`).
+    #[arg(
+        long = "strip-internal-headers",
+        env = "HEADROOM_PROXY_STRIP_INTERNAL_HEADERS",
+        value_enum,
+        default_value_t = StripInternalHeaders::Enabled,
+    )]
+    pub strip_internal_headers: StripInternalHeaders,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -236,6 +292,10 @@ pub struct Config {
     /// adds the derivation function (`compute_frozen_count`); Phase
     /// B's dispatcher consumes the resolved value here.
     pub cache_control_auto_frozen: CacheControlAutoFrozen,
+    /// Whether to strip internal `x-headroom-*` headers from
+    /// upstream-bound requests. PR-A5 default-on guard against
+    /// fingerprinting / leakage of internal flags.
+    pub strip_internal_headers: StripInternalHeaders,
 }
 
 impl Config {
@@ -261,6 +321,7 @@ impl Config {
             compression_max_body_bytes,
             compression_mode: args.compression_mode,
             cache_control_auto_frozen: args.cache_control_auto_frozen,
+            strip_internal_headers: args.strip_internal_headers,
         }
     }
 
@@ -282,6 +343,10 @@ impl Config {
             // Match production default so the cache-control walker is
             // exercised under test without per-test opt-in.
             cache_control_auto_frozen: CacheControlAutoFrozen::Enabled,
+            // Production default: strip internal `x-headroom-*` headers
+            // from upstream-bound requests. Tests opt out per-case via
+            // `start_proxy_with`.
+            strip_internal_headers: StripInternalHeaders::Enabled,
         }
     }
 }

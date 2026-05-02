@@ -566,6 +566,21 @@ class AnthropicHandlerMixin:
             # body is undecipherable → 502.
             headers.pop("accept-encoding", None)
             tags = self._extract_tags(headers)
+            # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
+            # headers AFTER `_extract_tags` reads them. Inbound bypass gating
+            # uses `request.headers.get(...)` directly above; memory user-id
+            # is read from `request.headers` below if needed. From this
+            # point on, `headers` is the upstream-bound copy.
+            from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+            _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+            headers = _strip_internal_headers(headers)
+            log_outbound_headers(
+                forwarder="anthropic_messages",
+                stripped_count=_pre_strip_count
+                - sum(1 for k in headers if k.lower().startswith("x-headroom-")),
+                request_id=request_id,
+            )
 
             # Subscription tracker: notify on OAuth requests (not API-key requests)
             _auth_header = headers.get("authorization", "")
@@ -614,10 +629,12 @@ class AnthropicHandlerMixin:
                         detail=f"Budget exceeded for {self.config.budget_period} period",
                     )
 
-            # Memory: Get user ID when memory is enabled (fallback to "default" for simple DevEx)
+            # Memory: Get user ID when memory is enabled (fallback to "default" for simple DevEx).
+            # Reads `request.headers` directly because the local `headers` dict was
+            # stripped of `x-headroom-*` above for the upstream-bound copy (PR-A5).
             memory_user_id: str | None = None
             if self.memory_handler:
-                memory_user_id = headers.get(
+                memory_user_id = request.headers.get(
                     "x-headroom-user-id",
                     os.environ.get("USER", os.environ.get("USERNAME", "default")),
                 )
@@ -2143,6 +2160,16 @@ class AnthropicHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="anthropic_batch",
+            stripped_count=_pre_strip_count,
+            request_id=request_id,
+        )
 
         # Track compression stats across all batch requests
         total_original_tokens = 0
@@ -2369,6 +2396,16 @@ class AnthropicHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="anthropic_batch_passthrough",
+            stripped_count=_pre_strip_count,
+            request_id=None,
+        )
 
         body = await request.body()
 
@@ -2470,6 +2507,16 @@ class AnthropicHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="anthropic_batch_results",
+            stripped_count=_pre_strip_count,
+            request_id=None,
+        )
 
         response = await self.http_client.get(url, headers=headers)  # type: ignore[union-attr]
 

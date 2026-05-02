@@ -99,6 +99,16 @@ class BatchHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_gb = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="google_batch",
+            stripped_count=_pre_strip_count_gb,
+            request_id=request_id,
+        )
 
         # Track compression stats
         total_original_tokens = 0
@@ -330,6 +340,16 @@ class BatchHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_gpt = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="google_batch_passthrough",
+            stripped_count=_pre_strip_count_gpt,
+            request_id=None,
+        )
 
         url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:batchGenerateContent"
 
@@ -428,6 +448,16 @@ class BatchHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_gp = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="gemini_passthrough",
+            stripped_count=_pre_strip_count_gp,
+            request_id=None,
+        )
 
         # Handle API key
         api_key = headers.pop("x-goog-api-key", None)
@@ -549,6 +579,16 @@ class BatchHandlerMixin:
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_gbr = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="google_batch_results",
+            stripped_count=_pre_strip_count_gbr,
+            request_id=None,
+        )
 
         # Handle API key
         api_key = headers.pop("x-goog-api-key", None)
@@ -729,6 +769,16 @@ class BatchHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_oacc = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_batch_chat_completions",
+            stripped_count=_pre_strip_count_oacc,
+            request_id=request_id,
+        )
 
         try:
             # Step 1: Download the input file from OpenAI
@@ -1048,6 +1098,8 @@ class BatchHandlerMixin:
 
         from headroom.proxy.helpers import (
             _read_request_body_bytes,
+            _strip_internal_headers,
+            log_outbound_headers,
             log_outbound_request,
             prepare_outbound_body_bytes,
         )
@@ -1055,6 +1107,14 @@ class BatchHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        _pre_strip_count_obp = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_batch_passthrough",
+            stripped_count=_pre_strip_count_obp,
+            request_id=None,
+        )
 
         url = f"{self.OPENAI_API_URL}/v1/batches"
 

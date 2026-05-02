@@ -198,13 +198,41 @@ async fn forward_http(
 
     // Build the outgoing headers off the incoming ones, then optionally drop
     // Host (rewrite_host=true => let reqwest set its own Host for the upstream).
+    // PR-A5 (P5-49): strip internal `x-headroom-*` from upstream-bound
+    // requests when `Config::strip_internal_headers == Enabled` (default).
+    let strip_internal = state.config.strip_internal_headers.is_enabled();
+    let pre_strip_internal_count = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| crate::headers::is_internal_header(name))
+        .count();
     let mut outgoing_headers = build_forward_request_headers(
         req.headers(),
         client_addr.ip(),
         "http",
         forwarded_host.as_deref(),
         &request_id,
+        strip_internal,
     );
+    if strip_internal && pre_strip_internal_count > 0 {
+        tracing::info!(
+            event = "outbound_headers",
+            forwarder = "rust_proxy",
+            stripped_count = pre_strip_internal_count,
+            request_id = %request_id,
+            "stripped internal x-headroom-* headers from upstream-bound request"
+        );
+    } else if !strip_internal && pre_strip_internal_count > 0 {
+        tracing::warn!(
+            event = "outbound_headers",
+            forwarder = "rust_proxy",
+            mode = "disabled",
+            internal_count = pre_strip_internal_count,
+            request_id = %request_id,
+            "HEADROOM_PROXY_STRIP_INTERNAL_HEADERS=disabled; \
+             internal x-headroom-* headers forwarded to upstream"
+        );
+    }
     if !state.config.rewrite_host {
         if let Some(h) = req.headers().get(http::header::HOST) {
             outgoing_headers.insert(http::header::HOST, h.clone());
