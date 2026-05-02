@@ -40,8 +40,9 @@
 //! existing log context (added in `proxy.rs`).
 
 use bytes::Bytes;
+use serde_json::Value;
 
-use crate::config::CompressionMode;
+use crate::config::{CacheControlAutoFrozen, CompressionMode};
 
 /// What happened. The caller uses the variant to decide whether to
 /// forward the original bytes (everything) or a modified body
@@ -127,6 +128,55 @@ pub fn compress_anthropic_request(
         "anthropic compression decision"
     );
     Outcome::NoCompression
+}
+
+/// Resolve the `frozen_message_count` floor for a parsed Anthropic
+/// `/v1/messages` request body, honouring the
+/// `cache_control_auto_frozen` config gate (PR-A4).
+///
+/// This is a thin wrapper around [`headroom_core::compute_frozen_count`]
+/// that returns `0` when the operator has disabled automatic
+/// derivation, regardless of the markers in `parsed`. Intended to be
+/// called by Phase B's live-zone dispatcher; PR-A4 ships it ready
+/// for that consumer alongside the underlying core helper.
+///
+/// # Arguments
+///
+/// - `parsed`: parsed JSON body. The walker reads `messages`,
+///   `system`, and `tools`; other fields are ignored. The function
+///   itself does NOT mutate the value.
+/// - `policy`: the resolved [`CacheControlAutoFrozen`] from `Config`.
+///   `Disabled` short-circuits to `0` without inspecting the body.
+/// - `request_id`: the per-request id used for log correlation,
+///   matched against the proxy's existing `tracing` span fields.
+///
+/// # Returns
+///
+/// The frozen-count floor (smallest `N` such that `messages[i]` for
+/// `i < N` is in the cache hot zone), or `0` when auto-derivation
+/// is disabled. Phase B PR-B2 forbids the live-zone dispatcher from
+/// touching any index below this value.
+pub fn resolve_frozen_count(
+    parsed: &Value,
+    policy: CacheControlAutoFrozen,
+    request_id: &str,
+) -> usize {
+    if !policy.is_enabled() {
+        tracing::debug!(
+            request_id = %request_id,
+            cache_control_auto_frozen = policy.as_str(),
+            "cache_control auto-derivation disabled; floor=0"
+        );
+        return 0;
+    }
+    let count = headroom_core::compute_frozen_count(parsed);
+    tracing::debug!(
+        request_id = %request_id,
+        cache_control_auto_frozen = policy.as_str(),
+        frozen_count = count,
+        "cache_control auto-derivation result"
+    );
+    count
 }
 
 #[cfg(test)]

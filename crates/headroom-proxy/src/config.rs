@@ -30,6 +30,54 @@ pub enum CompressionMode {
     LiveZone,
 }
 
+/// Policy for automatically deriving `frozen_message_count` from the
+/// customer's `cache_control` markers (PR-A4).
+///
+/// When `enabled` (default), the live-zone dispatcher will walk
+/// `messages[*].content[*].cache_control` and bump the floor below
+/// which compression is forbidden. When `disabled`, the floor stays
+/// at 0 regardless of markers — Phase B's dispatcher will then treat
+/// every message as live-zone, which is dangerous in production but
+/// useful for benchmarking the cache-control machinery.
+///
+/// `system` and `tools[*]` markers never bump `frozen_count` because
+/// those fields are *always* part of the cache hot zone (invariant I2);
+/// they're guaranteed-immutable independently of marker placement.
+///
+/// Source priority: CLI flag → `HEADROOM_PROXY_CACHE_CONTROL_AUTO_FROZEN`
+/// env var → default (`enabled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum CacheControlAutoFrozen {
+    /// Walk customer `cache_control` markers and derive
+    /// `frozen_message_count` automatically. Default.
+    Enabled,
+    /// Ignore customer `cache_control` markers when deriving
+    /// `frozen_message_count`; the function returns 0 regardless of
+    /// what the body contains. Intended for benchmarking and the
+    /// "no automatic floor" testing path; not for production use.
+    Disabled,
+}
+
+impl CacheControlAutoFrozen {
+    /// Stable snake_case name suitable for log fields. Mirrors
+    /// `CompressionMode::as_str` so the two policy fields render
+    /// identically in JSON tracing output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CacheControlAutoFrozen::Enabled => "enabled",
+            CacheControlAutoFrozen::Disabled => "disabled",
+        }
+    }
+
+    /// Convenience: is the auto-frozen derivation switched on? Most
+    /// callers want the boolean rather than pattern-matching on the
+    /// enum.
+    pub fn is_enabled(self) -> bool {
+        matches!(self, CacheControlAutoFrozen::Enabled)
+    }
+}
+
 impl CompressionMode {
     /// Stable snake_case name suitable for log fields. Avoids relying
     /// on `Debug` (which renders `Off`/`LiveZone`) or `Display`
@@ -127,6 +175,26 @@ pub struct CliArgs {
         default_value_t = CompressionMode::Off,
     )]
     pub compression_mode: CompressionMode,
+
+    /// Whether to derive `frozen_message_count` from customer
+    /// `cache_control` markers in the request body (PR-A4).
+    ///
+    /// `enabled` (default): walk `messages[*].content[*].cache_control`
+    /// and bump the floor for live-zone compression so any message
+    /// the customer cache-pinned is left untouched. `disabled`: skip
+    /// the walk; the floor stays at 0. The off switch exists for
+    /// benchmark setups that want to measure compression independent
+    /// of marker placement; it is NOT recommended for production.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_CACHE_CONTROL_AUTO_FROZEN`
+    /// env var → default (`enabled`).
+    #[arg(
+        long = "cache-control-auto-frozen",
+        env = "HEADROOM_PROXY_CACHE_CONTROL_AUTO_FROZEN",
+        value_enum,
+        default_value_t = CacheControlAutoFrozen::Enabled,
+    )]
+    pub cache_control_auto_frozen: CacheControlAutoFrozen,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -163,6 +231,11 @@ pub struct Config {
     /// because the dispatcher isn't implemented yet (Phase B PR-B2
     /// fills this in).
     pub compression_mode: CompressionMode,
+    /// Whether the live-zone dispatcher derives `frozen_message_count`
+    /// automatically from customer `cache_control` markers. PR-A4
+    /// adds the derivation function (`compute_frozen_count`); Phase
+    /// B's dispatcher consumes the resolved value here.
+    pub cache_control_auto_frozen: CacheControlAutoFrozen,
 }
 
 impl Config {
@@ -187,6 +260,7 @@ impl Config {
             compression: args.compression,
             compression_max_body_bytes,
             compression_mode: args.compression_mode,
+            cache_control_auto_frozen: args.cache_control_auto_frozen,
         }
     }
 
@@ -205,6 +279,9 @@ impl Config {
             compression: false,
             compression_max_body_bytes: 100 * 1024 * 1024,
             compression_mode: CompressionMode::Off,
+            // Match production default so the cache-control walker is
+            // exercised under test without per-test opt-in.
+            cache_control_auto_frozen: CacheControlAutoFrozen::Enabled,
         }
     }
 }

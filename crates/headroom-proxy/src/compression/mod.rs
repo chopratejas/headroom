@@ -35,7 +35,7 @@
 pub mod anthropic;
 pub mod model_limits;
 
-pub use anthropic::{compress_anthropic_request, Outcome, PassthroughReason};
+pub use anthropic::{compress_anthropic_request, resolve_frozen_count, Outcome, PassthroughReason};
 
 /// Does this request path target an LLM endpoint we know how to
 /// compress? Cheap pre-filter before buffering the body. Phase B
