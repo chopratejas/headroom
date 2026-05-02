@@ -338,6 +338,93 @@ async fn streaming_request_round_trips_through_proxy() {
     proxy.shutdown().await;
 }
 
+/// Two requests, identical first ~2K tokens (a "stable system prompt"),
+/// different last user message. Sent through the proxy with compression
+/// enabled. The SECOND request's response should report
+/// `usage.prompt_tokens_details.cached_tokens > 0` because OpenAI
+/// auto-caches the shared prefix (≥1024 tokens, increments of 128).
+///
+/// This test catches the failure mode where compression mutates the
+/// leading messages in a way that breaks the prefix cache hash —
+/// either by re-serializing JSON differently (whitespace, key order),
+/// dropping any leading message, or modifying the system message.
+///
+/// What it does NOT catch:
+/// - Cases where ICM is FORCED to fire (request exceeds budget) and
+///   ICM legitimately drops a message in the cached prefix. That's
+///   an inherent trade-off between "fit in window" and "preserve
+///   cache" that needs a session-aware tracker (see PrefixCacheTracker
+///   in headroom/cache/prefix_tracker.py for the full design).
+#[tokio::test]
+async fn shared_prefix_keeps_openai_cache_when_under_budget() {
+    let Some(api_key) = require_e2e() else { return };
+    let proxy = start_proxy_compression_on().await;
+
+    // ~5K-token shared system prompt — comfortably above OpenAI's
+    // 1024-token floor for prompt caching. The repeat factor was
+    // tuned empirically: 100 yielded only ~700 tokens (under the
+    // floor); 500 yields ~5K which always crosses the threshold.
+    let big_system = "You are a meticulous senior engineer. ".repeat(500);
+
+    let payload_for = |user: &str| {
+        json!({
+            "model": "gpt-4o-mini",
+            "max_tokens": 30,
+            "messages": [
+                {"role": "system", "content": big_system},
+                {"role": "user", "content": user},
+            ],
+        })
+    };
+
+    let client = reqwest::Client::new();
+    let send = |body: Value| {
+        let url = format!("{}/v1/chat/completions", proxy.url());
+        let key = api_key.clone();
+        let c = client.clone();
+        async move {
+            c.post(url)
+                .header("authorization", format!("Bearer {key}"))
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .expect("post")
+        }
+    };
+
+    // Warm the cache.
+    let r1 = send(payload_for("First call: say hi.")).await;
+    assert!(r1.status().is_success());
+    let r1_json: Value = r1.json().await.unwrap();
+    let r1_cached = r1_json["usage"]["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+    eprintln!("first call: cached_tokens={r1_cached} (expected ~0 cold)");
+
+    // Brief pause: OpenAI's cache needs a moment to register on the
+    // shared infra side before a second request sees it.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Second call — same prefix, different final user message.
+    let r2 = send(payload_for("Second call: say bye.")).await;
+    assert!(r2.status().is_success());
+    let r2_json: Value = r2.json().await.unwrap();
+    let r2_cached = r2_json["usage"]["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+    let r2_total = r2_json["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+    eprintln!("second call: cached_tokens={r2_cached} of {r2_total} prompt tokens");
+
+    assert!(
+        r2_cached >= 1024,
+        "compression broke OpenAI prefix cache: expected ≥1024 cached \
+         tokens on the second call, got {r2_cached} of {r2_total}"
+    );
+
+    proxy.shutdown().await;
+}
+
 // Force a use of the harness's `Arc` type so the `unused_imports`
 // lint doesn't kick in on the lone-test path; tests above don't need
 // it directly but having it imported keeps the file self-consistent
