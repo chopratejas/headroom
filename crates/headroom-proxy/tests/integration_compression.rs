@@ -1,16 +1,8 @@
-//! End-to-end integration tests for the compression interceptor.
+//! End-to-end integration tests for the token-mode compression interceptor.
 //!
-//! These tests boot a real Rust proxy in front of a wiremock upstream
-//! and verify the request body that arrives at the upstream — i.e. we
-//! observe the *actual* compression effect on the wire, not the
-//! library outcome in isolation.
-//!
-//! Coverage:
-//! - Compression-off (default): proxy is a passthrough, body is byte-identical.
-//! - Compression-on, small body: ICM short-circuits, body unchanged.
-//! - Compression-on, oversized body: ICM trims the messages array.
-//! - Compression-on, non-JSON body: skipped (Content-Type gate).
-//! - Compression-on, non-LLM path: skipped (path gate).
+//! Boots the Rust proxy in front of a wiremock upstream and verifies
+//! the body that arrives at the upstream — i.e. the actual on-the-wire
+//! effect of compression, not the library outcome in isolation.
 
 mod common;
 
@@ -20,80 +12,42 @@ use std::sync::{Arc, Mutex};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Mount a /v1/messages handler that captures the upstream request body
-/// into the returned Arc<Mutex<...>> for assertions, and returns 200 OK.
-async fn mount_anthropic_capture(upstream: &MockServer) -> Arc<Mutex<Option<Vec<u8>>>> {
+fn capture_path(upstream: &MockServer, p: &'static str) -> Arc<Mutex<Option<Vec<u8>>>> {
     let captured: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let captured_clone = captured.clone();
-    Mock::given(method("POST"))
-        .and(path("/v1/messages"))
-        .respond_with(move |req: &wiremock::Request| {
-            *captured_clone.lock().unwrap() = Some(req.body.clone());
-            ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#)
-        })
-        .mount(upstream)
-        .await;
+    let p_owned = p.to_string();
+    futures::executor::block_on(async {
+        Mock::given(method("POST"))
+            .and(path(p_owned))
+            .respond_with(move |req: &wiremock::Request| {
+                *captured_clone.lock().unwrap() = Some(req.body.clone());
+                ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#)
+            })
+            .mount(upstream)
+            .await;
+    });
     captured
 }
 
-/// Build a payload that's large enough to force ICM to trim. Uses the
-/// same pattern as the `compresses_when_over_budget` unit test in the
-/// anthropic module: huge max_tokens eats the budget, leaving very few
-/// tokens for input and forcing drops.
-fn oversized_anthropic_payload() -> Value {
-    let messages: Vec<Value> = (0..30)
-        .map(|i| {
-            json!({
-                "role": if i % 2 == 0 { "user" } else { "assistant" },
-                "content": format!("padding token {i} ").repeat(20),
-            })
-        })
-        .collect();
-    json!({
-        "model": "claude-3-5-sonnet-20241022",
-        "max_tokens": 199_500,
-        "messages": messages,
-    })
+fn big_json_array() -> String {
+    let row = r#"{"id":1,"name":"alice","email":"a@example.com","tags":["x","y","z"]}"#;
+    format!("[{}]", vec![row; 1000].join(","))
 }
 
 #[tokio::test]
 async fn compression_off_passes_body_unchanged() {
     let upstream = MockServer::start().await;
-    let captured = mount_anthropic_capture(&upstream).await;
-    let proxy = start_proxy_with(&upstream.uri(), |_| {
-        // compression remains off (Config::for_test default)
-    })
-    .await;
-
-    let payload = oversized_anthropic_payload();
-    let body = serde_json::to_vec(&payload).unwrap();
-    let resp = reqwest::Client::new()
-        .post(format!("{}/v1/messages", proxy.url()))
-        .header("content-type", "application/json")
-        .body(body.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-
-    let got = captured.lock().unwrap().clone().expect("upstream got body");
-    assert_eq!(got, body, "compression off — body must be byte-identical");
-    proxy.shutdown().await;
-}
-
-#[tokio::test]
-async fn compression_on_short_body_passes_through() {
-    let upstream = MockServer::start().await;
-    let captured = mount_anthropic_capture(&upstream).await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| {
-        c.compression = true;
-    })
-    .await;
+    let captured = capture_path(&upstream, "/v1/messages");
+    let proxy = start_proxy_with(&upstream.uri(), |_| {}).await;
 
     let payload = json!({
-        "model": "claude-3-5-sonnet-20241022",
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": "hello"}],
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1",
+                 "content": big_json_array()}
+            ]}
+        ]
     });
     let body = serde_json::to_vec(&payload).unwrap();
     let resp = reqwest::Client::new()
@@ -104,30 +58,28 @@ async fn compression_on_short_body_passes_through() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-
-    let got = captured.lock().unwrap().clone().expect("upstream got body");
-    let got_json: Value = serde_json::from_slice(&got).unwrap();
-    let in_messages = payload["messages"].as_array().unwrap().len();
-    let out_messages = got_json["messages"].as_array().unwrap().len();
-    assert_eq!(
-        out_messages, in_messages,
-        "small request stays under budget; messages array unchanged"
-    );
+    let got = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(got, body);
     proxy.shutdown().await;
 }
 
 #[tokio::test]
-async fn compression_on_oversized_body_trims_messages() {
+async fn anthropic_tool_result_in_new_turn_compresses() {
     let upstream = MockServer::start().await;
-    let captured = mount_anthropic_capture(&upstream).await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| {
-        c.compression = true;
-    })
-    .await;
+    let captured = capture_path(&upstream, "/v1/messages");
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
 
-    let payload = oversized_anthropic_payload();
+    let big = big_json_array();
+    let payload = json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": big.clone()}
+            ]}
+        ]
+    });
     let body = serde_json::to_vec(&payload).unwrap();
-    let in_messages = payload["messages"].as_array().unwrap().len();
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/messages", proxy.url()))
         .header("content-type", "application/json")
@@ -136,50 +88,172 @@ async fn compression_on_oversized_body_trims_messages() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-
-    let got = captured.lock().unwrap().clone().expect("upstream got body");
-    assert_ne!(got, body, "ICM should have trimmed something");
+    let got = captured.lock().unwrap().clone().unwrap();
+    let _ = body.len();
     let got_json: Value = serde_json::from_slice(&got).unwrap();
-    let out_messages = got_json["messages"].as_array().unwrap().len();
-    assert!(
-        out_messages < in_messages,
-        "expected fewer messages after compression: in={in_messages}, out={out_messages}"
-    );
-    // Other fields preserved verbatim.
-    assert_eq!(got_json["model"], payload["model"]);
-    assert_eq!(got_json["max_tokens"], payload["max_tokens"]);
+    let new_tool_content = got_json["messages"][0]["content"][0]["content"]
+        .as_str()
+        .unwrap();
+    assert!(new_tool_content.len() < big.len());
     proxy.shutdown().await;
 }
 
 #[tokio::test]
-async fn compression_on_non_json_skips() {
+async fn anthropic_prefix_messages_byte_identical() {
+    // Proves the prefix-cache contract: bytes 0..LU pass through
+    // exactly as the client sent them.
     let upstream = MockServer::start().await;
-    let captured = mount_anthropic_capture(&upstream).await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| {
-        c.compression = true;
-    })
-    .await;
+    let captured = capture_path(&upstream, "/v1/messages");
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
 
-    // Path matches /v1/messages but Content-Type isn't JSON. The gate
-    // must skip and stream verbatim — even though the body would
-    // otherwise be massive enough to compress.
-    let body = vec![0xAAu8; 64 * 1024];
+    let big = big_json_array();
+    let payload = json!({
+        "model": "claude-3-5-sonnet",
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "user", "content": "earlier turn — preserve me"},
+            {"role": "assistant", "content": "earlier reply — preserve me"},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": big.clone()}
+            ]}
+        ]
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let got = captured.lock().unwrap().clone().unwrap();
+    let got_json: Value = serde_json::from_slice(&got).unwrap();
+    assert_eq!(
+        got_json["messages"][0]["content"],
+        "earlier turn — preserve me"
+    );
+    assert_eq!(
+        got_json["messages"][1]["content"],
+        "earlier reply — preserve me"
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn openai_tool_message_in_new_turn_compresses() {
+    let upstream = MockServer::start().await;
+    let captured = capture_path(&upstream, "/v1/chat/completions");
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let big = big_json_array();
+    let payload = json!({
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "user", "content": "list users"},
+            {"role": "assistant", "content": null,
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "list", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": big.clone()}
+        ]
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
     let resp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let got = captured.lock().unwrap().clone().unwrap();
+    let _ = body.len();
+    let got_json: Value = serde_json::from_slice(&got).unwrap();
+    let new_tool = got_json["messages"][2]["content"].as_str().unwrap();
+    assert!(new_tool.len() < big.len());
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn responses_function_call_output_in_new_turn_compresses() {
+    let upstream = MockServer::start().await;
+    let captured = capture_path(&upstream, "/v1/responses");
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let big = big_json_array();
+    let payload = json!({
+        "model": "gpt-4o-mini",
+        "input": [
+            {"type": "message", "role": "user", "content": "list users"},
+            {"type": "function_call", "call_id": "c1",
+             "name": "list", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": big.clone()}
+        ]
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/responses", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let got = captured.lock().unwrap().clone().unwrap();
+    let _ = body.len();
+    let got_json: Value = serde_json::from_slice(&got).unwrap();
+    let new_output = got_json["input"][2]["output"].as_str().unwrap();
+    assert!(new_output.len() < big.len());
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn responses_previous_response_id_skips_completely() {
+    let upstream = MockServer::start().await;
+    let captured = capture_path(&upstream, "/v1/responses");
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let payload = json!({
+        "model": "gpt-4o-mini",
+        "previous_response_id": "resp_xyz",
+        "input": "any new text would be here"
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let _ = reqwest::Client::new()
+        .post(format!("{}/v1/responses", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    let got = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        got, body,
+        "previous_response_id mode must be byte-identical"
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn non_json_skips() {
+    let upstream = MockServer::start().await;
+    let captured = capture_path(&upstream, "/v1/messages");
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let body = vec![0xAAu8; 64 * 1024];
+    let _ = reqwest::Client::new()
         .post(format!("{}/v1/messages", proxy.url()))
         .header("content-type", "application/octet-stream")
         .body(body.clone())
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-
-    let got = captured.lock().unwrap().clone().expect("upstream got body");
-    assert_eq!(got, body, "non-JSON content-type must bypass compression");
+    let got = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(got, body);
     proxy.shutdown().await;
 }
 
 #[tokio::test]
-async fn compression_on_non_llm_path_skips() {
+async fn non_llm_path_skips() {
     let upstream = MockServer::start().await;
     let captured: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let captured_clone = captured.clone();
@@ -192,25 +266,23 @@ async fn compression_on_non_llm_path_skips() {
         .mount(&upstream)
         .await;
 
-    let proxy = start_proxy_with(&upstream.uri(), |c| {
-        c.compression = true;
-    })
-    .await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
 
-    // Same oversized JSON payload, but at a non-LLM path. The path
-    // gate must skip and the body must arrive verbatim.
-    let payload = oversized_anthropic_payload();
+    let big = big_json_array();
+    let payload = json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "x", "content": big}
+        ]}]
+    });
     let body = serde_json::to_vec(&payload).unwrap();
-    let resp = reqwest::Client::new()
+    let _ = reqwest::Client::new()
         .post(format!("{}/some/other/api", proxy.url()))
         .header("content-type", "application/json")
         .body(body.clone())
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-
-    let got = captured.lock().unwrap().clone().expect("upstream got body");
-    assert_eq!(got, body, "non-LLM path must bypass compression");
+    let got = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(got, body);
     proxy.shutdown().await;
 }

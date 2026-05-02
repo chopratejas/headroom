@@ -1,93 +1,47 @@
-//! Anthropic `/v1/messages` request compression.
+//! Anthropic `/v1/messages` token-mode compression.
 //!
-//! # Request shape (relevant subset)
+//! # Algorithm
 //!
-//! ```json
-//! {
-//!   "model": "claude-3-5-sonnet-20241022",
-//!   "system": "...",                        // string OR list of blocks (optional)
-//!   "messages": [
-//!     {"role": "user",      "content": "..."},
-//!     {"role": "assistant", "content": [...]}
-//!   ],
-//!   "tools": [...],                         // optional
-//!   "max_tokens": 1024,                     // required
-//!   ...
-//! }
-//! ```
+//! 1. Parse body as JSON. Read `messages`.
+//! 2. Find the **last user message** index (LU). Everything < LU is
+//!    the frozen prefix (untouched). Everything ≥ LU is the new turn.
+//! 3. Walk new-turn messages:
+//!    - role=assistant: passthrough (sacred — preserve accuracy)
+//!    - role=user with string `content`: passthrough (sacred user text)
+//!    - role=user with list `content`: walk blocks
+//!      - `tool_result` block with string `content`: COMPRESS the
+//!        string via [`crate::compression::walker::compress_blob`].
+//!      - `tool_result` block with list `content`: walk inner blocks;
+//!        compress text blocks; preserve image blocks.
+//!      - any other block (text, image, document, thinking): preserve
+//! 4. If anything changed, re-serialize. Otherwise passthrough.
 //!
-//! # What we do
+//! # What we never touch
 //!
-//! 1. Parse the body as JSON. On failure → passthrough.
-//! 2. Pull `messages` (the only field we touch). On absence → passthrough.
-//! 3. Pull `model` and `max_tokens` to compute the available budget.
-//! 4. Run the ICM's `should_apply` gate. Under-budget → passthrough.
-//! 5. Run `apply()`. Re-insert the (possibly trimmed) `messages` into
-//!    the parsed JSON. Re-serialize.
-//! 6. On *any* error along the way: passthrough with a warn log. The
-//!    proxy must never break a request because compression failed.
-//!
-//! # What we DON'T do
-//!
-//! - Touch `system`. Anthropic separates system from messages; our
-//!   ICM operates on the messages list. The system tokens are
-//!   "invisible" to ICM's budget calculation, which means we
-//!   under-count slightly — that's fine (we'll compress less than
-//!   strictly necessary, never more).
-//! - Touch `tools`, `temperature`, `top_p`, etc. These pass through
-//!   verbatim because they're tiny and load-bearing for behaviour.
-//! - Compress individual content blocks. That's content-router /
-//!   pipeline work, scoped to a follow-up PR. ICM operates at the
-//!   message-list level only.
+//! - The `system` field (top-level, separate from messages)
+//! - Any `cache_control` markers (positional cache breakpoints)
+//! - `tools`, `tool_choice`, `max_tokens`, `temperature`, etc.
+//! - Anything in the prefix (messages[..LU])
+//! - Assistant content (text, thinking, tool_use, redacted_thinking)
+//! - Binary content (images, documents)
+//! - User text (string content or `text`-type blocks in user msg)
+
+use std::sync::Arc;
 
 use bytes::Bytes;
 use serde_json::Value;
 
-use headroom_core::context::{ApplyCtx, IntelligentContextManager};
+use headroom_core::ccr::CcrStore;
+use headroom_core::transforms::pipeline::CompressionPipeline;
 
-use super::model_limits::context_window_for;
+use super::walker::compress_blob;
+use super::{Outcome, PassthroughReason};
 
-/// What happened. Used for the request-level tracing log.
-#[derive(Debug)]
-pub enum Outcome {
-    /// Body was unchanged. Reasons listed in `reason`.
-    Passthrough { reason: PassthroughReason },
-    /// ICM ran but didn't drop anything (already under budget).
-    NoCompression { tokens_before: usize },
-    /// ICM ran and trimmed the message list.
-    Compressed {
-        body: Bytes,
-        tokens_before: usize,
-        tokens_after: usize,
-        strategies_applied: Vec<&'static str>,
-        markers_inserted: Vec<String>,
-    },
-}
-
-/// Why we passed the body through unchanged.
-#[derive(Debug, Clone, Copy)]
-pub enum PassthroughReason {
-    /// JSON parse failed.
-    NotJson,
-    /// `messages` was missing or not a JSON array.
-    NoMessages,
-    /// Re-serialization of the modified body failed (shouldn't
-    /// happen — we just deserialized this shape).
-    SerializeFailed,
-}
-
-/// Run ICM over an Anthropic-shape body. Returns one of:
-///
-/// - `Outcome::Compressed` — caller should forward `outcome.body`
-///   instead of the original bytes.
-/// - `Outcome::NoCompression` — caller forwards the original
-///   bytes; ICM's `should_apply` returned false.
-/// - `Outcome::Passthrough` — same as `NoCompression` from the
-///   caller's perspective, but the reason is parse/serialize-related.
-///
-/// Never returns an error. Compression failures degrade to
-/// passthrough; this is the proxy's safety contract.
-pub fn maybe_compress(body: &Bytes, icm: &IntelligentContextManager) -> Outcome {
+pub fn maybe_compress(
+    body: &Bytes,
+    pipeline: &CompressionPipeline,
+    store: &Arc<dyn CcrStore>,
+) -> Outcome {
     let mut parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
@@ -97,9 +51,6 @@ pub fn maybe_compress(body: &Bytes, icm: &IntelligentContextManager) -> Outcome 
         }
     };
 
-    // Move the messages array out of the object so we can hand
-    // ownership to ICM. We re-insert at the end. If `messages` is
-    // missing or not an array, passthrough.
     let messages = match parsed.get_mut("messages") {
         Some(Value::Array(_)) => match parsed["messages"].take() {
             Value::Array(a) => a,
@@ -112,62 +63,42 @@ pub fn maybe_compress(body: &Bytes, icm: &IntelligentContextManager) -> Outcome 
         }
     };
 
-    let model = parsed
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    // `context_window_for` returns `u32` (LiteLLM-sourced). ICM's
-    // `ApplyCtx::model_limit` wants `usize`. The cast is lossless on
-    // every platform we run on — context windows are far below 4GB.
-    let model_limit = context_window_for(model) as usize;
+    let last_user = match find_last_user_idx(&messages) {
+        Some(i) => i,
+        None => {
+            // No user message at all — restore and bail.
+            parsed["messages"] = Value::Array(messages);
+            return Outcome::Passthrough {
+                reason: PassthroughReason::NoUserAnchor,
+            };
+        }
+    };
 
-    // Anthropic requires `max_tokens`; if absent (malformed), assume
-    // a small reservation rather than zero so we don't pretend the
-    // whole window is available for input.
-    let output_buffer = parsed
-        .get("max_tokens")
-        .and_then(Value::as_u64)
-        .map(|v| v as usize)
-        .unwrap_or(4_096);
+    let bytes_before = body.len();
+    let mut steps_applied: Vec<String> = Vec::new();
+    let mut new_messages: Vec<Value> = Vec::with_capacity(messages.len());
+    let mut any_changed = false;
 
-    // Cheap pre-check before the real apply call. Saves the cost of
-    // a full message-list traversal when the request is small.
-    if !icm.should_apply(&messages, model_limit, output_buffer) {
-        // Restore messages and return without compression.
-        parsed["messages"] = Value::Array(messages);
-        // Compute tokens_before from the re-inserted form for log
-        // accuracy. Cheap: it's the same walk should_apply already
-        // did, but we don't have the count back from that call. We
-        // skip the recount and return 0; the caller's log just
-        // shows "no_compression" without a number, which is fine.
-        return Outcome::NoCompression { tokens_before: 0 };
+    for (idx, msg) in messages.into_iter().enumerate() {
+        if idx < last_user {
+            // Frozen prefix — byte-identical passthrough.
+            new_messages.push(msg);
+            continue;
+        }
+        let (rebuilt, changed) = rewrite_message(msg, pipeline, store, &mut steps_applied);
+        if changed {
+            any_changed = true;
+        }
+        new_messages.push(rebuilt);
     }
 
-    let result = icm.apply(
-        messages,
-        ApplyCtx {
-            model_limit,
-            output_buffer: Some(output_buffer),
-            // TODO: detect provider prefix-cached messages from the
-            // request. Anthropic exposes prompt caching via
-            // `cache_control` on content blocks. Until we wire that
-            // detection, we treat the whole list as droppable.
-            frozen_message_count: 0,
-        },
-    );
+    parsed["messages"] = Value::Array(new_messages);
 
-    // ICM may return tokens_after >= tokens_before when no drops
-    // happened (e.g. everything is protected). Treat that as
-    // no-compression rather than ship a needless re-serialize.
-    if result.tokens_after >= result.tokens_before {
-        // Reinsert the (unchanged) messages and report.
-        parsed["messages"] = Value::Array(result.messages);
-        return Outcome::NoCompression {
-            tokens_before: result.tokens_before,
+    if !any_changed {
+        return Outcome::Passthrough {
+            reason: PassthroughReason::NothingToCompress,
         };
     }
-
-    parsed["messages"] = Value::Array(result.messages);
 
     let new_body = match serde_json::to_vec(&parsed) {
         Ok(v) => Bytes::from(v),
@@ -177,149 +108,344 @@ pub fn maybe_compress(body: &Bytes, icm: &IntelligentContextManager) -> Outcome 
             };
         }
     };
+    let bytes_after = new_body.len();
+
+    // NOTE: we do NOT gate on `bytes_after < bytes_before`. LLM
+    // providers tokenize the *content* of message strings, not the
+    // JSON byte representation — so compressed text that's shorter
+    // as a raw string saves real tokens (billed) even if the
+    // JSON-escaped form is slightly larger on the wire.
+    // Bandwidth is essentially free; tokens are what costs.
+    // The internal `compress_blob` already gated on raw-text
+    // savings, which is the right bar.
 
     Outcome::Compressed {
         body: new_body,
-        tokens_before: result.tokens_before,
-        tokens_after: result.tokens_after,
-        strategies_applied: result.strategies_applied,
-        markers_inserted: result.markers_inserted,
+        bytes_before,
+        bytes_after,
+        steps_applied,
+    }
+}
+
+fn find_last_user_idx(messages: &[Value]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+}
+
+/// Compress eligible content inside a user message in the new turn.
+/// Returns (rewritten_message, did_anything_change).
+fn rewrite_message(
+    msg: Value,
+    pipeline: &CompressionPipeline,
+    store: &Arc<dyn CcrStore>,
+    steps_applied: &mut Vec<String>,
+) -> (Value, bool) {
+    let role = msg.get("role").and_then(Value::as_str);
+    if role != Some("user") {
+        // Assistant or other — sacred.
+        return (msg, false);
+    }
+
+    let mut obj = match msg {
+        Value::Object(m) => m,
+        other => return (other, false),
+    };
+
+    // Anthropic content can be a plain string (sacred user text) OR
+    // a list of blocks (which is where tool_result lives).
+    let content = match obj.get("content") {
+        Some(Value::Array(_)) => obj.remove("content").unwrap(),
+        _ => {
+            // String or other shape — sacred / unknown, leave it.
+            return (Value::Object(obj), false);
+        }
+    };
+
+    let blocks = match content {
+        Value::Array(a) => a,
+        _ => unreachable!(),
+    };
+
+    let mut new_blocks: Vec<Value> = Vec::with_capacity(blocks.len());
+    let mut changed = false;
+
+    for block in blocks {
+        let (rebuilt, did_change) = rewrite_user_block(block, pipeline, store, steps_applied);
+        if did_change {
+            changed = true;
+        }
+        new_blocks.push(rebuilt);
+    }
+
+    obj.insert("content".to_string(), Value::Array(new_blocks));
+    (Value::Object(obj), changed)
+}
+
+fn rewrite_user_block(
+    block: Value,
+    pipeline: &CompressionPipeline,
+    store: &Arc<dyn CcrStore>,
+    steps_applied: &mut Vec<String>,
+) -> (Value, bool) {
+    let mut obj = match block {
+        Value::Object(m) => m,
+        other => return (other, false),
+    };
+
+    let block_type = obj.get("type").and_then(Value::as_str).map(str::to_owned);
+    if block_type.as_deref() != Some("tool_result") {
+        // text, image, document — sacred.
+        return (Value::Object(obj), false);
+    }
+
+    let inner = match obj.remove("content") {
+        Some(v) => v,
+        None => return (Value::Object(obj), false),
+    };
+
+    match inner {
+        Value::String(s) => {
+            if let Some(compressed) = compress_blob(pipeline, store, &s) {
+                obj.insert("content".to_string(), Value::String(compressed));
+                steps_applied.push("anthropic:tool_result_string".to_string());
+                (Value::Object(obj), true)
+            } else {
+                obj.insert("content".to_string(), Value::String(s));
+                (Value::Object(obj), false)
+            }
+        }
+        Value::Array(blocks) => {
+            let mut new_inner = Vec::with_capacity(blocks.len());
+            let mut changed = false;
+            for inner_block in blocks {
+                let (rebuilt, did_change) =
+                    rewrite_tool_result_inner_block(inner_block, pipeline, store, steps_applied);
+                if did_change {
+                    changed = true;
+                }
+                new_inner.push(rebuilt);
+            }
+            obj.insert("content".to_string(), Value::Array(new_inner));
+            (Value::Object(obj), changed)
+        }
+        other => {
+            // Unknown shape — restore as-is.
+            obj.insert("content".to_string(), other);
+            (Value::Object(obj), false)
+        }
+    }
+}
+
+fn rewrite_tool_result_inner_block(
+    block: Value,
+    pipeline: &CompressionPipeline,
+    store: &Arc<dyn CcrStore>,
+    steps_applied: &mut Vec<String>,
+) -> (Value, bool) {
+    let mut obj = match block {
+        Value::Object(m) => m,
+        other => return (other, false),
+    };
+
+    let block_type = obj.get("type").and_then(Value::as_str).map(str::to_owned);
+    if block_type.as_deref() != Some("text") {
+        // Image inside tool_result — preserve.
+        return (Value::Object(obj), false);
+    }
+
+    let text = match obj.remove("text") {
+        Some(Value::String(s)) => s,
+        Some(other) => {
+            obj.insert("text".to_string(), other);
+            return (Value::Object(obj), false);
+        }
+        None => return (Value::Object(obj), false),
+    };
+
+    if let Some(compressed) = compress_blob(pipeline, store, &text) {
+        obj.insert("text".to_string(), Value::String(compressed));
+        steps_applied.push("anthropic:tool_result_text_block".to_string());
+        (Value::Object(obj), true)
+    } else {
+        obj.insert("text".to_string(), Value::String(text));
+        (Value::Object(obj), false)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compression::icm::build_icm;
+    use crate::compression::pipeline::build_pipeline;
     use serde_json::json;
 
-    fn icm() -> std::sync::Arc<IntelligentContextManager> {
-        build_icm().expect("ICM builds")
+    #[allow(clippy::type_complexity)]
+    fn make_setup() -> (Arc<CompressionPipeline>, Arc<dyn CcrStore>) {
+        build_pipeline()
+    }
+
+    fn big_json_array() -> String {
+        // Larger fixture so compression beats JSON-escape overhead.
+        let row = r#"{"id":1,"name":"alice","email":"a@example.com","tags":["x","y","z"]}"#;
+        format!("[{}]", vec![row; 1000].join(","))
     }
 
     #[test]
     fn passthrough_on_invalid_json() {
-        let icm = icm();
+        let (p, s) = make_setup();
         let body = Bytes::from_static(b"not json");
-        match maybe_compress(&body, &icm) {
+        assert!(matches!(
+            maybe_compress(&body, &p, &s),
             Outcome::Passthrough {
-                reason: PassthroughReason::NotJson,
-            } => {}
-            other => panic!("expected NotJson passthrough, got {other:?}"),
-        }
+                reason: PassthroughReason::NotJson
+            }
+        ));
     }
 
     #[test]
-    fn passthrough_when_messages_field_missing() {
-        let icm = icm();
-        let body = Bytes::from(json!({"model": "claude-3-5-sonnet-20241022"}).to_string());
-        match maybe_compress(&body, &icm) {
+    fn passthrough_when_messages_missing() {
+        let (p, s) = make_setup();
+        let body = Bytes::from(json!({"model": "claude-x"}).to_string());
+        assert!(matches!(
+            maybe_compress(&body, &p, &s),
             Outcome::Passthrough {
-                reason: PassthroughReason::NoMessages,
-            } => {}
-            other => panic!("expected NoMessages passthrough, got {other:?}"),
-        }
+                reason: PassthroughReason::NoMessages
+            }
+        ));
     }
 
     #[test]
-    fn passthrough_when_messages_not_array() {
-        let icm = icm();
-        let body = Bytes::from(
-            json!({"model": "claude-3-5-sonnet", "messages": "not-an-array"}).to_string(),
-        );
-        match maybe_compress(&body, &icm) {
-            Outcome::Passthrough {
-                reason: PassthroughReason::NoMessages,
-            } => {}
-            other => panic!("expected NoMessages passthrough, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn no_compression_when_under_budget() {
-        let icm = icm();
+    fn passthrough_when_no_user_anchor() {
+        let (p, s) = make_setup();
         let body = Bytes::from(
             json!({
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": 1024,
-                "messages": [{"role": "user", "content": "hello"}]
+                "model": "claude-x",
+                "messages": [
+                    {"role": "assistant", "content": "hi"}
+                ]
             })
             .to_string(),
         );
-        match maybe_compress(&body, &icm) {
-            Outcome::NoCompression { .. } => {}
-            other => panic!("expected NoCompression, got {other:?}"),
-        }
+        assert!(matches!(
+            maybe_compress(&body, &p, &s),
+            Outcome::Passthrough {
+                reason: PassthroughReason::NoUserAnchor
+            }
+        ));
     }
 
     #[test]
-    fn compresses_when_over_budget() {
-        let icm = icm();
-        // Squeeze the available budget by setting a huge max_tokens
-        // so output_buffer eats almost the whole window. With a
-        // 200K window for Claude and max_tokens=199_500, only ~500
-        // tokens are available — anything bigger forces compression.
-        let big_messages: Vec<Value> = (0..30)
-            .map(|i| {
-                json!({
-                    "role": if i % 2 == 0 { "user" } else { "assistant" },
-                    "content": format!("padding token {i} ").repeat(20),
-                })
-            })
-            .collect();
+    fn user_string_content_passes_through() {
+        let (p, s) = make_setup();
         let body = Bytes::from(
             json!({
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": 199_500,
-                "messages": big_messages,
+                "model": "claude-x",
+                "messages": [
+                    {"role": "user", "content": "What's the weather?"}
+                ]
             })
             .to_string(),
         );
-        match maybe_compress(&body, &icm) {
+        assert!(matches!(
+            maybe_compress(&body, &p, &s),
+            Outcome::Passthrough {
+                reason: PassthroughReason::NothingToCompress
+            }
+        ));
+    }
+
+    #[test]
+    fn tool_result_string_content_compresses() {
+        let (p, s) = make_setup();
+        let big = big_json_array();
+        let body = Bytes::from(
+            json!({
+                "model": "claude-3-5-sonnet",
+                "messages": [
+                    {"role": "user", "content": "list users"},
+                    {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "list", "input": {}}
+                    ]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "tu_1", "content": big.clone()}
+                    ]}
+                ]
+            })
+            .to_string(),
+        );
+        match maybe_compress(&body, &p, &s) {
             Outcome::Compressed {
                 body: new_body,
-                tokens_before,
-                tokens_after,
-                ..
+                bytes_before,
+                bytes_after,
+                steps_applied,
             } => {
-                assert!(tokens_after < tokens_before);
-                // The new body is valid JSON with a shorter messages
-                // array (or includes the CCR marker that the shim's
-                // injection logic adds — but the proxy doesn't do
-                // marker injection; that lives in the Python shim).
+                assert!(!steps_applied.is_empty());
                 let parsed: Value = serde_json::from_slice(&new_body).unwrap();
-                assert!(parsed["messages"].as_array().is_some());
+                let last_msg = &parsed["messages"][2];
+                let new_content = &last_msg["content"][0]["content"];
+                assert!(new_content.is_string());
+                // The CONTENT text is shorter (real token savings) even
+                // if the JSON-encoded body is slightly larger after
+                // escape overhead.
+                assert!(new_content.as_str().unwrap().len() < big.len());
+                let _ = (bytes_before, bytes_after);
             }
             other => panic!("expected Compressed, got {other:?}"),
         }
     }
 
     #[test]
-    fn unknown_model_does_not_panic() {
-        // Should fall back to the default 128K window and behave
-        // like any other request.
-        let icm = icm();
-        let body = Bytes::from(
-            json!({
-                "model": "future-model-2099",
-                "max_tokens": 100,
-                "messages": [{"role": "user", "content": "hi"}]
-            })
-            .to_string(),
-        );
-        let _ = maybe_compress(&body, &icm); // shouldn't panic
+    fn prefix_messages_unchanged_byte_identical() {
+        let (p, s) = make_setup();
+        let big = big_json_array();
+        // The PREFIX (messages 0..2) must be byte-identical in output
+        // because the prefix-cache contract demands it.
+        let original_payload = json!({
+            "model": "claude-3-5-sonnet",
+            "messages": [
+                {"role": "user", "content": "first turn"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": big.clone()}
+                ]}
+            ]
+        });
+        let body = Bytes::from(original_payload.to_string());
+        if let Outcome::Compressed { body: new_body, .. } = maybe_compress(&body, &p, &s) {
+            let parsed: Value = serde_json::from_slice(&new_body).unwrap();
+            // First two messages — semantic equality (we don't drop
+            // them and we don't modify them; serializer order may
+            // differ but the content trees should be equal).
+            assert_eq!(parsed["messages"][0], original_payload["messages"][0]);
+            assert_eq!(parsed["messages"][1], original_payload["messages"][1]);
+        } else {
+            panic!("expected compression to fire on big tool_result");
+        }
     }
 
     #[test]
-    fn missing_max_tokens_does_not_panic() {
-        let icm = icm();
+    fn assistant_text_in_new_turn_is_sacred() {
+        // ICM-era code might have dropped this. Token mode must not
+        // touch assistant content even if it appears in the new turn.
+        let (p, s) = make_setup();
+        let big = big_json_array();
         let body = Bytes::from(
             json!({
-                "model": "claude-3-5-sonnet-20241022",
-                "messages": [{"role": "user", "content": "hi"}]
+                "model": "claude-x",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": big.clone()}
+                ]
             })
             .to_string(),
         );
-        let _ = maybe_compress(&body, &icm); // shouldn't panic
+        // No tool_result anywhere — nothing eligible to compress.
+        match maybe_compress(&body, &p, &s) {
+            Outcome::Passthrough {
+                reason: PassthroughReason::NothingToCompress,
+            } => {}
+            other => panic!("expected NothingToCompress, got {other:?}"),
+        }
     }
 }

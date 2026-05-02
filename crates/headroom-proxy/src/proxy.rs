@@ -16,7 +16,8 @@ use futures_util::{StreamExt as _, TryStreamExt};
 #[cfg(test)]
 use http_body_util::BodyExt;
 
-use headroom_core::context::IntelligentContextManager;
+use headroom_core::ccr::CcrStore;
+use headroom_core::transforms::pipeline::CompressionPipeline;
 
 use crate::compression;
 use crate::config::Config;
@@ -30,11 +31,13 @@ use crate::websocket::ws_handler;
 pub struct AppState {
     pub config: Arc<Config>,
     pub client: reqwest::Client,
-    /// Optional shared `IntelligentContextManager`. Constructed only
-    /// when `config.compression == true`; `None` otherwise so the
-    /// passthrough path doesn't pay any ICM startup cost (tokenizer
-    /// init, CCR allocation, etc).
-    pub icm: Option<Arc<IntelligentContextManager>>,
+    /// Per-process compression pipeline (Diff/Log/JSON offloads,
+    /// Reformats). Some only when `config.compression == true` so
+    /// the passthrough path skips startup cost.
+    pub pipeline: Option<Arc<CompressionPipeline>>,
+    /// CCR store for compressed-payload retrieval. Same gating as
+    /// `pipeline` — both are constructed together.
+    pub ccr_store: Option<Arc<dyn CcrStore>>,
 }
 
 impl AppState {
@@ -50,21 +53,22 @@ impl AppState {
             .build()
             .map_err(ProxyError::Upstream)?;
 
-        // Construct ICM only when compression is enabled. ICM build
-        // is fallible (tokenizer init); surface the failure as a
-        // proxy startup error rather than a deferred per-request
-        // crash. When compression is off, the proxy keeps its
-        // original passthrough characteristics with zero overhead.
-        let icm = if config.compression {
-            Some(compression::build_icm().map_err(ProxyError::CompressionStartup)?)
+        // Build the compression pipeline + CCR store only when
+        // compression is enabled. Building is infallible (every
+        // transform has a Default config), so this never errors —
+        // but we keep the fallible signature for symmetry.
+        let (pipeline, ccr_store) = if config.compression {
+            let (p, s) = compression::build_pipeline();
+            (Some(p), Some(s))
         } else {
-            None
+            (None, None)
         };
 
         Ok(Self {
             config: Arc::new(config),
             client,
-            icm,
+            pipeline,
+            ccr_store,
         })
     }
 }
@@ -214,20 +218,22 @@ async fn forward_http(
     //
     //   - Compression enabled in config?       (`state.config.compression`)
     //   - Method is POST?                      (we only compress request bodies)
-    //   - Path matches a known LLM endpoint?   (`compression::is_compressible_path`)
+    //   - Path classified as LLM endpoint?     (Anthropic / OpenAI chat / OpenAI responses)
     //   - Content-Type is application/json?    (skip multipart, form, binary)
-    //   - ICM was successfully built?          (Some by construction when compression is on)
+    //   - Pipeline + CCR store built?          (Some by construction when compression is on)
     //
-    // ALL of those true → buffer + run ICM + forward modified body.
-    // ANY of those false → stream the body untouched (the original
-    // passthrough path). This keeps WebSocket upgrades, healthchecks,
-    // tool-API endpoints, and SSE streaming from paying any
-    // buffering cost.
+    // ALL of those true → buffer + run token-mode walker + forward
+    // (possibly modified) body. ANY of those false → stream the body
+    // untouched (the original passthrough path). This keeps WebSocket
+    // upgrades, healthchecks, tool-API endpoints, and SSE streaming
+    // from paying any buffering cost.
+    let endpoint = compression::classify_path(uri.path());
     let should_compress = state.config.compression
         && method == axum::http::Method::POST
-        && compression::is_compressible_path(uri.path())
+        && endpoint.is_some()
         && is_application_json(req.headers())
-        && state.icm.is_some();
+        && state.pipeline.is_some()
+        && state.ccr_store.is_some();
 
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| ProxyError::InvalidHeader(e.to_string()))?;
@@ -262,46 +268,37 @@ async fn forward_http(
             }
         };
 
-        // Run the compressor. Failures degrade to passthrough by
-        // returning the original buffered bytes.
-        let icm = state.icm.as_ref().expect("checked above");
-        let outcome = compression::maybe_compress(&buffered, icm);
+        // Run the token-mode walker. Failures degrade to passthrough
+        // by returning the original buffered bytes.
+        let pipeline = state.pipeline.as_ref().expect("checked above");
+        let store = state.ccr_store.as_ref().expect("checked above");
+        let endpoint = endpoint.expect("checked above");
+        let outcome = compression::maybe_compress(&buffered, pipeline, store, endpoint);
 
         let body_to_send = match outcome {
             compression::Outcome::Compressed {
                 body,
-                tokens_before,
-                tokens_after,
-                strategies_applied,
-                markers_inserted,
+                bytes_before,
+                bytes_after,
+                steps_applied,
             } => {
                 tracing::info!(
                     request_id = %request_id,
                     path = %path_for_log,
-                    tokens_before = tokens_before,
-                    tokens_after = tokens_after,
-                    tokens_freed = tokens_before.saturating_sub(tokens_after),
-                    strategies = ?strategies_applied,
-                    markers = markers_inserted.len(),
+                    bytes_before = bytes_before,
+                    bytes_after = bytes_after,
+                    bytes_saved = bytes_before.saturating_sub(bytes_after),
+                    steps = ?steps_applied,
                     "compression applied"
                 );
                 body
             }
-            compression::Outcome::NoCompression { tokens_before } => {
+            compression::Outcome::Passthrough { reason } => {
                 tracing::debug!(
                     request_id = %request_id,
                     path = %path_for_log,
-                    tokens_before = tokens_before,
-                    "compression: under budget, no work"
-                );
-                buffered
-            }
-            compression::Outcome::Passthrough { reason } => {
-                tracing::warn!(
-                    request_id = %request_id,
-                    path = %path_for_log,
                     reason = ?reason,
-                    "compression: passthrough on parse/serialize"
+                    "compression: passthrough"
                 );
                 buffered
             }
