@@ -6,11 +6,11 @@
 //! library outcome in isolation.
 //!
 //! Coverage:
-//! - Compression-off (default): proxy is a passthrough, body is byte-identical.
-//! - Compression-on, small body: ICM short-circuits, body unchanged.
-//! - Compression-on, oversized body: ICM trims the messages array.
+//! - Anthropic & OpenAI: off → passthrough, on+short → unchanged,
+//!   on+oversized → trimmed.
 //! - Compression-on, non-JSON body: skipped (Content-Type gate).
 //! - Compression-on, non-LLM path: skipped (path gate).
+//! - OpenAI-specific: system message survives compression.
 
 mod common;
 
@@ -212,5 +212,164 @@ async fn compression_on_non_llm_path_skips() {
 
     let got = captured.lock().unwrap().clone().expect("upstream got body");
     assert_eq!(got, body, "non-LLM path must bypass compression");
+    proxy.shutdown().await;
+}
+
+// ─── OpenAI /v1/chat/completions ─────────────────────────────────────
+
+async fn mount_openai_capture(upstream: &MockServer) -> Arc<Mutex<Option<Vec<u8>>>> {
+    let captured: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let captured_clone = captured.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |req: &wiremock::Request| {
+            *captured_clone.lock().unwrap() = Some(req.body.clone());
+            ResponseTemplate::new(200).set_body_string(r#"{"ok":true}"#)
+        })
+        .mount(upstream)
+        .await;
+    captured
+}
+
+/// Big OpenAI payload: 40 alternating user/assistant turns plus a
+/// system message. max_tokens=127_000 reserves nearly the whole
+/// gpt-4o-mini 128K window for output, forcing input compression.
+fn oversized_openai_payload() -> Value {
+    let mut messages: Vec<Value> = vec![json!({
+        "role": "system",
+        "content": "Always respond concisely.",
+    })];
+    messages.extend((0..40).map(|i| {
+        json!({
+            "role": if i % 2 == 0 { "user" } else { "assistant" },
+            "content": format!("history turn {i} ").repeat(40),
+        })
+    }));
+    json!({
+        "model": "gpt-4o-mini",
+        "max_tokens": 127_000,
+        "messages": messages,
+    })
+}
+
+#[tokio::test]
+async fn openai_compression_off_passes_body_unchanged() {
+    let upstream = MockServer::start().await;
+    let captured = mount_openai_capture(&upstream).await;
+    let proxy = start_proxy_with(&upstream.uri(), |_| {}).await;
+
+    let payload = oversized_openai_payload();
+    let body = serde_json::to_vec(&payload).unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let got = captured.lock().unwrap().clone().expect("upstream got body");
+    assert_eq!(got, body, "compression off — body must be byte-identical");
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn openai_compression_on_short_body_passes_through() {
+    let upstream = MockServer::start().await;
+    let captured = mount_openai_capture(&upstream).await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let payload = json!({
+        "model": "gpt-4o-mini",
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user",   "content": "hi"},
+        ],
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let got = captured.lock().unwrap().clone().expect("upstream got body");
+    let got_json: Value = serde_json::from_slice(&got).unwrap();
+    let in_messages = payload["messages"].as_array().unwrap().len();
+    let out_messages = got_json["messages"].as_array().unwrap().len();
+    assert_eq!(out_messages, in_messages);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn openai_compression_on_oversized_body_trims_messages_keeps_system() {
+    let upstream = MockServer::start().await;
+    let captured = mount_openai_capture(&upstream).await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let payload = oversized_openai_payload();
+    let body = serde_json::to_vec(&payload).unwrap();
+    let in_messages = payload["messages"].as_array().unwrap().len();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let got = captured.lock().unwrap().clone().expect("upstream got body");
+    assert_ne!(got, body, "ICM should have trimmed something");
+    let got_json: Value = serde_json::from_slice(&got).unwrap();
+    let out_msgs = got_json["messages"].as_array().unwrap();
+    assert!(
+        out_msgs.len() < in_messages,
+        "expected fewer messages after compression: in={in_messages}, out={}",
+        out_msgs.len()
+    );
+    // OSS-defining safety contract: the system message must survive.
+    assert!(
+        out_msgs
+            .iter()
+            .any(|m| m.get("role").and_then(Value::as_str) == Some("system")),
+        "system message must be preserved after OpenAI compression"
+    );
+    // model + max_tokens preserved verbatim
+    assert_eq!(got_json["model"], payload["model"]);
+    assert_eq!(got_json["max_tokens"], payload["max_tokens"]);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn openai_max_completion_tokens_field_works() {
+    // Reasoning models (o1/o3) only accept max_completion_tokens.
+    // Verify the gate accepts that field shape.
+    let upstream = MockServer::start().await;
+    let captured = mount_openai_capture(&upstream).await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    let payload = json!({
+        "model": "gpt-4o-mini",
+        "max_completion_tokens": 1024,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+    let body = serde_json::to_vec(&payload).unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let got = captured.lock().unwrap().clone().expect("upstream got body");
+    // Small request → no compression → body unchanged
+    assert_eq!(got, body);
     proxy.shutdown().await;
 }

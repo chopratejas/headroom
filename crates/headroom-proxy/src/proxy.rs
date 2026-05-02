@@ -223,9 +223,13 @@ async fn forward_http(
     // passthrough path). This keeps WebSocket upgrades, healthchecks,
     // tool-API endpoints, and SSE streaming from paying any
     // buffering cost.
+    // Classify the path once: `Some(endpoint)` means we know how to
+    // compress this body, `None` means stream as-is. We re-use the
+    // classification below to dispatch to the right provider arm.
+    let endpoint = compression::classify_path(uri.path());
     let should_compress = state.config.compression
         && method == axum::http::Method::POST
-        && compression::is_compressible_path(uri.path())
+        && endpoint.is_some()
         && is_application_json(req.headers())
         && state.icm.is_some();
 
@@ -265,7 +269,8 @@ async fn forward_http(
         // Run the compressor. Failures degrade to passthrough by
         // returning the original buffered bytes.
         let icm = state.icm.as_ref().expect("checked above");
-        let outcome = compression::maybe_compress(&buffered, icm);
+        let endpoint = endpoint.expect("checked above");
+        let outcome = compression::maybe_compress(&buffered, icm, endpoint);
 
         let body_to_send = match outcome {
             compression::Outcome::Compressed {
