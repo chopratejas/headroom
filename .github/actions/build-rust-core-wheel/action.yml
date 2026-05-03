@@ -64,6 +64,14 @@ runs:
     # on Debian 12 (`node:22-bookworm`, glibc 2.36) and other older bases.
     # 2.28 is broad enough to cover every distro the e2e/* Dockerfiles use.
     # Mirrors the production matrix in release.yml.
+    # `headroom-core` transitively pulls `native-tls`/`openssl-sys` through
+    # `hf-hub` (used by `fastembed`) and `ureq` (build-dep of `ort-sys`) —
+    # cargo's feature unification overrides our workspace `rustls-tls` pin
+    # because those crates declare their own openssl-flavored defaults. The
+    # manylinux_2_28 (AlmaLinux 8) container has no OpenSSL dev headers, so
+    # the openssl-sys build.rs aborts with "failed to run custom build
+    # command". Install them via before-script-linux. perl-IPC-Cmd is also
+    # required by openssl-sys's autotools probe.
     - name: Build headroom-core-py wheel (linux)
       if: runner.os == 'Linux'
       uses: PyO3/maturin-action@v1
@@ -71,6 +79,8 @@ runs:
         command: build
         args: --release --out wheelhouse -m crates/headroom-py/Cargo.toml
         manylinux: "2_28"
+        before-script-linux: |
+          yum install -y openssl-devel pkgconfig perl-IPC-Cmd
       env:
         PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
 
