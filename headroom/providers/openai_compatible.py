@@ -519,3 +519,55 @@ def create_lmstudio_provider(
         name="lmstudio",
         base_url=base_url,
     )
+
+
+def create_astraflow_provider(
+    api_key: str | None = None,
+) -> OpenAICompatibleProvider:
+    """Create provider for Astraflow (global endpoint).
+
+    Astraflow (by UCloud / 优刻得) is an OpenAI-compatible AI model aggregation
+    platform supporting 200+ models.
+
+    Global endpoint: https://api-us-ca.umodelverse.ai/v1
+
+    Args:
+        api_key: Astraflow API key. If not provided, reads from the
+            ``ASTRAFLOW_API_KEY`` environment variable.
+
+    Returns:
+        Configured provider.
+    """
+    import os
+
+    return OpenAICompatibleProvider(
+        name="astraflow",
+        base_url="https://api-us-ca.umodelverse.ai/v1",
+        api_key=api_key or os.environ.get("ASTRAFLOW_API_KEY"),
+    )
+
+
+def create_astraflow_cn_provider(
+    api_key: str | None = None,
+) -> OpenAICompatibleProvider:
+    """Create provider for Astraflow (China endpoint).
+
+    Astraflow (by UCloud / 优刻得) is an OpenAI-compatible AI model aggregation
+    platform supporting 200+ models.
+
+    China endpoint: https://api.modelverse.cn/v1
+
+    Args:
+        api_key: Astraflow CN API key. If not provided, reads from the
+            ``ASTRAFLOW_CN_API_KEY`` environment variable.
+
+    Returns:
+        Configured provider.
+    """
+    import os
+
+    return OpenAICompatibleProvider(
+        name="astraflow_cn",
+        base_url="https://api.modelverse.cn/v1",
+        api_key=api_key or os.environ.get("ASTRAFLOW_CN_API_KEY"),
+    )
