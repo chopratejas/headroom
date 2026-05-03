@@ -58,7 +58,24 @@ runs:
           python scripts/version-sync.py --version "$version"
         fi
 
-    - name: Build headroom-core-py wheel
+    # `manylinux: 2_28` builds inside a glibc-2.28 container (RHEL 8 base).
+    # The default `auto` uses host glibc — Ubuntu 24.04 runners ship glibc
+    # 2.39, so wheels get tagged `manylinux_2_38_x86_64`, which pip rejects
+    # on Debian 12 (`node:22-bookworm`, glibc 2.36) and other older bases.
+    # 2.28 is broad enough to cover every distro the e2e/* Dockerfiles use.
+    # Mirrors the production matrix in release.yml.
+    - name: Build headroom-core-py wheel (linux)
+      if: runner.os == 'Linux'
+      uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        args: --release --out wheelhouse -m crates/headroom-py/Cargo.toml
+        manylinux: "2_28"
+      env:
+        PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+    - name: Build headroom-core-py wheel (macos/windows)
+      if: runner.os != 'Linux'
       uses: PyO3/maturin-action@v1
       with:
         command: build
