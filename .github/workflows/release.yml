@@ -73,6 +73,8 @@ jobs:
         env:
           MANUAL_VER: ${{ github.event.inputs.version }}
 
+  # Single source of truth for changelog + npm packaging. Wheels are
+  # built per-platform in `build-wheels` below. publish-pypi merges them.
   build:
     needs: [detect-version]
     runs-on: ubuntu-latest
@@ -132,13 +134,9 @@ jobs:
           path: /tmp/changelog-backup.md
           if-no-files-found: error
 
-      - name: Build Python package
-        run: python -m pip install build wheel && python -m build
-
       - name: Build npm release packages
         run: |
           mkdir -p release-assets
-          cp dist/* release-assets/
 
           cd sdk/typescript
           npm install
@@ -153,27 +151,124 @@ jobs:
           npm version ${{ needs.detect-version.outputs.npm_version }} --no-git-tag-version --allow-same-version
           npm pack --pack-destination ../../release-assets
 
-      - name: Upload dist artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
       - name: Upload release assets artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-assets
           path: release-assets/
 
+  # Cross-platform wheel matrix. Each entry produces wheels for cp310/11/12/13
+  # in one maturin invocation (PyO3 ABI3 forward-compat handles 3.14+ until
+  # we bump pyo3 past 0.22). The `headroom-ai` wheel contains the entire
+  # Python source under `headroom/` plus the compiled `headroom/_core.so`
+  # — one atomic install via `pip install headroom-ai`.
+  build-wheels:
+    needs: [detect-version, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: auto
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            manylinux: 2_28
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: ""
+          - os: macos-14
+            target: aarch64-apple-darwin
+            manylinux: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync version to pyproject.toml + Cargo.toml
+        shell: bash
+        run: |
+          python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
+          manylinux: ${{ matrix.manylinux }}
+        env:
+          # PyO3 0.22 supports up to Python 3.13; allow forward-compat
+          # builds for 3.14+ until we bump PyO3 (tracked separately).
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+      - name: Build sdist (linux x86_64 only — sdist is platform-independent)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload wheels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: dist/*
+
+  # Aggregator step: merge all wheel artifacts + the npm release assets
+  # into the canonical `dist/` directory for downstream publishing jobs.
+  collect-dist:
+    needs: [build, build-wheels]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: wheels-tmp/
+          merge-multiple: true
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/
+
+      - name: Stage final dist directory
+        run: |
+          mkdir -p dist
+          cp -v wheels-tmp/*.whl wheels-tmp/*.tar.gz dist/ 2>/dev/null || true
+          ls -la dist/
+          # Mirror the wheels into release-assets so create-release uploads them.
+          cp -v dist/*.whl dist/*.tar.gz release-assets/ 2>/dev/null || true
+          ls -la release-assets/
+
+      - name: Upload merged dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Upload merged release-assets artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-merged
+          path: release-assets/
+
   publish-pypi:
-    needs: [build]
+    needs: [collect-dist]
     if: github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
     environment: pypi  # NOTE: environment name must be a literal; update here if the GitHub environment name changes
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # Required for OIDC trusted publishing
     steps:
-      - name: Download dist artifact
+      - name: Download merged dist artifact (sdist + cross-platform wheels)
         uses: actions/download-artifact@v4
         with:
           name: dist
@@ -357,13 +452,15 @@ jobs:
       enable_ref_tags: false
 
   create-release:
-    needs: [detect-version, build, publish-pypi, publish-npm, publish-github-packages, publish-docker]
+    needs: [detect-version, build, build-wheels, collect-dist, publish-pypi, publish-npm, publish-github-packages, publish-docker]
     if: >-
       ${{
         always() &&
         github.event.inputs.dry_run != 'true' &&
         needs.detect-version.result == 'success' &&
-        needs.build.result == 'success'
+        needs.build.result == 'success' &&
+        needs.build-wheels.result == 'success' &&
+        needs.collect-dist.result == 'success'
       }}
     runs-on: ubuntu-latest
     permissions:
@@ -379,10 +476,10 @@ jobs:
           name: changelog
           path: /tmp
 
-      - name: Download release assets artifact
+      - name: Download merged release assets (npm tarballs + wheels + sdist)
         uses: actions/download-artifact@v4
         with:
-          name: release-assets
+          name: release-assets-merged
           path: release-assets
 
       - name: Show changelog

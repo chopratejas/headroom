@@ -86,15 +86,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Build wheel
+      - name: Build wheel (single-wheel architecture: builds headroom-ai)
         uses: PyO3/maturin-action@v1
+        # Maturin reads `[tool.maturin]` from the root `pyproject.toml`
+        # which points at `crates/headroom-py/Cargo.toml` for the cdylib.
+        # Output is `headroom_ai-<ver>-<py>-<py>-<platform>.whl` containing
+        # both Python source and the compiled `headroom/_core.so`.
         with:
           command: build
-          # `manifest-path:` is NOT a valid input on this action (it warns and
-          # ignores). Pass -m inside `args` so maturin sees the right Cargo.toml.
-          # Without this, maturin runs from the repo root and fails because
-          # the workspace Cargo.toml has no [package] section.
-          args: --release -m crates/headroom-py/Cargo.toml --out dist
+          args: --release --out dist
           target: ${{ matrix.maturin-target }}
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4

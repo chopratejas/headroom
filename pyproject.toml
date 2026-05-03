@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "headroom-ai"
@@ -220,22 +220,30 @@ Repository = "https://github.com/chopratejas/headroom"
 Issues = "https://github.com/chopratejas/headroom/issues"
 Changelog = "https://github.com/chopratejas/headroom/blob/main/CHANGELOG.md"
 
-[tool.hatch.build.targets.wheel]
-packages = ["headroom"]
-# Include non-Python files (dashboard templates, etc.)
-artifacts = [
-    "headroom/dashboard/templates/*.html",
-]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "/headroom",
-    "/tests",
-    "/LICENSE",
-    "/NOTICE",
-    "/README.md",
-    "/CHANGELOG.md",
-]
+# Maturin builds a single wheel containing both the Python source under
+# `headroom/` AND the compiled Rust extension `headroom/_core.so` (cdylib
+# from `crates/headroom-py`). One `pip install headroom-ai` ships everything
+# atomically — no separate `headroom-core-py` package, no chicken-and-egg,
+# no PIP_FIND_LINKS plumbing. Phase A0's runtime fail-loud check still
+# exists but only fires if someone forces an sdist install on a platform
+# without a wheel and the rust toolchain isn't available to compile it.
+[tool.maturin]
+# Where the Python package lives. With `python-source = "."` and the
+# package directory `headroom/` at repo root, maturin includes every file
+# under `headroom/` in the wheel — that picks up the dashboard HTML
+# templates, the bundled YAML configs, etc., without needing an explicit
+# `include` list.
+python-source = "."
+module-name = "headroom._core"
+# The cdylib source lives under `crates/headroom-py`. Maturin invokes
+# `cargo build` with this manifest to produce `_core.cdylib`, then injects
+# the resulting `.so` into the wheel at `headroom/_core.so`.
+manifest-path = "crates/headroom-py/Cargo.toml"
+features = ["extension-module"]
+# Forbid building without the cdylib feature — bare `cargo build` won't
+# produce a usable Python extension. Maturin's default `bindings` is "pyo3"
+# which is correct here (see `crates/headroom-py/src/`).
+bindings = "pyo3"
 
 [tool.ruff]
 target-version = "py310"
