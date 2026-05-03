@@ -121,7 +121,49 @@ def update_pyproject_version(root: Path, version: str) -> None:
         content,
         flags=re.MULTILINE,
     )
+    # Issue #355: keep `headroom-core-py` dep version pinned to the same
+    # release. The Rust extension is published as a separate wheel per
+    # release; pip resolves the platform-matching wheel at install time.
+    updated = re.sub(
+        r'"headroom-core-py(==|>=)[^"]+"',
+        f'"headroom-core-py>={version}"',
+        updated,
+    )
     pyproject_path.write_text(updated, encoding="utf-8")
+
+
+def update_rust_pyproject_version(root: Path, version: str) -> None:
+    """Issue #355: sync `crates/headroom-py/pyproject.toml` version so the
+    maturin-built `headroom-core-py` wheel matches the headroom-ai release."""
+    rust_pyproject_path = root / "crates" / "headroom-py" / "pyproject.toml"
+    if not rust_pyproject_path.exists():
+        return
+    content = rust_pyproject_path.read_text(encoding="utf-8")
+    updated = re.sub(
+        r'^version = "[^"]+"',
+        f'version = "{version}"',
+        content,
+        flags=re.MULTILINE,
+    )
+    rust_pyproject_path.write_text(updated, encoding="utf-8")
+
+
+def update_rust_cargo_version(root: Path, version: str) -> None:
+    """Issue #355: sync `crates/headroom-py/Cargo.toml` version so cargo /
+    maturin agree on what `headroom-core-py-VERSION-...whl` to emit."""
+    cargo_path = root / "crates" / "headroom-py" / "Cargo.toml"
+    if not cargo_path.exists():
+        return
+    content = cargo_path.read_text(encoding="utf-8")
+    # Only the [package] block's `version` line — leave dependency versions alone.
+    updated = re.sub(
+        r'^version = "[^"]+"',
+        f'version = "{version}"',
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    cargo_path.write_text(updated, encoding="utf-8")
 
 
 def write_release_metadata(root: Path, version: str) -> None:
@@ -179,6 +221,8 @@ def main() -> None:
     # Update all versioned files
     update_pyproject_version(args.root, version)
     update_version_py(args.root, version)
+    update_rust_pyproject_version(args.root, version)
+    update_rust_cargo_version(args.root, version)
     update_openclaw_package_json(
         args.root / "plugins" / "openclaw" / "package.json", version, version
     )

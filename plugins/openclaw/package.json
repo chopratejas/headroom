@@ -1,7 +1,7 @@
 {
   "name": "headroom-openclaw",
-  "version": "0.1.1",
-  "description": "Headroom context compression plugin for OpenClaw — 70-90% token savings with zero LLM calls",
+  "version": "0.20.99",
+  "description": "Headroom context compression plugin for OpenClaw \u2014 70-90% token savings with zero LLM calls",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "headroom-ai": "^0.1.0"
+    "headroom-ai": "^0.20.99"
   },
   "peerDependencies": {
     "openclaw": "*"

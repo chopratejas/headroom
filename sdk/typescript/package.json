@@ -1,6 +1,6 @@
 {
   "name": "headroom-ai",
-  "version": "0.1.0",
+  "version": "0.20.99",
   "description": "Compress LLM context. Save tokens. Fit more into every request.",
   "type": "module",
   "main": "./dist/index.cjs",

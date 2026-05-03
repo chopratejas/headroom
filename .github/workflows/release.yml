@@ -165,21 +165,96 @@ jobs:
           name: release-assets
           path: release-assets/
 
+  # Issue #355: v0.20.13 shipped to PyPI as `py3-none-any` because `python
+  # -m build` runs hatch only — maturin was never invoked, so the
+  # `headroom._core` Rust extension was missing. With A0's fail-loud
+  # startup check, users hit `event=rust_core_missing action=exit_78`.
+  # This job builds the Rust extension as a separate `headroom-core-py`
+  # wheel for each supported platform, and publish-pypi uploads them
+  # alongside the headroom-ai wheel.
+  build-rust-wheels:
+    needs: [detect-version]
+    if: github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 — primary deployment target (confirmed by issue #355).
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: auto
+          # Linux aarch64 — for arm64 servers / cloud.
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            manylinux: 2_28
+          # macOS Intel.
+          - os: macos-13
+            target: x86_64-apple-darwin
+            manylinux: ""
+          # macOS Apple Silicon — biggest dev install base.
+          - os: macos-14
+            target: aarch64-apple-darwin
+            manylinux: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync version into headroom-py Cargo.toml
+        run: |
+          python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
+
+      - name: Build wheels via maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist-rust -m crates/headroom-py/Cargo.toml --interpreter python3.10 python3.11 python3.12 python3.13
+          manylinux: ${{ matrix.manylinux }}
+        env:
+          # PyO3 0.22.6 supports up to Python 3.13; allow forward-compat
+          # builds for 3.14+ until we bump PyO3 (tracked separately).
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+      - name: Upload wheels artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-wheels-${{ matrix.target }}
+          path: dist-rust/
+
   publish-pypi:
-    needs: [build]
+    needs: [build, build-rust-wheels]
     if: github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
     environment: pypi  # NOTE: environment name must be a literal; update here if the GitHub environment name changes
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # Required for OIDC trusted publishing
     steps:
-      - name: Download dist artifact
+      - name: Download dist artifact (headroom-ai pure-python)
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
-      - name: Publish ${{ env.PYPI_PACKAGE }} to PyPI
+      - name: Download rust wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rust-wheels-*
+          path: dist-rust/
+          merge-multiple: true
+
+      - name: Merge rust wheels into dist/ for single PyPI upload
+        run: |
+          mkdir -p dist
+          cp dist-rust/*.whl dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - name: Publish ${{ env.PYPI_PACKAGE }} + headroom-core-py to PyPI
         id: pypi-publish
         uses: pypa/gh-action-pypi-publish@release/v1
         continue-on-error: true
