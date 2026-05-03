@@ -1,9 +1,136 @@
 //! Configuration for the proxy: CLI flags + env vars.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
 use std::time::Duration;
 use url::Url;
+
+/// Compression mode policy for the `/v1/messages` endpoint.
+///
+/// Drives whether `compress_anthropic_request` does any work. PR-A1
+/// (Phase A lockdown) wires the flag in but both modes currently
+/// passthrough — `live_zone` parses-but-warns until Phase B PR-B2
+/// fills in the live-zone-only block dispatcher.
+///
+/// We do NOT add an `icm` mode (the deleted code path) or a
+/// `passthrough` alias for `off` — those names are misleading. The
+/// only legal values are `off` (compression disabled) and `live_zone`
+/// (compress only the live-zone blocks; not yet implemented).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum CompressionMode {
+    /// Compression disabled. Body forwards byte-equal to upstream.
+    /// This is the default; Phase B will switch the default to
+    /// `live_zone` once that mode is implemented.
+    Off,
+    /// Compress only live-zone blocks (latest user message,
+    /// latest tool/function/shell/patch outputs). NOT YET IMPLEMENTED:
+    /// in PR-A1 this falls through to passthrough behaviour with a
+    /// loud warning. Phase B PR-B2 wires in the actual dispatcher.
+    LiveZone,
+}
+
+/// Policy for stripping internal `x-headroom-*` headers from upstream-bound
+/// requests (PR-A5, fixes P5-49).
+///
+/// When `enabled` (default), every header whose name starts with
+/// `x-headroom-` is dropped before the upstream call. Stops fingerprinting
+/// of the proxy via subscription-revocation flags (`x-headroom-bypass`,
+/// `x-headroom-mode`, etc.) and prevents leakage of internal user-id /
+/// stack / base-url headers.
+///
+/// When `disabled`, internal headers are forwarded verbatim. This is an
+/// explicit operator opt-in for diagnostic shadow tracing — NOT a fallback.
+/// Document the trade-off in `docs/configuration.md` before flipping this.
+///
+/// Source priority: CLI flag → `HEADROOM_PROXY_STRIP_INTERNAL_HEADERS`
+/// env var → default (`enabled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum StripInternalHeaders {
+    /// Strip every `x-headroom-*` header from upstream-bound requests.
+    /// Default. Operationally safe.
+    Enabled,
+    /// Forward `x-headroom-*` to upstream verbatim. Diagnostic-only;
+    /// exposes internal flags to the upstream and reveals the proxy.
+    Disabled,
+}
+
+impl StripInternalHeaders {
+    /// Stable snake_case name suitable for log fields.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StripInternalHeaders::Enabled => "enabled",
+            StripInternalHeaders::Disabled => "disabled",
+        }
+    }
+
+    /// Convenience: is the strip switched on?
+    pub fn is_enabled(self) -> bool {
+        matches!(self, StripInternalHeaders::Enabled)
+    }
+}
+
+/// Policy for automatically deriving `frozen_message_count` from the
+/// customer's `cache_control` markers (PR-A4).
+///
+/// When `enabled` (default), the live-zone dispatcher will walk
+/// `messages[*].content[*].cache_control` and bump the floor below
+/// which compression is forbidden. When `disabled`, the floor stays
+/// at 0 regardless of markers — Phase B's dispatcher will then treat
+/// every message as live-zone, which is dangerous in production but
+/// useful for benchmarking the cache-control machinery.
+///
+/// `system` and `tools[*]` markers never bump `frozen_count` because
+/// those fields are *always* part of the cache hot zone (invariant I2);
+/// they're guaranteed-immutable independently of marker placement.
+///
+/// Source priority: CLI flag → `HEADROOM_PROXY_CACHE_CONTROL_AUTO_FROZEN`
+/// env var → default (`enabled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum CacheControlAutoFrozen {
+    /// Walk customer `cache_control` markers and derive
+    /// `frozen_message_count` automatically. Default.
+    Enabled,
+    /// Ignore customer `cache_control` markers when deriving
+    /// `frozen_message_count`; the function returns 0 regardless of
+    /// what the body contains. Intended for benchmarking and the
+    /// "no automatic floor" testing path; not for production use.
+    Disabled,
+}
+
+impl CacheControlAutoFrozen {
+    /// Stable snake_case name suitable for log fields. Mirrors
+    /// `CompressionMode::as_str` so the two policy fields render
+    /// identically in JSON tracing output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CacheControlAutoFrozen::Enabled => "enabled",
+            CacheControlAutoFrozen::Disabled => "disabled",
+        }
+    }
+
+    /// Convenience: is the auto-frozen derivation switched on? Most
+    /// callers want the boolean rather than pattern-matching on the
+    /// enum.
+    pub fn is_enabled(self) -> bool {
+        matches!(self, CacheControlAutoFrozen::Enabled)
+    }
+}
+
+impl CompressionMode {
+    /// Stable snake_case name suitable for log fields. Avoids relying
+    /// on `Debug` (which renders `Off`/`LiveZone`) or `Display`
+    /// (which we don't implement to keep `ValueEnum` the single
+    /// source of truth for stringification).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompressionMode::Off => "off",
+            CompressionMode::LiveZone => "live_zone",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -72,6 +199,60 @@ pub struct CliArgs {
     /// they have a specific reason to cap compression separately.
     #[arg(long, value_parser = parse_bytes)]
     pub compression_max_body_bytes: Option<u64>,
+
+    /// Compression mode policy for `/v1/messages`.
+    ///
+    /// `off` (default): byte-faithful passthrough on every request.
+    /// `live_zone`: PR-B2 wired the dispatcher; PR-B2's per-type
+    /// compressors are no-ops, so the body still round-trips
+    /// byte-equal until PR-B3+ (which fills the per-type table).
+    /// The flag exists so the default can flip in one config
+    /// change once `live_zone` is the safer choice on real traffic.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_COMPRESSION_MODE`
+    /// env var → default (`off`).
+    #[arg(
+        long = "compression-mode",
+        env = "HEADROOM_PROXY_COMPRESSION_MODE",
+        value_enum,
+        default_value_t = CompressionMode::Off,
+    )]
+    pub compression_mode: CompressionMode,
+
+    /// Whether to derive `frozen_message_count` from customer
+    /// `cache_control` markers in the request body (PR-A4).
+    ///
+    /// `enabled` (default): walk `messages[*].content[*].cache_control`
+    /// and bump the floor for live-zone compression so any message
+    /// the customer cache-pinned is left untouched. `disabled`: skip
+    /// the walk; the floor stays at 0. The off switch exists for
+    /// benchmark setups that want to measure compression independent
+    /// of marker placement; it is NOT recommended for production.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_CACHE_CONTROL_AUTO_FROZEN`
+    /// env var → default (`enabled`).
+    #[arg(
+        long = "cache-control-auto-frozen",
+        env = "HEADROOM_PROXY_CACHE_CONTROL_AUTO_FROZEN",
+        value_enum,
+        default_value_t = CacheControlAutoFrozen::Enabled,
+    )]
+    pub cache_control_auto_frozen: CacheControlAutoFrozen,
+
+    /// Strip internal `x-headroom-*` headers from upstream-bound
+    /// requests (PR-A5, fixes P5-49). Default `enabled`. The `disabled`
+    /// path is operator opt-in for diagnostic shadow tracing only —
+    /// NOT a fallback per realignment build constraint #4.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_STRIP_INTERNAL_HEADERS`
+    /// env var → default (`enabled`).
+    #[arg(
+        long = "strip-internal-headers",
+        env = "HEADROOM_PROXY_STRIP_INTERNAL_HEADERS",
+        value_enum,
+        default_value_t = StripInternalHeaders::Enabled,
+    )]
+    pub strip_internal_headers: StripInternalHeaders,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -102,6 +283,21 @@ pub struct Config {
     /// Inherits `max_body_bytes` when not overridden. Bodies larger
     /// than this still forward, just unchanged.
     pub compression_max_body_bytes: u64,
+    /// Policy mode for compression on `/v1/messages`. PR-A1 lockdown:
+    /// both `Off` and `LiveZone` result in byte-faithful passthrough;
+    /// `LiveZone` additionally emits a `tracing::warn!` per request
+    /// because the dispatcher isn't implemented yet (Phase B PR-B2
+    /// fills this in).
+    pub compression_mode: CompressionMode,
+    /// Whether the live-zone dispatcher derives `frozen_message_count`
+    /// automatically from customer `cache_control` markers. PR-A4
+    /// adds the derivation function (`compute_frozen_count`); Phase
+    /// B's dispatcher consumes the resolved value here.
+    pub cache_control_auto_frozen: CacheControlAutoFrozen,
+    /// Whether to strip internal `x-headroom-*` headers from
+    /// upstream-bound requests. PR-A5 default-on guard against
+    /// fingerprinting / leakage of internal flags.
+    pub strip_internal_headers: StripInternalHeaders,
 }
 
 impl Config {
@@ -125,6 +321,9 @@ impl Config {
             graceful_shutdown_timeout: args.graceful_shutdown_timeout,
             compression: args.compression,
             compression_max_body_bytes,
+            compression_mode: args.compression_mode,
+            cache_control_auto_frozen: args.cache_control_auto_frozen,
+            strip_internal_headers: args.strip_internal_headers,
         }
     }
 
@@ -142,6 +341,14 @@ impl Config {
             graceful_shutdown_timeout: Duration::from_secs(5),
             compression: false,
             compression_max_body_bytes: 100 * 1024 * 1024,
+            compression_mode: CompressionMode::Off,
+            // Match production default so the cache-control walker is
+            // exercised under test without per-test opt-in.
+            cache_control_auto_frozen: CacheControlAutoFrozen::Enabled,
+            // Production default: strip internal `x-headroom-*` headers
+            // from upstream-bound requests. Tests opt out per-case via
+            // `start_proxy_with`.
+            strip_internal_headers: StripInternalHeaders::Enabled,
         }
     }
 }

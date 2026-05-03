@@ -4,7 +4,7 @@ A full-featured LLM proxy with optimization, caching, rate limiting,
 and observability.
 
 Features:
-- Context optimization (SmartCrusher, CacheAligner, RollingWindow)
+- Context optimization (SmartCrusher, CacheAligner — live-zone-only after Phase B)
 - Semantic caching (save costs on repeated queries)
 - Rate limiting (token bucket)
 - Retry with exponential backoff
@@ -75,9 +75,7 @@ from headroom.ccr import (
 from headroom.config import (
     CacheAlignerConfig,
     CCRConfig,
-    IntelligentContextConfig,
     ReadLifecycleConfig,
-    RollingWindowConfig,
     SmartCrusherConfig,
 )
 from headroom.dashboard import get_dashboard_html
@@ -159,10 +157,7 @@ from headroom.transforms import (
     CodeCompressorConfig,
     ContentRouter,
     ContentRouterConfig,
-    IntelligentContextManager,
-    RollingWindow,
     SmartCrusher,
-    Transform,
     TransformPipeline,
     is_tree_sitter_available,
 )
@@ -190,6 +185,93 @@ logging.basicConfig(
 logger = logging.getLogger("headroom.proxy")
 
 _MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
+
+# Env var that opts out of the Rust core deployment smoke test (Hotfix-A0).
+# Default behavior: hard-fail at startup if `headroom._core` is unimportable
+# (Finding #2 in HEADROOM_PROXY_LOG_FINDINGS_2026_05_03.md — production
+# deployment was silently running without the Rust extension and degrading
+# every compressed request to a Python-only path or a no-op).
+#
+# Set to the literal string "false" to start the proxy in degraded
+# Python-only mode. Any other value (including unset) keeps the
+# fail-loud behavior.
+_RUST_CORE_REQUIRED_ENV = "HEADROOM_REQUIRE_RUST_CORE"
+
+# sysexits.h(3) — EX_CONFIG. Process supervisors (systemd, k8s, docker)
+# treat this as a deliberate configuration failure rather than a crash, so
+# they won't restart-loop on a broken deployment.
+_EXIT_CONFIG = 78
+
+
+def _check_rust_core() -> tuple[str, str | None]:
+    """Verify the Rust extension `headroom._core` is loadable at startup.
+
+    Returns a `(status, error)` tuple:
+      - ``("loaded", None)``     — `headroom._core.hello()` returned the
+        expected sentinel.
+      - ``("disabled", reason)`` — opt-out env var was set; proxy starts
+        in Python-only degraded mode. `reason` carries the underlying
+        import error (or ``None`` if the import actually succeeded).
+      - ``("missing", reason)``  — never returned: this branch calls
+        ``sys.exit(78)`` so the proxy refuses to start. The branch exists
+        only as a typed sentinel for callers that want to reason about
+        all three states (e.g. health endpoints).
+
+    Behavior is gated by the ``HEADROOM_REQUIRE_RUST_CORE`` env var:
+    any value other than ``"false"`` (case-insensitive) keeps the
+    fail-loud default.
+    """
+    require = os.environ.get(_RUST_CORE_REQUIRED_ENV, "true").strip().lower() != "false"
+    try:
+        from headroom._core import hello as _rust_hello
+
+        marker = _rust_hello()
+    except Exception as exc:  # ImportError, but also any init-time PyO3 failure
+        reason = f"{type(exc).__name__}: {exc}"
+        if not require:
+            logger.warning(
+                "event=rust_core_disabled reason=%r opt_out_env=%s=false mode=python_only_degraded",
+                reason,
+                _RUST_CORE_REQUIRED_ENV,
+            )
+            return ("disabled", reason)
+        # Fail loud. Print to stderr in addition to logging so operators
+        # see it even if the logging handler is mis-configured.
+        msg = (
+            f"FATAL: Rust extension `headroom._core` not loadable.\n"
+            f"    error: {reason}\n"
+            f"    fix:   `make build-wheel && pip install --force-reinstall "
+            f"target/wheels/headroom_*.whl`\n"
+            f"    opt-out: set {_RUST_CORE_REQUIRED_ENV}=false to start in "
+            f"degraded Python-only mode\n"
+        )
+        logger.error("event=rust_core_missing reason=%r action=exit_78", reason)
+        print(msg, file=sys.stderr, flush=True)
+        sys.exit(_EXIT_CONFIG)
+
+    # Import succeeded; sanity-check the marker so we catch a stale or
+    # mis-linked .so where the symbol name resolves but returns garbage.
+    if marker != "headroom-core":
+        reason = f"unexpected marker {marker!r}"
+        if not require:
+            logger.warning(
+                "event=rust_core_disabled reason=%r opt_out_env=%s=false",
+                reason,
+                _RUST_CORE_REQUIRED_ENV,
+            )
+            return ("disabled", reason)
+        msg = (
+            f"FATAL: Rust extension `headroom._core` is loaded but the "
+            f"marker function returned {marker!r}; expected 'headroom-core'.\n"
+            f"    fix:   rebuild: `make build-wheel && pip install "
+            f"--force-reinstall target/wheels/headroom_*.whl`\n"
+        )
+        logger.error("event=rust_core_marker_mismatch marker=%r action=exit_78", marker)
+        print(msg, file=sys.stderr, flush=True)
+        sys.exit(_EXIT_CONFIG)
+
+    logger.info("event=rust_core_loaded marker=%r", marker)
+    return ("loaded", None)
 
 
 # Compression pipeline timeout in seconds
@@ -255,34 +337,14 @@ class HeadroomProxy(
         )
         self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker)
 
-        # Initialize transforms based on routing mode
-        # Choose context manager: IntelligentContextManager (smart) or RollingWindow (legacy)
-        context_manager: Transform  # Can be either IntelligentContextManager or RollingWindow
-        if config.intelligent_context:
-            # Get TOIN instance for learned pattern integration
-            toin = get_toin() if config.intelligent_context_scoring else None
-            context_manager = IntelligentContextManager(
-                config=IntelligentContextConfig(
-                    enabled=True,
-                    keep_system=True,
-                    keep_last_turns=config.keep_last_turns,
-                    use_importance_scoring=config.intelligent_context_scoring,
-                    toin_integration=config.intelligent_context_scoring,
-                    compress_threshold=0.10 if config.intelligent_context_compress_first else 0.0,
-                ),
-                toin=toin,
-                observer=self.metrics,
-            )
-            self._context_manager_status = "intelligent"
-        else:
-            context_manager = RollingWindow(
-                RollingWindowConfig(
-                    enabled=True,
-                    keep_system=True,
-                    keep_last_turns=config.keep_last_turns,
-                )
-            )
-            self._context_manager_status = "rolling_window"
+        # Initialize transforms based on routing mode.
+        #
+        # Phase B PR-B1 retired the IntelligentContextManager / RollingWindow
+        # message-dropping branch. Live-zone-only compression (PR-B2..B7) does
+        # not drop messages — it operates on content blocks within messages —
+        # so the proxy no longer needs a "context manager" transform stage.
+        # Reported via metrics as `_context_manager_status = "passthrough"`.
+        self._context_manager_status = "passthrough"
 
         if config.smart_routing:
             # Smart routing: ContentRouter handles all content types intelligently
@@ -298,7 +360,6 @@ class HeadroomProxy(
             transforms = [
                 CacheAligner(CacheAlignerConfig(enabled=False)),
                 ContentRouter(router_config, observer=self.metrics),
-                context_manager,
             ]
             self._code_aware_status = "lazy" if config.code_aware_enabled else "disabled"
         else:
@@ -317,7 +378,6 @@ class HeadroomProxy(
                     ),
                     observer=self.metrics,
                 ),
-                context_manager,
             ]
             # Add CodeAware if enabled and available
             self._code_aware_status = self._setup_code_aware(config, transforms)
@@ -526,6 +586,19 @@ class HeadroomProxy(
                 _mem_db_path = str(_mem_dir / "memory.db")
                 logger.info(f"Memory: Project-scoped DB at {_mem_db_path}")
 
+            # PR-B6: translate the string-typed ``ProxyConfig.memory_mode``
+            # into the typed ``MemoryMode`` enum. Unknown values raise
+            # loudly per the no-silent-fallback policy.
+            from headroom.proxy.memory_handler import MemoryMode
+
+            try:
+                _memory_mode = MemoryMode(config.memory_mode)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid memory_mode={config.memory_mode!r}; "
+                    f"expected one of {[m.value for m in MemoryMode]}"
+                ) from exc
+
             memory_config = MemoryConfig(
                 enabled=True,
                 backend=config.memory_backend,
@@ -535,6 +608,7 @@ class HeadroomProxy(
                 inject_context=config.memory_inject_context,
                 top_k=config.memory_top_k,
                 min_similarity=config.memory_min_similarity,
+                mode=_memory_mode,
                 qdrant_url=config.memory_qdrant_url,
                 qdrant_host=config.memory_qdrant_host,
                 qdrant_port=config.memory_qdrant_port,
@@ -712,8 +786,10 @@ class HeadroomProxy(
                     preserve_signatures=True,
                     preserve_type_annotations=True,
                 )
-                # Insert before RollingWindow (which should be last)
-                transforms.insert(-1, CodeAwareCompressor(code_config))
+                # CodeAware runs after the content/structure transforms.
+                # Phase B PR-B1 retired the trailing context_manager so we
+                # append rather than insert(-1).
+                transforms.append(CodeAwareCompressor(code_config))
                 return "enabled"
             else:
                 logger.warning(
@@ -1023,53 +1099,6 @@ class HeadroomProxy(
                 tags[tag_name] = value
         return tags
 
-    def _inject_system_context(
-        self,
-        messages: list[dict[str, Any]],
-        context: str,
-        body: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Inject context into the system message/parameter.
-
-        For Anthropic API: Uses top-level 'system' parameter (not messages array).
-        For OpenAI API: Uses system role in messages array.
-
-        Args:
-            messages: The messages list.
-            context: Context to inject.
-            body: Optional request body to update system parameter (for Anthropic).
-
-        Returns:
-            Updated messages list.
-        """
-        messages = list(messages)  # Copy to avoid mutation
-
-        # For Anthropic API: use top-level 'system' parameter
-        if body is not None:
-            existing_system = body.get("system", "")
-            if isinstance(existing_system, str):
-                body["system"] = (existing_system + "\n\n" + context).strip()
-            elif isinstance(existing_system, list):
-                # system is a list of content blocks (e.g., with cache_control).
-                # Append memory context as a new text block — never overwrite.
-                body["system"] = existing_system + [{"type": "text", "text": context}]
-            else:
-                # No existing system prompt — set as string
-                body["system"] = context
-            return messages
-
-        # For OpenAI API: use system role in messages
-        for i, msg in enumerate(messages):
-            if msg.get("role") == "system":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    messages[i] = {**msg, "content": content + "\n\n" + context}
-                return messages
-
-        # No system message found - prepend one
-        messages.insert(0, {"role": "system", "content": context})
-        return messages
-
     async def _retry_request(
         self,
         method: str,
@@ -1077,17 +1106,67 @@ class HeadroomProxy(
         headers: dict,
         body: dict,
         stream: bool = False,
+        *,
+        original_body_bytes: bytes | None = None,
+        body_mutated: bool = True,
+        mutation_reasons: list[str] | None = None,
+        request_id: str | None = None,
+        forwarder_name: str = "server",
+        path_for_log: str | None = None,
     ) -> httpx.Response:
-        """Make request with retry and exponential backoff."""
+        """Make request with retry and exponential backoff.
+
+        Byte-faithful forwarding (PR-A3, fixes P0-2):
+          * If ``original_body_bytes`` is provided AND ``body_mutated`` is
+            ``False``, the original bytes are forwarded verbatim. SHA-256
+            of upstream-received bytes equals client-sent bytes.
+          * Otherwise the body dict is canonically re-serialized via
+            ``serialize_body_canonical`` (compact separators, ensure_ascii=False).
+          * ``HEADROOM_PROXY_PYTHON_FORWARDER_MODE=legacy_json_kwarg`` is an
+            explicit operator opt-in for emergency rollback to the old
+            ``httpx ... json=body`` behavior.
+
+        The default ``body_mutated=True`` preserves backward compatibility
+        for callers that still pass only ``body`` (e.g. CCR continuations
+        construct their body from scratch, so canonical serialization is
+        correct and original bytes do not exist).
+        """
+        from headroom.proxy.helpers import (
+            log_outbound_request,
+            prepare_outbound_body_bytes,
+        )
+
         last_error = None
+        reasons = list(mutation_reasons or [])
+        outbound_bytes, source = prepare_outbound_body_bytes(
+            body=body,
+            original_body_bytes=original_body_bytes,
+            body_mutated=body_mutated,
+        )
+        outbound_headers = {**headers, "content-type": "application/json"}
+
+        log_outbound_request(
+            forwarder=forwarder_name,
+            method=method,
+            path=path_for_log or url,
+            body_bytes_count=len(outbound_bytes),
+            body_mutated=body_mutated,
+            mutation_reasons=reasons,
+            request_id=request_id,
+            source=source,
+        )
 
         for attempt in range(self.config.retry_max_attempts):
             try:
                 if stream:
                     # For streaming, we return early - retry happens at higher level
-                    return await self.http_client.post(url, json=body, headers=headers)  # type: ignore[union-attr]
+                    return await self.http_client.post(  # type: ignore[union-attr]
+                        url, content=outbound_bytes, headers=outbound_headers
+                    )
                 else:
-                    response = await self.http_client.post(url, json=body, headers=headers)  # type: ignore[union-attr]
+                    response = await self.http_client.post(  # type: ignore[union-attr]
+                        url, content=outbound_bytes, headers=outbound_headers
+                    )
 
                     # Don't retry client errors (4xx)
                     if 400 <= response.status_code < 500:
@@ -1266,6 +1345,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+        # Hotfix-A0: Rust core deployment smoke test. Refuse to accept
+        # traffic if the Rust extension is missing unless the operator
+        # explicitly opted out with HEADROOM_REQUIRE_RUST_CORE=false. See
+        # Finding #2 in HEADROOM_PROXY_LOG_FINDINGS_2026_05_03.md.
+        # `_check_rust_core` either returns ("loaded"|"disabled", _) or
+        # calls `sys.exit(78)` — execution past this line implies the
+        # rust_core_status is recorded.
+        _rust_core_status, _rust_core_error = _check_rust_core()
+        app.state.rust_core_status = _rust_core_status
+        app.state.rust_core_error = _rust_core_error
+
         configure_otel_metrics(OTelMetricsConfig.from_env(default_service_name="headroom-proxy"))
         configure_langfuse_tracing(
             LangfuseTracingConfig.from_env(default_service_name="headroom-proxy")
@@ -1323,6 +1413,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app.state.started_at = None
     app.state.ready = False
     app.state.startup_error = None
+    # Set by the lifespan startup smoke test (`_check_rust_core`). Default
+    # "missing" means lifespan hasn't run yet — anything reading /health
+    # before startup completes (rare; lifespan runs before the first
+    # request) sees an honest "missing" rather than a stale "loaded".
+    app.state.rust_core_status = "missing"
+    app.state.rust_core_error = None
 
     def _iso_utc_now() -> str:
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1440,7 +1536,13 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "uptime_seconds": _uptime_seconds(),
             "checks": checks,
             "runtime": _runtime_payload(),
+            # Hotfix-A0: surface rust core load state so operators can alert
+            # on `rust_core != "loaded"` (Finding #2).
+            "rust_core": getattr(app.state, "rust_core_status", "missing"),
         }
+        rust_core_error = getattr(app.state, "rust_core_error", None)
+        if rust_core_error:
+            payload["rust_core_error"] = rust_core_error
         deployment_profile = os.environ.get("HEADROOM_DEPLOYMENT_PROFILE")
         if deployment_profile:
             payload["deployment"] = {

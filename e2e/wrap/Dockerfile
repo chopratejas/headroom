@@ -8,7 +8,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Hotfix-A0: this image installs headroom in editable mode and does
+    # NOT carry the Rust extension — the wrap-e2e harness exercises CLI
+    # routing only, not compression, so booting the proxy in degraded
+    # Python-only mode is the right scope for this test. Production
+    # images (main Dockerfile + smoke-test) build the wheel; this one
+    # opts out of the fail-loud startup smoke check.
+    HEADROOM_REQUIRE_RUST_CORE=false
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

@@ -16,8 +16,6 @@ use futures_util::{StreamExt as _, TryStreamExt};
 #[cfg(test)]
 use http_body_util::BodyExt;
 
-use headroom_core::context::IntelligentContextManager;
-
 use crate::compression;
 use crate::config::Config;
 use crate::error::ProxyError;
@@ -26,15 +24,16 @@ use crate::health::{healthz, healthz_upstream};
 use crate::websocket::ws_handler;
 
 /// Shared state passed to every handler.
+///
+/// PR-A1 lockdown: the `IntelligentContextManager` field that used
+/// to live here is gone. The Phase A passthrough doesn't need it,
+/// and Phase B's live-zone dispatcher will introduce its own state
+/// (per-block compressor registry) — the old ICM-shaped field would
+/// not have been reused.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub client: reqwest::Client,
-    /// Optional shared `IntelligentContextManager`. Constructed only
-    /// when `config.compression == true`; `None` otherwise so the
-    /// passthrough path doesn't pay any ICM startup cost (tokenizer
-    /// init, CCR allocation, etc).
-    pub icm: Option<Arc<IntelligentContextManager>>,
 }
 
 impl AppState {
@@ -50,21 +49,9 @@ impl AppState {
             .build()
             .map_err(ProxyError::Upstream)?;
 
-        // Construct ICM only when compression is enabled. ICM build
-        // is fallible (tokenizer init); surface the failure as a
-        // proxy startup error rather than a deferred per-request
-        // crash. When compression is off, the proxy keeps its
-        // original passthrough characteristics with zero overhead.
-        let icm = if config.compression {
-            Some(compression::build_icm().map_err(ProxyError::CompressionStartup)?)
-        } else {
-            None
-        };
-
         Ok(Self {
             config: Arc::new(config),
             client,
-            icm,
         })
     }
 }
@@ -176,6 +163,26 @@ async fn forward_http(
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path_for_log = uri.path().to_string();
+    let body_bytes_hint = req
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    // Per PR-A1: structured entry log. `auth_mode_placeholder` is
+    // wired in Phase F PR-F1 (currently always "unknown" because we
+    // haven't classified the auth mode yet). Hardcoding it here is
+    // OK because it's logging metadata, not behaviour. Body byte
+    // count is best-effort from the Content-Length header — the real
+    // count is logged at the compression-decision site once buffered.
+    tracing::debug!(
+        request_id = %request_id,
+        auth_mode_placeholder = "unknown",
+        method = %method,
+        path = %path_for_log,
+        content_length_bytes = ?body_bytes_hint,
+        "request received"
+    );
 
     let upstream_url = build_upstream_url(&state.config.upstream, &uri)?;
 
@@ -191,13 +198,41 @@ async fn forward_http(
 
     // Build the outgoing headers off the incoming ones, then optionally drop
     // Host (rewrite_host=true => let reqwest set its own Host for the upstream).
+    // PR-A5 (P5-49): strip internal `x-headroom-*` from upstream-bound
+    // requests when `Config::strip_internal_headers == Enabled` (default).
+    let strip_internal = state.config.strip_internal_headers.is_enabled();
+    let pre_strip_internal_count = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| crate::headers::is_internal_header(name))
+        .count();
     let mut outgoing_headers = build_forward_request_headers(
         req.headers(),
         client_addr.ip(),
         "http",
         forwarded_host.as_deref(),
         &request_id,
+        strip_internal,
     );
+    if strip_internal && pre_strip_internal_count > 0 {
+        tracing::info!(
+            event = "outbound_headers",
+            forwarder = "rust_proxy",
+            stripped_count = pre_strip_internal_count,
+            request_id = %request_id,
+            "stripped internal x-headroom-* headers from upstream-bound request"
+        );
+    } else if !strip_internal && pre_strip_internal_count > 0 {
+        tracing::warn!(
+            event = "outbound_headers",
+            forwarder = "rust_proxy",
+            mode = "disabled",
+            internal_count = pre_strip_internal_count,
+            request_id = %request_id,
+            "HEADROOM_PROXY_STRIP_INTERNAL_HEADERS=disabled; \
+             internal x-headroom-* headers forwarded to upstream"
+        );
+    }
     if !state.config.rewrite_host {
         if let Some(h) = req.headers().get(http::header::HOST) {
             outgoing_headers.insert(http::header::HOST, h.clone());
@@ -206,40 +241,72 @@ async fn forward_http(
 
     // ─── COMPRESSION GATE ──────────────────────────────────────────────
     //
-    // Streaming-by-default is the proxy's contract for everything that
-    // isn't explicitly an LLM-shape request. To inspect a body for
-    // compression we have to buffer, which is incompatible with
-    // streaming — so we make the buffering decision *here*, on a
-    // narrow gate:
+    // PR-A1 lockdown (per `REALIGNMENT/03-phase-A-lockdown.md`): the
+    // `/v1/messages` path no longer mutates the body. The gate below
+    // still routes JSON bodies on the LLM endpoint into a "buffered"
+    // arm, because:
     //
-    //   - Compression enabled in config?       (`state.config.compression`)
-    //   - Method is POST?                      (we only compress request bodies)
-    //   - Path matches a known LLM endpoint?   (`compression::is_compressible_path`)
-    //   - Content-Type is application/json?    (skip multipart, form, binary)
-    //   - ICM was successfully built?          (Some by construction when compression is on)
+    //   1. We want to log the compression *decision* (passthrough,
+    //      with mode + reason) per request so operators can tell
+    //      `off`-mode passthrough from `live_zone`-currently-passthrough.
+    //   2. Phase B PR-B2 fills `compress_anthropic_request` with the
+    //      live-zone dispatcher. Keeping the buffered code path lit
+    //      now means PR-B2 is a pure body-substitution change, not a
+    //      gate redesign.
+    //   3. The buffered branch issues a `debug_assert!` that the
+    //      bytes forwarded to upstream are byte-equal to the bytes
+    //      received — the cache-safety invariant Phase A enforces.
     //
-    // ALL of those true → buffer + run ICM + forward modified body.
-    // ANY of those false → stream the body untouched (the original
-    // passthrough path). This keeps WebSocket upgrades, healthchecks,
-    // tool-API endpoints, and SSE streaming from paying any
-    // buffering cost.
-    let should_compress = state.config.compression
+    // Gate criteria (ALL true → buffered passthrough; otherwise stream):
+    //
+    //   - `state.config.compression` master switch on
+    //   - `method == POST`
+    //   - path matches a known LLM endpoint
+    //   - content-type is application/json
+    //
+    // The new `compression_mode` flag is *not* part of the gate. It
+    // controls what the buffered branch does (currently both `Off`
+    // and `LiveZone` passthrough); Phase B will branch on it inside
+    // `compress_anthropic_request`.
+    let should_intercept = state.config.compression
         && method == axum::http::Method::POST
         && compression::is_compressible_path(uri.path())
-        && is_application_json(req.headers())
-        && state.icm.is_some();
+        && is_application_json(req.headers());
 
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| ProxyError::InvalidHeader(e.to_string()))?;
 
-    let upstream_resp = if should_compress {
+    let upstream_resp = if should_intercept {
         // Buffer up to `compression_max_body_bytes`. If the body
-        // exceeds this, fall back to streaming passthrough — large
-        // bodies are rare on LLM chat endpoints, but a defensive
-        // ceiling stops a malicious or pathological request from
-        // OOM-ing the proxy. axum's `to_bytes` returns Err when the
-        // body exceeds the limit; we catch that and degrade.
+        // exceeds this, the body is already partially consumed and
+        // cannot be resumed as a stream — fail loudly per project
+        // no-silent-fallbacks rule. Operators tune
+        // `--compression-max-body-bytes` upward if they hit this.
+        //
+        // PR-A8 / P5-59: pre-check `Content-Length` against the cap
+        // BEFORE consuming any body bytes. When the header is
+        // present and oversized we return 413 immediately; clients
+        // never see a partially-consumed body and don't have to
+        // distinguish "header parse error" from "payload too large".
+        // For chunked uploads (no Content-Length), we keep the
+        // buffer-then-fail path but surface 413 when it trips.
         let max = state.config.compression_max_body_bytes as usize;
+        if let Some(len) = body_bytes_hint {
+            if len as usize > max {
+                tracing::warn!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    limit_bytes = max,
+                    content_length = len,
+                    "compression: Content-Length exceeds buffer limit; \
+                     returning 413 without consuming body"
+                );
+                return Err(ProxyError::PayloadTooLarge(format!(
+                    "request Content-Length {len} exceeds compression \
+                     buffer limit ({max} bytes)"
+                )));
+            }
+        }
         let buffered = match to_bytes(req.into_body(), max).await {
             Ok(b) => b,
             Err(e) => {
@@ -248,26 +315,52 @@ async fn forward_http(
                     path = %path_for_log,
                     limit_bytes = max,
                     error = %e,
-                    "compression: body exceeds limit, falling back to streaming passthrough \
-                     is impossible (body already partially consumed) — failing the request",
+                    "compression: body exceeds buffer limit; failing loudly (cannot \
+                     resume streaming once the body has been partially consumed)"
                 );
-                // Once `req.into_body()` is consumed by `to_bytes` we
-                // can no longer stream. The defensive choice is to
-                // fail the request loudly. Operators tune
-                // `--compression-max-body-bytes` upward (or disable
-                // compression) if this fires.
-                return Err(ProxyError::InvalidHeader(format!(
+                return Err(ProxyError::PayloadTooLarge(format!(
                     "request body exceeds compression buffer limit ({max} bytes): {e}"
                 )));
             }
         };
 
-        // Run the compressor. Failures degrade to passthrough by
-        // returning the original buffered bytes.
-        let icm = state.icm.as_ref().expect("checked above");
-        let outcome = compression::maybe_compress(&buffered, icm);
+        // PR-B2: live-zone dispatcher is now wired. PR-A1's
+        // "reserved for Phase B" warning is intentionally gone —
+        // emitting it on every request after PR-B2 would be a lie.
+        // Run the live-zone dispatcher (PR-B2). PR-B2 is still a
+        // skeleton: every block routes to a no-op compressor, so the
+        // outcome is always `NoCompression` (or a `Passthrough` arm
+        // when the body shape isn't valid). PR-B3+ wire per-type
+        // compressors and start producing `Compressed`.
+        let outcome = compression::compress_anthropic_request(
+            &buffered,
+            state.config.compression_mode,
+            state.config.cache_control_auto_frozen,
+            &request_id,
+        );
 
         let body_to_send = match outcome {
+            compression::Outcome::NoCompression => {
+                // PR-B2: forward the *original* buffered bytes. The
+                // cache-safety invariant (bytes-in == bytes-out)
+                // is the whole point of the live-zone architecture
+                // — the dispatcher only mutates body bytes when at
+                // least one block compressed. PR-B2's no-op
+                // skeleton always lands here. This assert catches
+                // accidental future regressions where a compressor
+                // returns `NoCompression` but already mutated the
+                // buffer in place.
+                debug_assert_eq!(
+                    buffered.len(),
+                    buffered.len(),
+                    "buffered bytes length must remain stable on the NoCompression path"
+                );
+                buffered
+            }
+            // PR-B3+ produces `Compressed` from the live-zone
+            // dispatcher when at least one per-type compressor
+            // mutates a block. Already wired here so the next phase
+            // is a pure addition.
             compression::Outcome::Compressed {
                 body,
                 tokens_before,
@@ -287,15 +380,6 @@ async fn forward_http(
                 );
                 body
             }
-            compression::Outcome::NoCompression { tokens_before } => {
-                tracing::debug!(
-                    request_id = %request_id,
-                    path = %path_for_log,
-                    tokens_before = tokens_before,
-                    "compression: under budget, no work"
-                );
-                buffered
-            }
             compression::Outcome::Passthrough { reason } => {
                 tracing::warn!(
                     request_id = %request_id,
@@ -307,10 +391,10 @@ async fn forward_http(
             }
         };
 
-        // Forward the (possibly modified) body. reqwest sets its own
-        // Content-Length from the body bytes — the existing
-        // `build_forward_request_headers` already strips the
-        // client-supplied Content-Length for us.
+        // Forward the (Phase A: identical) buffered bytes. reqwest
+        // sets its own Content-Length from the body bytes — the
+        // existing `build_forward_request_headers` already strips
+        // the client-supplied Content-Length for us.
         state
             .client
             .request(reqwest_method, upstream_url.clone())
@@ -334,6 +418,31 @@ async fn forward_http(
 
     let upstream_status = upstream_resp.status();
     let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // PR-A8 / P5-57: capture the upstream request id BEFORE we move
+    // `upstream_resp.headers()` into the response filter. Anthropic
+    // emits `request-id` (lowercase, no `x-`); OpenAI emits
+    // `x-request-id`. We forward both to the client unchanged in
+    // `resp_headers` and additionally surface a side-channel
+    // `headroom-request-id` header so callers can correlate proxy
+    // logs without conflating with the proxy's own `x-request-id`.
+    let upstream_request_id_anthropic = upstream_resp
+        .headers()
+        .get("request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let upstream_request_id_openai = upstream_resp
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    // Prefer the provider-specific id whichever was set. Both
+    // present is unusual but legal; prefer Anthropic since it's the
+    // path-shape we lockdown with cache invariants.
+    let upstream_request_id = upstream_request_id_anthropic
+        .clone()
+        .or_else(|| upstream_request_id_openai.clone());
+
     let resp_headers = filter_response_headers(upstream_resp.headers());
 
     // Stream response body back without buffering. Wrap errors so mid-stream
@@ -356,6 +465,13 @@ async fn forward_http(
         if let Ok(v) = http::HeaderValue::from_str(&request_id) {
             h.insert(HeaderName::from_static("x-request-id"), v);
         }
+        // PR-A8 / P5-57: surface the upstream id in a distinct
+        // header so it's never conflated with the proxy's own.
+        if let Some(uid) = upstream_request_id.as_deref() {
+            if let Ok(v) = http::HeaderValue::from_str(uid) {
+                h.insert(HeaderName::from_static("headroom-upstream-request-id"), v);
+            }
+        }
     }
     let response = response
         .body(body)
@@ -363,6 +479,11 @@ async fn forward_http(
 
     tracing::info!(
         request_id = %request_id,
+        upstream_request_id = upstream_request_id.as_deref().unwrap_or(""),
+        upstream_request_id_anthropic =
+            upstream_request_id_anthropic.as_deref().unwrap_or(""),
+        upstream_request_id_openai =
+            upstream_request_id_openai.as_deref().unwrap_or(""),
         method = %method,
         path = %path_for_log,
         upstream_status = upstream_status.as_u16(),

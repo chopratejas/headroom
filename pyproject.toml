@@ -318,6 +318,7 @@ asyncio_mode = "auto"
 markers = [
     "slow: slow tests (model loads, large fixtures)",
     "real_llm: tests that hit real LLM APIs; skipped unless explicitly enabled",
+    "live: opt-in multi-turn tests that hit real upstream APIs; require provider keys",
 ]
 
 [tool.coverage.run]

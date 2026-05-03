@@ -91,7 +91,7 @@ def test_anthropic_tools_sorted_deterministically_before_forward() -> None:
     with _make_proxy_client() as client:
         proxy = client.app.state.proxy
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -204,7 +204,7 @@ def test_anthropic_batch_tools_sorted_deterministically_before_forward() -> None
     with TestClient(app) as client:
         proxy = client.app.state.proxy
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -332,7 +332,7 @@ def test_token_mode_freeze_is_capped_by_prefix_tracker() -> None:
 
         proxy.anthropic_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={
@@ -385,7 +385,7 @@ def test_memory_context_avoids_system_mutation_when_prefix_frozen() -> None:
             has_memory_tool_calls=lambda resp, provider: False,
         )
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -459,9 +459,12 @@ def test_ccr_system_instruction_injection_disabled_when_prefix_frozen(monkeypatc
             def process_request(self, messages, tools):  # noqa: ANN001
                 return messages, tools, False
 
+            def scan_for_markers(self, messages):  # noqa: ANN001
+                return []
+
         monkeypatch.setattr("headroom.ccr.CCRToolInjector", _FakeInjector)
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={
@@ -523,9 +526,12 @@ def test_ccr_tool_injection_disabled_when_prefix_frozen(monkeypatch) -> None:
             def process_request(self, messages, tools):  # noqa: ANN001
                 return messages, tools, False
 
+            def scan_for_markers(self, messages):  # noqa: ANN001
+                return []
+
         monkeypatch.setattr("headroom.ccr.CCRToolInjector", _FakeInjector)
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={
@@ -576,7 +582,7 @@ def test_previous_turns_always_frozen_only_final_turn_mutable() -> None:
             AssertionError("cache mode should not invoke anthropic pipeline")
         )
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -631,7 +637,7 @@ def test_batch_optimization_freezes_previous_turns_only() -> None:
             AssertionError("cache mode batch path should not invoke anthropic pipeline")
         )
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -721,7 +727,7 @@ def test_token_mode_does_not_force_freeze_all_previous_turns() -> None:
 
         proxy.anthropic_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={
@@ -797,7 +803,7 @@ def test_cache_mode_restores_frozen_prefix_if_transform_mutates_history() -> Non
 
         proxy.anthropic_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -867,7 +873,7 @@ def test_cache_mode_does_not_forward_latest_turn_rewrites() -> None:
 
         proxy.anthropic_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -943,7 +949,7 @@ def test_cache_mode_reuses_prior_forwarded_prefix_and_compresses_only_new_suffix
 
         proxy.anthropic_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -1026,7 +1032,7 @@ def test_cache_mode_skips_same_message_append_rewrite_to_preserve_stability() ->
 
         proxy.anthropic_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -1181,7 +1187,7 @@ def _drive_request(
 
     proxy.anthropic_pipeline.apply = _fake_apply
 
-    async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+    async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
         return httpx.Response(
             200,
             json={
@@ -1464,7 +1470,7 @@ def test_issue_327_streaming_and_non_streaming_compute_same_frozen_count() -> No
 
         proxy.anthropic_pipeline.apply = _fake_apply_a
 
-        async def _fake_retry_a(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry_a(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={
@@ -1540,7 +1546,7 @@ def test_issue_327_streaming_and_non_streaming_compute_same_frozen_count() -> No
             b'data: {"type":"message_stop"}\n\n'
         )
 
-        async def _fake_retry_b(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry_b(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 content=sse_body,

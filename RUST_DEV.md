@@ -288,61 +288,70 @@ doesn't rediscover them.
 
 ## Multi-worker deployment — CCR fragmentation
 
-**Recommendation: run the proxy with `--workers 1` (the default).** The
-in-memory CCR store is per-process. Multi-worker uvicorn deployments produce
-silent retrieval failures — and `Compress-Cache-Retrieve` is the lossless
-half of the pipeline.
+**Status:** PR-B7 (`REALIGNMENT/04-phase-B-live-zone.md`) introduced two
+persistent CCR backends. The single-`--workers` recommendation no longer
+applies once you select a persistent backend.
 
-### What goes wrong with `--workers N > 1`
+### Backend selection
 
-Each uvicorn worker is a separate Python process. Each process holds its own
-copies of:
+`crates/headroom-core/src/ccr/backends/` ships three implementations of
+the `CcrStore` trait:
 
-1. **`InMemoryCcrStore`** (`crates/headroom-core/src/ccr.rs:78`) — the
-   sharded `DashMap` mapping `hash → original_content` for content the
-   compressor replaced with `Retrieve original: hash=X` markers.
+| Backend                | When to use                                 | Persistence | Multi-worker safe          |
+| ---------------------- | ------------------------------------------- | ----------- | -------------------------- |
+| `InMemoryCcrStore`     | Tests, single-worker prototyping            | No          | No                         |
+| `SqliteCcrStore` (default) | Single-instance prod / single-host fleet | Yes (file)  | Yes (sticky session)       |
+| `RedisCcrStore` (opt-in)   | Multi-host / horizontally-scaled prod     | Yes (Redis) | Yes (no stickiness needed) |
+
+`backends::from_config` picks one at startup from the operator's
+`CcrBackendConfig`. **Init failures surface to the caller**
+(`feedback_no_silent_fallbacks.md`) — a misconfigured DB path or
+unreachable Redis URL aborts startup rather than silently degrading to
+in-memory.
+
+### When does what work?
+
+- **`SqliteCcrStore`** is the default for new deploys. The DB file lives
+  on the local disk; multiple workers on the **same host** share it via
+  SQLite's WAL-mode locking, so `--workers N` works as long as a sticky
+  load balancer routes each session to the same host. Survives proxy
+  restarts: a new worker that opens the same DB file recovers every
+  in-flight `<<ccr:HASH>>` marker.
+- **`RedisCcrStore`** (cfg-gated behind the `redis` feature) is the
+  drop-in for **horizontally-scaled** deployments. Every worker on
+  every host hits the same Redis instance; no sticky session is
+  required at any layer of the LB. Enable with `--features redis` in
+  the proxy crate's Cargo build.
+- **`InMemoryCcrStore`** is fine for tests and single-worker
+  development. Production deployments using it lose every
+  `<<ccr:HASH>>` marker on restart and fragment across workers — keep
+  it confined to local boxes.
+
+### What goes wrong with the in-memory backend on `--workers N > 1`
+
+(Historical context — applies only when the operator explicitly
+chooses `CcrBackendConfig::InMemory`.) Each uvicorn worker is a
+separate Python process. Each process holds its own copies of:
+
+1. **`InMemoryCcrStore`** — sharded `DashMap` mapping
+   `hash → original_content` for content the compressor replaced with
+   `<<ccr:HASH>>` markers.
 2. **`HeadroomProxy._compression_caches`** (`headroom/proxy/server.py:367`)
-   — the per-session `CompressionCache` dict.
+   — per-session `CompressionCache` dict.
 3. **`HeadroomProxy.session_tracker_store`** — per-session prefix-tracker
    state derived from Anthropic's `cache_read_input_tokens` responses.
 4. **TOIN learner state** — pattern statistics used to bias the compressor.
 
-When uvicorn round-robins requests across workers, a session whose turn-1
-landed on worker A may have turn-2 land on worker B. Worker B has zero
-knowledge of what worker A did:
-
-- The CCR marker `Retrieve original: hash=X` is in the conversation, but
-  worker B's `InMemoryCcrStore` returns `None` for `X`. The marker stays
-  in-context as an opaque directive the model can't act on. Tokens spent,
-  no retrieval value.
-- The `CompressionCache` on worker B has no replay entries → every fresh
-  tool_result is recompressed from scratch, even content that worker A
-  already compressed once. CPU wasted; observable as compression latency
-  doubling on round-robin sessions.
-- The `prefix_tracker` on worker B starts at `frozen_message_count = 0` →
-  worker B compresses positions that Anthropic has already cached. Cache
-  bust + write premium paid on every cross-worker session turn.
-
-### What works today
-
-`--workers 1` is the only fully-supported configuration. The proxy is async
-and a single worker handles thousands of concurrent requests via the event
-loop; CPU-bound Rust work releases the GIL via `py.allow_threads`, so
-vertical scaling on one process is the intended path.
-
-### What we'd need for multi-worker
-
-A backend implementation of the `CcrStore` trait
-(`crates/headroom-core/src/ccr.rs`) backed by a shared store — Redis,
-Memcached, or a sticky-session reverse proxy. The `_compression_caches`
-and `session_tracker_store` would also need shared backing. None of this
-is implemented yet. If you need horizontal scale today, run multiple
-single-worker proxy processes behind a sticky-session load balancer (hash
-on session_id) — that pins each session to one worker and avoids the
-fragmentation entirely.
+When uvicorn round-robins requests across workers, a session whose
+turn-1 landed on worker A may have turn-2 land on worker B. Worker B has
+zero knowledge of what worker A did, the `<<ccr:HASH>>` marker resolves
+to `None`, and the model sees an opaque directive it can't act on.
+Switching to `SqliteCcrStore` (default) or `RedisCcrStore` resolves the
+fragmentation directly.
 
 ### Detecting it in the wild
 
-The proxy emits a `WARNING`-level log line on startup if it detects
-`WEB_CONCURRENCY` or uvicorn `--workers` set to anything > 1, pointing
-operators at this section.
+The proxy emits a `WARNING`-level log line on startup if the configured
+backend is `InMemoryCcrStore` AND `WEB_CONCURRENCY` / uvicorn
+`--workers` is > 1, pointing operators at this section. The other two
+backends never warn — they're the supported multi-worker paths.

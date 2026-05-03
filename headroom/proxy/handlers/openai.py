@@ -263,11 +263,27 @@ class OpenAIHandlerMixin:
         # if httpx lacks brotli support the response body is undecipherable → 502.
         headers.pop("accept-encoding", None)
         tags = self._extract_tags(headers)
+        # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
+        # headers AFTER `_extract_tags` reads them. Inbound bypass gating
+        # uses `request.headers.get(...)` above; memory user-id reads
+        # `request.headers` below. From this point on, `headers` is the
+        # upstream-bound copy.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
 
-        # Memory: Get user ID when memory is enabled
+        _pre_strip_count_chat = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_chat_completions",
+            stripped_count=_pre_strip_count_chat,
+            request_id=request_id,
+        )
+
+        # Memory: Get user ID when memory is enabled. Reads `request.headers`
+        # directly because `headers` was stripped of `x-headroom-*` for the
+        # upstream-bound copy (PR-A5).
         memory_user_id: str | None = None
         if self.memory_handler:
-            memory_user_id = headers.get(
+            memory_user_id = request.headers.get(
                 "x-headroom-user-id",
                 os.environ.get("USER", os.environ.get("USERNAME", "default")),
             )
@@ -341,6 +357,48 @@ class OpenAIHandlerMixin:
         openai_prefix_tracker = self.session_tracker_store.get_or_create(
             openai_session_id, "openai"
         )
+
+        # PR-A6 (P5-50, preps P0-6): session-sticky `OpenAI-Beta` merge.
+        # Same pattern as anthropic.py — read client value, union with
+        # session-seen tokens, update tracker. WS auto-injection of
+        # `responses_websockets=2026-02-06` lives on the WS handler;
+        # chat-completions has no Headroom-required tokens today, so the
+        # merge effectively just makes the client value byte-stable
+        # across turns.
+        from headroom.proxy.helpers import (
+            get_session_beta_tracker as _get_session_beta_tracker_chat,
+        )
+        from headroom.proxy.helpers import (
+            log_beta_header_merge as _log_beta_header_merge_chat,
+        )
+
+        _client_openai_beta = headers.get("openai-beta")
+        _client_openai_beta_count = (
+            len([t for t in (_client_openai_beta or "").split(",") if t.strip()])
+            if _client_openai_beta
+            else 0
+        )
+        _sticky_openai_beta = _get_session_beta_tracker_chat().record_and_get_sticky_betas(
+            provider="openai",
+            session_id=openai_session_id,
+            client_value=_client_openai_beta,
+        )
+        _sticky_openai_beta_count = (
+            len([t for t in _sticky_openai_beta.split(",") if t.strip()])
+            if _sticky_openai_beta
+            else 0
+        )
+        if _sticky_openai_beta and _sticky_openai_beta != (_client_openai_beta or ""):
+            headers["openai-beta"] = _sticky_openai_beta
+        _log_beta_header_merge_chat(
+            provider="openai",
+            session_id=openai_session_id,
+            client_betas_count=_client_openai_beta_count,
+            sticky_betas_count=_sticky_openai_beta_count,
+            headroom_added=[],
+            request_id=request_id,
+        )
+
         openai_frozen_count = openai_prefix_tracker.get_frozen_message_count()
         if is_cache_mode(self.config.mode):
             openai_frozen_count = self._strict_previous_turn_frozen_count(
@@ -485,6 +543,12 @@ class OpenAIHandlerMixin:
                 logger.debug(f"[{request_id}] post_compress hook error: {e}")
 
         # CCR Tool Injection: Inject retrieval tool if compression occurred
+        # OR if this session has previously done CCR (PR-B7 sticky-on).
+        # See `headroom/proxy/handlers/anthropic.py` and PR-B7 plan
+        # `REALIGNMENT/04-phase-B-live-zone.md` for the rationale: once a
+        # session has done CCR, the `headroom_retrieve` tool stays
+        # registered for every subsequent turn so the prompt cache
+        # anchored on the previous turn's tool list never busts.
         tools = body.get("tools")
         _original_tools = tools  # Preserve for diagnostic / future retry
         if (
@@ -492,21 +556,28 @@ class OpenAIHandlerMixin:
         ) and not _bypass:
             injector = CCRToolInjector(
                 provider="openai",
-                inject_tool=self.config.ccr_inject_tool,
+                inject_tool=False,  # routed through sticky helper below
                 inject_system_instructions=self.config.ccr_inject_system_instructions,
             )
-            optimized_messages, tools, was_injected = injector.process_request(
-                optimized_messages, tools
-            )
+            injector.scan_for_markers(optimized_messages)
+            if self.config.ccr_inject_system_instructions and injector.has_compressed_content:
+                optimized_messages = injector.inject_into_system_message(optimized_messages)
 
-            if injector.has_compressed_content:
-                if was_injected:
+            if self.config.ccr_inject_tool:
+                from headroom.proxy.helpers import apply_session_sticky_ccr_tool
+
+                tools, ccr_tool_injected = apply_session_sticky_ccr_tool(
+                    provider="openai",
+                    session_id=openai_session_id,
+                    request_id=request_id,
+                    existing_tools=tools,
+                    has_compressed_content_this_turn=injector.has_compressed_content,
+                )
+                if ccr_tool_injected:
                     logger.debug(
-                        f"[{request_id}] CCR: Injected retrieval tool for hashes: {injector.detected_hashes}"
-                    )
-                else:
-                    logger.debug(
-                        f"[{request_id}] CCR: Tool already present (MCP?), skipped injection for hashes: {injector.detected_hashes}"
+                        f"[{request_id}] CCR: tool registered (session={openai_session_id}, "
+                        f"compressed_this_turn={injector.has_compressed_content}, "
+                        f"hashes_seen={len(injector.detected_hashes)})"
                     )
 
         if is_cache_mode(self.config.mode):
@@ -521,34 +592,85 @@ class OpenAIHandlerMixin:
                     "to preserve cache stability (openai)"
                 )
 
-        # Memory: inject context and tools for OpenAI requests
+        # Memory: inject context and tools for OpenAI requests.
+        #
+        # PR-A3 follow-up to A2: memory context now routes exclusively to
+        # the live-zone tail (latest user message), never via a system-level
+        # prepend. The cache hot zone (system messages) is sacrosanct —
+        # invariant I2. See REALIGNMENT/03-phase-A-lockdown.md PR-A3.
         memory_context_injected = False
         memory_tools_injected = False
         if self.memory_handler and memory_user_id:
             try:
-                # Inject memory context (search similar memories, add as system message)
                 if self.memory_handler.config.inject_context:
                     memory_context = await self.memory_handler.search_and_format_context(
                         memory_user_id, optimized_messages
                     )
                     if memory_context:
-                        # Prepend as system message for OpenAI format
-                        optimized_messages = [
-                            {"role": "system", "content": memory_context},
-                            *optimized_messages,
-                        ]
-                        memory_context_injected = True
-                        logger.info(
-                            f"[{request_id}] Memory: Injected {len(memory_context)} chars "
-                            f"of context for user {memory_user_id}"
+                        from headroom.proxy.helpers import (
+                            append_text_to_latest_user_chat_message,
+                            get_memory_injection_mode,
+                            log_memory_injection,
                         )
 
-                # Inject memory tools
-                if self.memory_handler.config.inject_tools:
-                    tools, mem_tools_injected = self.memory_handler.inject_tools(tools, "openai")
-                    if mem_tools_injected:
-                        memory_tools_injected = True
-                        logger.info(f"[{request_id}] Memory: Injected memory tools (openai)")
+                        injection_mode = get_memory_injection_mode()
+                        if injection_mode == "disabled":
+                            log_memory_injection(
+                                request_id=request_id,
+                                session_id=None,
+                                decision="skipped_disabled",
+                                bytes_injected=0,
+                                query=None,
+                            )
+                        else:
+                            new_messages, bytes_appended = append_text_to_latest_user_chat_message(
+                                optimized_messages, memory_context
+                            )
+                            if bytes_appended > 0:
+                                optimized_messages = new_messages
+                                memory_context_injected = True
+                                log_memory_injection(
+                                    request_id=request_id,
+                                    session_id=None,
+                                    decision="injected_live_zone_tail_chat",
+                                    bytes_injected=bytes_appended,
+                                    query=None,
+                                )
+                                logger.info(
+                                    f"[{request_id}] Memory: Injected {bytes_appended} chars "
+                                    f"into latest user message tail for user {memory_user_id}"
+                                )
+                            else:
+                                log_memory_injection(
+                                    request_id=request_id,
+                                    session_id=None,
+                                    decision="no_eligible_user_message",
+                                    bytes_injected=0,
+                                    query=None,
+                                )
+
+                # Inject memory tools — PR-A7 (P0-6) routes through
+                # `apply_session_sticky_memory_tools` so byte-stable across turns.
+                from headroom.proxy.helpers import (
+                    apply_session_sticky_memory_tools as _apply_sticky_mem_tools,
+                )
+
+                memory_tool_defs = (
+                    self.memory_handler.compute_memory_tool_definitions("openai")
+                    if self.memory_handler.config.inject_tools
+                    else []
+                )
+                tools, mem_tools_injected = _apply_sticky_mem_tools(
+                    provider="openai",
+                    session_id=openai_session_id,
+                    request_id=request_id,
+                    existing_tools=tools,
+                    memory_tools_to_inject=memory_tool_defs,
+                    inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                )
+                if mem_tools_injected:
+                    memory_tools_injected = True
+                    logger.info(f"[{request_id}] Memory: Injected memory tools (openai)")
             except Exception as e:
                 logger.warning(f"[{request_id}] Memory injection failed: {e}")
 
@@ -1102,11 +1224,63 @@ class OpenAIHandlerMixin:
         # if httpx lacks brotli support the response body is undecipherable → 502.
         headers.pop("accept-encoding", None)
         tags = self._extract_tags(headers)
+        # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
+        # headers AFTER `_extract_tags` reads them. Memory user-id reads
+        # `request.headers` below.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
 
-        # Memory: Get user ID when memory is enabled
+        _pre_strip_count_resp = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_responses",
+            stripped_count=_pre_strip_count_resp,
+            request_id=request_id,
+        )
+
+        # PR-A6 (P5-50, preps P0-6): session-sticky `OpenAI-Beta` merge
+        # for /v1/responses. Compute a session_id off the same store the
+        # chat handler uses so multi-endpoint clients within one
+        # conversation share the sticky-token set.
+        _responses_session_id = self.session_tracker_store.compute_session_id(
+            request, model, messages
+        )
+        from headroom.proxy.helpers import (
+            get_session_beta_tracker as _get_session_beta_tracker_resp,
+        )
+        from headroom.proxy.helpers import (
+            log_beta_header_merge as _log_beta_header_merge_resp,
+        )
+
+        _client_resp_beta = headers.get("openai-beta")
+        _client_resp_beta_count = (
+            len([t for t in (_client_resp_beta or "").split(",") if t.strip()])
+            if _client_resp_beta
+            else 0
+        )
+        _sticky_resp_beta = _get_session_beta_tracker_resp().record_and_get_sticky_betas(
+            provider="openai",
+            session_id=_responses_session_id,
+            client_value=_client_resp_beta,
+        )
+        _sticky_resp_beta_count = (
+            len([t for t in _sticky_resp_beta.split(",") if t.strip()]) if _sticky_resp_beta else 0
+        )
+        if _sticky_resp_beta and _sticky_resp_beta != (_client_resp_beta or ""):
+            headers["openai-beta"] = _sticky_resp_beta
+        _log_beta_header_merge_resp(
+            provider="openai",
+            session_id=_responses_session_id,
+            client_betas_count=_client_resp_beta_count,
+            sticky_betas_count=_sticky_resp_beta_count,
+            headroom_added=[],
+            request_id=request_id,
+        )
+
+        # Memory: Get user ID when memory is enabled. Reads `request.headers`
+        # directly because `headers` was stripped of `x-headroom-*` (PR-A5).
         memory_user_id: str | None = None
         if self.memory_handler:
-            memory_user_id = headers.get(
+            memory_user_id = request.headers.get(
                 "x-headroom-user-id",
                 os.environ.get("USER", os.environ.get("USERNAME", "default")),
             )
@@ -1191,7 +1365,10 @@ class OpenAIHandlerMixin:
         # Memory: inject context and tools for Responses API requests
         if self.memory_handler and memory_user_id:
             try:
-                # Inject memory context into instructions (Responses API system prompt)
+                # Memory context now routes exclusively to the live-zone tail
+                # (latest non-frozen user item). Instructions are part of the
+                # cache hot zone and must never be mutated — invariant I2.
+                # See REALIGNMENT/03-phase-A-lockdown.md PR-A2.
                 if self.memory_handler.config.inject_context:
                     try:
                         memory_context = await asyncio.wait_for(
@@ -1207,42 +1384,115 @@ class OpenAIHandlerMixin:
                             f"{RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS:.1f}s; continuing without it"
                         )
                     if memory_context:
-                        existing_instructions = body.get("instructions") or ""
-                        if existing_instructions:
-                            body["instructions"] = f"{existing_instructions}\n\n{memory_context}"
-                        else:
-                            body["instructions"] = memory_context
-                        logger.info(
-                            f"[{request_id}] Memory: Injected {len(memory_context)} chars "
-                            f"of context into instructions for user {memory_user_id}"
+                        from headroom.proxy.helpers import (
+                            append_text_to_latest_user_input_item,
+                            get_memory_injection_mode,
+                            log_memory_injection,
                         )
 
-                # Inject memory tools (Responses API format)
-                if self.memory_handler.config.inject_tools:
-                    resp_tools = body.get("tools") or []
-                    resp_tools, mem_tools_injected = self.memory_handler.inject_tools(
-                        resp_tools, "openai"
-                    )
-                    if mem_tools_injected:
-                        # Convert Chat Completions format to Responses API format
-                        converted_tools = []
-                        for t in resp_tools:
-                            if t.get("type") == "function" and "function" in t:
-                                fn = t["function"]
-                                converted_tools.append(
-                                    {
-                                        "type": "function",
-                                        "name": fn.get("name"),
-                                        "description": fn.get("description", ""),
-                                        "parameters": fn.get("parameters", {}),
-                                    }
+                        injection_mode = get_memory_injection_mode()
+                        user_query = extract_user_query(optimized_messages) or ""
+                        if injection_mode == "disabled":
+                            log_memory_injection(
+                                request_id=request_id,
+                                session_id=None,
+                                decision="skipped_disabled",
+                                bytes_injected=0,
+                                query=user_query,
+                            )
+                        else:
+                            # Route into body["input"] (the canonical Responses API
+                            # field) targeting the latest user item's first text
+                            # block. body["instructions"] (cache hot zone) is left
+                            # untouched.
+                            current_input = body.get("input")
+                            if isinstance(current_input, str):
+                                # String input: append to it. The string IS the
+                                # latest user content; appending here is the
+                                # equivalent of the live-zone tail.
+                                body["input"] = (
+                                    current_input + "\n\n" + memory_context
+                                    if current_input
+                                    else memory_context
                                 )
+                                log_memory_injection(
+                                    request_id=request_id,
+                                    session_id=None,
+                                    decision="injected_live_zone_tail_string",
+                                    bytes_injected=len(memory_context),
+                                    query=user_query,
+                                )
+                            elif isinstance(current_input, list):
+                                new_input, bytes_appended = append_text_to_latest_user_input_item(
+                                    current_input, memory_context
+                                )
+                                if bytes_appended > 0:
+                                    body["input"] = new_input
+                                    log_memory_injection(
+                                        request_id=request_id,
+                                        session_id=None,
+                                        decision="injected_live_zone_tail",
+                                        bytes_injected=bytes_appended,
+                                        query=user_query,
+                                    )
+                                else:
+                                    log_memory_injection(
+                                        request_id=request_id,
+                                        session_id=None,
+                                        decision="no_eligible_user_item",
+                                        bytes_injected=0,
+                                        query=user_query,
+                                    )
                             else:
-                                converted_tools.append(t)
-                        body["tools"] = converted_tools
-                        logger.info(
-                            f"[{request_id}] Memory: Injected memory tools (openai/responses)"
+                                log_memory_injection(
+                                    request_id=request_id,
+                                    session_id=None,
+                                    decision="no_input_field",
+                                    bytes_injected=0,
+                                    query=user_query,
+                                )
+
+                # Inject memory tools (Responses API format) — PR-A7 (P0-6).
+                # Pre-convert the Chat-Completions schema to Responses API
+                # format BEFORE handing to the sticky tracker so the
+                # canonical bytes pinned in turn 1 already reflect the
+                # exact bytes that will hit the wire.
+                from headroom.proxy.helpers import (
+                    apply_session_sticky_memory_tools as _apply_sticky_mem_tools_resp,
+                )
+
+                memory_tool_defs_chat = (
+                    self.memory_handler.compute_memory_tool_definitions("openai")
+                    if self.memory_handler.config.inject_tools
+                    else []
+                )
+                memory_tool_defs_responses: list[dict[str, Any]] = []
+                for t in memory_tool_defs_chat:
+                    if t.get("type") == "function" and "function" in t:
+                        fn = t["function"]
+                        memory_tool_defs_responses.append(
+                            {
+                                "type": "function",
+                                "name": fn.get("name"),
+                                "description": fn.get("description", ""),
+                                "parameters": fn.get("parameters", {}),
+                            }
                         )
+                    else:
+                        memory_tool_defs_responses.append(t)
+
+                resp_tools = body.get("tools") or []
+                resp_tools, mem_tools_injected = _apply_sticky_mem_tools_resp(
+                    provider="openai",
+                    session_id=_responses_session_id,
+                    request_id=request_id,
+                    existing_tools=resp_tools,
+                    memory_tools_to_inject=memory_tool_defs_responses,
+                    inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                )
+                if mem_tools_injected:
+                    body["tools"] = resp_tools
+                    logger.info(f"[{request_id}] Memory: Injected memory tools (openai/responses)")
             except Exception as e:
                 logger.warning(f"[{request_id}] Memory injection failed (responses): {e}")
 
@@ -1521,10 +1771,30 @@ class OpenAIHandlerMixin:
                 "transfer-encoding",  # hop-by-hop
             }
         )
-        upstream_headers: dict[str, str] = {}
+        # PR-A5 (P5-49): also drop internal x-headroom-* from the upstream
+        # WebSocket handshake. Inbound reads on `ws_headers` (memory user-id
+        # below) keep working because we filter only when building
+        # `upstream_headers`, not when reading from `ws_headers`.
+        from headroom.proxy.helpers import (
+            _strip_internal_headers as _strip_internal,
+        )
+        from headroom.proxy.helpers import (
+            log_outbound_headers as _log_outbound_headers,
+        )
+
+        _ws_pre_strip_filtered: dict[str, str] = {}
         for k, v in ws_headers.items():
             if k.lower() not in _skip_headers:
-                upstream_headers[k] = v
+                _ws_pre_strip_filtered[k] = v
+        _ws_pre_strip_count = sum(
+            1 for k in _ws_pre_strip_filtered if k.lower().startswith("x-headroom-")
+        )
+        upstream_headers = _strip_internal(_ws_pre_strip_filtered)
+        _log_outbound_headers(
+            forwarder="openai_responses_ws",
+            stripped_count=_ws_pre_strip_count,
+            request_id=request_id,
+        )
 
         upstream_headers, is_chatgpt_auth = _resolve_codex_routing_headers(upstream_headers)
         _lower_headers = {k.lower(): v for k, v in upstream_headers.items()}
@@ -1562,9 +1832,59 @@ class OpenAIHandlerMixin:
         upstream_headers = await apply_copilot_api_auth(upstream_headers, url=upstream_url)
 
         # Ensure the required beta header is present — OpenAI returns 500 without it.
-        # Codex sends `responses_websockets=2026-02-06`; only inject if missing entirely.
-        if "openai-beta" not in _lower_headers:
-            upstream_headers["OpenAI-Beta"] = "responses_websockets=2026-02-06"
+        # PR-A6 (P5-50): use the deterministic `merge_openai_beta` helper
+        # so the auto-injected `responses_websockets=2026-02-06` is
+        # appended to the client's value (preserving order, deduping
+        # case-insensitively) rather than overwriting it. The
+        # SessionBetaTracker also records the merge so a future cross-
+        # connection sticky model can replay tokens by session_id.
+        from headroom.proxy.helpers import (
+            get_session_beta_tracker as _get_session_beta_tracker_ws,
+        )
+        from headroom.proxy.helpers import (
+            log_beta_header_merge as _log_beta_header_merge_ws,
+        )
+        from headroom.proxy.helpers import merge_openai_beta as _merge_openai_beta_ws
+
+        _ws_required_tokens = ["responses_websockets=2026-02-06"]
+        # Read the original (pre-merge) client value from the WS headers
+        # to preserve casing and ordering.
+        _ws_client_beta_value: str | None = None
+        for _k, _v in upstream_headers.items():
+            if _k.lower() == "openai-beta":
+                _ws_client_beta_value = _v
+                break
+        # Record session-stickiness BEFORE adding required tokens so the
+        # tracker stores the canonical client baseline.
+        _ws_sticky_beta = _get_session_beta_tracker_ws().record_and_get_sticky_betas(
+            provider="openai",
+            session_id=session_id,
+            client_value=_ws_client_beta_value,
+        )
+        _ws_merged_beta = _merge_openai_beta_ws(_ws_sticky_beta, _ws_required_tokens)
+        # Replace any existing case-variants of openai-beta with the
+        # canonical "OpenAI-Beta" key carrying the merged value.
+        _ws_existing_keys = [_k for _k in upstream_headers if _k.lower() == "openai-beta"]
+        for _k in _ws_existing_keys:
+            del upstream_headers[_k]
+        if _ws_merged_beta:
+            upstream_headers["OpenAI-Beta"] = _ws_merged_beta
+        _ws_client_beta_count = (
+            len([t for t in (_ws_client_beta_value or "").split(",") if t.strip()])
+            if _ws_client_beta_value
+            else 0
+        )
+        _ws_merged_beta_count = (
+            len([t for t in _ws_merged_beta.split(",") if t.strip()]) if _ws_merged_beta else 0
+        )
+        _log_beta_header_merge_ws(
+            provider="openai",
+            session_id=session_id,
+            client_betas_count=_ws_client_beta_count,
+            sticky_betas_count=_ws_merged_beta_count,
+            headroom_added=_ws_required_tokens,
+            request_id=request_id,
+        )
 
         logger.debug(
             f"[{request_id}] WS upstream headers: "
@@ -1748,51 +2068,68 @@ class OpenAIHandlerMixin:
                                 f"of context into instructions"
                             )
 
-                    # Inject memory tools (Responses API format)
-                    if self.memory_handler.config.inject_tools:
-                        ws_tools = ws_response_body.get("tools") or []
-                        ws_tools, mem_injected = self.memory_handler.inject_tools(
-                            ws_tools, "openai"
-                        )
-                        if mem_injected:
-                            converted_tools = []
-                            for t in ws_tools:
-                                if t.get("type") == "function" and "function" in t:
-                                    fn = t["function"]
-                                    converted_tools.append(
-                                        {
-                                            "type": "function",
-                                            "name": fn.get("name"),
-                                            "description": fn.get("description", ""),
-                                            "parameters": fn.get("parameters", {}),
-                                        }
-                                    )
-                                else:
-                                    converted_tools.append(t)
-                            ws_response_body["tools"] = converted_tools
+                    # Inject memory tools (Responses API format) — PR-A7 (P0-6).
+                    # WS path uses a per-connection UUID; tracker scope is
+                    # the WS session (short-lived). Pre-convert to Responses
+                    # API format so canonical bytes match the wire format.
+                    from headroom.proxy.helpers import (
+                        apply_session_sticky_memory_tools as _apply_sticky_mem_tools_ws,
+                    )
 
-                            # Add memory instruction so the model uses
-                            # memory tools as persistent cross-session knowledge.
-                            mem_instruction = (
-                                "\n\n## Memory\n"
-                                "You have persistent memory via memory_search and "
-                                "memory_save tools. Memory stores knowledge across "
-                                "sessions — user info, project details, org context, "
-                                "decisions, architecture, conventions, anything worth "
-                                "remembering.\n\n"
-                                "- ALWAYS call memory_search BEFORE searching files "
-                                "when the user asks a question that could be answered "
-                                "from prior knowledge.\n"
-                                "- Call memory_save to store important facts, decisions, "
-                                "or context that would be useful in future sessions.\n"
-                                "- Memory is your first source of truth for anything "
-                                "not visible in the current conversation."
+                    ws_mem_defs_chat = (
+                        self.memory_handler.compute_memory_tool_definitions("openai")
+                        if self.memory_handler.config.inject_tools
+                        else []
+                    )
+                    ws_mem_defs_responses: list[dict[str, Any]] = []
+                    for t in ws_mem_defs_chat:
+                        if t.get("type") == "function" and "function" in t:
+                            fn = t["function"]
+                            ws_mem_defs_responses.append(
+                                {
+                                    "type": "function",
+                                    "name": fn.get("name"),
+                                    "description": fn.get("description", ""),
+                                    "parameters": fn.get("parameters", {}),
+                                }
                             )
-                            existing_instr = ws_response_body.get("instructions") or ""
-                            ws_response_body["instructions"] = existing_instr + mem_instruction
-                            logger.info(
-                                f"[{request_id}] WS Memory: Injected memory tools + instruction"
-                            )
+                        else:
+                            ws_mem_defs_responses.append(t)
+
+                    ws_tools = ws_response_body.get("tools") or []
+                    ws_tools, mem_injected = _apply_sticky_mem_tools_ws(
+                        provider="openai",
+                        session_id=session_id,
+                        request_id=request_id,
+                        existing_tools=ws_tools,
+                        memory_tools_to_inject=ws_mem_defs_responses,
+                        inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                    )
+                    if mem_injected:
+                        ws_response_body["tools"] = ws_tools
+
+                        # Add memory instruction so the model uses
+                        # memory tools as persistent cross-session knowledge.
+                        mem_instruction = (
+                            "\n\n## Memory\n"
+                            "You have persistent memory via memory_search and "
+                            "memory_save tools. Memory stores knowledge across "
+                            "sessions — user info, project details, org context, "
+                            "decisions, architecture, conventions, anything worth "
+                            "remembering.\n\n"
+                            "- ALWAYS call memory_search BEFORE searching files "
+                            "when the user asks a question that could be answered "
+                            "from prior knowledge.\n"
+                            "- Call memory_save to store important facts, decisions, "
+                            "or context that would be useful in future sessions.\n"
+                            "- Memory is your first source of truth for anything "
+                            "not visible in the current conversation."
+                        )
+                        existing_instr = ws_response_body.get("instructions") or ""
+                        ws_response_body["instructions"] = existing_instr + mem_instruction
+                        logger.info(
+                            f"[{request_id}] WS Memory: Injected memory tools + instruction"
+                        )
 
                     # Write back into envelope if it was wrapped
                     if "response" in body and isinstance(body["response"], dict):
@@ -2232,7 +2569,9 @@ class OpenAIHandlerMixin:
                 if hasattr(ws_err, "response"):
                     resp_body = getattr(getattr(ws_err, "response", None), "body", b"")
                     if resp_body:
-                        _ws_detail += f" | {resp_body[:300].decode('utf-8', errors='replace')}"
+                        from headroom.proxy.helpers import safe_decode_for_logging
+
+                        _ws_detail += f" | {safe_decode_for_logging(resp_body, max_bytes=300)}"
                 logger.warning(
                     f"[{request_id}] WS upstream failed ({_ws_detail}), "
                     f"falling back to HTTP POST streaming"
@@ -2269,8 +2608,10 @@ class OpenAIHandlerMixin:
                         resp = e.response
                         body_bytes = getattr(resp, "body", None) or b""
                         if body_bytes:
+                            from headroom.proxy.helpers import safe_decode_for_logging
+
                             error_detail += (
-                                f" | body: {body_bytes[:500].decode('utf-8', errors='replace')}"
+                                f" | body: {safe_decode_for_logging(body_bytes, max_bytes=500)}"
                             )
                     except Exception:
                         pass
@@ -2383,6 +2724,31 @@ class OpenAIHandlerMixin:
         http_headers = dict(upstream_headers)
         http_headers["content-type"] = "application/json"
 
+        # Byte-faithful re-serialization (PR-A3, fixes P0-2). The WS payload
+        # is always synthesized from the WebSocket frame so the body is
+        # treated as mutated; we still go through the canonical path so
+        # numeric precision and UTF-8 are preserved.
+        from headroom.proxy.helpers import (
+            log_outbound_request,
+            prepare_outbound_body_bytes,
+        )
+
+        outbound_bytes, outbound_source = prepare_outbound_body_bytes(
+            body=http_body,
+            original_body_bytes=None,
+            body_mutated=True,
+        )
+        log_outbound_request(
+            forwarder="openai_ws",
+            method="POST",
+            path=http_url,
+            body_bytes_count=len(outbound_bytes),
+            body_mutated=True,
+            mutation_reasons=["ws_http_fallback_resynthesized"],
+            request_id=request_id,
+            source=outbound_source,
+        )
+
         logger.debug(f"[{request_id}] WS→HTTP fallback POST to {http_url}")
 
         try:
@@ -2393,7 +2759,7 @@ class OpenAIHandlerMixin:
                         "POST",
                         http_url,
                         headers=http_headers,
-                        json=http_body,
+                        content=outbound_bytes,
                         timeout=120.0,
                     ) as response:
                         if response.status_code != 200:
@@ -2402,7 +2768,9 @@ class OpenAIHandlerMixin:
                                 error_body += chunk
                                 if len(error_body) > 2000:
                                     break
-                            error_text = error_body.decode("utf-8", errors="replace")
+                            from headroom.proxy.helpers import safe_decode_for_logging
+
+                            error_text = safe_decode_for_logging(error_body)
                             logger.error(
                                 f"[{request_id}] WS→HTTP fallback got {response.status_code}: "
                                 f"{error_text[:500]}"
@@ -2650,6 +3018,16 @@ class OpenAIHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("accept-encoding", None)
+        # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_pt = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="openai_passthrough",
+            stripped_count=_pre_strip_count_pt,
+            request_id=None,
+        )
 
         body = await request.body()
 

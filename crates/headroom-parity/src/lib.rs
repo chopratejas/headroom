@@ -462,130 +462,6 @@ impl TransformComparator for ContentDetectorComparator {
     }
 }
 
-/// Real comparator for the `message_scorer` transform. Drives the
-/// Rust port over fixture inputs and emits the same per-message
-/// score struct shape the Python recorder dumps.
-///
-/// Float parity strategy: deterministic factors use `f32::exp` /
-/// `f32::ln` on the Rust side and `math.exp(f64)` / `math.log(f64)`
-/// on the Python side. Both are mathematically identical but their
-/// last-bit rounding can differ. The Python recorder rounds every
-/// float to 6 decimals before writing the fixture; this comparator
-/// mirrors the same rounding so JSON byte-equality holds.
-pub struct MessageScorerComparator;
-
-impl TransformComparator for MessageScorerComparator {
-    fn name(&self) -> &str {
-        "message_scorer"
-    }
-
-    fn run(
-        &self,
-        input: &serde_json::Value,
-        config: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        use headroom_core::scoring::{MessageScorer, ScoringWeights};
-        use std::collections::HashSet;
-
-        let messages: Vec<serde_json::Value> = input
-            .get("messages")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .context("message_scorer fixture input.messages must be an array")?;
-
-        let parse_index_set = |key: &str| -> HashSet<usize> {
-            input
-                .get(key)
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_u64().map(|n| n as usize))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let protected = parse_index_set("protected_indices");
-        let tool_unit = parse_index_set("tool_unit_indices");
-
-        let decay_rate = input
-            .get("decay_rate")
-            .and_then(|v| v.as_f64())
-            .map(|v| v as f32)
-            .unwrap_or(0.1);
-
-        // config.weights may be null (use defaults) or a full struct.
-        let weights = config
-            .get("weights")
-            .and_then(|v| if v.is_null() { None } else { Some(v) })
-            .map(|w| ScoringWeights {
-                recency: w.get("recency").and_then(|x| x.as_f64()).unwrap_or(0.20) as f32,
-                semantic_similarity: w
-                    .get("semantic_similarity")
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.20) as f32,
-                toin_importance: w
-                    .get("toin_importance")
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.25) as f32,
-                error_indicator: w
-                    .get("error_indicator")
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.15) as f32,
-                forward_reference: w
-                    .get("forward_reference")
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.15) as f32,
-                token_density: w
-                    .get("token_density")
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.05) as f32,
-            });
-
-        let scorer = MessageScorer::new(weights, None, None, decay_rate);
-        let scores = scorer.score_messages(&messages, &protected, &tool_unit);
-
-        let scored_array: Vec<serde_json::Value> = scores
-            .into_iter()
-            .map(|s| serde_json::to_value(&s).expect("MessageScore is serializable"))
-            .collect();
-
-        // 5 decimal places matches the Python recorder. See
-        // record_message_scorer.py:_FLOAT_ROUND_PLACES for why.
-        Ok(round_floats(&serde_json::Value::Array(scored_array), 5))
-    }
-}
-
-/// Recursively round every f64 value in a JSON tree to `places`
-/// decimal places. Used to absorb f32-vs-f64 last-bit drift between
-/// the Python recorder and Rust comparator.
-fn round_floats(value: &serde_json::Value, places: u32) -> serde_json::Value {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                if f.is_finite() && n.is_f64() {
-                    let factor = 10f64.powi(places as i32);
-                    let rounded = (f * factor).round() / factor;
-                    return serde_json::Number::from_f64(rounded)
-                        .map(serde_json::Value::Number)
-                        .unwrap_or_else(|| value.clone());
-                }
-            }
-            value.clone()
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(|v| round_floats(v, places)).collect())
-        }
-        serde_json::Value::Object(map) => {
-            let mut out = serde_json::Map::new();
-            for (k, v) in map {
-                out.insert(k.clone(), round_floats(v, places));
-            }
-            serde_json::Value::Object(out)
-        }
-        _ => value.clone(),
-    }
-}
-
 /// Every built-in comparator, in a stable order.
 pub fn builtin_comparators() -> Vec<Box<dyn TransformComparator>> {
     vec![
@@ -596,7 +472,6 @@ pub fn builtin_comparators() -> Vec<Box<dyn TransformComparator>> {
         Box::new(CcrComparator),
         Box::new(SmartCrusherComparator),
         Box::new(ContentDetectorComparator),
-        Box::new(MessageScorerComparator),
     ]
 }
 

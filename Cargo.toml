@@ -31,7 +31,21 @@ serde = { version = "1", features = ["derive"] }
 # smart_crusher port relies on this to match Python's `str(dict)` output,
 # which preserves insertion order; otherwise BTreeMap's sorted-key default
 # would diverge from Python on every multi-key object.
-serde_json = { version = "1", features = ["preserve_order"] }
+#
+# `arbitrary_precision` keeps the literal numeric token from the source
+# JSON intact: `Value::Number` becomes a wrapper around the original
+# digit string, so `1.0` does NOT collapse to `1`, and `12345678901234567`
+# does NOT lose precision through f64. Required by Realignment invariant
+# I1 (byte-faithful passthrough on unmutated bytes; see REALIGNMENT/02-
+# architecture.md §2.2) and PR-A4 (see REALIGNMENT/03-phase-A-lockdown.md).
+#
+# `raw_value` exposes `serde_json::value::RawValue`, the unparsed JSON
+# fragment type. Phase B PR-B2 uses this to forward unmodified
+# `messages[*]` entries as exact byte copies — the parser captures the
+# original byte slice, so byte-for-byte round-trips work even with
+# whitespace, key order, or escape preferences the producer chose.
+# Enabled here in Phase A so PR-B2 can land as a pure consumer change.
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
 bytes = "1"
 thiserror = "1"
 tracing = "0.1"

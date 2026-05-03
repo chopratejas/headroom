@@ -53,3 +53,9 @@ hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 http-body-util = "0.1"
 tokio-stream = "0.1"
+# PR-A1 cache-safety tests assert SHA-256 byte-equality between the
+# inbound and upstream-received bodies. The hash is the only sound
+# way to gate "the proxy did not perturb the request" because JSON
+# value-equality misses whitespace, key order, and Unicode escape
+# differences that all bust the prompt cache.
+sha2 = "0.10"

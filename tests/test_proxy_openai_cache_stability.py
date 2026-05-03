@@ -67,7 +67,7 @@ def test_openai_cache_mode_freezes_previous_turns() -> None:
 
         proxy.openai_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={
@@ -135,7 +135,7 @@ def test_openai_cache_mode_restores_mutated_frozen_prefix() -> None:
 
         proxy.openai_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured["body"] = body
             return httpx.Response(
                 200,
@@ -233,7 +233,7 @@ def test_issue_327_openai_handler_does_not_call_walker_functions() -> None:
 
         proxy.openai_pipeline.apply = _fake_apply
 
-        async def _fake_retry(method, url, headers, body, stream=False):  # noqa: ANN001
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             return httpx.Response(
                 200,
                 json={

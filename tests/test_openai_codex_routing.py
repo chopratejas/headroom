@@ -141,6 +141,13 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
         self.anthropic_backend = None
         self.cost_tracker = None
         self.memory_handler = None
+        # PR-A6 wires session-sticky `OpenAI-Beta` merging into the
+        # responses HTTP handler — it reads `compute_session_id` to key
+        # the SessionBetaTracker. The routing tests don't exercise the
+        # tracker semantics themselves, so a fixed-id stub is enough.
+        self.session_tracker_store = SimpleNamespace(
+            compute_session_id=lambda *a, **k: "sess-openai-1",
+        )
         self.captured_request: tuple[str, str, dict, dict] | None = None
         self.captured_stream_request: tuple[str, dict, dict] | None = None
 
