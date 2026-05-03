@@ -27,6 +27,15 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
+    # Issue #355: pyproject.toml declares headroom-core-py as a runtime
+    # dep. The Rust crate lives in this monorepo and isn't on PyPI yet,
+    # so build the wheel locally first; PIP_FIND_LINKS lets the next pip
+    # install resolve the constraint from the local wheelhouse.
+    - name: Build local headroom-core-py wheel
+      uses: ./.github/actions/build-rust-core-wheel
+      with:
+        python-version: ${{ inputs.python-version }}
+
     - name: Install headroom (editable, with proxy extras)
       shell: bash
       run: |

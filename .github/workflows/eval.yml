@@ -20,6 +20,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # Issue #355: build the Rust runtime dep locally before pip install.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
       - name: Install dependencies
         run: pip install -e ".[all]"
 
@@ -77,6 +80,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # Issue #355: build the Rust runtime dep locally before pip install.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
       - name: Install dependencies
         run: pip install -e ".[all]"
       - name: Run Tier 1 evaluation suite

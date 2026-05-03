@@ -136,6 +136,11 @@ jobs:
         with:
           python-version: '3.11'
       - uses: Swatinem/rust-cache@v2
+      # Issue #355: pyproject.toml's runtime dep on `headroom-core-py` can't
+      # be resolved from PyPI yet (Rust crate lives in this monorepo). Build
+      # the wheel locally; PIP_FIND_LINKS lets the venv's pip pick it up.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
       - name: Install deps
         run: |
           python -m venv .venv

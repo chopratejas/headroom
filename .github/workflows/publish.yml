@@ -30,6 +30,11 @@ jobs:
         run: |
           python -m build
 
+      # Issue #355: build the Rust runtime dep locally so SBOM generation's
+      # editable install can resolve `headroom-core-py` from PIP_FIND_LINKS.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
+
       - name: Generate SBOM (CycloneDX)
         run: |
           pip install -e ".[proxy]"

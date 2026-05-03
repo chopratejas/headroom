@@ -15,6 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Issue #355: e2e/wrap/Dockerfile does `pip install -e ".[proxy]"`,
+      # which can't resolve headroom-core-py from PyPI yet. Pre-build the
+      # wheel into `wheelhouse/` so `docker build` picks it up via the
+      # build context (Dockerfile COPYs `wheelhouse/` and sets
+      # `PIP_FIND_LINKS`).
+      - name: Build local headroom-core-py wheel for e2e build context
+        uses: ./.github/actions/build-rust-core-wheel
+
       - name: Build wrap e2e image
         run: docker build -f e2e/wrap/Dockerfile -t headroom-wrap-e2e .
 
