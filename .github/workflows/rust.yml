@@ -97,7 +97,7 @@ jobs:
           args: --release --out dist
           target: ${{ matrix.maturin-target }}
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.target }}
           path: dist/*.whl

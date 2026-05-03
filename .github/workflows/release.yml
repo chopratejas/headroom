@@ -132,7 +132,7 @@ jobs:
         shell: bash
 
       - name: Upload changelog via action
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: changelog
           path: /tmp/changelog-backup.md
@@ -156,7 +156,7 @@ jobs:
           npm pack --pack-destination ../../release-assets
 
       - name: Upload release assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: release-assets/
@@ -225,7 +225,7 @@ jobs:
           args: --out dist
 
       - name: Upload wheels artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*
@@ -261,13 +261,13 @@ jobs:
           ls -la release-assets/
 
       - name: Upload merged dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
 
       - name: Upload merged release-assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets-merged
           path: release-assets/
