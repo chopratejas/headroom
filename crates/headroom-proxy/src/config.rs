@@ -296,6 +296,39 @@ pub struct CliArgs {
         action = clap::ArgAction::Set,
     )]
     pub enable_conversations_passthrough: bool,
+
+    /// Phase D PR-D4: GCP Vertex region for the publisher path
+    /// (`{region}-aiplatform.googleapis.com`). Default `us-central1`
+    /// (matches the GCP-published default region for Anthropic
+    /// publisher models). The proxy does NOT auto-construct the
+    /// regional URL — that's an `--upstream` decision the operator
+    /// makes once at startup. This flag is exposed for structured
+    /// logging + observability so dashboards can group Vertex traffic
+    /// by region without parsing the upstream URL.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_VERTEX_REGION`
+    /// env var → default (`us-central1`).
+    #[arg(
+        long = "vertex-region",
+        env = "HEADROOM_PROXY_VERTEX_REGION",
+        default_value = "us-central1"
+    )]
+    pub vertex_region: String,
+
+    /// Phase D PR-D4: OAuth scope to request from GCP ADC. Defaults
+    /// to `cloud-platform`, the broad scope `gcloud` itself uses for
+    /// ADC. Operators with tighter IAM postures can scope down to
+    /// `cloud-platform.read-only` etc., but Vertex `:rawPredict`
+    /// requires write so most deployments use the default.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_VERTEX_ADC_SCOPE`
+    /// env var → default (`cloud-platform`).
+    #[arg(
+        long = "vertex-adc-scope",
+        env = "HEADROOM_PROXY_VERTEX_ADC_SCOPE",
+        default_value = "https://www.googleapis.com/auth/cloud-platform"
+    )]
+    pub vertex_adc_scope: String,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -350,6 +383,14 @@ pub struct Config {
     /// NOT gate compression of conversation items (that's
     /// C5+/B-phase territory).
     pub enable_conversations_passthrough: bool,
+    /// PR-D4: GCP Vertex region tag (e.g. `us-central1`). Surfaced
+    /// in structured logs only — the actual upstream URL comes from
+    /// `Config::upstream`. Operators set this so observability
+    /// dashboards can group Vertex traffic by region.
+    pub vertex_region: String,
+    /// PR-D4: GCP ADC OAuth scope used when fetching the bearer
+    /// token. Default `https://www.googleapis.com/auth/cloud-platform`.
+    pub vertex_adc_scope: String,
 }
 
 impl Config {
@@ -378,6 +419,8 @@ impl Config {
             strip_internal_headers: args.strip_internal_headers,
             enable_responses_streaming: args.enable_responses_streaming,
             enable_conversations_passthrough: args.enable_conversations_passthrough,
+            vertex_region: args.vertex_region,
+            vertex_adc_scope: args.vertex_adc_scope,
         }
     }
 
@@ -408,6 +451,10 @@ impl Config {
             // production traffic will hit.
             enable_responses_streaming: true,
             enable_conversations_passthrough: true,
+            // PR-D4: default Vertex region (used for log tagging
+            // only; the upstream URL is `upstream`).
+            vertex_region: "us-central1".to_string(),
+            vertex_adc_scope: "https://www.googleapis.com/auth/cloud-platform".to_string(),
         }
     }
 }

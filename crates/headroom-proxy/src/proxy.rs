@@ -30,10 +30,24 @@ use crate::websocket::ws_handler;
 /// and Phase B's live-zone dispatcher will introduce its own state
 /// (per-block compressor registry) — the old ICM-shaped field would
 /// not have been reused.
+///
+/// PR-D4 adds `vertex_token_source`: an `Arc<dyn TokenSource>` used
+/// by the Vertex `:rawPredict` / `:streamRawPredict` handlers to
+/// resolve a GCP ADC bearer token. Production wires
+/// [`crate::vertex::adc::GcpAdcTokenSource`] (lazy ADC chain
+/// resolution + cached tokens with refresh-ahead-of-expiry); tests
+/// inject [`crate::vertex::adc::StaticTokenSource`] so they never
+/// hit real GCP.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub client: reqwest::Client,
+    /// PR-D4: GCP ADC bearer-token source for Vertex routes. Default:
+    /// [`crate::vertex::adc::GcpAdcTokenSource`] constructed lazily;
+    /// the actual ADC chain is only resolved when the first Vertex
+    /// route hits `bearer()`. Tests override via
+    /// [`AppState::with_token_source`].
+    pub vertex_token_source: Arc<dyn crate::vertex::TokenSource>,
 }
 
 impl AppState {
@@ -49,10 +63,29 @@ impl AppState {
             .build()
             .map_err(ProxyError::Upstream)?;
 
+        // PR-D4: lazy ADC token source. Provider resolution is
+        // deferred to first `bearer()` call so proxy startup stays
+        // cheap when no Vertex route is exercised.
+        let vertex_token_source: Arc<dyn crate::vertex::TokenSource> =
+            Arc::new(crate::vertex::adc::GcpAdcTokenSource::new());
+
         Ok(Self {
             config: Arc::new(config),
             client,
+            vertex_token_source,
         })
+    }
+
+    /// Test helper: build an `AppState` with an explicit token source.
+    /// Lets the integration tests substitute a `StaticTokenSource` so
+    /// the test suite never hits real GCP.
+    pub fn with_token_source(
+        config: Config,
+        token_source: Arc<dyn crate::vertex::TokenSource>,
+    ) -> Result<Self, ProxyError> {
+        let mut s = Self::new(config)?;
+        s.vertex_token_source = token_source;
+        Ok(s)
     }
 }
 
@@ -82,6 +115,20 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/v1/responses",
             post(crate::handlers::responses::handle_responses),
+        )
+        // PR-D4: native Vertex publisher path. The Vertex AI Anthropic
+        // publisher endpoints look like
+        // `POST /v1beta1/projects/{p}/locations/{l}/publishers/anthropic/models/{m}:rawPredict`
+        // (and `:streamRawPredict`). The trailing `:<verb>` is awkward
+        // in axum's `:param` syntax, so we capture the entire trailing
+        // segment as `:model_action` and split on the last `:` inside
+        // the dispatcher. Both verbs share the same axum route shape
+        // — matchit can't distinguish two patterns that overlap on the
+        // literal parameter. The verb dispatch lives in
+        // [`crate::vertex::handle_vertex_predict_dispatch`].
+        .route(
+            "/v1beta1/projects/:project/locations/:location/publishers/anthropic/models/:model_action",
+            post(crate::vertex::handle_vertex_predict_dispatch),
         );
 
     // PR-C4: Conversations API (passthrough-with-instrumentation).
