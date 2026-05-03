@@ -166,11 +166,45 @@ class TestRestoreTags:
         assert "<thinking>A</thinking>" in restored
         assert "<context>B</context>" in restored
 
-    def test_lost_placeholder_appended(self):
-        """If compression removes a placeholder, the block is appended."""
+    def test_lost_placeholder_discards_wrap(self):
+        """Hotfix-A9: when compression strips a placeholder, the wrap
+        is DISCARDED — the compressed text is returned as-is and the
+        original tag bytes are NOT re-injected anywhere. The original
+        "append at the trailing edge" fallback produced silently
+        malformed XML (orphan opening tag with no closing tag) on
+        ~350 production requests over 9 days; that bug is gone."""
         protected = [("{{HEADROOM_TAG_0}}", "<tag>data</tag>")]
-        result = restore_tags("text without placeholder", protected)
-        assert "<tag>data</tag>" in result
+        compressed = "text without placeholder"
+        result = restore_tags(compressed, protected)
+        # Compressed text returned unchanged; original tag NOT injected.
+        assert result == compressed
+        assert "<tag>" not in result
+        assert "</tag>" not in result
+        assert "<tag>data</tag>" not in result
+
+    def test_lost_placeholder_idempotent_when_all_missing(self):
+        """Invariant: if every placeholder is missing from compressed,
+        restore_tags returns compressed byte-for-byte unchanged."""
+        protected = [
+            ("{{HEADROOM_TAG_0}}", "<a>1</a>"),
+            ("{{HEADROOM_TAG_1}}", "<b>2</b>"),
+            ("{{HEADROOM_TAG_2}}", "<c>3</c>"),
+        ]
+        compressed = "compressor stripped every placeholder"
+        assert restore_tags(compressed, protected) == compressed
+
+    def test_partial_loss_keeps_present_discards_lost(self):
+        """Mixed case: some placeholders survive, others are lost.
+        Surviving ones get substituted; lost ones are discarded with
+        zero orphan-tag injection."""
+        protected = [
+            ("{{HEADROOM_TAG_0}}", "<a>1</a>"),
+            ("{{HEADROOM_TAG_1}}", "<lost>x</lost>"),
+        ]
+        result = restore_tags("head {{HEADROOM_TAG_0}} tail", protected)
+        assert result == "head <a>1</a> tail"
+        assert "<lost" not in result
+        assert "</lost>" not in result
 
     def test_roundtrip_preserves_content(self):
         original = (
@@ -181,3 +215,65 @@ class TestRestoreTags:
         restored = restore_tags(cleaned, protected)
         assert "<system-reminder>Rule 1: always validate</system-reminder>" in restored
         assert "<tool_call>search(q='test')</tool_call>" in restored
+
+
+class TestBugFixesPhase3e4:
+    """Bug fixes baked into the Phase 3e.4 Rust port. Each test pins
+    behavior the Python regex implementation got wrong."""
+
+    def test_fixed_in_3e4_duplicate_blocks_get_distinct_placeholders(self):
+        """Bug #2: Python's `result.replace(orig, ph, 1)` replaces the
+        FIRST textual match of `orig`, not the matched offset. Two
+        identical custom-tag blocks in the same input collapsed to a
+        single placeholder + a stray duplicate of the second block.
+        The Rust walker emits offset-based output, so distinct blocks
+        always get distinct placeholders."""
+        text = (
+            "<system-reminder>same</system-reminder> middle <system-reminder>same</system-reminder>"
+        )
+        cleaned, protected = protect_tags(text)
+        assert len(protected) == 2
+        placeholders = {p[0] for p in protected}
+        assert len(placeholders) == 2  # two DIFFERENT placeholders
+        assert "<system-reminder>" not in cleaned
+        # Roundtrip is exact byte-for-byte.
+        assert restore_tags(cleaned, protected) == text
+
+    def test_fixed_in_3e4_handles_60_nested_custom_tags(self):
+        """Bug #3: Python had a hard `max_iterations = 50` safety cap
+        that quietly stopped protecting deeper nested input. The Rust
+        walker is bounded by input length only."""
+        depth = 60
+        text = "<lvl>" * depth + "core" + "</lvl>" * depth
+        cleaned, protected = protect_tags(text)
+        # Outermost span eats everything → ONE placeholder, no leaks.
+        assert "<lvl>" not in cleaned
+        assert "</lvl>" not in cleaned
+        assert len(protected) == 1
+        assert restore_tags(cleaned, protected) == text
+
+    def test_fixed_in_3e4_self_closing_duplicates_distinct(self):
+        """Bug #4: same first-occurrence-replace bug for self-closing
+        tags. Two identical `<marker/>` would collapse to one
+        placeholder + a stray dup."""
+        text = "<marker/> middle <marker/>"
+        cleaned, protected = protect_tags(text)
+        assert len(protected) == 2
+        assert protected[0][0] != protected[1][0]
+        assert "<marker/>" not in cleaned
+        assert restore_tags(cleaned, protected) == text
+
+    def test_fixed_in_3e4_placeholder_collision_avoided(self):
+        """Bug #5: input contains a literal `{{HEADROOM_TAG_…}}`
+        substring. Python silently used the same prefix and let the
+        collision break restoration. Rust salts the prefix when this
+        happens."""
+        text = (
+            "User wrote {{HEADROOM_TAG_0}} on purpose. <system-reminder>real one</system-reminder>"
+        )
+        cleaned, protected = protect_tags(text)
+        assert len(protected) == 1
+        # Placeholder picked must NOT collide with the user's literal.
+        assert protected[0][0] != "{{HEADROOM_TAG_0}}"
+        # Roundtrip is exact (the user's literal stays intact).
+        assert restore_tags(cleaned, protected) == text

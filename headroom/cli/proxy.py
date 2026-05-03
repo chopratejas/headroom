@@ -196,22 +196,6 @@ from .main import main
     is_flag=True,
     help="Disable Read lifecycle management (stale/superseded Read compression)",
 )
-# Intelligent Context Management (ON by default)
-@click.option(
-    "--no-intelligent-context",
-    is_flag=True,
-    help="Disable IntelligentContextManager (fall back to RollingWindow)",
-)
-@click.option(
-    "--no-intelligent-scoring",
-    is_flag=True,
-    help="Disable multi-factor importance scoring (use position-based)",
-)
-@click.option(
-    "--no-compress-first",
-    is_flag=True,
-    help="Disable trying deeper compression before dropping messages",
-)
 # Memory System (Multi-Provider Support)
 @click.option(
     "--memory",
@@ -277,6 +261,17 @@ from .main import main
     "--no-learn",
     is_flag=True,
     help="Explicitly disable traffic learning even when --memory is set.",
+)
+@click.option(
+    "--min-evidence",
+    type=int,
+    default=None,
+    envvar="HEADROOM_MIN_EVIDENCE",
+    help=(
+        "Minimum number of times a pattern must be observed before it is "
+        "persisted to memory. Higher values reduce one-shot noise at the "
+        "cost of slower learning. Default: 5. (env: HEADROOM_MIN_EVIDENCE)"
+    ),
 )
 # Backend configuration
 @click.option(
@@ -366,9 +361,6 @@ def proxy(
     budget: float | None,
     code_graph: bool,
     no_read_lifecycle: bool,
-    no_intelligent_context: bool,
-    no_intelligent_scoring: bool,
-    no_compress_first: bool,
     memory: bool,
     memory_db_path: str,
     no_memory_tools: bool,
@@ -380,6 +372,7 @@ def proxy(
     memory_qdrant_api_key: str | None,
     learn: bool,
     no_learn: bool,
+    min_evidence: int | None,
     backend: str,
     anyllm_provider: str,
     anthropic_api_url: str | None,
@@ -525,10 +518,6 @@ def proxy(
         code_graph_watcher=code_graph,
         # Read lifecycle: ON by default (use --no-read-lifecycle to disable)
         read_lifecycle=not no_read_lifecycle,
-        # Intelligent Context: ON by default (use --no-intelligent-context to disable)
-        intelligent_context=not no_intelligent_context,
-        intelligent_context_scoring=not no_intelligent_scoring,
-        intelligent_context_compress_first=not no_compress_first,
         # Memory System (Multi-Provider with auto-detection)
         # --learn implies --memory (need backend for storing patterns)
         # Stateless mode disables memory (requires SQLite on disk)
@@ -542,6 +531,7 @@ def proxy(
         # Stateless mode disables learning (requires filesystem)
         traffic_learning_enabled=False if is_stateless else (learn and not no_learn),
         traffic_learning_agent_type=os.environ.get("HEADROOM_AGENT_TYPE", "unknown"),
+        traffic_learning_min_evidence=min_evidence if min_evidence is not None else 5,
         # Backend (Anthropic direct, Bedrock, LiteLLM, or any-llm)
         backend=backend,
         bedrock_region=bedrock_region or region,

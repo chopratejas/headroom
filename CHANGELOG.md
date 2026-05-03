@@ -9,22 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`Learned: error recovery` section in MEMORY.md no longer bloats with
-  stale or contradictory entries.** The dedup key for error-recovery
-  patterns was the literal rendered bullet text, so near-duplicate
-  recoveries (same intent, different `| tail -N` count, same error path
-  guessed against different successors) each created a new row. There was
-  also no TTL or re-validation, so wrong-today entries lingered. Fixed by:
-  (1) normalizing the hash on recovery intent — Read recoveries key on
-  `(basename(error_path), basename(success_path))`; Bash recoveries strip
-  volatile suffixes and hash only the primary command before the first
-  `|`/`&&`; (2) stamping `first_seen_at` / `last_seen_at` on every pattern
-  and bumping them in `_bump_persisted_evidence` via `json_set`; (3)
-  refining at render time — drop rows not re-observed in 21 days,
+  stale, one-shot, or contradictory entries.** The matchers paired up
+  unrelated tool calls (e.g. `state.rs` and `lib.rs` in the same dir
+  becoming `File state.rs does not exist. The correct path is lib.rs.`),
+  the dedup key was the literal rendered bullet text so near-duplicates
+  each created their own row, the shutdown flush dropped the evidence
+  gate to 1 so every singleton landed at session end, and there was no
+  TTL or re-validation. Fixed at every layer:
+  (1) **Emission**: Read recoveries require the failed/successful
+  basenames to be identical or close in edit distance; Bash recoveries
+  require a shared binary (allowing `python`↔`python3` and
+  `ruff`↔`.venv/bin/ruff` variants) plus low-edit-distance OR a shared
+  substantive non-flag token. Unrelated pairs are rejected at the source.
+  (2) **Dedup**: error-recovery rows are hashed on recovery intent —
+  Read on `(basename(error_path), basename(success_path))`, Bash on the
+  primary command stripped of volatile suffixes (`| tail -N`, `2>&1`,
+  etc.). Near-duplicates collapse into one row.
+  (3) **Evidence gating**: default `min_evidence` raised from 2 to 5;
+  shutdown-relaxation removed; new `--min-evidence` flag and
+  `HEADROOM_MIN_EVIDENCE` envvar so embedded clients can tighten the
+  threshold further.
+  (4) **Render-time refinement**: drop rows not re-observed in 21 days,
   re-validate Read success paths against the filesystem, collapse
   same-error_path-with-multiple-targets into one "use Glob/Grep first"
-  bullet, rank by `evidence_count * 0.5 ** (days/5)`, cap the section at
-  15. Other `Learned: …` categories (environment, preference,
-  architecture) are untouched.
+  bullet, rank by `evidence_count * 0.5 ** (days/5)`, cap the section
+  at 15. A→B / B→A contradiction pairs are also dropped at flush time.
+  Patterns now stamp `first_seen_at` / `last_seen_at` on every save;
+  `_bump_persisted_evidence` updates them via `json_set`. Other
+  `Learned: …` categories (environment, preference, architecture) are
+  untouched.
 - **`headroom unwrap codex` now actually undoes `headroom wrap codex`** —
   previously there was no `unwrap codex` subcommand at all, so the injected
   `model_provider = "headroom"` / `[model_providers.headroom]` block stayed

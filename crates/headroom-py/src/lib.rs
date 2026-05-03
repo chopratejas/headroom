@@ -23,6 +23,10 @@ use headroom_core::transforms::smart_crusher::{
     CrushResult as RustCrushResult, SmartCrusher as RustSmartCrusher,
     SmartCrusherConfig as RustSmartCrusherConfig,
 };
+use headroom_core::transforms::tag_protector::{
+    is_known_html_tag as rust_is_known_html_tag, known_html_tag_names as rust_known_html_tag_names,
+    protect_tags as rust_protect_tags, restore_tags as rust_restore_tags,
+};
 use headroom_core::transforms::{
     detect as rust_detect_chain, is_json_array_of_dicts as rust_is_json_array_of_dicts,
     ContentType as RustContentType, DetectionResult as RustDetectionResult, DiffCompressionResult,
@@ -1402,6 +1406,57 @@ const _: fn() = || {
     let _ = RustLogLevel::Unknown;
 };
 
+// ─── tag_protector bridge (Phase 3e.4) ───────────────────────────────────
+//
+// Mirrors `headroom.transforms.tag_protector.{protect_tags,restore_tags,
+// is_html_tag,KNOWN_HTML_TAGS}`. The Rust walker is single-pass and
+// fixes five real bugs the Python original carried (see crate-level
+// docs in `tag_protector.rs`). The GIL is released during the walk
+// because the algorithm holds no Python references.
+
+/// Replace custom workflow tags in `text` with opaque placeholders so
+/// downstream ML compressors can't accidentally drop them.
+///
+/// Returns `(cleaned_text, blocks)` where `blocks` is a list of
+/// `(placeholder, original)` tuples for `restore_tags`.
+#[pyfunction]
+#[pyo3(signature = (text, compress_tagged_content = false))]
+fn protect_tags(
+    py: Python<'_>,
+    text: &str,
+    compress_tagged_content: bool,
+) -> (String, Vec<(String, String)>) {
+    let owned = text.to_string();
+    py.allow_threads(move || {
+        let (cleaned, blocks, _stats) = rust_protect_tags(&owned, compress_tagged_content);
+        (cleaned, blocks)
+    })
+}
+
+/// Splice protected blocks back into `text`. Missing placeholders fall
+/// back to appending the original block (lossy-compression incident).
+#[pyfunction]
+fn restore_tags(py: Python<'_>, text: &str, blocks: Vec<(String, String)>) -> String {
+    let owned = text.to_string();
+    py.allow_threads(move || rust_restore_tags(&owned, &blocks))
+}
+
+/// Case-insensitive HTML5 tag check. The Python shim uses this to
+/// preserve the legacy private `_is_html_tag` import surface for tests.
+#[pyfunction]
+fn is_html_tag(name: &str) -> bool {
+    rust_is_known_html_tag(name)
+}
+
+/// Return the canonical HTML5 tag name list. The Python shim
+/// reconstructs `KNOWN_HTML_TAGS` from this so callers that import the
+/// frozenset (the existing test does) continue to work without
+/// re-declaring the set in two languages.
+#[pyfunction]
+fn known_html_tag_names() -> Vec<&'static str> {
+    rust_known_html_tag_names().to_vec()
+}
+
 // ─── Module init ───────────────────────────────────────────────────────────
 
 #[pymodule]
@@ -1423,6 +1478,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLogCompressionResult>()?;
     m.add_class::<PyLogCompressor>()?;
     m.add_function(wrap_pyfunction!(detect_log_format, m)?)?;
+    m.add_function(wrap_pyfunction!(protect_tags, m)?)?;
+    m.add_function(wrap_pyfunction!(restore_tags, m)?)?;
+    m.add_function(wrap_pyfunction!(is_html_tag, m)?)?;
+    m.add_function(wrap_pyfunction!(known_html_tag_names, m)?)?;
     m.add_function(wrap_pyfunction!(detect_content_type, m)?)?;
     m.add_function(wrap_pyfunction!(is_json_array_of_dicts, m)?)?;
     m.add_function(wrap_pyfunction!(score_line, m)?)?;

@@ -29,7 +29,7 @@ use serde_json::{json, Map, Value};
 
 /// Content types recognized by the detector. String tags match Python's
 /// `ContentType` enum values 1:1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentType {
     JsonArray,
     SourceCode,

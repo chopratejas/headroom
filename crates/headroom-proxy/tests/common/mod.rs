@@ -34,8 +34,20 @@ impl ProxyHandle {
 
 #[allow(dead_code)]
 pub async fn start_proxy(upstream: &str) -> ProxyHandle {
+    start_proxy_with(upstream, |_| {}).await
+}
+
+/// Start a proxy with a customized `Config`. The closure receives a
+/// mutable reference to the default `Config::for_test` and may toggle
+/// flags like `compression` before the proxy is built.
+#[allow(dead_code)]
+pub async fn start_proxy_with<F>(upstream: &str, customize: F) -> ProxyHandle
+where
+    F: FnOnce(&mut Config),
+{
     let upstream_url: Url = upstream.parse().expect("valid upstream url");
-    let config = Config::for_test(upstream_url);
+    let mut config = Config::for_test(upstream_url);
+    customize(&mut config);
     let state = AppState::new(config.clone()).expect("app state");
     let app = build_app(state).into_make_service_with_connect_info::<SocketAddr>();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

@@ -102,6 +102,28 @@ class TestHeadroomProxyTrafficLearner:
         assert proxy.traffic_learner is not None
         assert proxy.traffic_learner._backend is None
 
+    def test_min_evidence_defaults_to_five(self):
+        """Default ProxyConfig has min_evidence=5; learner inherits it."""
+        config = ProxyConfig(
+            memory_enabled=True,
+            traffic_learning_enabled=True,
+        )
+        assert config.traffic_learning_min_evidence == 5
+        proxy = HeadroomProxy(config)
+        assert proxy.traffic_learner is not None
+        assert proxy.traffic_learner._min_evidence == 5
+
+    def test_min_evidence_propagates_to_learner(self):
+        """A custom min_evidence flows from ProxyConfig into TrafficLearner."""
+        config = ProxyConfig(
+            memory_enabled=True,
+            traffic_learning_enabled=True,
+            traffic_learning_min_evidence=10,
+        )
+        proxy = HeadroomProxy(config)
+        assert proxy.traffic_learner is not None
+        assert proxy.traffic_learner._min_evidence == 10
+
 
 # =============================================================================
 # CLI Flag Resolution Tests (simulates CLI logic without running Click)

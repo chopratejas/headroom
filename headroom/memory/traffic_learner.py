@@ -211,6 +211,180 @@ _MODULE_RE = re.compile(r"No module named ['\"]?(\w[\w.]*)['\"]?")
 _COMMAND_NF_RE = re.compile(r"(\w[\w-]*): command not found")
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Iterative Levenshtein distance. Pure Python, no deps.
+
+    Bounded use only — callers should keep input sizes reasonable
+    (basenames, command strings) to avoid O(n*m) blowups.
+    """
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    if len(a) > len(b):
+        a, b = b, a
+    prev = list(range(len(a) + 1))
+    for j, cb in enumerate(b, 1):
+        curr = [j] + [0] * len(a)
+        for i, ca in enumerate(a, 1):
+            cost = 0 if ca == cb else 1
+            curr[i] = min(curr[i - 1] + 1, prev[i] + 1, prev[i - 1] + cost)
+        prev = curr
+    return prev[-1]
+
+
+def _paths_related_as_typo(failed: str, success: str) -> bool:
+    """Heuristic: are these two file paths plausibly the same target?
+
+    Two paths are "related as typo recovery" if their basenames are
+    identical or close in edit distance. Different basenames in the same
+    directory (e.g. `state.rs` vs `lib.rs`) are NOT related — the matcher
+    must reject them, otherwise unrelated reads get paired into bogus
+    "File X does not exist, use Y" rules.
+    """
+    if not failed or not success or failed == success:
+        return False
+    a = failed.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    b = success.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    threshold = max(2, max(len(a), len(b)) // 3)
+    return _levenshtein(a, b) <= threshold
+
+
+# Tokens that occur in many unrelated commands and don't, by themselves,
+# suggest two commands are related retries.
+_COMMAND_NOISE_TOKENS = frozenset(
+    {
+        "head",
+        "tail",
+        "cat",
+        "grep",
+        "awk",
+        "sed",
+        "sort",
+        "uniq",
+        "wc",
+        "xargs",
+        "find",
+    }
+)
+
+
+def _bash_first_binary(cmd: str) -> str | None:
+    """Return the first binary name in a Bash command, or None.
+
+    Strips a leading `source <venv> && ` prefix and skips over `VAR=value`
+    environment-variable assignments before the binary. Used to gate
+    command-recovery pairing: if two commands don't share a binary, they
+    are not retries of each other.
+    """
+    s = cmd.strip()
+    m = re.match(r"source\s+\S+\s*&&\s*(.*)", s, re.I)
+    if m:
+        s = m.group(1)
+    for tok in s.split():
+        if "=" in tok and tok.split("=", 1)[0].replace("_", "").isalnum():
+            continue
+        return tok
+    return None
+
+
+def _bash_binaries_match(a: str, b: str) -> bool:
+    """Treat two binaries as 'the same tool' for recovery purposes.
+
+    Equal strings, basename equality (`ruff` vs `.venv/bin/ruff`), and
+    short prefix-style versions (`python` vs `python3`) all qualify.
+    Different tools (`grep` vs `find`) do not.
+    """
+    if a == b:
+        return True
+    a_base = a.rsplit("/", 1)[-1]
+    b_base = b.rsplit("/", 1)[-1]
+    if a_base == b_base:
+        return True
+    if (a_base.startswith(b_base) or b_base.startswith(a_base)) and _levenshtein(
+        a_base, b_base
+    ) <= 2:
+        return True
+    return False
+
+
+def _commands_related_as_retry(failed: str, success: str) -> bool:
+    """Heuristic: is `success` plausibly a corrected retry of `failed`?
+
+    Requires the same binary AND either:
+      - low normalized edit distance (≤40% of max length), OR
+      - at least one shared substantive token (length ≥ 5, not a flag,
+        not a generic shell verb).
+
+    The bar is conservative: noise like `grep <pattern A> <file A>` paired
+    with `grep <pattern B> <file B>` shares the `grep` binary but no real
+    arguments, and gets rejected. Genuine retries (extra flag, single
+    arg edit) pass via the edit-distance path.
+    """
+    if not failed or not success or failed == success:
+        return False
+    bin_a = _bash_first_binary(failed)
+    bin_b = _bash_first_binary(success)
+    if not bin_a or not bin_b or not _bash_binaries_match(bin_a, bin_b):
+        return False
+
+    max_len = max(len(failed), len(success))
+    if max_len > 0 and _levenshtein(failed, success) / max_len <= 0.40:
+        return True
+
+    def _substantive(cmd: str, binary: str) -> set[str]:
+        out: set[str] = set()
+        for tok in cmd.split():
+            if len(tok) < 5 or tok.startswith("-") or tok == binary:
+                continue
+            if tok.lower() in _COMMAND_NOISE_TOKENS:
+                continue
+            out.add(tok)
+        return out
+
+    return bool(_substantive(failed, bin_a) & _substantive(success, bin_b))
+
+
+_FILE_X_DOES_NOT_EXIST_RE = re.compile(
+    r"^File `([^`]+)` does not exist\. The correct path is `([^`]+)`\.$"
+)
+
+
+def _drop_contradictions(patterns: list[ExtractedPattern]) -> list[ExtractedPattern]:
+    """Remove A→B and B→A pairs from error_recovery patterns.
+
+    When the matcher emits a "File X does not exist, use Y" rule and the
+    inverse "File Y does not exist, use X" rule, both are likely the
+    result of opposite-direction typos rather than a stable truth. Drop
+    both rather than persisting contradictory advice.
+    """
+    forward: dict[tuple[str, str], int] = {}
+    for idx, p in enumerate(patterns):
+        if p.category != PatternCategory.ERROR_RECOVERY:
+            continue
+        m = _FILE_X_DOES_NOT_EXIST_RE.match(p.content)
+        if not m:
+            continue
+        forward[(m.group(1), m.group(2))] = idx
+
+    drop: set[int] = set()
+    for (a, b), idx_ab in forward.items():
+        idx_ba = forward.get((b, a))
+        if idx_ba is not None:
+            drop.add(idx_ab)
+            drop.add(idx_ba)
+
+    if not drop:
+        return patterns
+    return [p for i, p in enumerate(patterns) if i not in drop]
+
+
 # =============================================================================
 # Traffic Learner
 # =============================================================================
@@ -231,7 +405,7 @@ class TrafficLearner:
         agent_type: str = "unknown",
         max_history: int = 20,
         dedup_window: int = 100,
-        min_evidence: int = 2,
+        min_evidence: int = 5,
     ) -> None:
         """Initialize the traffic learner.
 
@@ -398,10 +572,16 @@ class TrafficLearner:
         if not patterns:
             return
 
-        # Evidence gate: at shutdown accept single-evidence rows; during live
-        # flushes require 2+ to suppress one-off noise.
-        min_evidence = 1 if self._stopping else 2
-        patterns = [p for p in patterns if p.evidence_count >= min_evidence]
+        # Evidence gate: require self._min_evidence corroborations to flush,
+        # including at shutdown. One-shot singletons are noise, not signal.
+        patterns = [p for p in patterns if p.evidence_count >= self._min_evidence]
+        if not patterns:
+            return
+
+        # Drop A→B / B→A contradictions among error_recovery patterns.
+        # Both directions appearing with enough evidence usually means
+        # opposite-direction typos in different sessions, not stable advice.
+        patterns = _drop_contradictions(patterns)
         if not patterns:
             return
 
@@ -642,22 +822,24 @@ class TrafficLearner:
         elif tool == "Read":
             error_path = error_entry["input"].get("file_path", "")
             success_path = success_entry["input"].get("file_path", "")
-            if error_path and success_path and error_path != success_path:
-                content = (
-                    f"File `{error_path}` does not exist. The correct path is `{success_path}`."
-                )
-                return ExtractedPattern(
-                    category=PatternCategory.ERROR_RECOVERY,
-                    content=content,
-                    importance=0.7,
-                    entity_refs=[success_path],
-                    metadata={
-                        "error_category": error_cat,
-                        "tool": "Read",
-                        "error_path": error_path,
-                        "success_path": success_path,
-                    },
-                )
+            # Reject pairs whose basenames don't look like typos of each
+            # other — different files in the same directory are unrelated
+            # reads, not a recovery, and emitting a rule is actively wrong.
+            if not _paths_related_as_typo(error_path, success_path):
+                return None
+            content = f"File `{error_path}` does not exist. The correct path is `{success_path}`."
+            return ExtractedPattern(
+                category=PatternCategory.ERROR_RECOVERY,
+                content=content,
+                importance=0.7,
+                entity_refs=[success_path],
+                metadata={
+                    "error_category": error_cat,
+                    "tool": "Read",
+                    "error_path": error_path,
+                    "success_path": success_path,
+                },
+            )
         elif tool in ("Grep", "Glob"):
             error_pattern = error_entry["input"].get("pattern", "")
             success_pattern = success_entry["input"].get("pattern", "")
@@ -684,6 +866,13 @@ class TrafficLearner:
         error_cat = error_entry.get("error_category", "unknown")
 
         if not failed_cmd or not success_cmd or failed_cmd == success_cmd:
+            return None
+        # Require the two commands to look like the same operation retried.
+        # Without this, any failed Bash followed by any Bash success in the
+        # last 5 calls becomes a "use Y instead of X" rule, even when X and
+        # Y are unrelated (e.g. two grep calls with different needles and
+        # different files).
+        if not _commands_related_as_retry(failed_cmd, success_cmd):
             return None
 
         # Determine importance based on error category

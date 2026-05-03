@@ -42,8 +42,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        # Pin action code to @stable (latest fixes), toolchain version
+        # via input. The @1.95.0 ref shipped action code that errors on
+        # ubuntu-latest with `detected conflict: 'bin/cargo-clippy'`
+        # because the pre-installed runner Rust collides with the
+        # clippy-preview component install.
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
@@ -101,7 +107,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit + cargo-deny
         run: |
@@ -121,7 +129,9 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'

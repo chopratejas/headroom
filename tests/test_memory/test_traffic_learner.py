@@ -14,11 +14,17 @@ from headroom.memory.traffic_learner import (
     ExtractedPattern,
     PatternCategory,
     TrafficLearner,
+    _bash_binaries_match,
+    _bash_first_binary,
     _classify_error,
+    _commands_related_as_retry,
+    _drop_contradictions,
     _is_error,
+    _levenshtein,
     _load_persisted_patterns_from_sqlite,
     _normalize_bash_for_hash,
     _parse_iso_timestamp,
+    _paths_related_as_typo,
     _patterns_to_recommendations,
     _project_for_pattern,
     _refine_error_recovery,
@@ -54,6 +60,181 @@ class TestErrorClassification:
         assert not _is_error("All tests passed")
         assert not _is_error("")
         assert not _is_error("short")
+
+
+# =============================================================================
+# Recovery-pair relatedness heuristics
+# =============================================================================
+
+
+class TestPathsRelatedAsTypo:
+    def test_identical_basename_different_dir_is_typo(self):
+        # Same file in two locations — common path-typo case.
+        assert _paths_related_as_typo("/a/state.rs", "/b/state.rs")
+
+    def test_close_basename_is_typo(self):
+        assert _paths_related_as_typo("/a/staet.rs", "/a/state.rs")
+        assert _paths_related_as_typo("/a/App.tsx", "/a/app.tsx")
+
+    def test_unrelated_files_in_same_dir_rejected(self):
+        # The motivating bug: state.rs and lib.rs are unrelated files,
+        # not typos, and should never be paired into a recovery rule.
+        assert not _paths_related_as_typo("/src-tauri/src/state.rs", "/src-tauri/src/lib.rs")
+        assert not _paths_related_as_typo("/x/models.py", "/x/views.py")
+
+    def test_empty_or_equal_paths_rejected(self):
+        assert not _paths_related_as_typo("", "/a/x")
+        assert not _paths_related_as_typo("/a/x", "")
+        assert not _paths_related_as_typo("/a/x", "/a/x")
+
+
+class TestCommandsRelatedAsRetry:
+    def test_python_to_python3_is_retry(self):
+        assert _commands_related_as_retry("python test.py", "python3 test.py")
+
+    def test_path_prefixed_binary_is_retry(self):
+        assert _commands_related_as_retry("ruff check .", ".venv/bin/ruff check .")
+
+    def test_extra_flag_is_retry(self):
+        assert _commands_related_as_retry("cargo build", "cargo build --release")
+
+    def test_different_binaries_rejected(self):
+        assert not _commands_related_as_retry("grep -n foo bar.rs", "find . -name foo")
+
+    def test_same_binary_unrelated_args_rejected(self):
+        # The motivating bug: two grep calls sharing nothing but the
+        # binary should not pair up. Different needles, different files.
+        failed = (
+            'grep -nE "smoke|HEADROOM_SMOKE_TEST_TIMEOUT|smoke_test" '
+            "/Users/x/src-tauri/src/tool_manager.rs 2>&1 | head -20"
+        )
+        success = (
+            'grep -nE "fn hf_hub_cache_dir|HF_HOME|HUGGINGFACE_HUB_CACHE" '
+            "/Users/x/src-tauri/src/state.rs 2>&1 | head -10"
+        )
+        assert not _commands_related_as_retry(failed, success)
+
+    def test_empty_or_equal_commands_rejected(self):
+        assert not _commands_related_as_retry("", "ls")
+        assert not _commands_related_as_retry("ls", "")
+        assert not _commands_related_as_retry("ls", "ls")
+
+
+class TestDropContradictions:
+    def _read_recovery(self, failed: str, success: str) -> ExtractedPattern:
+        return ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content=f"File `{failed}` does not exist. The correct path is `{success}`.",
+            importance=0.7,
+            entity_refs=[success],
+            metadata={"error_category": "file_not_found", "failed_path": failed},
+            evidence_count=5,
+        )
+
+    def test_drops_inverse_pairs(self):
+        a_to_b = self._read_recovery("/x/a.rs", "/x/b.rs")
+        b_to_a = self._read_recovery("/x/b.rs", "/x/a.rs")
+        keep = self._read_recovery("/x/c.rs", "/x/d.rs")
+        cleaned = _drop_contradictions([a_to_b, b_to_a, keep])
+        assert keep in cleaned
+        assert a_to_b not in cleaned
+        assert b_to_a not in cleaned
+
+    def test_passthrough_when_no_inverse(self):
+        a_to_b = self._read_recovery("/x/a.rs", "/x/b.rs")
+        cleaned = _drop_contradictions([a_to_b])
+        assert cleaned == [a_to_b]
+
+    def test_only_filters_error_recovery_category(self):
+        env_pattern = ExtractedPattern(
+            category=PatternCategory.ENVIRONMENT,
+            content="File `x` does not exist. The correct path is `y`.",  # text alone
+            importance=0.5,
+            evidence_count=5,
+        )
+        cleaned = _drop_contradictions([env_pattern])
+        assert cleaned == [env_pattern]
+
+    def test_skips_error_recovery_with_non_canonical_content(self):
+        """Bash recoveries don't match the Read regex; skip without crashing."""
+        bash_pattern = ExtractedPattern(
+            category=PatternCategory.ERROR_RECOVERY,
+            content="Command `foo` fails (exit_code). Use `bar` instead.",
+            importance=0.7,
+            evidence_count=5,
+        )
+        cleaned = _drop_contradictions([bash_pattern])
+        assert cleaned == [bash_pattern]
+
+
+# =============================================================================
+# Helper edge cases (branch coverage)
+# =============================================================================
+
+
+class TestLevenshtein:
+    def test_equal_returns_zero(self):
+        assert _levenshtein("abc", "abc") == 0
+
+    def test_empty_a_returns_len_b(self):
+        assert _levenshtein("", "abc") == 3
+
+    def test_empty_b_returns_len_a(self):
+        assert _levenshtein("abc", "") == 3
+
+    def test_swap_when_a_longer(self):
+        # Triggers the `len(a) > len(b)` swap branch.
+        assert _levenshtein("abcdef", "abc") == 3
+
+    def test_simple_substitution(self):
+        assert _levenshtein("kitten", "sitting") == 3
+
+
+class TestBashFirstBinary:
+    def test_empty_returns_none(self):
+        assert _bash_first_binary("") is None
+        assert _bash_first_binary("   ") is None
+
+    def test_strips_source_venv_prefix(self):
+        assert _bash_first_binary("source .venv/bin/activate && pytest -x") == "pytest"
+
+    def test_skips_env_var_assignments(self):
+        assert _bash_first_binary("FOO=bar BAZ=qux python script.py") == "python"
+
+    def test_returns_first_token_otherwise(self):
+        assert _bash_first_binary("cargo test --release") == "cargo"
+
+
+class TestBashBinariesMatch:
+    def test_equal_strings_match(self):
+        # Direct equality short-circuit; not exercised by the typical retry flow.
+        assert _bash_binaries_match("cargo", "cargo")
+
+    def test_basename_match_across_paths(self):
+        assert _bash_binaries_match("ruff", ".venv/bin/ruff")
+        assert _bash_binaries_match("/usr/bin/python3", "python3")
+
+    def test_prefix_version_match(self):
+        assert _bash_binaries_match("python", "python3")
+
+    def test_unrelated_binaries_do_not_match(self):
+        assert not _bash_binaries_match("grep", "find")
+
+
+class TestPathsRelatedAsTypoEdgeCases:
+    def test_root_paths_rejected(self):
+        # After basename strip both sides become empty.
+        assert not _paths_related_as_typo("/", "/")
+
+
+class TestCommandsRelatedAsRetrySubstantiveToken:
+    def test_substantive_token_beats_distance(self):
+        # Edit distance is too high to pass the 40% gate, but both commands
+        # share the substantive token "headroom-config", so the token-overlap
+        # path accepts the pair.
+        failed = "python -m foo --headroom-config=/etc/h.toml"
+        success = "python -m bar --headroom-config=/etc/h.toml --extra"
+        assert _commands_related_as_retry(failed, success)
 
 
 # =============================================================================
@@ -866,6 +1047,34 @@ class TestFlushToFile:
         assert written_proj is proj
         assert len(recs) == 1
         assert "python3" in recs[0].content
+
+    @pytest.mark.asyncio
+    async def test_shutdown_flush_respects_min_evidence(self, tmp_path, monkeypatch):
+        """Regression: stop() must not bypass the evidence gate.
+
+        Earlier behavior collapsed min_evidence to 1 at shutdown, persisting
+        every singleton pattern. This is exactly inverted: singletons are the
+        *least* trustworthy patterns. The gate must use self._min_evidence at
+        all times, including stop()'s final flush.
+        """
+        writer = _FakeWriter()
+        proj = _make_project(str(tmp_path))
+        plugin = _FakePlugin(roots=[proj], writer=writer)
+        _install_plugin_registry(monkeypatch, plugin)
+
+        learner = TrafficLearner(backend=None, agent_type="claude", min_evidence=5)
+        # Singleton pattern: should NOT survive the shutdown flush.
+        learner._pattern_counts["h"] = (
+            ExtractedPattern(
+                category=PatternCategory.ENVIRONMENT,
+                content=f"singleton at {tmp_path}/main.py",
+                importance=0.5,
+                evidence_count=1,
+            ),
+            1,
+        )
+        await learner.stop()  # triggers a final flush_to_file
+        assert writer.calls == [], "singleton survived the shutdown gate"
 
     @pytest.mark.asyncio
     async def test_early_returns_no_plugin(self, monkeypatch):

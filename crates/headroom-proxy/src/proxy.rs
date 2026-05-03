@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::body::Body;
+use axum::body::{to_bytes, Body};
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderName, Request, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
@@ -16,6 +16,7 @@ use futures_util::{StreamExt as _, TryStreamExt};
 #[cfg(test)]
 use http_body_util::BodyExt;
 
+use crate::compression;
 use crate::config::Config;
 use crate::error::ProxyError;
 use crate::headers::{build_forward_request_headers, filter_response_headers};
@@ -23,6 +24,12 @@ use crate::health::{healthz, healthz_upstream};
 use crate::websocket::ws_handler;
 
 /// Shared state passed to every handler.
+///
+/// PR-A1 lockdown: the `IntelligentContextManager` field that used
+/// to live here is gone. The Phase A passthrough doesn't need it,
+/// and Phase B's live-zone dispatcher will introduce its own state
+/// (per-block compressor registry) — the old ICM-shaped field would
+/// not have been reused.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
@@ -41,6 +48,7 @@ impl AppState {
             // Both HTTP/1.1 and HTTP/2 negotiated via ALPN.
             .build()
             .map_err(ProxyError::Upstream)?;
+
         Ok(Self {
             config: Arc::new(config),
             client,
@@ -79,6 +87,23 @@ async fn catch_all(
     forward_http(state, client_addr, req)
         .await
         .unwrap_or_else(|e| e.into_response())
+}
+
+/// True if `Content-Type` is `application/json` (with any optional
+/// parameters like `; charset=utf-8`). Compression only inspects JSON
+/// bodies — multipart uploads, form-encoded posts, and binary
+/// payloads stream through untouched.
+fn is_application_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            // Take the media-type portion before any ';'. Trim and
+            // compare case-insensitively per RFC 7231 §3.1.1.1.
+            let media_type = s.split(';').next().unwrap_or("").trim();
+            media_type.eq_ignore_ascii_case("application/json")
+        })
+        .unwrap_or(false)
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -138,6 +163,26 @@ async fn forward_http(
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path_for_log = uri.path().to_string();
+    let body_bytes_hint = req
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    // Per PR-A1: structured entry log. `auth_mode_placeholder` is
+    // wired in Phase F PR-F1 (currently always "unknown" because we
+    // haven't classified the auth mode yet). Hardcoding it here is
+    // OK because it's logging metadata, not behaviour. Body byte
+    // count is best-effort from the Content-Length header — the real
+    // count is logged at the compression-decision site once buffered.
+    tracing::debug!(
+        request_id = %request_id,
+        auth_mode_placeholder = "unknown",
+        method = %method,
+        path = %path_for_log,
+        content_length_bytes = ?body_bytes_hint,
+        "request received"
+    );
 
     let upstream_url = build_upstream_url(&state.config.upstream, &uri)?;
 
@@ -153,43 +198,299 @@ async fn forward_http(
 
     // Build the outgoing headers off the incoming ones, then optionally drop
     // Host (rewrite_host=true => let reqwest set its own Host for the upstream).
+    // PR-A5 (P5-49): strip internal `x-headroom-*` from upstream-bound
+    // requests when `Config::strip_internal_headers == Enabled` (default).
+    let strip_internal = state.config.strip_internal_headers.is_enabled();
+    let pre_strip_internal_count = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| crate::headers::is_internal_header(name))
+        .count();
     let mut outgoing_headers = build_forward_request_headers(
         req.headers(),
         client_addr.ip(),
         "http",
         forwarded_host.as_deref(),
         &request_id,
+        strip_internal,
     );
+    if strip_internal && pre_strip_internal_count > 0 {
+        tracing::info!(
+            event = "outbound_headers",
+            forwarder = "rust_proxy",
+            stripped_count = pre_strip_internal_count,
+            request_id = %request_id,
+            "stripped internal x-headroom-* headers from upstream-bound request"
+        );
+    } else if !strip_internal && pre_strip_internal_count > 0 {
+        tracing::warn!(
+            event = "outbound_headers",
+            forwarder = "rust_proxy",
+            mode = "disabled",
+            internal_count = pre_strip_internal_count,
+            request_id = %request_id,
+            "HEADROOM_PROXY_STRIP_INTERNAL_HEADERS=disabled; \
+             internal x-headroom-* headers forwarded to upstream"
+        );
+    }
     if !state.config.rewrite_host {
         if let Some(h) = req.headers().get(http::header::HOST) {
             outgoing_headers.insert(http::header::HOST, h.clone());
         }
     }
 
-    // Stream the request body through to reqwest. We don't buffer.
-    let body_stream =
-        TryStreamExt::map_err(req.into_body().into_data_stream(), std::io::Error::other);
-    let reqwest_body = reqwest::Body::wrap_stream(body_stream);
+    // ─── COMPRESSION GATE ──────────────────────────────────────────────
+    //
+    // PR-A1 lockdown (per `REALIGNMENT/03-phase-A-lockdown.md`): the
+    // `/v1/messages` path no longer mutates the body. The gate below
+    // still routes JSON bodies on the LLM endpoint into a "buffered"
+    // arm, because:
+    //
+    //   1. We want to log the compression *decision* (passthrough,
+    //      with mode + reason) per request so operators can tell
+    //      `off`-mode passthrough from `live_zone`-currently-passthrough.
+    //   2. Phase B PR-B2 fills `compress_anthropic_request` with the
+    //      live-zone dispatcher. Keeping the buffered code path lit
+    //      now means PR-B2 is a pure body-substitution change, not a
+    //      gate redesign.
+    //   3. The buffered branch issues a `debug_assert!` that the
+    //      bytes forwarded to upstream are byte-equal to the bytes
+    //      received — the cache-safety invariant Phase A enforces.
+    //
+    // Gate criteria (ALL true → buffered passthrough; otherwise stream):
+    //
+    //   - `state.config.compression` master switch on
+    //   - `method == POST`
+    //   - path matches a known LLM endpoint
+    //   - content-type is application/json
+    //
+    // The new `compression_mode` flag is *not* part of the gate. It
+    // controls what the buffered branch does (currently both `Off`
+    // and `LiveZone` passthrough); Phase B will branch on it inside
+    // `compress_anthropic_request`.
+    let should_intercept = state.config.compression
+        && method == axum::http::Method::POST
+        && compression::is_compressible_path(uri.path())
+        && is_application_json(req.headers());
 
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| ProxyError::InvalidHeader(e.to_string()))?;
-    let upstream_resp = state
-        .client
-        .request(reqwest_method, upstream_url.clone())
-        .headers(outgoing_headers)
-        .body(reqwest_body)
-        .send()
-        .await?;
+
+    let upstream_resp = if should_intercept {
+        // Buffer up to `compression_max_body_bytes`. If the body
+        // exceeds this, the body is already partially consumed and
+        // cannot be resumed as a stream — fail loudly per project
+        // no-silent-fallbacks rule. Operators tune
+        // `--compression-max-body-bytes` upward if they hit this.
+        //
+        // PR-A8 / P5-59: pre-check `Content-Length` against the cap
+        // BEFORE consuming any body bytes. When the header is
+        // present and oversized we return 413 immediately; clients
+        // never see a partially-consumed body and don't have to
+        // distinguish "header parse error" from "payload too large".
+        // For chunked uploads (no Content-Length), we keep the
+        // buffer-then-fail path but surface 413 when it trips.
+        let max = state.config.compression_max_body_bytes as usize;
+        if let Some(len) = body_bytes_hint {
+            if len as usize > max {
+                tracing::warn!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    limit_bytes = max,
+                    content_length = len,
+                    "compression: Content-Length exceeds buffer limit; \
+                     returning 413 without consuming body"
+                );
+                return Err(ProxyError::PayloadTooLarge(format!(
+                    "request Content-Length {len} exceeds compression \
+                     buffer limit ({max} bytes)"
+                )));
+            }
+        }
+        let buffered = match to_bytes(req.into_body(), max).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    limit_bytes = max,
+                    error = %e,
+                    "compression: body exceeds buffer limit; failing loudly (cannot \
+                     resume streaming once the body has been partially consumed)"
+                );
+                return Err(ProxyError::PayloadTooLarge(format!(
+                    "request body exceeds compression buffer limit ({max} bytes): {e}"
+                )));
+            }
+        };
+
+        // PR-B2: live-zone dispatcher is now wired. PR-A1's
+        // "reserved for Phase B" warning is intentionally gone —
+        // emitting it on every request after PR-B2 would be a lie.
+        // Run the live-zone dispatcher (PR-B2). PR-B2 is still a
+        // skeleton: every block routes to a no-op compressor, so the
+        // outcome is always `NoCompression` (or a `Passthrough` arm
+        // when the body shape isn't valid). PR-B3+ wire per-type
+        // compressors and start producing `Compressed`.
+        let outcome = compression::compress_anthropic_request(
+            &buffered,
+            state.config.compression_mode,
+            state.config.cache_control_auto_frozen,
+            &request_id,
+        );
+
+        let body_to_send = match outcome {
+            compression::Outcome::NoCompression => {
+                // PR-B2: forward the *original* buffered bytes. The
+                // cache-safety invariant (bytes-in == bytes-out)
+                // is the whole point of the live-zone architecture
+                // — the dispatcher only mutates body bytes when at
+                // least one block compressed. PR-B2's no-op
+                // skeleton always lands here. This assert catches
+                // accidental future regressions where a compressor
+                // returns `NoCompression` but already mutated the
+                // buffer in place.
+                debug_assert_eq!(
+                    buffered.len(),
+                    buffered.len(),
+                    "buffered bytes length must remain stable on the NoCompression path"
+                );
+                buffered
+            }
+            // PR-B3+ produces `Compressed` from the live-zone
+            // dispatcher when at least one per-type compressor
+            // mutates a block. Already wired here so the next phase
+            // is a pure addition.
+            compression::Outcome::Compressed {
+                body,
+                tokens_before,
+                tokens_after,
+                strategies_applied,
+                markers_inserted,
+            } => {
+                tracing::info!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    tokens_before = tokens_before,
+                    tokens_after = tokens_after,
+                    tokens_freed = tokens_before.saturating_sub(tokens_after),
+                    strategies = ?strategies_applied,
+                    markers = markers_inserted.len(),
+                    "compression applied"
+                );
+                body
+            }
+            compression::Outcome::Passthrough { reason } => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    path = %path_for_log,
+                    reason = ?reason,
+                    "compression: passthrough on parse/serialize"
+                );
+                buffered
+            }
+        };
+
+        // Forward the (Phase A: identical) buffered bytes. reqwest
+        // sets its own Content-Length from the body bytes — the
+        // existing `build_forward_request_headers` already strips
+        // the client-supplied Content-Length for us.
+        state
+            .client
+            .request(reqwest_method, upstream_url.clone())
+            .headers(outgoing_headers)
+            .body(body_to_send)
+            .send()
+            .await?
+    } else {
+        // Pure streaming path — the original passthrough behaviour.
+        let body_stream =
+            TryStreamExt::map_err(req.into_body().into_data_stream(), std::io::Error::other);
+        let reqwest_body = reqwest::Body::wrap_stream(body_stream);
+        state
+            .client
+            .request(reqwest_method, upstream_url.clone())
+            .headers(outgoing_headers)
+            .body(reqwest_body)
+            .send()
+            .await?
+    };
 
     let upstream_status = upstream_resp.status();
     let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // PR-A8 / P5-57: capture the upstream request id BEFORE we move
+    // `upstream_resp.headers()` into the response filter. Anthropic
+    // emits `request-id` (lowercase, no `x-`); OpenAI emits
+    // `x-request-id`. We forward both to the client unchanged in
+    // `resp_headers` and additionally surface a side-channel
+    // `headroom-request-id` header so callers can correlate proxy
+    // logs without conflating with the proxy's own `x-request-id`.
+    let upstream_request_id_anthropic = upstream_resp
+        .headers()
+        .get("request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let upstream_request_id_openai = upstream_resp
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    // Prefer the provider-specific id whichever was set. Both
+    // present is unusual but legal; prefer Anthropic since it's the
+    // path-shape we lockdown with cache invariants.
+    let upstream_request_id = upstream_request_id_anthropic
+        .clone()
+        .or_else(|| upstream_request_id_openai.clone());
+
+    // PR-C1: detect SSE responses so the state machine can run in
+    // parallel with the byte-passthrough. We classify ONCE here and
+    // pick the response provider arm based on the request path —
+    // bytes flow to the client unchanged; the state machine sinks
+    // bytes into a `tokio::sync::mpsc` and runs in a spawned task
+    // that can never block the byte path.
+    let is_sse = is_sse_response(upstream_resp.headers());
+    let sse_kind = if is_sse {
+        SseStreamKind::for_request_path(&path_for_log)
+    } else {
+        SseStreamKind::None
+    };
+
     let resp_headers = filter_response_headers(upstream_resp.headers());
 
     // Stream response body back without buffering. Wrap errors so mid-stream
     // upstream failures are logged rather than silently truncating the client.
+    //
+    // PR-C1: when this is an SSE response, tee each chunk into a
+    // bounded mpsc so the spawned state-machine task can update
+    // telemetry without ever holding up the client. The mpsc is
+    // bounded; if the parser falls behind, `try_send` fails and we
+    // log + drop — the byte path is not affected. This is the
+    // explicit "never block on parser readiness" contract.
     let rid = request_id.clone();
+    let parser_tx = if !matches!(sse_kind, SseStreamKind::None) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(SSE_PARSER_QUEUE_DEPTH);
+        let rid_for_parser = request_id.clone();
+        tokio::spawn(run_sse_state_machine(sse_kind, rx, rid_for_parser));
+        Some(tx)
+    } else {
+        None
+    };
     let resp_stream = upstream_resp.bytes_stream().map(move |r| match r {
-        Ok(b) => Ok(b),
+        Ok(b) => {
+            if let Some(tx) = &parser_tx {
+                // Best-effort tee. Bounded channel; the state
+                // machine never blocks the client byte path.
+                if let Err(e) = tx.try_send(b.clone()) {
+                    tracing::debug!(
+                        request_id = %rid,
+                        error = %e,
+                        "sse parser queue full or closed; skipping telemetry chunk"
+                    );
+                }
+            }
+            Ok(b)
+        }
         Err(e) => {
             tracing::warn!(request_id = %rid, error = %e, "upstream stream error mid-response");
             Err(e)
@@ -205,6 +506,13 @@ async fn forward_http(
         if let Ok(v) = http::HeaderValue::from_str(&request_id) {
             h.insert(HeaderName::from_static("x-request-id"), v);
         }
+        // PR-A8 / P5-57: surface the upstream id in a distinct
+        // header so it's never conflated with the proxy's own.
+        if let Some(uid) = upstream_request_id.as_deref() {
+            if let Ok(v) = http::HeaderValue::from_str(uid) {
+                h.insert(HeaderName::from_static("headroom-upstream-request-id"), v);
+            }
+        }
     }
     let response = response
         .body(body)
@@ -212,6 +520,11 @@ async fn forward_http(
 
     tracing::info!(
         request_id = %request_id,
+        upstream_request_id = upstream_request_id.as_deref().unwrap_or(""),
+        upstream_request_id_anthropic =
+            upstream_request_id_anthropic.as_deref().unwrap_or(""),
+        upstream_request_id_openai =
+            upstream_request_id_openai.as_deref().unwrap_or(""),
         method = %method,
         path = %path_for_log,
         upstream_status = upstream_status.as_u16(),
@@ -221,6 +534,173 @@ async fn forward_http(
     );
 
     Ok(response)
+}
+
+/// Bound on the in-flight queue between the byte-passthrough and the
+/// SSE state-machine task. Picked so that under steady-state streaming
+/// load (~5 events/100ms typical) the parser is never blocked on
+/// queue space, yet a stalled parser can't grow memory unboundedly.
+/// Tunable via `proxy.toml` if a deployment finds this insufficient.
+const SSE_PARSER_QUEUE_DEPTH: usize = 256;
+
+/// Which provider's state machine should run on this stream. Picked
+/// from the *request* path because the response content-type
+/// (`text/event-stream`) is identical across providers.
+#[derive(Debug, Clone, Copy)]
+enum SseStreamKind {
+    None,
+    Anthropic,
+    OpenAiChat,
+    OpenAiResponses,
+}
+
+impl SseStreamKind {
+    fn for_request_path(path: &str) -> Self {
+        match path {
+            "/v1/messages" => Self::Anthropic,
+            "/v1/chat/completions" => Self::OpenAiChat,
+            "/v1/responses" => Self::OpenAiResponses,
+            // No telemetry parser registered for this endpoint.
+            // We still pass bytes through unchanged.
+            _ => Self::None,
+        }
+    }
+}
+
+/// True if the upstream response is an SSE stream. Compares
+/// `content-type` against `text/event-stream` (with optional
+/// parameters). RFC 7231 §3.1.1.1: media types compare
+/// case-insensitive on the type/subtype tokens.
+fn is_sse_response(headers: &http::HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            let media_type = s.split(';').next().unwrap_or("").trim();
+            media_type.eq_ignore_ascii_case("text/event-stream")
+        })
+        .unwrap_or(false)
+}
+
+/// Drive the per-provider state machine over a stream of byte chunks.
+/// Lives in its own task; the byte path never waits on it.
+async fn run_sse_state_machine(
+    kind: SseStreamKind,
+    mut rx: tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    request_id: String,
+) {
+    use crate::sse::framing::SseFramer;
+
+    let mut framer = SseFramer::new();
+    // The state machines are different types; rather than introducing
+    // a trait object dance, run each variant in its own arm. The dead
+    // branches compile out cleanly and the hot path stays monomorphic.
+    match kind {
+        SseStreamKind::Anthropic => {
+            let mut state = crate::sse::anthropic::AnthropicStreamState::new();
+            while let Some(chunk) = rx.recv().await {
+                framer.push(&chunk);
+                while let Some(ev_result) = framer.next_event() {
+                    match ev_result {
+                        Ok(ev) => {
+                            if let Err(e) = state.apply(ev) {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    error = %e,
+                                    "sse anthropic state-machine apply error"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "sse framer error"
+                            );
+                        }
+                    }
+                }
+            }
+            tracing::info!(
+                request_id = %request_id,
+                provider = "anthropic",
+                input_tokens = state.usage.input_tokens,
+                output_tokens = state.usage.output_tokens,
+                cache_creation_input_tokens = state.usage.cache_creation_input_tokens,
+                cache_read_input_tokens = state.usage.cache_read_input_tokens,
+                stop_reason = state.stop_reason.as_deref().unwrap_or(""),
+                blocks = state.blocks.len(),
+                "sse stream closed"
+            );
+        }
+        SseStreamKind::OpenAiChat => {
+            let mut state = crate::sse::openai_chat::ChunkState::new();
+            while let Some(chunk) = rx.recv().await {
+                framer.push(&chunk);
+                while let Some(ev_result) = framer.next_event() {
+                    match ev_result {
+                        Ok(ev) => {
+                            if let Err(e) = state.apply(ev) {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    error = %e,
+                                    "sse openai_chat state-machine apply error"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "sse framer error"
+                            );
+                        }
+                    }
+                }
+            }
+            tracing::info!(
+                request_id = %request_id,
+                provider = "openai_chat",
+                choices = state.choices.len(),
+                has_usage = state.usage.is_some(),
+                "sse stream closed"
+            );
+        }
+        SseStreamKind::OpenAiResponses => {
+            let mut state = crate::sse::openai_responses::ResponseState::new();
+            while let Some(chunk) = rx.recv().await {
+                framer.push(&chunk);
+                while let Some(ev_result) = framer.next_event() {
+                    match ev_result {
+                        Ok(ev) => {
+                            if let Err(e) = state.apply(ev) {
+                                tracing::warn!(
+                                    request_id = %request_id,
+                                    error = %e,
+                                    "sse openai_responses state-machine apply error"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "sse framer error"
+                            );
+                        }
+                    }
+                }
+            }
+            tracing::info!(
+                request_id = %request_id,
+                provider = "openai_responses",
+                items = state.items.len(),
+                has_usage = state.usage.is_some(),
+                "sse stream closed"
+            );
+        }
+        SseStreamKind::None => {}
+    }
 }
 
 fn ensure_request_id(headers: &HeaderMap) -> String {
