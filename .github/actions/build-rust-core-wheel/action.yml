@@ -1,0 +1,73 @@
+# Composite action: build the headroom-core-py wheel locally and expose
+# it to subsequent pip installs via PIP_FIND_LINKS.
+#
+# Why this exists: issue #355's hotfix declares `headroom-core-py` as a
+# runtime dep of `headroom-ai`. The Rust crate lives in this monorepo;
+# until a PyPI release is cut, pip can't find the package on PyPI and
+# `pip install -e .` fails. This action builds the wheel locally with
+# the matching release version and points pip at the local wheelhouse.
+#
+# Use this BEFORE any `pip install -e .` step in CI:
+#
+#     - uses: ./.github/actions/build-rust-core-wheel
+#       with:
+#         version: ${{ needs.detect-version.outputs.npm_version }}
+#     - run: pip install -e .[agno]
+#
+# After the action runs, PIP_FIND_LINKS is set in $GITHUB_ENV so every
+# subsequent `pip install` step in the same job sees the local wheel.
+
+name: build-rust-core-wheel
+description: Build headroom-core-py locally and add it to pip's find-links
+
+inputs:
+  version:
+    description: >
+      Release version to stamp into the wheel (e.g. `0.20.14`). When
+      omitted, pulls the version from pyproject.toml — fine for PR CI
+      where exact alignment with a release isn't required.
+    required: false
+    default: ""
+  python-version:
+    description: Python version for the build.
+    required: false
+    default: "3.11"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Sync version into Cargo.toml + headroom-py/pyproject.toml
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.version }}" ]; then
+          python scripts/version-sync.py --version "${{ inputs.version }}"
+        else
+          # Use whatever pyproject.toml currently says; version-sync writes
+          # the same version into the Rust crate.
+          version=$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          python scripts/version-sync.py --version "$version"
+        fi
+
+    - name: Build headroom-core-py wheel
+      uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        args: --release --out wheelhouse -m crates/headroom-py/Cargo.toml
+      env:
+        PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+    - name: Expose wheelhouse to subsequent pip installs
+      shell: bash
+      run: |
+        wheelhouse_abs="$(cd wheelhouse && pwd)"
+        # PIP_FIND_LINKS is the canonical pip env knob — picked up by
+        # every subsequent `pip install` in this job without further
+        # changes to pip command lines.
+        echo "PIP_FIND_LINKS=$wheelhouse_abs" >> "$GITHUB_ENV"
+        echo "Built wheels:"
+        ls -la "$wheelhouse_abs"

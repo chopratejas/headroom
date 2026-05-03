@@ -31,6 +31,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
+      # Issue #355: pyproject.toml declares headroom-core-py as a runtime
+      # dep. The Rust crate lives in this monorepo and isn't on PyPI yet,
+      # so build the wheel locally and let PIP_FIND_LINKS resolve the
+      # constraint from the local wheelhouse.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -112,10 +121,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      # Issue #355: pyproject.toml declares headroom-core-py as a runtime
+      # dep — see the test-agno job for the rationale.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
 
       - name: Install with relevance extras
         run: |
@@ -164,10 +173,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      # Issue #355: pyproject.toml declares headroom-core-py as a runtime
+      # dep. The Rust crate lives in this monorepo and isn't on PyPI yet,
+      # so build it locally first; PIP_FIND_LINKS lets pip resolve the
+      # constraint from the local wheelhouse.
+      - name: Build local headroom-core-py wheel
+        uses: ./.github/actions/build-rust-core-wheel
 
       - name: Install with agno extras
         run: |

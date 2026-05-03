@@ -48,6 +48,28 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 WORKDIR /build
 
+# Issue #355: pyproject.toml declares `headroom-core-py>=0.1.0` as a
+# runtime dep. The Rust crate lives in this monorepo and isn't on PyPI
+# yet, so build it FIRST into /build/wheels and let `pip install
+# .[extras]` resolve the dep from there via PIP_FIND_LINKS. Without
+# this, every `uv pip install` fails with "No matching distribution
+# found for headroom-core-py".
+ENV PIP_FIND_LINKS=/build/wheels
+ENV UV_FIND_LINKS=/build/wheels
+
+# Pre-Layer 1: build the Rust wheel so subsequent pip installs can
+# resolve `headroom-core-py>=0.1.0` from /build/wheels. The crate
+# version stays at the source default (0.1.0) — matches the floor in
+# pyproject.toml. Release-time version sync runs in the GitHub workflow
+# (release.yml's build-rust-wheels job), not here.
+COPY crates/ crates/
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/build/target \
+    pip install --no-cache-dir maturin \
+    && maturin build --release -m crates/headroom-py/Cargo.toml --out /build/wheels \
+    && pip install --no-deps /build/wheels/headroom_core_py-*.whl
+
 # Layer 1: install deps only (cached unless pyproject.toml/uv.lock change)
 COPY pyproject.toml uv.lock README.md ./
 # Stub package so uv can resolve the local extras without full source
@@ -56,8 +78,10 @@ ARG HEADROOM_EXTRAS=proxy,code
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system ".[${HEADROOM_EXTRAS}]"
 
-# Layer 2 (Hotfix-A0): build and install the Rust extension wheel
-# BEFORE installing headroom-ai source. Why this order:
+# Layer 2 (Hotfix-A0): WHEEL ALREADY BUILT ABOVE — keep this comment
+# block as living documentation of why the order matters.
+#
+# Why the wheel install must run BEFORE installing headroom-ai source:
 #
 #   * The headroom-core-py wheel includes a stub `headroom/__init__.py`
 #     plus `headroom/_core.cpython-*.so` (maturin's `python-source`
@@ -77,17 +101,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 #     `headroom/` tree. `_core.so` survives because headroom-ai
 #     doesn't claim ownership of it.
 #
-# uv already installed `maturin` as a transitive of the [proxy]/[code]
-# extras; if it didn't, install it explicitly here so the build never
-# silently skips.
-COPY crates/ crates/
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/build/target \
-    uv pip install --system maturin \
-    && maturin build --release -m crates/headroom-py/Cargo.toml --out /build/wheels \
-    && uv pip install --system --no-deps /build/wheels/headroom_core_py-*.whl
+# (See pre-Layer 1 above — the wheel is already built and installed
+# into site-packages. This block is the historical rationale; do NOT
+# rebuild here, the cargo cache mount will hit and it's wasted IO.)
 
 # Layer 3: copy real source, install headroom-ai (no deps). This
 # overwrites the wheel's stub `headroom/__init__.py` with the real one

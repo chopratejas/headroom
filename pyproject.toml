@@ -53,10 +53,14 @@ dependencies = [
     "opentelemetry-api>=1.24.0",  # Safe no-op OTEL API for instrumentation
     "ast-grep-cli>=0.30.0",       # AST-aware code slicing (CodeCompressor); binary wheel
     "tomli>=2.0.0; python_version < '3.11'",  # tomllib backport for helper scripts
-    # Issue #355: Rust extension `headroom._core` is required at startup
+    # Issue #355: Rust extension `headroom._core` is mandatory at startup
     # (PR-A0 fail-loud check). Published as platform wheels per release;
-    # version-sync.py keeps this pinned to the matching headroom-ai release.
-    "headroom-core-py>=0.20.13",
+    # the floor is intentionally low (>=0.1.0) so PR CI can satisfy it
+    # with a freshly-built local wheel (current crate version 0.1.0)
+    # without needing to mutate pyproject.toml mid-build. version-sync.py
+    # rewrites the floor to the release version when a release is cut,
+    # tightening the pairing for users `pip install`ing from PyPI.
+    "headroom-core-py>=0.1.0",
 ]
 
 [project.optional-dependencies]
