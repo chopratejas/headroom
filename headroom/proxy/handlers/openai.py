@@ -1147,13 +1147,8 @@ class OpenAIHandlerMixin:
         from fastapi.responses import JSONResponse, Response
 
         from headroom.proxy.helpers import (
-            COMPRESSION_TIMEOUT_SECONDS,
             MAX_REQUEST_BODY_SIZE,
             _read_request_json,
-        )
-        from headroom.proxy.responses_converter import (
-            messages_to_responses_items,
-            responses_items_to_messages,
         )
         from headroom.tokenizers import get_tokenizer
         from headroom.utils import extract_user_query
@@ -1193,28 +1188,20 @@ class OpenAIHandlerMixin:
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
 
-        # Convert Responses API input to messages format for optimization.
-        # The Responses API uses a different item model (function_call,
-        # function_call_output, reasoning as top-level items) — we convert to
-        # Chat Completions messages for the pipeline, then convert back.
-
+        # PR-C5: Python no longer compresses /v1/responses — Rust handles
+        # item-aware compression natively (see crates/headroom-proxy/src/
+        # handlers/responses.rs). We synthesise a minimal `messages` list
+        # purely for downstream memory injection + telemetry; list-typed
+        # `input` is consulted via `body["input"]` directly via the
+        # live-zone-tail helpers below.
         input_data = body.get("input", "")
         instructions = body.get("instructions")
-        previous_response_id = body.get("previous_response_id")
 
         messages: list[dict[str, Any]] = []
-        original_items: list[dict[str, Any]] | None = None
-        preserved_indices: list[int] = []
-
         if instructions:
             messages.append({"role": "system", "content": instructions})
-
         if isinstance(input_data, str):
             messages.append({"role": "user", "content": input_data})
-        elif isinstance(input_data, list):
-            original_items = input_data
-            converted, preserved_indices = responses_items_to_messages(input_data)
-            messages.extend(converted)
 
         headers = dict(request.headers.items())
         headers.pop("host", None)
@@ -1300,67 +1287,15 @@ class OpenAIHandlerMixin:
         tokenizer = get_tokenizer(model)
         original_tokens = tokenizer.count_messages(messages)
 
-        # Optimize: convert items → compress → convert back
-        tokens_saved = 0
-        transforms_applied: list[str] = []
+        # PR-C5: Python compression on /v1/responses is retired — the Rust
+        # handler at crates/headroom-proxy/src/handlers/responses.rs is the
+        # canonical compression path. Defaults below feed downstream
+        # telemetry and memory injection without invoking the pipeline.
         optimized_messages = messages
         optimized_tokens = original_tokens
-
-        _bypass = (
-            request.headers.get("x-headroom-bypass", "").lower() == "true"
-            or request.headers.get("x-headroom-mode", "").lower() == "passthrough"
-        )
-        _should_compress = (
-            self.config.optimize
-            and original_items is not None
-            and not previous_response_id
-            and not _bypass
-            and len(messages) > 1
-        )
-        _license_ok = self.usage_reporter.should_compress if self.usage_reporter else True
-
-        if _should_compress and _license_ok:
-            try:
-                context_limit = self.openai_provider.get_context_limit(model)
-                result = await self._run_compression_in_executor(
-                    lambda: self.openai_pipeline.apply(
-                        messages=messages,
-                        model=model,
-                        model_limit=context_limit,
-                        context=extract_user_query(messages),
-                    ),
-                    timeout=COMPRESSION_TIMEOUT_SECONDS,
-                )
-                if result.messages != messages:
-                    optimized_messages = result.messages
-                    transforms_applied = result.transforms_applied
-                    original_tokens = result.tokens_before
-                    optimized_tokens = result.tokens_after
-            except Exception as e:
-                logger.warning(f"[{request_id}] Responses API optimization failed: {e}")
-
-        # Guard: if "optimization" inflated tokens, revert to originals
-        if optimized_tokens > original_tokens:
-            logger.warning(
-                f"[{request_id}] Optimization inflated tokens "
-                f"({original_tokens} -> {optimized_tokens}), reverting to original messages"
-            )
-            optimized_messages = messages
-            optimized_tokens = original_tokens
-            transforms_applied = []
-
-        tokens_saved = original_tokens - optimized_tokens
+        tokens_saved = 0
+        transforms_applied: list[str] = []
         optimization_latency = (time.time() - start_time) * 1000
-
-        # Convert compressed messages back to Responses API items
-        if optimized_messages is not messages and original_items is not None:
-            opt_msgs = optimized_messages
-            # Strip system message (instructions) — it's separate in Responses API
-            if instructions and opt_msgs and opt_msgs[0].get("role") == "system":
-                body["instructions"] = opt_msgs[0]["content"]
-                opt_msgs = opt_msgs[1:]
-
-            body["input"] = messages_to_responses_items(opt_msgs, original_items, preserved_indices)
 
         # Memory: inject context and tools for Responses API requests
         if self.memory_handler and memory_user_id:
@@ -1676,15 +1611,11 @@ class OpenAIHandlerMixin:
         Responses API.  This handler:
         1. Accepts the client WebSocket
         2. Receives the first message (``response.create`` request)
-        3. Compresses the ``input`` array using the existing pipeline
-        4. Opens an upstream WebSocket to OpenAI
-        5. Sends the compressed request upstream
-        6. Relays all subsequent messages bidirectionally
+        3. Opens an upstream WebSocket to OpenAI
+        4. Sends the request upstream as-is (PR-C5: Python compression on
+           /v1/responses retired — Rust handles item-aware compression)
+        5. Relays all subsequent messages bidirectionally
         """
-        from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
-        from headroom.tokenizers import get_tokenizer
-        from headroom.utils import extract_user_query
-
         try:
             import websockets
         except ImportError:
@@ -1920,87 +1851,16 @@ class OpenAIHandlerMixin:
                 # deregister / metrics / stage-timings emission as usual.
                 return
 
-            # --- Optional: compress the input in the first message ---
+            # PR-C5: WebSocket /v1/responses no longer compresses in Python.
+            # The Rust handler covers item-aware compression; the WS first
+            # frame is now passed through unmodified.
             body: dict[str, Any] = {}
+            tokens_saved = 0
             try:
                 body = json.loads(first_msg_raw)
-                tokens_saved = 0
-                ws_request_body = body.get("response", body)
-                input_data = (
-                    ws_request_body.get("input") if isinstance(ws_request_body, dict) else None
-                )
-
-                should_compress = (
-                    self.config.optimize
-                    and isinstance(input_data, list)
-                    and len(input_data) > 1
-                    and not (
-                        ws_request_body.get("previous_response_id")
-                        if isinstance(ws_request_body, dict)
-                        else None
-                    )
-                )
-                if should_compress:
-                    try:
-                        from headroom.proxy.responses_converter import (
-                            messages_to_responses_items,
-                            responses_items_to_messages,
-                        )
-
-                        model = ws_request_body.get("model", "gpt-4o")
-                        converted, preserved = responses_items_to_messages(input_data)
-
-                        messages: list[dict[str, Any]] = []
-                        instructions = ws_request_body.get("instructions")
-                        if instructions:
-                            messages.append({"role": "system", "content": instructions})
-                        messages.extend(converted)
-
-                        tokenizer = get_tokenizer(model)
-                        original_tokens = tokenizer.count_messages(messages)
-
-                        context_limit = self.openai_provider.get_context_limit(model)
-                        async with stage_timer.measure("compression"):
-                            result = await self._run_compression_in_executor(
-                                lambda: self.openai_pipeline.apply(
-                                    messages=messages,
-                                    model=model,
-                                    model_limit=context_limit,
-                                    context=extract_user_query(messages),
-                                ),
-                                timeout=COMPRESSION_TIMEOUT_SECONDS,
-                            )
-
-                        if result.messages != messages:
-                            opt = result.messages
-                            if instructions and opt and opt[0].get("role") == "system":
-                                ws_request_body["instructions"] = opt[0]["content"]
-                                opt = opt[1:]
-                            if result.tokens_after <= original_tokens:
-                                ws_request_body["input"] = messages_to_responses_items(
-                                    opt, input_data, preserved
-                                )
-                            else:
-                                logger.warning(
-                                    f"[{request_id}] WS optimization inflated tokens "
-                                    f"({original_tokens} -> {result.tokens_after}), reverting"
-                                )
-                            tokens_saved = max(0, original_tokens - result.tokens_after)
-                            if "response" in body and isinstance(body["response"], dict):
-                                body["response"] = ws_request_body
-                            else:
-                                body = ws_request_body
-                            first_msg_raw = json.dumps(body)
-                            logger.info(
-                                f"[{request_id}] WS /v1/responses compressed: "
-                                f"saved {tokens_saved} tokens"
-                            )
-                    except Exception as e:
-                        logger.warning(f"[{request_id}] WS compression failed: {e}")
-
             except json.JSONDecodeError:
                 # Not JSON — pass through as-is
-                tokens_saved = 0
+                pass
 
             # --- Memory: inject context, tools, and instructions ---
             memory_user_id: str | None = None
@@ -2034,13 +1894,11 @@ class OpenAIHandlerMixin:
                             ws_msgs.append({"role": "system", "content": ws_instructions})
                         if isinstance(ws_input, str) and ws_input:
                             ws_msgs.append({"role": "user", "content": ws_input})
-                        elif isinstance(ws_input, list):
-                            from headroom.proxy.responses_converter import (
-                                responses_items_to_messages,
-                            )
-
-                            converted_msgs, _ = responses_items_to_messages(ws_input)
-                            ws_msgs.extend(converted_msgs)
+                        # PR-C5: list-typed `input` no longer feeds memory
+                        # search via the Python converter — the Rust handler
+                        # owns native item-aware processing. Memory context
+                        # for list-input WS sessions falls back to the
+                        # `instructions` system message only.
 
                         try:
                             async with stage_timer.measure("memory_context"):
