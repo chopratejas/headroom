@@ -194,10 +194,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      # Issue #355: e2e/wrap/Dockerfile and e2e/init/Dockerfile both
+      # do `pip install -e ".[proxy]"`, which can't resolve
+      # headroom-core-py from PyPI yet. Pre-build the wheel into
+      # `wheelhouse/` so docker build picks it up via the build
+      # context. The main Dockerfile builds its own copy internally;
+      # the wheelhouse is only needed for the e2e/* Dockerfiles.
+      - name: Build local headroom-core-py wheel for e2e build context
+        uses: ./.github/actions/build-rust-core-wheel
 
       - name: Build local Headroom image
         run: |

@@ -31,6 +31,12 @@ COPY e2e/__init__.py ./e2e/__init__.py
 COPY e2e/_lib ./e2e/_lib
 COPY e2e/init ./e2e/init
 
+# Issue #355: see e2e/wrap/Dockerfile for the rationale. CI prebuilds
+# the headroom-core-py wheel and passes it via the build context so
+# pip can resolve the runtime dep without hitting PyPI.
+COPY wheelhouse /workspace/wheelhouse
+ENV PIP_FIND_LINKS=/workspace/wheelhouse
+
 RUN python -m venv /opt/headroom-venv && \
     /opt/headroom-venv/bin/python -m pip install --upgrade "pip<25" && \
     /opt/headroom-venv/bin/python -m pip install -e ".[proxy]"

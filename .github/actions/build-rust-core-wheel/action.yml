@@ -47,9 +47,14 @@ runs:
         if [ -n "${{ inputs.version }}" ]; then
           python scripts/version-sync.py --version "${{ inputs.version }}"
         else
-          # Use whatever pyproject.toml currently says; version-sync writes
-          # the same version into the Rust crate.
-          version=$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          # Read pyproject.toml without `tomllib` — it doesn't exist on
+          # Python 3.10 and we want this action to work across all
+          # supported Python versions.
+          version=$(grep -E '^version = "[^"]+"' pyproject.toml | head -1 | sed -E 's/^version = "([^"]+)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "error: could not read version from pyproject.toml" >&2
+            exit 1
+          fi
           python scripts/version-sync.py --version "$version"
         fi
 

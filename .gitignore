@@ -240,3 +240,6 @@ uv.lock
 # package shadows the maturin overlay on sys.path.
 /headroom/_core.*.so
 /headroom/_core.so
+
+# Issue #355: locally-built headroom-core-py wheels (CI-populated)
+wheelhouse/*.whl

@@ -35,6 +35,17 @@ COPY headroom ./headroom
 COPY sdk/typescript ./sdk/typescript
 COPY plugins/openclaw ./plugins/openclaw
 
+# Issue #355: pyproject.toml declares headroom-core-py as a runtime
+# dep. Until the package is on PyPI, CI prebuilds the wheel into
+# `wheelhouse/` (via .github/actions/build-rust-core-wheel) and the
+# CI runner passes that dir into the docker build context. With
+# PIP_FIND_LINKS pointing at /workspace/wheelhouse, pip can satisfy
+# the constraint locally. If the wheelhouse is empty (developer
+# building locally), pip falls back to PyPI which works once the
+# next release publishes the wheel.
+COPY wheelhouse /workspace/wheelhouse
+ENV PIP_FIND_LINKS=/workspace/wheelhouse
+
 RUN python -m venv /opt/headroom-venv && \
     /opt/headroom-venv/bin/python -m pip install --upgrade pip && \
     /opt/headroom-venv/bin/python -m pip install -e ".[proxy]" && \
