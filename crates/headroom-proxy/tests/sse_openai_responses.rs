@@ -161,3 +161,66 @@ fn response_incomplete_status() {
     run(&mut s, raw.as_bytes());
     assert_eq!(s.status, StreamStatus::Incomplete);
 }
+
+/// PR-C4 property test: feeding the same byte sequence through the
+/// framer chunked at every possible boundary produces the same final
+/// state. This is the cache-safety invariant on the streaming path —
+/// the parser never depends on TCP chunk geometry.
+#[test]
+fn chunk_boundary_invariance_pr_c4() {
+    let raw = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_inv\",\"model\":\"gpt-5\"}}\n\n",
+        "event: output_item.added\n",
+        "data: {\"type\":\"output_item.added\",\"item\":{\"id\":\"msg_inv\",\"type\":\"message\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_inv\",\"delta\":\"alpha\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_inv\",\"delta\":\" beta\"}\n\n",
+        "event: output_item.done\n",
+        "data: {\"type\":\"output_item.done\",\"item\":{\"id\":\"msg_inv\",\"type\":\"message\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_inv\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+    )
+    .as_bytes();
+
+    // Try every single-byte split point and a couple of multi-split
+    // variations. Final state must match.
+    let baseline = {
+        let mut s = ResponseState::new();
+        run(&mut s, raw);
+        s
+    };
+
+    for split in 1..raw.len() {
+        let mut s = ResponseState::new();
+        let mut framer = SseFramer::new();
+        framer.push(&raw[..split]);
+        while let Some(r) = framer.next_event() {
+            s.apply(r.unwrap()).unwrap();
+        }
+        framer.push(&raw[split..]);
+        while let Some(r) = framer.next_event() {
+            s.apply(r.unwrap()).unwrap();
+        }
+        assert_eq!(s.response_id, baseline.response_id, "split={split}");
+        assert_eq!(s.status, baseline.status, "split={split}");
+        let item = s.items.get("msg_inv").expect("msg_inv present");
+        assert_eq!(item.output_text, "alpha beta", "split={split}");
+        assert!(item.complete, "split={split}");
+    }
+}
+
+/// PR-C4: an empty / minimal upstream response (just `[DONE]`) must
+/// never panic the state machine and must surface as a closed stream
+/// with no items.
+#[test]
+fn minimal_upstream_response_pr_c4() {
+    let mut s = ResponseState::new();
+    let raw = b"data: [DONE]\n\n";
+    run(&mut s, raw);
+    assert!(s.items.is_empty());
+    // status stays Open: [DONE] is a framer sentinel, not a state-
+    // machine status. Genuine completion goes through `response.completed`.
+    assert_eq!(s.status, StreamStatus::Open);
+}

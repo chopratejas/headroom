@@ -253,6 +253,49 @@ pub struct CliArgs {
         default_value_t = StripInternalHeaders::Enabled,
     )]
     pub strip_internal_headers: StripInternalHeaders,
+
+    /// Phase C PR-C4: enable the `/v1/responses` SSE streaming
+    /// pipeline. When `true` (default), `Accept: text/event-stream`
+    /// requests on `/v1/responses` flow through the byte-level SSE
+    /// framer + Responses state-machine telemetry tee that PR-C1
+    /// wired into `forward_http`'s response stream. When `false`,
+    /// the streaming pipeline is bypassed and the SSE response is
+    /// proxied as opaque bytes (no framer, no state machine,
+    /// strictly fewer logs). Bypass exists ONLY for emergency
+    /// rollback of the streaming pipeline without flipping the
+    /// global `--compression` switch — it is NOT a fallback path.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_ENABLE_RESPONSES_STREAMING`
+    /// env var → default (`true`).
+    #[arg(
+        long = "enable-responses-streaming",
+        env = "HEADROOM_PROXY_ENABLE_RESPONSES_STREAMING",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+    )]
+    pub enable_responses_streaming: bool,
+
+    /// Phase C PR-C4: enable the `/v1/conversations*` passthrough
+    /// surface. When `true` (default), the proxy mounts explicit
+    /// axum routes for OpenAI's Conversations API
+    /// (`POST/GET/DELETE /v1/conversations/...` and the nested
+    /// `/items` paths) and forwards every request upstream
+    /// byte-equal with structured-log instrumentation
+    /// (`event = "conversations_passthrough_pr_c4"`). When `false`,
+    /// requests still reach upstream via the catch-all but lose
+    /// the per-route logging. Compression on conversation items
+    /// is NOT performed in this PR — `enable_conversations_passthrough`
+    /// is strictly an instrumentation switch.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_ENABLE_CONVERSATIONS_PASSTHROUGH`
+    /// env var → default (`true`).
+    #[arg(
+        long = "enable-conversations-passthrough",
+        env = "HEADROOM_PROXY_ENABLE_CONVERSATIONS_PASSTHROUGH",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+    )]
+    pub enable_conversations_passthrough: bool,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -298,6 +341,15 @@ pub struct Config {
     /// upstream-bound requests. PR-A5 default-on guard against
     /// fingerprinting / leakage of internal flags.
     pub strip_internal_headers: StripInternalHeaders,
+    /// PR-C4: enable the `/v1/responses` streaming pipeline (SSE
+    /// state-machine + telemetry tee). Default `true`.
+    pub enable_responses_streaming: bool,
+    /// PR-C4: enable the `/v1/conversations*` passthrough surface
+    /// (per-route axum handlers with explicit instrumentation).
+    /// Default `true`. Strictly an instrumentation switch — does
+    /// NOT gate compression of conversation items (that's
+    /// C5+/B-phase territory).
+    pub enable_conversations_passthrough: bool,
 }
 
 impl Config {
@@ -324,6 +376,8 @@ impl Config {
             compression_mode: args.compression_mode,
             cache_control_auto_frozen: args.cache_control_auto_frozen,
             strip_internal_headers: args.strip_internal_headers,
+            enable_responses_streaming: args.enable_responses_streaming,
+            enable_conversations_passthrough: args.enable_conversations_passthrough,
         }
     }
 
@@ -349,6 +403,11 @@ impl Config {
             // from upstream-bound requests. Tests opt out per-case via
             // `start_proxy_with`.
             strip_internal_headers: StripInternalHeaders::Enabled,
+            // PR-C4: streaming pipeline + conversations passthrough
+            // both default-on so tests exercise the same paths
+            // production traffic will hit.
+            enable_responses_streaming: true,
+            enable_conversations_passthrough: true,
         }
     }
 }

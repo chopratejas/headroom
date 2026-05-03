@@ -1,4 +1,4 @@
-//! POST `/v1/responses` handler — Phase C PR-C3.
+//! POST `/v1/responses` handler — Phase C PR-C3 + PR-C4.
 //!
 //! # Why an explicit handler?
 //!
@@ -12,17 +12,29 @@
 //! can inspect it) and re-injects it into [`crate::proxy::forward_http`].
 //! `forward_http`'s compression gate dispatches on the path
 //! classification (`CompressibleEndpoint::OpenAiResponses`) added by
-//! this PR.
+//! C3.
 //!
-//! # Streaming
+//! # Streaming (PR-C4)
 //!
-//! When the request carries `Accept: text/event-stream`, this handler
-//! defers to PR-C4's streaming wiring. For now we forward
-//! byte-for-byte and emit
-//! `event = responses_streaming_passthrough_until_c4` so we can
-//! measure the volume in production. C4 wires the
-//! [`crate::sse::openai_responses::ResponseState`] machine PR-C1
-//! shipped.
+//! When the request carries `Accept: text/event-stream`, the response
+//! tee in [`crate::proxy::forward_http`] flips on the
+//! [`crate::sse::openai_responses::ResponseState`] state machine
+//! (PR-C1) and frames bytes through [`crate::sse::framing::SseFramer`]
+//! — never via naive `\n\n` splits. Decoded events update telemetry
+//! in a spawned task that can never block the byte path.
+//!
+//! Per-item-type request-side compression (PR-C3) runs **regardless**
+//! of `Accept`: a streaming `/v1/responses` request gets the same
+//! request-body compression as a non-streaming one. C4 closes the
+//! loop by confirming the full pipeline is active (no more
+//! `responses_streaming_passthrough_until_c4` fallback). The
+//! pipeline gate is `Config::enable_responses_streaming` (default
+//! `true`) — toggle off only as an emergency rollback.
+//!
+//! Compression of streaming **response** events is NOT performed.
+//! Output items are rendered live token-by-token; mid-stream
+//! rewriting would corrupt the user-visible UX and is not part of
+//! the live-zone-only contract (the live zone is **request**-side).
 //!
 //! # Per-item-type behaviour
 //!
@@ -67,20 +79,36 @@ pub async fn handle_responses(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // Streaming detection: when the client asks for SSE, log the
-    // volume so we can plan the C4 cut-over. The body still flows
-    // through `forward_http` — compression is gated by content-type
-    // (application/json) and SSE responses are streamed back via the
-    // existing tee in `forward_http` (already wired for the
-    // `OpenAIResponsesStreamState` parser by PR-C1).
+    // PR-C4: streaming pipeline confirmation. When the client asks
+    // for SSE, log a structured breadcrumb so dashboards can confirm
+    // the streaming pipeline is engaged (the SSE framer +
+    // ResponseState machine in `forward_http`'s tee). The
+    // `enable_responses_streaming` switch is honoured here — when
+    // disabled, we still forward but emit a distinct event so the
+    // operator sees the rollback take effect.
+    //
+    // Why log INFO (not WARN)? PR-C3 used WARN as a "this path is
+    // half-built" signal. PR-C4 wires the streaming state machine
+    // through, so the previous WARN is no longer accurate.
     if accepts_sse(&headers) {
-        tracing::warn!(
-            event = "responses_streaming_passthrough_until_c4",
-            method = %method,
-            path = %uri.path(),
-            "/v1/responses called with Accept: text/event-stream — \
-             passthrough until PR-C4 wires the streaming state machine"
-        );
+        if state.config.enable_responses_streaming {
+            tracing::info!(
+                event = "responses_streaming_pipeline_active",
+                method = %method,
+                path = %uri.path(),
+                framer = "byte_level_sse",
+                state_machine = "openai_responses",
+                "responses streaming pipeline engaged: SSE framer + ResponseState telemetry tee"
+            );
+        } else {
+            tracing::warn!(
+                event = "responses_streaming_pipeline_disabled",
+                method = %method,
+                path = %uri.path(),
+                "responses streaming pipeline disabled by --enable-responses-streaming=false; \
+                 SSE bytes will pass through opaquely (emergency rollback path)"
+            );
+        }
     }
 
     // Reconstruct the Request<Body> shape forward_http expects.

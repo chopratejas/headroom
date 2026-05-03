@@ -61,7 +61,7 @@ impl AppState {
 /// handled inside the catch-all handler when an `Upgrade: websocket` header
 /// is present.
 pub fn build_app(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/healthz/upstream", get(healthz_upstream))
         // PR-C2: explicit POST route for /v1/chat/completions. The
@@ -82,9 +82,49 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/v1/responses",
             post(crate::handlers::responses::handle_responses),
-        )
-        .fallback(any(catch_all))
-        .with_state(state)
+        );
+
+    // PR-C4: Conversations API (passthrough-with-instrumentation).
+    // The flag is read once at app-build time so router shape
+    // matches the configured policy. When disabled, requests still
+    // reach upstream via `catch_all`'s streaming forwarder, but the
+    // per-route handlers (and their structured-log breadcrumbs) are
+    // NOT mounted — operators flip the toggle to silence logs, not
+    // to break the surface. The catch-all preserves byte equivalence.
+    if state.config.enable_conversations_passthrough {
+        router = router
+            .route(
+                "/v1/conversations",
+                post(crate::handlers::conversations::handle_conversations_create),
+            )
+            .route(
+                "/v1/conversations/:conversation_id",
+                get(crate::handlers::conversations::handle_conversations_get)
+                    .post(crate::handlers::conversations::handle_conversations_update)
+                    .delete(crate::handlers::conversations::handle_conversations_delete),
+            )
+            .route(
+                "/v1/conversations/:conversation_id/items",
+                post(crate::handlers::conversations::handle_conversations_items_create)
+                    .get(crate::handlers::conversations::handle_conversations_items_list),
+            )
+            .route(
+                "/v1/conversations/:conversation_id/items/:item_id",
+                get(crate::handlers::conversations::handle_conversations_item_get)
+                    .delete(crate::handlers::conversations::handle_conversations_item_delete),
+            );
+    } else {
+        // Mirror the WARN we use elsewhere when a default-on guard
+        // is flipped off. Logged at app-build time, not per-request.
+        tracing::warn!(
+            event = "conversations_passthrough_disabled",
+            "Conversations API per-route handlers disabled by \
+             --enable-conversations-passthrough=false; requests will \
+             still reach upstream via the catch-all (no per-route logs)"
+        );
+    }
+
+    router.fallback(any(catch_all)).with_state(state)
 }
 
 /// Catch-all handler. If the request is a WebSocket upgrade, hand off to the
@@ -515,9 +555,29 @@ pub(crate) async fn forward_http(
     // bytes flow to the client unchanged; the state machine sinks
     // bytes into a `tokio::sync::mpsc` and runs in a spawned task
     // that can never block the byte path.
+    //
+    // PR-C4: the OpenAI Responses arm is gated by
+    // `enable_responses_streaming`. When that flag is false the
+    // tee is short-circuited to `None` so the framer + state
+    // machine don't spin up and bytes flow opaquely. Other
+    // providers' state machines are unaffected.
     let is_sse = is_sse_response(upstream_resp.headers());
     let sse_kind = if is_sse {
-        SseStreamKind::for_request_path(&path_for_log)
+        let kind = SseStreamKind::for_request_path(&path_for_log);
+        if matches!(kind, SseStreamKind::OpenAiResponses)
+            && !state.config.enable_responses_streaming
+        {
+            tracing::info!(
+                request_id = %request_id,
+                path = %path_for_log,
+                event = "responses_streaming_state_machine_skipped",
+                reason = "enable_responses_streaming=false",
+                "PR-C4 streaming pipeline disabled; SSE bytes pass through without telemetry"
+            );
+            SseStreamKind::None
+        } else {
+            kind
+        }
     } else {
         SseStreamKind::None
     };

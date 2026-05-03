@@ -9,4 +9,5 @@
 //! based on `classify_compressible_path`.
 
 pub mod chat_completions;
+pub mod conversations;
 pub mod responses;
