@@ -41,6 +41,11 @@ humantime = "2"
 bytesize = "1"
 tokio-util = { version = "0.7" }
 headroom-core = { path = "../headroom-core" }
+# PR-D4: GCP Application Default Credentials → bearer token for
+# Vertex `:rawPredict` / `:streamRawPredict`. See workspace
+# Cargo.toml for rationale.
+gcp_auth = { workspace = true }
+async-trait = "0.1"
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

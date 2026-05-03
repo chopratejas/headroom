@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use headroom_proxy::vertex::TokenSource;
 use headroom_proxy::{build_app, AppState, Config};
 use tokio::sync::oneshot;
 use url::Url;
@@ -45,10 +46,27 @@ pub async fn start_proxy_with<F>(upstream: &str, customize: F) -> ProxyHandle
 where
     F: FnOnce(&mut Config),
 {
+    start_proxy_with_state(upstream, customize, |_state| {}).await
+}
+
+/// Start a proxy with both a `Config` customization and an
+/// `AppState` customization. PR-D4 uses this to inject a
+/// `StaticTokenSource` for Vertex tests (so they never hit real GCP).
+#[allow(dead_code)]
+pub async fn start_proxy_with_state<FCfg, FState>(
+    upstream: &str,
+    customize_config: FCfg,
+    customize_state: FState,
+) -> ProxyHandle
+where
+    FCfg: FnOnce(&mut Config),
+    FState: FnOnce(&mut AppState),
+{
     let upstream_url: Url = upstream.parse().expect("valid upstream url");
     let mut config = Config::for_test(upstream_url);
-    customize(&mut config);
-    let state = AppState::new(config.clone()).expect("app state");
+    customize_config(&mut config);
+    let mut state = AppState::new(config.clone()).expect("app state");
+    customize_state(&mut state);
     let app = build_app(state).into_make_service_with_connect_info::<SocketAddr>();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -69,6 +87,16 @@ where
         shutdown: Some(tx),
         task,
     }
+}
+
+/// Convenience: replace the default `vertex_token_source` with a
+/// `StaticTokenSource` returning the supplied bearer string. Used by
+/// the PR-D4 Vertex integration tests so they never hit real GCP.
+#[allow(dead_code)]
+pub fn install_static_token_source(state: &mut AppState, bearer: &str) {
+    state.vertex_token_source = Arc::new(headroom_proxy::vertex::StaticTokenSource::new(
+        bearer.to_string(),
+    )) as Arc<dyn TokenSource>;
 }
 
 /// Hold a reference to the config so dead_code doesn't strip its use.

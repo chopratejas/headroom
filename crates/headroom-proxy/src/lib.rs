@@ -10,6 +10,7 @@ pub mod health;
 pub mod proxy;
 pub mod responses_items;
 pub mod sse;
+pub mod vertex;
 pub mod websocket;
 
 pub use config::Config;

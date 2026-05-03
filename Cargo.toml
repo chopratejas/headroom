@@ -56,3 +56,10 @@ axum = "0.7"
 tower = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 pyo3 = "0.22"
+# PR-D4: Vertex publisher path uses GCP Application Default Credentials
+# (ADC) → bearer token for the `Authorization: Bearer <token>` header.
+# `gcp_auth` resolves the chain (gcloud user creds, GCE/GKE metadata
+# server, service-account JSON, workload-identity federation) without
+# us baking provider-specific knowledge in. The token source is wrapped
+# in a `TokenSource` trait so tests inject a static-token mock.
+gcp_auth = "0.12"
