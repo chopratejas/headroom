@@ -1085,30 +1085,33 @@ def test_classify_auth_mode_routes_payg_vs_oauth(proxy_client: TestClient) -> No
         }
 
         # 1) PAYG via x-api-key
+        # ggignore: synthetic auth-mode classifier fixture (no live API call).
         proxy_client.post(
             "/v1/messages",
             headers={
-                "x-api-key": "sk-ant-api03-payg-fixture",
+                "x-api-key": "sk-ant-api03-payg-fixture",  # noqa: S105
                 "anthropic-version": LIVE_CONFIG["anthropic_version"],
                 "content-type": "application/json",
             },
             json=common_body,
         )
         # 2) OAuth via sk-ant-oat01- bearer
+        # ggignore: synthetic auth-mode classifier fixture (no live API call).
         proxy_client.post(
             "/v1/messages",
             headers={
-                "authorization": "Bearer sk-ant-oat01-oauth-fixture",
+                "authorization": "Bearer sk-ant-oat01-oauth-fixture",  # noqa: S105
                 "anthropic-version": LIVE_CONFIG["anthropic_version"],
                 "content-type": "application/json",
             },
             json=common_body,
         )
         # 3) PAYG via sk-ant-api03- bearer (some clients send it this way)
+        # ggignore: synthetic auth-mode classifier fixture (no live API call).
         proxy_client.post(
             "/v1/messages",
             headers={
-                "authorization": "Bearer sk-ant-api03-payg-bearer-fixture",
+                "authorization": "Bearer sk-ant-api03-payg-bearer-fixture",  # noqa: S105
                 "anthropic-version": LIVE_CONFIG["anthropic_version"],
                 "content-type": "application/json",
             },

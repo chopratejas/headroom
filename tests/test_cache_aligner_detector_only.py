@@ -212,7 +212,8 @@ def test_detect_volatile_content_iso_date() -> None:
 
 
 def test_detect_volatile_content_jwt() -> None:
-    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    # ggignore: canonical fake JWT, payload {"sub":"1"}, no privilege.
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"  # noqa: S105
     findings = detect_volatile_content(f"Token: {jwt}")
     labels = [f.label for f in findings]
     assert "jwt" in labels
