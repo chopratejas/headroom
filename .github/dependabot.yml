@@ -18,13 +18,34 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "ci"
+    # Wait 3 days after a release before bumping. Avoids immediately broken
+    # tags (e.g. floating-major tag missing for cosign-installer v4 right
+    # after publish, fixed only with the .x.y point release).
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
     groups:
       actions-minor-patch:
         update-types:
           - "minor"
           - "patch"
+      # Group docker/* actions together (login/metadata/buildx/bake) so
+      # major bumps land in one PR — they're tested together anyway.
+      docker-actions:
+        patterns:
+          - "docker/*"
+        update-types:
+          - "major"
+      # Group actions/* core actions for major bumps.
+      core-actions:
+        patterns:
+          - "actions/*"
+        update-types:
+          - "major"
 
   # Python dependency updates (pip)
   - package-ecosystem: pip
