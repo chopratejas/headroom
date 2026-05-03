@@ -55,13 +55,28 @@ ARG HEADROOM_EXTRAS=proxy,code
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system ".[${HEADROOM_EXTRAS}]"
 
-# Layer 2: copy real source, reinstall only headroom-ai (no deps)
-COPY headroom/ headroom/
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --no-deps --reinstall-package headroom-ai .
-
-# Layer 3 (Hotfix-A0): build and install the Rust extension wheel. uv
-# already installed `maturin` as a transitive of the [proxy]/[code]
+# Layer 2 (Hotfix-A0): build and install the Rust extension wheel
+# BEFORE installing headroom-ai source. Why this order:
+#
+#   * The headroom-core-py wheel includes a stub `headroom/__init__.py`
+#     plus `headroom/_core.cpython-*.so` (maturin's `python-source`
+#     layout — see `crates/headroom-py/pyproject.toml`).
+#   * The headroom-ai install also writes files under `headroom/`.
+#   * If headroom-ai is installed FIRST and the wheel goes second with
+#     `--force-reinstall`, pip uninstalls the wheel's previously
+#     installed files, deleting `headroom/__init__.py` (which the wheel
+#     also claims). headroom-ai's __init__.py was already overwritten
+#     by the wheel's empty stub at install-time, so the deletion leaves
+#     no `__init__.py` at all — `from headroom._core import hello`
+#     then fails with `ModuleNotFoundError: No module named
+#     'headroom._core'`. Observed in PR #350 CI before this reorder.
+#   * Installing the wheel FIRST means: wheel lays down stub
+#     `__init__.py` + `_core.so`. Then headroom-ai install OVERWRITES
+#     `__init__.py` with the real one and adds the rest of the
+#     `headroom/` tree. `_core.so` survives because headroom-ai
+#     doesn't claim ownership of it.
+#
+# uv already installed `maturin` as a transitive of the [proxy]/[code]
 # extras; if it didn't, install it explicitly here so the build never
 # silently skips.
 COPY crates/ crates/
@@ -71,7 +86,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/build/target \
     uv pip install --system maturin \
     && maturin build --release -m crates/headroom-py/Cargo.toml --out /build/wheels \
-    && uv pip install --system --force-reinstall --no-deps /build/wheels/headroom_core_py-*.whl
+    && uv pip install --system --no-deps /build/wheels/headroom_core_py-*.whl
+
+# Layer 3: copy real source, install headroom-ai (no deps). This
+# overwrites the wheel's stub `headroom/__init__.py` with the real one
+# and adds the full `headroom/` tree alongside the surviving
+# `_core.so` from Layer 2.
+COPY headroom/ headroom/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --no-deps --reinstall-package headroom-ai .
 
 # Layer 4 (Hotfix-A0): verify the extension actually loads end-to-end
 # inside the build image. If this fails, the runtime image would fail
