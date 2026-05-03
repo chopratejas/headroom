@@ -246,7 +246,10 @@ def test_handle_openai_responses_routes_chatgpt_auth_to_backend_api(monkeypatch)
     assert response.status_code == 200
 
 
-def test_handle_openai_responses_stream_keeps_compression(monkeypatch):
+def test_handle_openai_responses_stream_skips_python_compression(monkeypatch):
+    """PR-C5: Python no longer compresses /v1/responses (Rust handles it
+    natively). The streaming forward path must still fire — only the
+    Python compression dispatch is retired."""
     request = _build_request(
         {
             "model": "gpt-5.4",
@@ -264,15 +267,6 @@ def test_handle_openai_responses_stream_keeps_compression(monkeypatch):
     )
     handler = _DummyOpenAIHandler()
     handler.config.optimize = True
-    handler.openai_pipeline.apply.return_value = SimpleNamespace(
-        messages=[
-            {"role": "system", "content": "Keep it short"},
-            {"role": "user", "content": "hello"},
-        ],
-        transforms_applied=[],
-        tokens_before=2,
-        tokens_after=2,
-    )
 
     monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda model: _DummyTokenizer())
 
@@ -280,7 +274,7 @@ def test_handle_openai_responses_stream_keeps_compression(monkeypatch):
 
     assert response.status_code == 200
     assert handler.captured_stream_request is not None
-    assert handler.openai_pipeline.apply.call_count == 1
+    assert handler.openai_pipeline.apply.call_count == 0
     assert handler.captured_stream_request[2]["stream"] is True
 
 
