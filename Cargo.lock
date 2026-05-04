@@ -1813,6 +1813,7 @@ dependencies = [
  "fastembed",
  "flate2",
  "hf-hub 0.4.3",
+ "http",
  "magika",
  "md-5",
  "proptest",

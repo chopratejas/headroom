@@ -33,6 +33,7 @@ import httpx
 
 from headroom.copilot_auth import apply_copilot_api_auth, build_copilot_upstream_url
 from headroom.pipeline import PipelineStage, summarize_routing_markers
+from headroom.proxy.auth_mode import classify_auth_mode
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -163,6 +164,14 @@ class OpenAIHandlerMixin:
 
         start_time = time.time()
         request_id = await self._next_request_id()
+
+        # Phase F PR-F1: classify auth mode at request entry. The result
+        # is stored on `request.state` so downstream handlers (cache
+        # gates, header injection, lossy-compressor gates) read it
+        # without re-classifying. Pure function, well under 10us.
+        auth_mode = classify_auth_mode(request.headers)
+        request.state.auth_mode = auth_mode
+        logger.debug(f"[{request_id}] auth_mode_classified mode={auth_mode.value}")
 
         # Check request body size
         content_length = request.headers.get("content-length")
@@ -1160,6 +1169,14 @@ class OpenAIHandlerMixin:
 
         start_time = time.time()
         request_id = await self._next_request_id()
+
+        # Phase F PR-F1: classify auth mode at request entry. The result
+        # is stored on `request.state` so downstream handlers (cache
+        # gates, header injection, lossy-compressor gates) read it
+        # without re-classifying. Pure function, well under 10us.
+        auth_mode = classify_auth_mode(request.headers)
+        request.state.auth_mode = auth_mode
+        logger.debug(f"[{request_id}] auth_mode_classified mode={auth_mode.value}")
 
         # Check request body size
         content_length = request.headers.get("content-length")

@@ -206,12 +206,51 @@ jobs:
         run: |
           python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
 
+      # macOS Intel runner does NOT have OpenSSL on the openssl-sys
+      # default lookup path; aarch64 finds it via /opt/homebrew/opt/openssl@3
+      # but x86_64 runners use /usr/local/Cellar which openssl-sys does
+      # not auto-discover. Resolve OPENSSL_DIR explicitly so openssl-sys
+      # (transitive via fastembed → hf-hub → ureq → native-tls) builds
+      # on both Apple silicon and Intel.
+      - name: Install OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install openssl@3 pkg-config
+          openssl_dir="$(brew --prefix openssl@3)"
+          {
+            echo "OPENSSL_DIR=$openssl_dir"
+            echo "OPENSSL_LIB_DIR=$openssl_dir/lib"
+            echo "OPENSSL_INCLUDE_DIR=$openssl_dir/include"
+            echo "PKG_CONFIG_PATH=$openssl_dir/lib/pkgconfig"
+          } >> "$GITHUB_ENV"
+
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
           manylinux: ${{ matrix.manylinux }}
+          # cibuildwheel/maturin-action spins up its own manylinux
+          # container; the e2e Dockerfiles' yum install openssl-devel
+          # is not inherited. Install build-time native deps inside
+          # whatever distro the manylinux image happens to be (RHEL
+          # family uses yum, Debian-family musllinux uses apt). Without
+          # this, openssl-sys (pulled by fastembed → hf-hub → ureq →
+          # native-tls) fails: "pkg-config exited with status code 1 —
+          # Package openssl was not found". Only runs for Linux builds;
+          # macOS sets up via the brew step above.
+          before-script-linux: |
+            set -euo pipefail
+            if command -v yum >/dev/null 2>&1; then
+              yum install -y openssl-devel pkgconfig perl-IPC-Cmd
+            elif command -v apt-get >/dev/null 2>&1; then
+              apt-get update
+              apt-get install -y --no-install-recommends libssl-dev pkg-config
+            else
+              echo "::error::No supported package manager (yum/apt-get) found in manylinux container" >&2
+              exit 1
+            fi
         env:
           # PyO3 0.22 supports up to Python 3.13; allow forward-compat
           # builds for 3.14+ until we bump PyO3 (tracked separately).
@@ -315,11 +354,14 @@ jobs:
           node-version: "20"
           registry-url: ${{ env.NPM_REGISTRY_URL }}
 
-      - name: Download dist artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
+      # No artifact download required: the publish steps below pack and
+      # publish directly from the checked-out source tree (sdk/typescript
+      # and plugins/openclaw) via `npm pack` + `npm publish`. The
+      # `dist` artifact is a Python-distribution aggregate produced by
+      # `collect-dist`; it has no npm content. Earlier versions of
+      # this workflow downloaded it speculatively, which now fails as
+      # "Artifact not found" because publish-npm is not gated on
+      # collect-dist. Removing the dead step is the right fix.
 
       - name: Publish ${{ env.NPM_SDK_PACKAGE }} (TypeScript SDK) to npmjs.org
         id: npm-sdk-publish
@@ -374,11 +416,11 @@ jobs:
           node-version: "20"
           registry-url: ${{ env.GITHUB_PACKAGES_REGISTRY_URL }}
 
-      - name: Download dist artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
+      # No artifact download required: the publish-github-packages flow
+      # below `npm pack`s its own scoped tarball into a workdir and
+      # publishes that. Same reasoning as publish-npm — the speculative
+      # `dist` download was failing "Artifact not found" because this
+      # job is not gated on `collect-dist`.
 
       - name: Publish ${{ env.NPM_SDK_PACKAGE }} to GitHub Package Registry
         id: gpr-sdk-publish

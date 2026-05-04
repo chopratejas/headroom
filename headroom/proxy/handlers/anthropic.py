@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 import httpx
 
 from headroom.pipeline import PipelineStage, summarize_routing_markers
+from headroom.proxy.auth_mode import classify_auth_mode
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -353,6 +354,14 @@ class AnthropicHandlerMixin:
         start_time = time.time()
         request_id = await self._next_request_id()
         trace_session_id = uuid.uuid4().hex
+
+        # Phase F PR-F1: classify auth mode at request entry. The result
+        # is stored on `request.state` so downstream handlers (cache
+        # gates, header injection, lossy-compressor gates) read it
+        # without re-classifying. Pure function, well under 10us.
+        auth_mode = classify_auth_mode(request.headers)
+        request.state.auth_mode = auth_mode
+        logger.debug(f"[{request_id}] auth_mode_classified mode={auth_mode.value}")
 
         # Unit 2: per-stage timings for the pre-upstream phase. The
         # finalizer emits one structured log line + Prometheus

@@ -22,6 +22,11 @@ use crate::error::ProxyError;
 use crate::headers::{build_forward_request_headers, filter_response_headers};
 use crate::health::{healthz, healthz_upstream};
 use crate::websocket::ws_handler;
+// Phase F PR-F1: imported as `classify_auth_mode` to make the call
+// site self-documenting. `AuthMode` is re-exported under the same
+// path for downstream handlers that read the value back out of
+// `req.extensions()` (Phase F PR-F2/F3/F4).
+use headroom_core::auth_mode::classify as classify_auth_mode;
 
 /// Shared state passed to every handler.
 ///
@@ -277,7 +282,7 @@ pub(crate) fn join_upstream_path(base: &url::Url, path: &str, query: Option<&str
 pub(crate) async fn forward_http(
     state: AppState,
     client_addr: SocketAddr,
-    req: Request<Body>,
+    mut req: Request<Body>,
 ) -> Result<Response<Body>, ProxyError> {
     let start = Instant::now();
     let request_id = ensure_request_id(req.headers());
@@ -290,15 +295,24 @@ pub(crate) async fn forward_http(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    // Per PR-A1: structured entry log. `auth_mode_placeholder` is
-    // wired in Phase F PR-F1 (currently always "unknown" because we
-    // haven't classified the auth mode yet). Hardcoding it here is
-    // OK because it's logging metadata, not behaviour. Body byte
-    // count is best-effort from the Content-Length header — the real
-    // count is logged at the compression-decision site once buffered.
+    // Phase F PR-F1: classify auth mode at request entry. The result
+    // is stored in request extensions so downstream handlers (cache
+    // gates, header injection, lossy-compressor gates) read it
+    // without re-classifying. Pure function, <10us per call —
+    // doing it once here is cheaper than threading the result.
+    let auth_mode = classify_auth_mode(req.headers());
+    req.extensions_mut().insert(auth_mode);
+
+    // Per PR-A1: structured entry log. The `auth_mode` field is now
+    // populated with the real classification result (Phase F PR-F1
+    // replaces the prior `auth_mode_placeholder = "unknown"`). Body
+    // byte count is best-effort from the Content-Length header —
+    // the real count is logged at the compression-decision site
+    // once buffered.
     tracing::debug!(
+        event = "auth_mode_classified",
         request_id = %request_id,
-        auth_mode_placeholder = "unknown",
+        auth_mode = auth_mode.as_str(),
         method = %method,
         path = %path_for_log,
         content_length_bytes = ?body_bytes_hint,
