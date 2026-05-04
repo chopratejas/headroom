@@ -178,15 +178,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Use manylinux_2_28 explicitly (instead of `auto`, which resolved
+          # to manylinux2014 / CentOS 7 / OpenSSL 1.0.2k — too old for
+          # `openssl-sys 0.9`). manylinux_2_28 is AlmaLinux 8 / glibc 2.28,
+          # the same baseline our e2e Dockerfiles use post-#360. The
+          # `openssl/vendored` Cargo feature (added in headroom-proxy)
+          # compiles OpenSSL from source so the system version doesn't
+          # matter, but pinning the floor keeps us off CentOS 7's ancient
+          # gcc/glibc surface anyway.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            manylinux: auto
+            manylinux: 2_28
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             manylinux: 2_28
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            manylinux: ""
+          # NOTE: `macos-15-intel` (x86_64-apple-darwin) is intentionally
+          # NOT in the matrix. `ort-sys 2.0.0-rc.12` (transitive via our
+          # ML compression backend) does not provide prebuilt ONNX Runtime
+          # binaries for `x86_64-apple-darwin`, and building ORT from
+          # source would add CMake + ~5 minutes per build. Apple Silicon
+          # macOS is fully covered below; Intel-mac users install the
+          # platform-independent sdist (also produced by this matrix).
+          # Tracked as a follow-up: switch to `ort-tract` or upstream a
+          # request for x86_64 macOS prebuilts.
           - os: macos-14
             target: aarch64-apple-darwin
             manylinux: ""
@@ -206,47 +220,29 @@ jobs:
         run: |
           python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
 
-      # macOS Intel runner does NOT have OpenSSL on the openssl-sys
-      # default lookup path; aarch64 finds it via /opt/homebrew/opt/openssl@3
-      # but x86_64 runners use /usr/local/Cellar which openssl-sys does
-      # not auto-discover. Resolve OPENSSL_DIR explicitly so openssl-sys
-      # (transitive via fastembed → hf-hub → ureq → native-tls) builds
-      # on both Apple silicon and Intel.
-      - name: Install OpenSSL (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          brew install openssl@3 pkg-config
-          openssl_dir="$(brew --prefix openssl@3)"
-          {
-            echo "OPENSSL_DIR=$openssl_dir"
-            echo "OPENSSL_LIB_DIR=$openssl_dir/lib"
-            echo "OPENSSL_INCLUDE_DIR=$openssl_dir/include"
-            echo "PKG_CONFIG_PATH=$openssl_dir/lib/pkgconfig"
-          } >> "$GITHUB_ENV"
-
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
           manylinux: ${{ matrix.manylinux }}
-          # cibuildwheel/maturin-action spins up its own manylinux
-          # container; the e2e Dockerfiles' yum install openssl-devel
-          # is not inherited. Install build-time native deps inside
-          # whatever distro the manylinux image happens to be (RHEL
-          # family uses yum, Debian-family musllinux uses apt). Without
-          # this, openssl-sys (pulled by fastembed → hf-hub → ureq →
-          # native-tls) fails: "pkg-config exited with status code 1 —
-          # Package openssl was not found". Only runs for Linux builds;
-          # macOS sets up via the brew step above.
+          # OpenSSL is vendored at the cargo level via headroom-proxy's
+          # `openssl = { features = ["vendored"] }` dep — that compiles
+          # OpenSSL from source as part of the cargo build, so we no
+          # longer need to install system OpenSSL in the manylinux
+          # container or via Homebrew on macOS. We DO still install
+          # `perl-IPC-Cmd` because OpenSSL's vendored Configure script
+          # uses it (without it the build fails with "Can't locate
+          # IPC/Cmd.pm"). The `if`/`elif` covers RHEL-family manylinux
+          # images; we don't run on Debian-family musllinux today, but
+          # the apt branch makes it forward-compatible.
           before-script-linux: |
             set -euo pipefail
             if command -v yum >/dev/null 2>&1; then
-              yum install -y openssl-devel pkgconfig perl-IPC-Cmd
+              yum install -y perl-IPC-Cmd
             elif command -v apt-get >/dev/null 2>&1; then
               apt-get update
-              apt-get install -y --no-install-recommends libssl-dev pkg-config
+              apt-get install -y --no-install-recommends libipc-cmd-perl
             else
               echo "::error::No supported package manager (yum/apt-get) found in manylinux container" >&2
               exit 1

@@ -69,34 +69,104 @@ def test_ci_commitlint_skips_default_github_merge_commits() -> None:
     assert "!startsWith(github.event.head_commit.message, 'Merge pull request ')" in content
 
 
-def test_build_wheels_installs_openssl_devel_on_linux_via_before_script() -> None:
-    """The wheel matrix uses PyO3/maturin-action's manylinux container,
-    which does not inherit our e2e Dockerfiles' yum installs. Without an
-    explicit before-script-linux, openssl-sys (transitive via fastembed
-    → hf-hub → ureq → native-tls) fails to find pkg-config'd OpenSSL
-    and the Linux x86_64/aarch64 wheels never build.
+def test_headroom_proxy_vendors_openssl() -> None:
+    """`hf-hub` (transitive via `fastembed`) hard-codes `native-tls` as a
+    default feature, forcing `openssl-sys` for the entire workspace
+    despite our `reqwest`/`tokio-tungstenite`/`tokio-rustls` preferences.
+    The wheel matrix breaks on every Linux + Intel-macOS target where
+    the manylinux container's system OpenSSL is too old (manylinux2014
+    ships 1.0.2k) or the cross-compile sysroot has none (aarch64).
+    Enabling the `vendored` Cargo feature on `openssl` instructs
+    `openssl-sys` to compile OpenSSL from source — works on every
+    target uniformly.
+    """
+    cargo_toml = (ROOT / "crates" / "headroom-proxy" / "Cargo.toml").read_text(encoding="utf-8")
+
+    # Guard against a future refactor that re-removes the vendored dep.
+    assert 'openssl = { version = "0.10", features = ["vendored"] }' in cargo_toml
+
+
+def test_build_wheels_installs_perl_ipc_cmd_for_vendored_openssl() -> None:
+    """OpenSSL's vendored `Configure` script needs `IPC::Cmd`. Without
+    it the build fails with `Can't locate IPC/Cmd.pm`. The before-script
+    must install it on whichever distro the manylinux container runs
+    (RHEL family today; defensive apt branch for future Debian-family
+    musllinux builds).
     """
     content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "before-script-linux:" in content
-    assert "yum install -y openssl-devel" in content
-    # apt-get fallback for non-RHEL manylinux variants
-    assert "libssl-dev pkg-config" in content
+    assert "perl-IPC-Cmd" in content  # yum (RHEL family)
+    assert "libipc-cmd-perl" in content  # apt (Debian family fallback)
 
 
-def test_build_wheels_resolves_openssl_dir_explicitly_on_macos() -> None:
-    """macOS Intel runners (`macos-15-intel`) keep Homebrew under
-    `/usr/local/Cellar`, which `openssl-sys` does not auto-discover.
-    aarch64 runners use `/opt/homebrew/opt/openssl@3` which IS on the
-    default path. Setting OPENSSL_DIR explicitly fixes Intel without
-    regressing aarch64.
+def test_build_wheels_does_not_set_openssl_dir() -> None:
+    """`OPENSSL_DIR` (and the related `OPENSSL_LIB_DIR` /
+    `OPENSSL_INCLUDE_DIR`) DEFEATS the `vendored` feature: openssl-sys
+    will use the system OpenSSL at that path instead of compiling from
+    source. The earlier macOS hot-fix exported these env vars; with
+    vendored enabled they must NOT be set, otherwise we silently
+    regress to the system-OpenSSL path that broke originally.
     """
     content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "Install OpenSSL (macOS)" in content
-    assert "if: runner.os == 'macOS'" in content
-    assert "brew install openssl@3" in content
-    assert 'echo "OPENSSL_DIR=$openssl_dir"' in content
+    # Locate the build-wheels job and assert it does not export OPENSSL_DIR.
+    bw_start = content.index("\n  build-wheels:")
+    bw_end = content.index("\n  collect-dist:")
+    body = content[bw_start:bw_end]
+
+    assert "OPENSSL_DIR" not in body, (
+        "build-wheels must not set OPENSSL_DIR — it disables openssl-sys's "
+        "vendored feature and reintroduces the system-OpenSSL dependency."
+    )
+
+
+def test_build_wheels_matrix_excludes_intel_macos() -> None:
+    """`ort-sys 2.0.0-rc.12` (transitive via the ML compression backend)
+    has no prebuilt ONNX Runtime binaries for `x86_64-apple-darwin`.
+    Building ORT from source would add CMake + ~5 minutes per build.
+    Apple Silicon macOS is fully covered; Intel-mac users install from
+    the platform-independent sdist this matrix also produces.
+
+    We assert against the actual matrix entry shape (`target: <triple>`
+    on a non-comment line) so explanatory comments mentioning the
+    excluded triple don't false-positive.
+    """
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    bw_start = content.index("\n  build-wheels:")
+    bw_end = content.index("\n  collect-dist:")
+    body = content[bw_start:bw_end]
+
+    matrix_targets: list[str] = []
+    for raw in body.splitlines():
+        stripped = raw.lstrip()
+        # Skip YAML comments — only look at real matrix-entry lines.
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("target:"):
+            # `target: x86_64-apple-darwin` → `x86_64-apple-darwin`
+            matrix_targets.append(stripped.split(":", 1)[1].strip())
+
+    assert "aarch64-apple-darwin" in matrix_targets, "Apple Silicon must stay in the matrix"
+    assert "x86_64-unknown-linux-gnu" in matrix_targets
+    assert "aarch64-unknown-linux-gnu" in matrix_targets
+
+    # Intel macOS must NOT be a matrix entry — re-add only after switching
+    # off ort-sys (e.g., to ort-tract) or adding a CMake-from-source step.
+    assert "x86_64-apple-darwin" not in matrix_targets, (
+        f"x86_64-apple-darwin must not be a wheel-matrix target; got {matrix_targets}"
+    )
+
+    # The runner OS itself shouldn't appear as a configured `os:` either.
+    matrix_os: list[str] = []
+    for raw in body.splitlines():
+        stripped = raw.lstrip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("os:"):
+            matrix_os.append(stripped.split(":", 1)[1].strip())
+    assert "macos-15-intel" not in matrix_os
 
 
 def test_npm_publish_jobs_do_not_download_dist_artifact() -> None:
