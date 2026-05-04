@@ -89,15 +89,53 @@ def test_headroom_proxy_vendors_openssl() -> None:
 def test_build_wheels_installs_perl_ipc_cmd_for_vendored_openssl() -> None:
     """OpenSSL's vendored `Configure` script needs `IPC::Cmd`. Without
     it the build fails with `Can't locate IPC/Cmd.pm`. The before-script
-    must install it on whichever distro the manylinux container runs
-    (RHEL family today; defensive apt branch for future Debian-family
-    musllinux builds).
+    must (a) probe the module first to skip a no-op install when the
+    container already has it, (b) cover RHEL family (dnf/yum) AND
+    Debian/Ubuntu (apt-get) AND musllinux (apk) since the maturin-action
+    uses different containers per target, and (c) fail loud with an
+    explicit `perl -MIPC::Cmd -e 1` assertion if the install path
+    didn't actually resolve the module — no silent fallback into a
+    later confusing openssl-src build error.
+
+    The previous shape used `libipc-cmd-perl` on the apt branch, which
+    is a deprecated alias and is not in the default sources of the
+    aarch64-cross container; that broke the aarch64 wheel build.
     """
     content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "before-script-linux:" in content
-    assert "perl-IPC-Cmd" in content  # yum (RHEL family)
-    assert "libipc-cmd-perl" in content  # apt (Debian family fallback)
+
+    # Pre-probe so we no-op when IPC::Cmd is already importable.
+    assert "perl -MIPC::Cmd -e 1" in content
+
+    # All three RHEL-family + Debian-family + Alpine package managers covered.
+    assert "dnf install -y perl-IPC-Cmd" in content
+    assert "yum install -y perl-IPC-Cmd" in content
+    # The plain `perl` meta-package pulls perl-modules-* on Debian/Ubuntu,
+    # which contains IPC::Cmd. The legacy `libipc-cmd-perl` alias must NOT
+    # be referenced as an installable target — it is no longer in default
+    # Debian/Ubuntu sources. We allow the string in YAML/shell comments
+    # (operator hints) by checking only non-comment lines.
+    assert "apt-get install -y --no-install-recommends perl" in content
+    assert "apk add --no-cache perl-utils" in content
+
+    non_comment_lines: list[str] = []
+    for raw in content.splitlines():
+        stripped = raw.lstrip()
+        # Drop YAML and shell `#` comments. Mid-line `#` comments would
+        # require a real YAML/shell tokenizer; the file's actual install
+        # commands are never on the same physical line as a comment.
+        if stripped.startswith("#"):
+            continue
+        non_comment_lines.append(raw)
+    code_only = "\n".join(non_comment_lines)
+    assert "libipc-cmd-perl" not in code_only, (
+        "libipc-cmd-perl must not appear as an apt-get target — it is a "
+        "deprecated alias not in default Debian/Ubuntu sources."
+    )
+
+    # Final fail-loud assertion (no silent fallback).
+    assert "perl -MIPC::Cmd -e 'print \"IPC::Cmd loaded OK" in content
 
 
 def test_build_wheels_does_not_set_openssl_dir() -> None:
