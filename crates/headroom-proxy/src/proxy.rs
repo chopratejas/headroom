@@ -88,6 +88,14 @@ pub fn build_app(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/healthz/upstream", get(healthz_upstream))
+        // PR-D3: Prometheus scrape endpoint. Renders the global
+        // registry in text format. The handler is stateless — no
+        // `AppState` needed — and idempotent across concurrent
+        // scrapes (`prometheus`'s registry uses internal locking).
+        // Mounted unconditionally because it has no dependencies on
+        // any feature flag; an operator who doesn't want it scraped
+        // simply firewalls the path.
+        .route("/metrics", get(crate::observability::handle_metrics))
         // PR-C2: explicit POST route for /v1/chat/completions. The
         // handler buffers the body and re-injects it into
         // `forward_http`, which runs the OpenAI live-zone gate
@@ -116,7 +124,16 @@ pub fn build_app(state: AppState) -> Router {
     // identical for `anthropic.claude-*` model IDs (Bedrock just
     // accepts both legacy `invoke` and modern `converse` paths).
     if state.config.enable_bedrock_native {
-        router = router
+        // PR-D3: Bedrock-scoped auth-mode middleware. Build a
+        // sub-router with ONLY the Bedrock routes, attach the
+        // auth-mode layer (so it fires before the handler runs and
+        // is scoped to these routes alone — `/v1/messages`,
+        // `/healthz`, etc. do NOT run through this middleware), and
+        // merge it into the parent router. The merge composes
+        // routes without changing their layer stacks; the parent's
+        // `with_state` (applied at the end) hands `AppState` to the
+        // Bedrock handlers identically.
+        let bedrock_router: Router<AppState> = Router::new()
             .route(
                 "/model/:model_id/invoke",
                 post(crate::bedrock::invoke::handle_invoke),
@@ -133,7 +150,11 @@ pub fn build_app(state: AppState) -> Router {
             .route(
                 "/model/:model_id/invoke-with-response-stream",
                 post(crate::bedrock::invoke_streaming::handle_invoke_streaming),
-            );
+            )
+            .route_layer(axum::middleware::from_fn(
+                crate::bedrock::classify_and_attach_auth_mode,
+            ));
+        router = router.merge(bedrock_router);
         if !state.config.bedrock_validate_eventstream_crc {
             tracing::warn!(
                 event = "bedrock_eventstream_crc_validation_disabled",

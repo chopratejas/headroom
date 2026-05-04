@@ -38,10 +38,10 @@
 //!   unsigned.
 
 use std::net::SocketAddr;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Extension, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -55,12 +55,48 @@ use crate::compression::{
     compress_anthropic_request, Outcome as AnthropicOutcome, PassthroughReason,
 };
 use crate::headers::filter_response_headers;
+use crate::observability::{observe_bedrock_invoke_latency, record_bedrock_invoke};
 use crate::proxy::AppState;
+// Phase F PR-F1 + PR-D3: the bedrock auth-mode layer
+// (`classify_and_attach_auth_mode`) populates `request.extensions()`
+// with `AuthMode` BEFORE this handler runs. We extract it via
+// `Extension<AuthMode>` so the middleware-supplied value is the
+// single source of truth — handler does NOT re-classify; that
+// would risk drift from the middleware's resolution + WARN log.
+use headroom_core::auth_mode::AuthMode;
 
 /// Anthropic vendor prefix as encoded in Bedrock model ids
 /// (`anthropic.claude-3-haiku-...`). Literal-match per project rule
 /// "no regexes for parsing the model ID".
 const ANTHROPIC_VENDOR_PREFIX: &str = "anthropic.";
+
+/// RAII guard that observes the `bedrock_invoke_latency_seconds`
+/// histogram on drop. Created at handler entry; observed when the
+/// guard goes out of scope no matter how the handler exits. Owning
+/// `String` rather than `&str` for the labels avoids capture-order
+/// dramas with the borrow checker on early-return paths.
+struct LatencyGuard {
+    model: String,
+    region: String,
+    start: Instant,
+}
+
+impl LatencyGuard {
+    fn start(model: &str, region: &str) -> Self {
+        Self {
+            model: model.to_string(),
+            region: region.to_string(),
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Drop for LatencyGuard {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        observe_bedrock_invoke_latency(&self.model, &self.region, elapsed);
+    }
+}
 
 /// AWS Bedrock Runtime DNS template. The `{}` placeholder is the
 /// region. Only used when `Config::bedrock_endpoint` is `None`.
@@ -71,9 +107,11 @@ const BEDROCK_RUNTIME_HOST_TEMPLATE: &str = "bedrock-runtime.{region}.amazonaws.
 /// Buffers the body so the live-zone compressor + SigV4 signer can
 /// inspect it. Both are required to be applied to the SAME byte slice
 /// — the signer hashes whatever the forwarder will actually send.
+#[allow(clippy::too_many_arguments)] // axum extractors demand one argument per role
 pub async fn handle_invoke(
     State(state): State<AppState>,
     ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
+    Extension(auth_mode): Extension<AuthMode>,
     Path(model_id): Path<String>,
     method: Method,
     uri: Uri,
@@ -87,11 +125,32 @@ pub async fn handle_invoke(
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // PR-D3: latency stopwatch starts at handler entry (after
+    // routing + middleware). The histogram observes wall-clock
+    // time, so it captures upstream RTT + sign + compress as a
+    // single number — operators can split contributions via the
+    // `bedrock_*` structured-log timing fields if a slow path
+    // shows up. Wrapped in a `LatencyGuard` so EVERY return path
+    // (success, sign-failure, upstream-error, response-build error)
+    // observes the histogram. RAII keeps the call site to one
+    // line and rules out future regressions where someone adds a
+    // new error path and forgets to instrument.
+    let region = state.config.bedrock_region.clone();
+    let _latency_guard = LatencyGuard::start(&model_id, &region);
+
+    // PR-D3: count every invoke at handler entry (one per request,
+    // before any error path can early-return). Pairs with the
+    // structured log emitted below so operators can join the
+    // counter with the trace by `request_id`.
+    record_bedrock_invoke(&model_id, &region, auth_mode);
+
     tracing::info!(
         event = "bedrock_invoke_received",
         request_id = %request_id,
         method = %method,
         model_id = %model_id,
+        region = %region,
+        auth_mode = auth_mode.as_str(),
         body_bytes = body.len(),
         "bedrock invoke route received request"
     );

@@ -53,6 +53,12 @@ aws-smithy-runtime-api = { workspace = true }
 # transitively pulled in by `aws-smithy-*` (so this is not an
 # additional cold dep — promoting to a direct one for clarity).
 crc32fast = "1"
+# Phase D PR-D3: Prometheus metrics for Bedrock observability. The
+# `prometheus` crate's default-features pull in `protobuf`, which we
+# don't need (we serve text-format scrapes only), so we disable
+# defaults and re-enable nothing — pure registry + counter +
+# histogram + text encoder is sufficient.
+prometheus = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

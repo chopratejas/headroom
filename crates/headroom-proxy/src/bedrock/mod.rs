@@ -45,6 +45,7 @@
 //! parsing is in [`eventstream`]; the SSE translator is in
 //! [`eventstream_to_sse`].
 
+pub mod auth_mode_layer;
 pub mod envelope;
 pub mod eventstream;
 pub mod eventstream_to_sse;
@@ -52,6 +53,7 @@ pub mod invoke;
 pub mod invoke_streaming;
 pub mod sigv4;
 
+pub use auth_mode_layer::classify_and_attach_auth_mode;
 pub use envelope::{BedrockEnvelope, EnvelopeError};
 pub use eventstream::{
     parse as parse_eventstream, CrcValidation, EventStreamMessage, EventStreamParser, HeaderValue,

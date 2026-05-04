@@ -43,10 +43,10 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Extension, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -65,7 +65,14 @@ use crate::compression::{
     compress_anthropic_request, Outcome as AnthropicOutcome, PassthroughReason,
 };
 use crate::headers::filter_response_headers;
+use crate::observability::{
+    observe_bedrock_invoke_latency, record_bedrock_eventstream_message, record_bedrock_invoke,
+};
 use crate::proxy::AppState;
+// Phase F PR-F1 + PR-D3: pre-classified by `classify_and_attach_auth_mode`
+// middleware on the bedrock router; we read it back via the
+// `Extension<AuthMode>` extractor.
+use headroom_core::auth_mode::AuthMode;
 
 /// Anthropic vendor prefix as encoded in Bedrock model ids.
 const ANTHROPIC_VENDOR_PREFIX: &str = "anthropic.";
@@ -76,10 +83,41 @@ const BEDROCK_RUNTIME_HOST_TEMPLATE: &str = "bedrock-runtime.{region}.amazonaws.
 /// Path action for the streaming route.
 const STREAMING_ACTION: &str = "invoke-with-response-stream";
 
+/// RAII guard that observes the `bedrock_invoke_latency_seconds`
+/// histogram on drop. Mirrors the [`crate::bedrock::invoke`] guard
+/// — duplicated to avoid a cross-module type dependency for what
+/// is fundamentally a 6-line struct. (When PR-D2 + PR-D3 settle,
+/// the two handlers can share a `bedrock::common::LatencyGuard`
+/// helper; that's a deferred refactor.)
+struct LatencyGuard {
+    model: String,
+    region: String,
+    start: Instant,
+}
+
+impl LatencyGuard {
+    fn start(model: &str, region: &str) -> Self {
+        Self {
+            model: model.to_string(),
+            region: region.to_string(),
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Drop for LatencyGuard {
+    fn drop(&mut self) {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        observe_bedrock_invoke_latency(&self.model, &self.region, elapsed);
+    }
+}
+
 /// Axum POST handler for `/model/{model_id}/invoke-with-response-stream`.
+#[allow(clippy::too_many_arguments)] // axum extractors demand one argument per role
 pub async fn handle_invoke_streaming(
     State(state): State<AppState>,
     ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
+    Extension(auth_mode): Extension<AuthMode>,
     Path(model_id): Path<String>,
     method: Method,
     uri: Uri,
@@ -93,11 +131,22 @@ pub async fn handle_invoke_streaming(
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // PR-D3: latency stopwatch + invoke counter at handler entry.
+    // RAII guard observes the histogram regardless of which return
+    // path the handler takes. Per-EventStream-message metrics are
+    // recorded inside `translate_stream` once the upstream response
+    // starts arriving.
+    let region = state.config.bedrock_region.clone();
+    let _latency_guard = LatencyGuard::start(&model_id, &region);
+    record_bedrock_invoke(&model_id, &region, auth_mode);
+
     tracing::info!(
         event = "bedrock_invoke_streaming_received",
         request_id = %request_id,
         method = %method,
         model_id = %model_id,
+        region = %region,
+        auth_mode = auth_mode.as_str(),
         body_bytes = body.len(),
         "bedrock invoke-with-response-stream route received request"
     );
@@ -344,6 +393,8 @@ pub async fn handle_invoke_streaming(
                 upstream_stream,
                 state.config.bedrock_validate_eventstream_crc,
                 request_id.clone(),
+                model_id.clone(),
+                region.clone(),
             );
             let translated = tee_to_anthropic_state(translated, request_id.clone());
             let body_out = Body::from_stream(translated);
@@ -366,6 +417,8 @@ fn translate_stream<S>(
     upstream: S,
     validate_crc: bool,
     request_id: String,
+    model_id: String,
+    region: String,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>>
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
@@ -377,205 +430,247 @@ where
         parser = parser.with_crc_validation(CrcValidation::No);
     }
     let upstream: ByteStream = Box::pin(upstream);
-    let init = (parser, upstream, false, request_id);
-    stream::unfold(init, |(mut parser, mut upstream, mut done, request_id)| {
-        Box::pin(async move {
-            if done {
-                return None;
-            }
-            // First, drain any complete messages already in the
-            // parser's buffer (bytes from the previous chunk).
-            loop {
-                match parser.next_message() {
-                    Ok(Some(msg)) => match translate_message(&msg, OutputMode::Sse) {
-                        Ok(TranslateOutcome::Emit(frame)) => {
-                            tracing::debug!(
-                                event = "bedrock_eventstream_message",
-                                request_id = %request_id,
-                                event_type = msg.event_type().unwrap_or(""),
-                                payload_bytes = msg.payload.len(),
-                                "translated bedrock eventstream message"
-                            );
-                            return Some((Ok(frame), (parser, upstream, false, request_id)));
-                        }
-                        Ok(TranslateOutcome::Skip { event_type }) => {
-                            tracing::warn!(
-                                event = "bedrock_eventstream_unknown_event_type",
-                                request_id = %request_id,
-                                event_type = %event_type,
-                                "skipping unknown bedrock eventstream message"
-                            );
-                            // Loop and try the next message in the buffer.
-                            continue;
-                        }
-                        Err(TranslateError::UpstreamException { payload_preview }) => {
-                            tracing::warn!(
-                                event = "bedrock_eventstream_upstream_exception",
-                                request_id = %request_id,
-                                payload_preview = %payload_preview,
-                                "bedrock eventstream upstream exception"
-                            );
-                            // Emit the exception as an Anthropic-shape
-                            // SSE error frame so the client sees it.
-                            let json = serde_json::json!({
-                                "type": "error",
-                                "error": {
-                                    "type": "bedrock_upstream_exception",
-                                    "message": payload_preview,
+    // Bundle the per-stream identifiers we thread through every
+    // unfold step. `unfold` only allows a single state value, so
+    // grouping these into a tuple of owned Strings keeps the
+    // closure readable.
+    let init = (parser, upstream, false, request_id, model_id, region);
+    stream::unfold(
+        init,
+        |(mut parser, mut upstream, mut done, request_id, model_id, region)| {
+            Box::pin(async move {
+                if done {
+                    return None;
+                }
+                // First, drain any complete messages already in the
+                // parser's buffer (bytes from the previous chunk).
+                loop {
+                    match parser.next_message() {
+                        Ok(Some(msg)) => match translate_message(&msg, OutputMode::Sse) {
+                            Ok(TranslateOutcome::Emit(frame)) => {
+                                // PR-D3: per-message Prometheus metric.
+                                // The label `event_type` is bounded by
+                                // AWS's documented vocabulary (chunk,
+                                // metadata, exception variants); not
+                                // customer-controlled.
+                                let event_type = msg.event_type().unwrap_or("unknown").to_string();
+                                record_bedrock_eventstream_message(&model_id, &region, &event_type);
+                                tracing::debug!(
+                                    event = "bedrock_eventstream_message",
+                                    request_id = %request_id,
+                                    event_type = %event_type,
+                                    payload_bytes = msg.payload.len(),
+                                    "translated bedrock eventstream message"
+                                );
+                                return Some((
+                                    Ok(frame),
+                                    (parser, upstream, false, request_id, model_id, region),
+                                ));
+                            }
+                            Ok(TranslateOutcome::Skip { event_type }) => {
+                                tracing::warn!(
+                                    event = "bedrock_eventstream_unknown_event_type",
+                                    request_id = %request_id,
+                                    event_type = %event_type,
+                                    "skipping unknown bedrock eventstream message"
+                                );
+                                // Loop and try the next message in the buffer.
+                                continue;
+                            }
+                            Err(TranslateError::UpstreamException { payload_preview }) => {
+                                tracing::warn!(
+                                    event = "bedrock_eventstream_upstream_exception",
+                                    request_id = %request_id,
+                                    payload_preview = %payload_preview,
+                                    "bedrock eventstream upstream exception"
+                                );
+                                // Emit the exception as an Anthropic-shape
+                                // SSE error frame so the client sees it.
+                                let json = serde_json::json!({
+                                    "type": "error",
+                                    "error": {
+                                        "type": "bedrock_upstream_exception",
+                                        "message": payload_preview,
+                                    }
+                                })
+                                .to_string();
+                                let mut frame = Vec::with_capacity(json.len() + 32);
+                                frame.extend_from_slice(b"event: error\ndata: ");
+                                frame.extend_from_slice(json.as_bytes());
+                                frame.extend_from_slice(b"\n\n");
+                                return Some((
+                                    Ok(Bytes::from(frame)),
+                                    (parser, upstream, true, request_id, model_id, region),
+                                ));
+                            }
+                            Err(TranslateError::MissingEventType) => {
+                                tracing::warn!(
+                                    event = "bedrock_eventstream_missing_event_type",
+                                    request_id = %request_id,
+                                    "bedrock eventstream message missing :event-type; emitting error frame"
+                                );
+                                let frame = error_sse_frame(
+                                    "bedrock_eventstream_missing_event_type",
+                                    "Bedrock message missing :event-type header",
+                                );
+                                return Some((
+                                    Ok(frame),
+                                    (parser, upstream, true, request_id, model_id, region),
+                                ));
+                            }
+                        },
+                        Ok(None) => break,
+                        Err(parse_err) => {
+                            let event_name = match &parse_err {
+                                ParseError::PreludeCrcMismatch { .. }
+                                | ParseError::MessageCrcMismatch { .. } => {
+                                    "bedrock_eventstream_crc_mismatch"
                                 }
-                            })
-                            .to_string();
-                            let mut frame = Vec::with_capacity(json.len() + 32);
-                            frame.extend_from_slice(b"event: error\ndata: ");
-                            frame.extend_from_slice(json.as_bytes());
-                            frame.extend_from_slice(b"\n\n");
+                                _ => "bedrock_eventstream_parse_failed",
+                            };
+                            tracing::warn!(
+                                event = event_name,
+                                request_id = %request_id,
+                                error = %parse_err,
+                                "bedrock eventstream parse failure; closing translated stream"
+                            );
+                            let frame = error_sse_frame(event_name, &parse_err.to_string());
                             return Some((
-                                Ok(Bytes::from(frame)),
-                                (parser, upstream, true, request_id),
+                                Ok(frame),
+                                (parser, upstream, true, request_id, model_id, region),
                             ));
                         }
-                        Err(TranslateError::MissingEventType) => {
-                            tracing::warn!(
-                                event = "bedrock_eventstream_missing_event_type",
-                                request_id = %request_id,
-                                "bedrock eventstream message missing :event-type; emitting error frame"
-                            );
-                            let frame = error_sse_frame(
-                                "bedrock_eventstream_missing_event_type",
-                                "Bedrock message missing :event-type header",
-                            );
-                            return Some((Ok(frame), (parser, upstream, true, request_id)));
-                        }
-                    },
-                    Ok(None) => break,
-                    Err(parse_err) => {
-                        let event_name = match &parse_err {
-                            ParseError::PreludeCrcMismatch { .. }
-                            | ParseError::MessageCrcMismatch { .. } => {
-                                "bedrock_eventstream_crc_mismatch"
-                            }
-                            _ => "bedrock_eventstream_parse_failed",
-                        };
-                        tracing::warn!(
-                            event = event_name,
-                            request_id = %request_id,
-                            error = %parse_err,
-                            "bedrock eventstream parse failure; closing translated stream"
-                        );
-                        let frame = error_sse_frame(event_name, &parse_err.to_string());
-                        return Some((Ok(frame), (parser, upstream, true, request_id)));
                     }
                 }
-            }
-            // Buffer drained; pull the next chunk from upstream.
-            loop {
-                match upstream.next().await {
-                    Some(Ok(chunk)) => {
-                        parser.push(&chunk);
-                        // Loop back through the parser to emit any
-                        // newly-complete messages.
-                        match parser.next_message() {
-                            Ok(Some(msg)) => match translate_message(&msg, OutputMode::Sse) {
-                                Ok(TranslateOutcome::Emit(frame)) => {
-                                    tracing::debug!(
-                                        event = "bedrock_eventstream_message",
+                // Buffer drained; pull the next chunk from upstream.
+                loop {
+                    match upstream.next().await {
+                        Some(Ok(chunk)) => {
+                            parser.push(&chunk);
+                            // Loop back through the parser to emit any
+                            // newly-complete messages.
+                            match parser.next_message() {
+                                Ok(Some(msg)) => match translate_message(&msg, OutputMode::Sse) {
+                                    Ok(TranslateOutcome::Emit(frame)) => {
+                                        // PR-D3: per-message Prometheus
+                                        // metric (mirror of the parser-buffer
+                                        // drain branch above).
+                                        let event_type =
+                                            msg.event_type().unwrap_or("unknown").to_string();
+                                        record_bedrock_eventstream_message(
+                                            &model_id,
+                                            &region,
+                                            &event_type,
+                                        );
+                                        tracing::debug!(
+                                            event = "bedrock_eventstream_message",
+                                            request_id = %request_id,
+                                            event_type = %event_type,
+                                            payload_bytes = msg.payload.len(),
+                                            "translated bedrock eventstream message"
+                                        );
+                                        return Some((
+                                            Ok(frame),
+                                            (parser, upstream, false, request_id, model_id, region),
+                                        ));
+                                    }
+                                    Ok(TranslateOutcome::Skip { event_type }) => {
+                                        tracing::warn!(
+                                            event = "bedrock_eventstream_unknown_event_type",
+                                            request_id = %request_id,
+                                            event_type = %event_type,
+                                            "skipping unknown bedrock eventstream message"
+                                        );
+                                        // Continue draining the parser /
+                                        // pulling more chunks.
+                                        continue;
+                                    }
+                                    Err(TranslateError::UpstreamException { payload_preview }) => {
+                                        let json = serde_json::json!({
+                                            "type": "error",
+                                            "error": {
+                                                "type": "bedrock_upstream_exception",
+                                                "message": payload_preview,
+                                            }
+                                        })
+                                        .to_string();
+                                        let mut frame = Vec::with_capacity(json.len() + 32);
+                                        frame.extend_from_slice(b"event: error\ndata: ");
+                                        frame.extend_from_slice(json.as_bytes());
+                                        frame.extend_from_slice(b"\n\n");
+                                        return Some((
+                                            Ok(Bytes::from(frame)),
+                                            (parser, upstream, true, request_id, model_id, region),
+                                        ));
+                                    }
+                                    Err(TranslateError::MissingEventType) => {
+                                        let frame = error_sse_frame(
+                                            "bedrock_eventstream_missing_event_type",
+                                            "Bedrock message missing :event-type header",
+                                        );
+                                        return Some((
+                                            Ok(frame),
+                                            (parser, upstream, true, request_id, model_id, region),
+                                        ));
+                                    }
+                                },
+                                Ok(None) => continue,
+                                Err(parse_err) => {
+                                    let event_name = match &parse_err {
+                                        ParseError::PreludeCrcMismatch { .. }
+                                        | ParseError::MessageCrcMismatch { .. } => {
+                                            "bedrock_eventstream_crc_mismatch"
+                                        }
+                                        _ => "bedrock_eventstream_parse_failed",
+                                    };
+                                    tracing::warn!(
+                                        event = event_name,
                                         request_id = %request_id,
-                                        event_type = msg.event_type().unwrap_or(""),
-                                        payload_bytes = msg.payload.len(),
-                                        "translated bedrock eventstream message"
+                                        error = %parse_err,
+                                        "bedrock eventstream parse failure"
                                     );
+                                    let frame = error_sse_frame(event_name, &parse_err.to_string());
                                     return Some((
                                         Ok(frame),
-                                        (parser, upstream, false, request_id),
+                                        (parser, upstream, true, request_id, model_id, region),
                                     ));
                                 }
-                                Ok(TranslateOutcome::Skip { event_type }) => {
-                                    tracing::warn!(
-                                        event = "bedrock_eventstream_unknown_event_type",
-                                        request_id = %request_id,
-                                        event_type = %event_type,
-                                        "skipping unknown bedrock eventstream message"
-                                    );
-                                    // Continue draining the parser /
-                                    // pulling more chunks.
-                                    continue;
-                                }
-                                Err(TranslateError::UpstreamException { payload_preview }) => {
-                                    let json = serde_json::json!({
-                                        "type": "error",
-                                        "error": {
-                                            "type": "bedrock_upstream_exception",
-                                            "message": payload_preview,
-                                        }
-                                    })
-                                    .to_string();
-                                    let mut frame = Vec::with_capacity(json.len() + 32);
-                                    frame.extend_from_slice(b"event: error\ndata: ");
-                                    frame.extend_from_slice(json.as_bytes());
-                                    frame.extend_from_slice(b"\n\n");
-                                    return Some((
-                                        Ok(Bytes::from(frame)),
-                                        (parser, upstream, true, request_id),
-                                    ));
-                                }
-                                Err(TranslateError::MissingEventType) => {
-                                    let frame = error_sse_frame(
-                                        "bedrock_eventstream_missing_event_type",
-                                        "Bedrock message missing :event-type header",
-                                    );
-                                    return Some((Ok(frame), (parser, upstream, true, request_id)));
-                                }
-                            },
-                            Ok(None) => continue,
-                            Err(parse_err) => {
-                                let event_name = match &parse_err {
-                                    ParseError::PreludeCrcMismatch { .. }
-                                    | ParseError::MessageCrcMismatch { .. } => {
-                                        "bedrock_eventstream_crc_mismatch"
-                                    }
-                                    _ => "bedrock_eventstream_parse_failed",
-                                };
-                                tracing::warn!(
-                                    event = event_name,
-                                    request_id = %request_id,
-                                    error = %parse_err,
-                                    "bedrock eventstream parse failure"
-                                );
-                                let frame = error_sse_frame(event_name, &parse_err.to_string());
-                                return Some((Ok(frame), (parser, upstream, true, request_id)));
                             }
                         }
-                    }
-                    Some(Err(e)) => {
-                        tracing::warn!(
-                            event = "bedrock_eventstream_upstream_io_error",
-                            request_id = %request_id,
-                            error = %e,
-                            "upstream io error mid-stream"
-                        );
-                        return Some((Err(e), (parser, upstream, true, request_id)));
-                    }
-                    None => {
-                        // End of upstream stream. If buffered bytes
-                        // remain that did not parse into a message,
-                        // log loudly — we are NOT silently dropping
-                        // them.
-                        if parser.buffered_len() > 0 {
+                        Some(Err(e)) => {
                             tracing::warn!(
-                                event = "bedrock_eventstream_truncated",
+                                event = "bedrock_eventstream_upstream_io_error",
                                 request_id = %request_id,
-                                buffered_bytes = parser.buffered_len(),
-                                "upstream stream ended with un-parseable trailing bytes"
+                                error = %e,
+                                "upstream io error mid-stream"
                             );
+                            return Some((
+                                Err(e),
+                                (parser, upstream, true, request_id, model_id, region),
+                            ));
                         }
-                        done = true;
-                        let _ = done;
-                        return None;
+                        None => {
+                            // End of upstream stream. If buffered bytes
+                            // remain that did not parse into a message,
+                            // log loudly — we are NOT silently dropping
+                            // them.
+                            if parser.buffered_len() > 0 {
+                                tracing::warn!(
+                                    event = "bedrock_eventstream_truncated",
+                                    request_id = %request_id,
+                                    buffered_bytes = parser.buffered_len(),
+                                    "upstream stream ended with un-parseable trailing bytes"
+                                );
+                            }
+                            done = true;
+                            let _ = done;
+                            return None;
+                        }
                     }
                 }
-            }
-        })
-    })
+            })
+        },
+    )
 }
 
 /// Tee the translated SSE stream into an `AnthropicStreamState` task
