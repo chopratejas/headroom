@@ -1813,7 +1813,7 @@ dependencies = [
  "fastembed",
  "flate2",
  "hf-hub 0.4.3",
- "http",
+ "http 1.4.0",
  "magika",
  "md-5",
  "proptest",
@@ -1892,6 +1892,7 @@ name = "headroom-py"
 version = "0.1.0"
 dependencies = [
  "headroom-core",
+ "openssl",
  "pyo3",
  "serde_json",
 ]

@@ -69,21 +69,30 @@ def test_ci_commitlint_skips_default_github_merge_commits() -> None:
     assert "!startsWith(github.event.head_commit.message, 'Merge pull request ')" in content
 
 
-def test_headroom_proxy_vendors_openssl() -> None:
+def test_headroom_py_vendors_openssl() -> None:
     """`hf-hub` (transitive via `fastembed`) hard-codes `native-tls` as a
-    default feature, forcing `openssl-sys` for the entire workspace
+    default feature, forcing `openssl-sys` for the entire build graph
     despite our `reqwest`/`tokio-tungstenite`/`tokio-rustls` preferences.
-    The wheel matrix breaks on every Linux + Intel-macOS target where
-    the manylinux container's system OpenSSL is too old (manylinux2014
-    ships 1.0.2k) or the cross-compile sysroot has none (aarch64).
-    Enabling the `vendored` Cargo feature on `openssl` instructs
-    `openssl-sys` to compile OpenSSL from source — works on every
-    target uniformly.
-    """
-    cargo_toml = (ROOT / "crates" / "headroom-proxy" / "Cargo.toml").read_text(encoding="utf-8")
 
-    # Guard against a future refactor that re-removes the vendored dep.
-    assert 'openssl = { version = "0.10", features = ["vendored"] }' in cargo_toml
+    Critically: this dep MUST live in `headroom-py/Cargo.toml` (the
+    wheel-producing crate) — NOT in `headroom-proxy/Cargo.toml`. Cargo's
+    feature unification only applies to the resolution graph that's
+    actually built. `maturin build --manifest-path crates/headroom-py/
+    Cargo.toml` resolves headroom-py's deps only; headroom-py does NOT
+    depend on headroom-proxy, so a `vendored` feature enable in
+    headroom-proxy never propagates to the wheel build. The earlier
+    hot-fix put it in headroom-proxy and the wheel still failed with
+    "Could not find directory of OpenSSL installation" — fixed by
+    moving the dep to headroom-py.
+    """
+    py_cargo = (ROOT / "crates" / "headroom-py" / "Cargo.toml").read_text(encoding="utf-8")
+
+    # Guard against a future refactor that re-removes the vendored dep
+    # from headroom-py (would silently break the wheel build again).
+    assert 'openssl = { version = "0.10", features = ["vendored"] }' in py_cargo, (
+        "headroom-py/Cargo.toml must declare openssl with the vendored feature; "
+        "without it the manylinux wheel build cannot find system OpenSSL."
+    )
 
 
 def test_build_wheels_installs_perl_ipc_cmd_for_vendored_openssl() -> None:
