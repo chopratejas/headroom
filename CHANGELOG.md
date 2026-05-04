@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`headroom learn` with claude-cli no longer fails silently on slow
+  networks or large digests.** The CLI backend timeout was a hard 120s
+  wall-clock cap with no liveness signal: a successful long analysis and
+  a hung connection looked identical, and exit 0 with "no recommendations"
+  was the only user-visible signal. Two changes:
+  (1) **Streaming + idle timeout for claude-cli**: the command now uses
+  `--output-format stream-json --verbose` and a watchdog thread reads
+  events as they arrive. The process is killed only after
+  `HEADROOM_LEARN_CLI_IDLE_TIMEOUT_SECS` (default 60s) of zero output, or
+  after `HEADROOM_LEARN_CLI_TIMEOUT_SECS` (default 300s, was 120s) total.
+  Long-but-active analyses run to completion; genuine hangs are caught
+  fast. The final `type:"result"` event carries the assistant response.
+  Drains stdout/stderr via reader threads so the watchdog works on
+  Windows too. (2) **Env-var overrides for all CLI backends**:
+  `HEADROOM_LEARN_CLI_TIMEOUT_SECS` is honored by gemini-cli and
+  codex-cli as the wall-clock timeout; idle override applies only to the
+  streaming claude-cli path.
 - **`Learned: error recovery` section in MEMORY.md no longer bloats with
   stale, one-shot, or contradictory entries.** The matchers paired up
   unrelated tool calls (e.g. `state.rs` and `lib.rs` in the same dir
