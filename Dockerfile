@@ -14,18 +14,16 @@ ARG UV_VERSION
 
 # build-essential / g++ for any C extension wheels uv may need to build
 # from source. curl + ca-certificates are required by the rustup
-# bootstrap below. pkg-config + libssl-dev for `openssl-sys` (transitive
-# from fastembed/hf-hub/ureq → native-tls — the workspace `rustls-tls`
-# pin loses to cargo feature unification). patchelf for maturin's
-# wheel-link repair on linux.
+# bootstrap below. patchelf for maturin's wheel-link repair on linux.
+# No OpenSSL system deps required: the rustls-everywhere refactor
+# eliminated `openssl-sys` from our build tree by switching fastembed
+# to `hf-hub-rustls-tls` + `ort-download-binaries-rustls-tls`.
 RUN apt-get update && \
   apt-get install -y --no-install-recommends \
     build-essential \
     g++ \
     curl \
     ca-certificates \
-    pkg-config \
-    libssl-dev \
     patchelf \
   && rm -rf /var/lib/apt/lists/*
 

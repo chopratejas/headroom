@@ -6,7 +6,8 @@
 # 2.28 baseline) yields a wheel portable to any glibc 2.28+ runtime.
 FROM quay.io/pypa/manylinux_2_28_x86_64 AS builder
 
-RUN yum install -y openssl-devel pkgconfig perl-IPC-Cmd
+# No OpenSSL system deps required (rustls-everywhere refactor). See
+# e2e/wrap/Dockerfile for the full rationale.
 
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \

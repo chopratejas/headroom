@@ -69,103 +69,184 @@ def test_ci_commitlint_skips_default_github_merge_commits() -> None:
     assert "!startsWith(github.event.head_commit.message, 'Merge pull request ')" in content
 
 
-def test_headroom_py_vendors_openssl() -> None:
-    """`hf-hub` (transitive via `fastembed`) hard-codes `native-tls` as a
-    default feature, forcing `openssl-sys` for the entire build graph
-    despite our `reqwest`/`tokio-tungstenite`/`tokio-rustls` preferences.
+def test_no_openssl_sys_in_wheel_build_tree() -> None:
+    """STRUCTURAL INVARIANT: openssl-sys must NOT appear in the wheel
+    build's resolved dependency graph.
 
-    Critically: this dep MUST live in `headroom-py/Cargo.toml` (the
-    wheel-producing crate) — NOT in `headroom-proxy/Cargo.toml`. Cargo's
-    feature unification only applies to the resolution graph that's
-    actually built. `maturin build --manifest-path crates/headroom-py/
-    Cargo.toml` resolves headroom-py's deps only; headroom-py does NOT
-    depend on headroom-proxy, so a `vendored` feature enable in
-    headroom-proxy never propagates to the wheel build. The earlier
-    hot-fix put it in headroom-proxy and the wheel still failed with
-    "Could not find directory of OpenSSL installation" — fixed by
-    moving the dep to headroom-py.
+    This is the load-bearing assertion for the entire build pipeline.
+    If openssl-sys is in the wheel-build resolution graph, every
+    Linux/macOS surface that builds from source needs system OpenSSL
+    + perl modules + pkg-config — and we've spent five hot-fixes
+    chasing whichever combination of perl modules / OpenSSL versions
+    / pkg-config paths was missing in each manylinux/Dockerfile/
+    devcontainer surface. The cleanest fix is to NOT depend on
+    OpenSSL at all.
+
+    fastembed exposes `hf-hub-rustls-tls` and
+    `ort-download-binaries-rustls-tls` features that replace its
+    default `native-tls` path. With `default-features = false` plus
+    those rustls features enabled in headroom-core, our entire build
+    tree uses rustls and no crate pulls openssl-sys.
+
+    This test runs `cargo tree` (so it actually exercises the
+    resolved feature graph, not just declared Cargo.toml features).
+    A future refactor that adds a transitive native-tls user will
+    fail here, surfaced at PR time rather than 5 minutes into a CI
+    wheel-build error.
     """
-    py_cargo = (ROOT / "crates" / "headroom-py" / "Cargo.toml").read_text(encoding="utf-8")
+    import subprocess
 
-    # Guard against a future refactor that re-removes the vendored dep
-    # from headroom-py (would silently break the wheel build again).
-    assert 'openssl = { version = "0.10", features = ["vendored"] }' in py_cargo, (
-        "headroom-py/Cargo.toml must declare openssl with the vendored feature; "
-        "without it the manylinux wheel build cannot find system OpenSSL."
-    )
+    for crate in ("headroom-py", "headroom-proxy", "headroom-core"):
+        result = subprocess.run(
+            [
+                "cargo",
+                "tree",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "-p",
+                crate,
+                "-i",
+                "openssl-sys",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # `cargo tree -i <pkg>` exits 101 with "did not match any
+        # packages" when the package is NOT in the tree — the GREEN
+        # case. Exit 0 with a tree of consumers means it IS pulled.
+        not_in_tree = result.returncode != 0 and "did not match any packages" in result.stderr
+        assert not_in_tree, (
+            f"openssl-sys is back in {crate}'s build tree:\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}\n"
+            "Find the new native-tls user (likely a default-features=true "
+            "on a transitive crate) and disable it. Switching every "
+            "transitive HTTP+TLS consumer to rustls is the load-bearing "
+            "invariant that keeps wheel builds working without system "
+            "OpenSSL or perl modules."
+        )
 
 
-def test_build_wheels_installs_perl_ipc_cmd_for_vendored_openssl() -> None:
-    """OpenSSL's vendored `Configure` script needs `IPC::Cmd`. Without
-    it the build fails with `Can't locate IPC/Cmd.pm`. The before-script
-    must (a) probe the module first to skip a no-op install when the
-    container already has it, (b) cover RHEL family (dnf/yum) AND
-    Debian/Ubuntu (apt-get) AND musllinux (apk) since the maturin-action
-    uses different containers per target, and (c) fail loud with an
-    explicit `perl -MIPC::Cmd -e 1` assertion if the install path
-    didn't actually resolve the module — no silent fallback into a
-    later confusing openssl-src build error.
+def test_no_native_tls_in_wheel_build_tree() -> None:
+    """The dual of the openssl-sys gate: native-tls is the proximate
+    cause of openssl-sys being pulled. Catch it earlier with a more
+    specific error message so future debugging starts at the right
+    place.
+    """
+    import subprocess
 
-    The previous shape used `libipc-cmd-perl` on the apt branch, which
-    is a deprecated alias and is not in the default sources of the
-    aarch64-cross container; that broke the aarch64 wheel build.
+    for crate in ("headroom-py", "headroom-proxy", "headroom-core"):
+        result = subprocess.run(
+            [
+                "cargo",
+                "tree",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "-p",
+                crate,
+                "-i",
+                "native-tls",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        not_in_tree = result.returncode != 0 and "did not match any packages" in result.stderr
+        assert not_in_tree, (
+            f"native-tls is back in {crate}'s build tree — likely some "
+            f"crate's `default-features = true` re-enabled native-tls "
+            f"transitively:\n{result.stdout}"
+        )
+
+
+def test_fastembed_uses_rustls_features() -> None:
+    """The mechanism that keeps openssl-sys out of the build is
+    fastembed's explicit rustls feature selection in headroom-core.
+    fastembed's default features include `hf-hub-native-tls` and
+    `ort-download-binaries-native-tls` — both pull openssl-sys.
+    Disabling defaults and enabling the rustls equivalents removes
+    the OpenSSL surface entirely.
+    """
+    cargo = (ROOT / "crates" / "headroom-core" / "Cargo.toml").read_text(encoding="utf-8")
+
+    assert "default-features = false" in cargo
+    assert '"hf-hub-rustls-tls"' in cargo
+    assert '"ort-download-binaries-rustls-tls"' in cargo
+    # `image-models` is in default; we re-enable it explicitly so we
+    # don't lose the image-embedding capability when defaults are off.
+    assert '"image-models"' in cargo
+
+
+def test_dockerfiles_no_longer_install_openssl_devel() -> None:
+    """Once openssl-sys is out of the build tree, every Dockerfile
+    that used to install `openssl-devel` / `libssl-dev` for the Rust
+    build can drop those packages. This test enforces the cleanup so
+    a future refactor doesn't carry the old packages forward "just
+    in case".
+
+    The check looks only at non-comment lines so explanatory comments
+    that mention the historical packages don't false-positive.
+    """
+    targets = [
+        ROOT / "e2e" / "wrap" / "Dockerfile",
+        ROOT / "e2e" / "init" / "Dockerfile",
+        ROOT / "Dockerfile",
+        ROOT / ".devcontainer" / "Dockerfile",
+    ]
+
+    forbidden = ["openssl-devel", "libssl-dev"]
+
+    for target in targets:
+        content = target.read_text(encoding="utf-8")
+        non_comment = "\n".join(
+            line for line in content.splitlines() if not line.lstrip().startswith("#")
+        )
+        for pkg in forbidden:
+            assert pkg not in non_comment, (
+                f"{target.relative_to(ROOT)} still installs {pkg!r} on a "
+                f"non-comment line. The rustls-everywhere refactor removed "
+                f"openssl-sys from the build tree; this package is no "
+                f"longer needed."
+            )
+
+
+def test_release_yml_does_not_install_openssl_or_perl_for_wheels() -> None:
+    """With openssl-sys out of the build tree (verified by
+    test_no_openssl_sys_in_wheel_build_tree), the previous
+    before-script-linux that installed perl-IPC-Cmd / perl /
+    perl-utils for the openssl-src vendored Configure script is
+    obsolete. Removing it speeds the wheel build and keeps the
+    Linux entry honest — every package install we keep here
+    represents a hidden assumption about the manylinux container.
     """
     content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "before-script-linux:" in content
-
-    # Pre-probe so we no-op when IPC::Cmd is already importable.
-    assert "perl -MIPC::Cmd -e 1" in content
-
-    # All three RHEL-family + Debian-family + Alpine package managers covered.
-    assert "dnf install -y perl-IPC-Cmd" in content
-    assert "yum install -y perl-IPC-Cmd" in content
-    # The plain `perl` meta-package pulls perl-modules-* on Debian/Ubuntu,
-    # which contains IPC::Cmd. The legacy `libipc-cmd-perl` alias must NOT
-    # be referenced as an installable target — it is no longer in default
-    # Debian/Ubuntu sources. We allow the string in YAML/shell comments
-    # (operator hints) by checking only non-comment lines.
-    assert "apt-get install -y --no-install-recommends perl" in content
-    assert "apk add --no-cache perl-utils" in content
-
-    non_comment_lines: list[str] = []
-    for raw in content.splitlines():
-        stripped = raw.lstrip()
-        # Drop YAML and shell `#` comments. Mid-line `#` comments would
-        # require a real YAML/shell tokenizer; the file's actual install
-        # commands are never on the same physical line as a comment.
-        if stripped.startswith("#"):
-            continue
-        non_comment_lines.append(raw)
-    code_only = "\n".join(non_comment_lines)
-    assert "libipc-cmd-perl" not in code_only, (
-        "libipc-cmd-perl must not appear as an apt-get target — it is a "
-        "deprecated alias not in default Debian/Ubuntu sources."
-    )
-
-    # Final fail-loud assertion (no silent fallback).
-    assert "perl -MIPC::Cmd -e 'print \"IPC::Cmd loaded OK" in content
-
-
-def test_build_wheels_does_not_set_openssl_dir() -> None:
-    """`OPENSSL_DIR` (and the related `OPENSSL_LIB_DIR` /
-    `OPENSSL_INCLUDE_DIR`) DEFEATS the `vendored` feature: openssl-sys
-    will use the system OpenSSL at that path instead of compiling from
-    source. The earlier macOS hot-fix exported these env vars; with
-    vendored enabled they must NOT be set, otherwise we silently
-    regress to the system-OpenSSL path that broke originally.
-    """
-    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-
-    # Locate the build-wheels job and assert it does not export OPENSSL_DIR.
     bw_start = content.index("\n  build-wheels:")
     bw_end = content.index("\n  collect-dist:")
     body = content[bw_start:bw_end]
 
-    assert "OPENSSL_DIR" not in body, (
-        "build-wheels must not set OPENSSL_DIR — it disables openssl-sys's "
-        "vendored feature and reintroduces the system-OpenSSL dependency."
-    )
+    non_comment = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+
+    # No legacy install commands or env vars must appear on a non-comment
+    # line. Each forbidden token represents an assumption about system
+    # OpenSSL that the rustls refactor removed.
+    forbidden = [
+        "openssl-devel",
+        "libssl-dev",
+        "perl-IPC-Cmd",
+        "libipc-cmd-perl",
+        "OPENSSL_DIR",
+    ]
+    for token in forbidden:
+        assert token not in non_comment, (
+            f"release.yml build-wheels job still references {token!r} on "
+            f"a non-comment line. The rustls-everywhere refactor removed "
+            f"openssl-sys from the build tree; this command/env is now "
+            f"obsolete."
+        )
 
 
 def test_build_wheels_matrix_excludes_intel_macos() -> None:

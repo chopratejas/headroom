@@ -226,48 +226,14 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
           manylinux: ${{ matrix.manylinux }}
-          # OpenSSL is vendored at the cargo level via headroom-proxy's
-          # `openssl = { features = ["vendored"] }` dep — that compiles
-          # OpenSSL from source as part of the cargo build, so we no
-          # longer need to install system OpenSSL in the manylinux
-          # container or via Homebrew on macOS. We DO need `IPC::Cmd`
-          # at build time because OpenSSL's vendored Configure script
-          # imports it (without it the build fails with "Can't locate
-          # IPC/Cmd.pm").
-          #
-          # `IPC::Cmd` has been a Perl core module since 5.10, so any
-          # working `perl` install provides it. The aarch64-cross
-          # container the maturin-action uses is Debian/Ubuntu-based
-          # (apt), the x86_64 native container is AlmaLinux 8 (yum/dnf).
-          # Probe the IPC::Cmd module directly first; only install when
-          # missing, using whichever package manager exists. The legacy
-          # `libipc-cmd-perl` alias on Debian is no longer in default
-          # sources — installing plain `perl` pulls IPC::Cmd via
-          # perl-modules-* on every Debian/Ubuntu version we'll see.
-          before-script-linux: |
-            set -euo pipefail
-            if perl -MIPC::Cmd -e 1 >/dev/null 2>&1; then
-              echo "IPC::Cmd already available"
-              exit 0
-            fi
-            if command -v dnf >/dev/null 2>&1; then
-              dnf install -y perl-IPC-Cmd
-            elif command -v yum >/dev/null 2>&1; then
-              yum install -y perl-IPC-Cmd
-            elif command -v apt-get >/dev/null 2>&1; then
-              apt-get update -qq
-              # `perl` is the meta-package that pulls perl-modules-* containing IPC::Cmd.
-              apt-get install -y --no-install-recommends perl
-            elif command -v apk >/dev/null 2>&1; then
-              apk add --no-cache perl-utils
-            else
-              echo "::error::No supported package manager (dnf/yum/apt-get/apk) in container" >&2
-              exit 1
-            fi
-            # Final assertion — fail the build now (not 5 minutes later
-            # in the openssl-src compile step) if IPC::Cmd is still not
-            # importable. No silent fallback per project guideline.
-            perl -MIPC::Cmd -e 'print "IPC::Cmd loaded OK\n"'
+          # No before-script-linux needed: the rustls-everywhere refactor
+          # (PR #371) switched fastembed to `hf-hub-rustls-tls` +
+          # `ort-download-binaries-rustls-tls` features, which removed
+          # `openssl-sys` from our build tree entirely. The wheel build
+          # no longer needs system OpenSSL or any perl modules.
+          # `cargo tree -p headroom-py -i openssl-sys` returns "not
+          # found" — that's the regression gate (see test_release_workflows
+          # ::test_no_openssl_sys_in_wheel_build_tree).
         env:
           # PyO3 0.22 supports up to Python 3.13; allow forward-compat
           # builds for 3.14+ until we bump PyO3 (tracked separately).

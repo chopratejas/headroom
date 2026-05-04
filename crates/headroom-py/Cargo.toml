@@ -25,19 +25,3 @@ extension-module = ["pyo3/extension-module"]
 headroom-core = { path = "../headroom-core" }
 pyo3 = { workspace = true }
 serde_json = { workspace = true }
-# `headroom-core` pulls `openssl-sys` transitively via fastembed →
-# hf-hub → ureq → native-tls. The wheel matrix's manylinux_2_28
-# x86_64 container has no `openssl-devel`, and even with one the
-# manylinux2014 fallback ships OpenSSL 1.0.2k which `openssl-sys 0.9`
-# rejects. We force the `vendored` feature on `openssl` so cargo
-# compiles OpenSSL from source as part of the wheel build, removing
-# the system-OpenSSL dependency entirely.
-#
-# Why this dep lives HERE (the wheel-producing crate) rather than
-# headroom-proxy: cargo's feature unification only applies to the
-# resolution graph that's actually built. `maturin build --manifest-path
-# crates/headroom-py/Cargo.toml` resolves from headroom-py's deps
-# only — headroom-proxy's `openssl/vendored` enable doesn't propagate
-# because headroom-py never depends on headroom-proxy. Pinning the
-# vendored feature on headroom-py's own deps is the right fix.
-openssl = { version = "0.10", features = ["vendored"] }

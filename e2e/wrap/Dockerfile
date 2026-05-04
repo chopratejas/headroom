@@ -9,10 +9,15 @@
 # on any glibc 2.28+ runtime, including bookworm.
 FROM quay.io/pypa/manylinux_2_28_x86_64 AS builder
 
-# `openssl-sys` (transitive via fastembed/hf-hub/ureq → native-tls) needs
-# OpenSSL dev headers. perl-IPC-Cmd is required by openssl-sys's autotools
-# probe.
-RUN yum install -y openssl-devel pkgconfig perl-IPC-Cmd
+# No OpenSSL system deps required. As of the rustls-everywhere refactor,
+# all HTTP+TLS in our Rust crates goes through `rustls`. fastembed's
+# `hf-hub-rustls-tls` + `ort-download-binaries-rustls-tls` features
+# replace the default native-tls path; `cargo tree -p headroom-py -i
+# openssl-sys` returns "not found", confirming this Dockerfile no
+# longer needs `openssl-devel`, `pkgconfig`, or any perl modules
+# (Time::Piece, IPC::Cmd) for the openssl-src vendored Configure
+# script. The historical `yum install openssl-devel pkgconfig
+# perl-IPC-Cmd` line is intentionally absent.
 
 # Install rust toolchain into the manylinux container. Match the
 # rust-toolchain.toml at repo root (1.95.0 + rustfmt + clippy) so cargo

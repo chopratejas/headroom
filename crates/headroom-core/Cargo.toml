@@ -53,7 +53,19 @@ flate2 = "1"
 # int8-quantized ONNX) auto-downloads from HuggingFace Hub on first use.
 # Same library + same model = byte-equal embeddings between Python and Rust
 # (both call into ONNX Runtime over the identical ONNX file).
-fastembed = "5"
+#
+# `default-features = false` + explicit rustls features eliminates the
+# transitive `native-tls` → `openssl-sys` dependency that fastembed's
+# default features pull in (via `hf-hub-native-tls` + `ort-download-
+# binaries-native-tls`). Without this, every wheel-build surface
+# (release matrix, e2e/wrap, e2e/init, devcontainer, ci.yml) needs
+# system OpenSSL + perl modules for openssl-src vendored compile. Using
+# rustls everywhere removes the entire OpenSSL build-deps surface.
+fastembed = { version = "5", default-features = false, features = [
+    "hf-hub-rustls-tls",
+    "ort-download-binaries-rustls-tls",
+    "image-models",
+] }
 # `magika` is Google's ONNX-backed content classifier (Tier 1 of the
 # Stage-3d ContentRouter detection arch). Bundled standard-model is
 # loaded once per process via `OnceLock` and shared across calls. The

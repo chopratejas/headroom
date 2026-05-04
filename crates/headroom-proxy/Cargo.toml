@@ -24,18 +24,6 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter", "fmt"] }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-# `hf-hub` (transitive via `fastembed`) hard-codes `native-tls` as a default
-# feature; Cargo's feature unification then enables `openssl-sys` for the
-# whole workspace despite our `reqwest`/`tokio-tungstenite`/`tokio-rustls`
-# preferences. The wheel build matrix breaks on every Linux + Intel-macOS
-# target where the manylinux container's system OpenSSL is too old or
-# absent (manylinux2014 ships 1.0.2k; aarch64 cross sysroot has none).
-# Enabling `openssl/vendored` instructs `openssl-sys` to compile OpenSSL
-# from source as part of the cargo build, removing the system-OpenSSL
-# dependency entirely. ~30s extra one-time build cost; works on every
-# target uniformly. The crate is referenced here only to enable the
-# feature via Cargo's unification — we don't use the API directly.
-openssl = { version = "0.10", features = ["vendored"] }
 clap = { workspace = true, features = ["derive", "env"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
