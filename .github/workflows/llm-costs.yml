@@ -1,0 +1,18 @@
+name: LLM Cost Analysis
+
+on:
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  cost-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: Jwrede/tokentoll@753ca4d1150c74169b52a843439049b65e256d2b  # v0.6.1
