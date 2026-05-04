@@ -15,4 +15,4 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: Jwrede/tokentoll@ff50a35604b7858d9064cca6354b6229a94f7235  # v0.6.0
+      - uses: Jwrede/tokentoll@753ca4d1150c74169b52a843439049b65e256d2b  # v0.6.1
