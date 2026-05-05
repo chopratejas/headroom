@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Dashboard "Recent Requests" / `/transformations/feed` now shows
+  traffic routed through non-Anthropic backends** (`litellm-*`, `anyllm`,
+  `openrouter`). The `/v1/chat/completions` backend-routed branches in
+  `handlers/openai.py` (non-streaming) and `handlers/streaming.py`
+  (`_stream_openai_via_backend`) called `metrics.record_request(...)` —
+  so `/stats` aggregate counters and the durable savings store were
+  correct — but did not call `self.logger.log(RequestLog(...))`. As a
+  result, the in-memory deque feeding `/stats.recent_requests` and
+  `/transformations/feed` was never populated for those backends, and
+  the dashboard's live feed stayed empty even while compression and
+  routing worked. Added the missing `RequestLog` emission in both
+  branches, mirroring the existing direct-OpenAI / Anthropic paths
+  (`handlers/streaming.py:_stream_response`).
+
+- **Streaming requests routed through non-Anthropic backends now report
+  `output_tokens` correctly** instead of always being `0`. The
+  `_stream_openai_via_backend` path in `handlers/streaming.py` was
+  yielding upstream chunks unparsed, so neither `metrics.record_request`
+  nor the dashboard's "Recent Requests" panel ever saw completion
+  tokens. The fix mirrors the direct-OpenAI streaming branch in
+  `handlers/openai.py`: auto-inject `stream_options.include_usage=True`
+  (only when the caller has not set it) and parse SSE chunks through
+  `_parse_sse_usage_from_buffer(..., "openai")` as they pass through,
+  capturing `completion_tokens` from the final usage chunk and using it
+  for both metrics and the request log.
+
 - **`Learned: error recovery` section in MEMORY.md no longer bloats with
   stale, one-shot, or contradictory entries.** The matchers paired up
   unrelated tool calls (e.g. `state.rs` and `lib.rs` in the same dir
