@@ -90,7 +90,8 @@ RUN python -m pip install uv==${UV_VERSION} "maturin[patchelf]"
 
 WORKDIR /build
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/ crates/
 RUN mkdir -p headroom && touch headroom/__init__.py
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system ".[${HEADROOM_EXTRAS}]"
@@ -105,8 +106,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "onnxruntime-gpu>=1.19.0"
 
 COPY headroom/ headroom/
-COPY crates/ crates/
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --no-deps --reinstall-package headroom-ai .
 
