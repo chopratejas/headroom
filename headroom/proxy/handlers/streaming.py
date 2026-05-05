@@ -1233,10 +1233,42 @@ class StreamingMixin:
 
         assert self.anthropic_backend is not None
 
+        # Inject stream_options.include_usage=True so the upstream emits a
+        # final usage chunk we can parse for output_tokens. Mirrors the
+        # direct-OpenAI streaming branch in handlers/openai.py. We only set
+        # the flag when the caller has not taken a stance, so explicit
+        # `include_usage: false` is preserved.
+        if "stream_options" not in body:
+            body["stream_options"] = {"include_usage": True}
+        elif isinstance(body.get("stream_options"), dict):
+            body["stream_options"].setdefault("include_usage", True)
+
+        # Mutable state used by the generator to accumulate output_tokens
+        # parsed out of the SSE chunks as they pass through.
+        stream_state: dict[str, Any] = {
+            "output_tokens": 0,
+            "sse_buffer": bytearray(),
+        }
+
         async def generate():
             try:
                 async for sse_chunk in self.anthropic_backend.stream_openai_message(body, headers):
-                    yield sse_chunk.encode() if isinstance(sse_chunk, str) else sse_chunk
+                    chunk_bytes = sse_chunk.encode() if isinstance(sse_chunk, str) else sse_chunk
+                    yield chunk_bytes
+
+                    # Parse usage out of the buffered bytes (handles SSE events
+                    # split across backend chunk boundaries). The OpenAI-format
+                    # final chunk carries `usage.completion_tokens`.
+                    try:
+                        stream_state["sse_buffer"].extend(chunk_bytes)
+                        usage = self._parse_sse_usage_from_buffer(stream_state, "openai")
+                        if usage and "output_tokens" in usage:
+                            stream_state["output_tokens"] = usage["output_tokens"]
+                    except Exception as parse_err:  # noqa: BLE001
+                        logger.debug(
+                            f"[{request_id}] usage parse error "
+                            f"via {self.anthropic_backend.name}: {parse_err}"
+                        )
             except Exception as e:
                 logger.error(f"[{request_id}] Backend streaming error: {e}")
                 error_data = {
@@ -1250,11 +1282,12 @@ class StreamingMixin:
                 yield b"data: [DONE]\n\n"
             finally:
                 total_latency = (time.time() - start_time) * 1000
+                output_tokens = stream_state["output_tokens"]
                 await self.metrics.record_request(
                     provider=self.anthropic_backend.name,
                     model=model,
                     input_tokens=optimized_tokens,
-                    output_tokens=0,  # Unknown in streaming
+                    output_tokens=output_tokens,
                     tokens_saved=tokens_saved,
                     latency_ms=total_latency,
                     cached=False,
@@ -1277,7 +1310,7 @@ class StreamingMixin:
                             model=model,
                             input_tokens_original=original_tokens,
                             input_tokens_optimized=optimized_tokens,
-                            output_tokens=0,  # Unknown in streaming
+                            output_tokens=output_tokens,
                             tokens_saved=tokens_saved,
                             savings_percent=(tokens_saved / original_tokens * 100)
                             if original_tokens > 0
