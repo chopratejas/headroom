@@ -555,7 +555,7 @@ def _call_claude_cli_streaming(
     finally:
         try:
             proc.stdin.close()
-        except BrokenPipeError:
+        except BrokenPipeError:  # pragma: no cover — defensive, claude exits before stdin drain
             pass
 
     events: queue.Queue[tuple[str, str | None]] = queue.Queue()
@@ -583,7 +583,9 @@ def _call_claude_cli_streaming(
         proc.kill()
         try:
             proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+        except (
+            subprocess.TimeoutExpired
+        ):  # pragma: no cover — defensive, kill normally returns fast
             pass
         logger.debug("claude-cli killed: %s", reason)
 

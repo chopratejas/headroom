@@ -824,6 +824,95 @@ class TestCallCliLlm:
             _call_cli_llm("test digest", "codex-cli")
 
 
+class TestParseStreamEvent:
+    def test_returns_none_for_empty_line(self):
+        from headroom.learn.analyzer import _parse_stream_event
+
+        assert _parse_stream_event("") is None
+        assert _parse_stream_event("   \n") is None
+
+    def test_returns_none_for_invalid_json(self):
+        from headroom.learn.analyzer import _parse_stream_event
+
+        assert _parse_stream_event("not json at all") is None
+        assert _parse_stream_event("{unclosed") is None
+
+    def test_returns_none_for_non_dict_json(self):
+        from headroom.learn.analyzer import _parse_stream_event
+
+        assert _parse_stream_event('"a string"') is None
+        assert _parse_stream_event("[1, 2, 3]") is None
+
+    def test_parses_valid_event(self):
+        from headroom.learn.analyzer import _parse_stream_event
+
+        assert _parse_stream_event('{"type": "result", "result": "x"}') == {
+            "type": "result",
+            "result": "x",
+        }
+
+
+class TestClaudeCliEdgeCases:
+    """Coverage for less-traveled branches in the streaming claude-cli path."""
+
+    def test_non_string_result_field_falls_through_to_missing(self):
+        # `result` event present but the `result` field is a dict, not a string.
+        # The watchdog should not store it as final_result, so the path raises
+        # the "did not emit a final result event" error.
+        stdout = [_stream_event("result", subtype="success", result={"unexpected": "shape"})]
+        with patch(
+            "headroom.learn.analyzer.subprocess.Popen", _fake_claude_popen(stdout_lines=stdout)
+        ):
+            with pytest.raises(RuntimeError, match="did not emit a final `result` event"):
+                _call_cli_llm("test digest", "claude-cli")
+
+    def test_stderr_on_success_is_logged_not_raised(self, caplog):
+        import logging
+
+        stdout = [_result_event('{"context_file_rules": [], "memory_file_rules": []}')]
+        stderr_warning = "deprecation: --foo will be removed in v2\n"
+        popen = _fake_claude_popen(stdout_lines=stdout, stderr_lines=[stderr_warning])
+        with caplog.at_level(logging.DEBUG, logger="headroom.learn.analyzer"):
+            with patch("headroom.learn.analyzer.subprocess.Popen", popen):
+                result = _call_cli_llm("test digest", "claude-cli")
+        assert result == {"context_file_rules": [], "memory_file_rules": []}
+        assert any("CLI stderr (exit 0)" in rec.message for rec in caplog.records)
+
+    def test_non_result_stdout_lines_are_buffered_into_snippet_on_failure(self):
+        # If only assistant/system events arrive (no result), the missing-result
+        # error should include a snippet from stdout.
+        stdout = [
+            _stream_event("system", subtype="init"),
+            _stream_event("assistant", message={"content": "thinking..."}),
+        ]
+        with patch(
+            "headroom.learn.analyzer.subprocess.Popen", _fake_claude_popen(stdout_lines=stdout)
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                _call_cli_llm("test digest", "claude-cli")
+        message = str(exc_info.value)
+        assert "did not emit a final `result` event" in message
+        assert "thinking" in message  # stdout snippet was included
+
+    def test_resolve_timeout_logs_warning_for_invalid(self, caplog, monkeypatch):
+        import logging
+
+        monkeypatch.setenv("HEADROOM_LEARN_CLI_TIMEOUT_SECS", "abc")
+        with caplog.at_level(logging.WARNING, logger="headroom.learn.analyzer"):
+            assert _resolve_timeout_secs("HEADROOM_LEARN_CLI_TIMEOUT_SECS", 300) == 300
+        assert any(
+            "Invalid HEADROOM_LEARN_CLI_TIMEOUT_SECS" in rec.message for rec in caplog.records
+        )
+
+    def test_resolve_timeout_logs_warning_for_non_positive(self, caplog, monkeypatch):
+        import logging
+
+        monkeypatch.setenv("HEADROOM_LEARN_CLI_TIMEOUT_SECS", "-5")
+        with caplog.at_level(logging.WARNING, logger="headroom.learn.analyzer"):
+            assert _resolve_timeout_secs("HEADROOM_LEARN_CLI_TIMEOUT_SECS", 300) == 300
+        assert any("must be positive" in rec.message for rec in caplog.records)
+
+
 class TestResolveTimeoutSecs:
     def test_uses_default_when_unset(self, monkeypatch):
         monkeypatch.delenv("HEADROOM_LEARN_CLI_TIMEOUT_SECS", raising=False)
