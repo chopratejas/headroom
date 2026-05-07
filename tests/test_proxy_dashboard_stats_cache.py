@@ -500,6 +500,29 @@ def test_dashboard_route_disables_browser_caching() -> None:
     assert response.headers["expires"] == "0"
 
 
+def test_stats_history_route_disables_browser_caching() -> None:
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            cost_tracking_enabled=False,
+            log_requests=False,
+            ccr_inject_tool=False,
+            ccr_handle_responses=False,
+            ccr_context_tracking=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/stats-history")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store, no-cache, must-revalidate, max-age=0"
+    assert response.headers["pragma"] == "no-cache"
+    assert response.headers["expires"] == "0"
+
+
 def test_dashboard_uses_uncached_fetches_and_lazy_history_feed_polling() -> None:
     html = get_dashboard_html()
 

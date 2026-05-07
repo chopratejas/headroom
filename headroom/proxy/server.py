@@ -2329,10 +2329,16 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             return Response(
                 content=proxy.metrics.savings_tracker.export_csv(series=series),
                 media_type="text/csv; charset=utf-8",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                headers={
+                    **DASHBOARD_NO_STORE_HEADERS,
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                },
             )
 
-        return proxy.metrics.savings_tracker.history_response(history_mode=history_mode)
+        return JSONResponse(
+            content=proxy.metrics.savings_tracker.history_response(history_mode=history_mode),
+            headers=DASHBOARD_NO_STORE_HEADERS,
+        )
 
     @app.get("/transformations/feed")
     async def transformations_feed(limit: int = 20):
