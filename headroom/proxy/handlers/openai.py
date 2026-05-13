@@ -41,6 +41,7 @@ import httpx
 from headroom.copilot_auth import apply_copilot_api_auth, build_copilot_upstream_url
 from headroom.pipeline import PipelineStage, summarize_routing_markers
 from headroom.proxy.auth_mode import classify_auth_mode
+from headroom.proxy.tenant_key import resolve_tenant_key, set_request_tenant_key
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -1136,6 +1137,16 @@ class OpenAIHandlerMixin:
         auth_mode = classify_auth_mode(request.headers)
         request.state.auth_mode = auth_mode
         logger.debug(f"[{request_id}] auth_mode_classified mode={auth_mode.value}")
+
+        # Phase F PR-F3: resolve per-tenant TOIN key (header / hash /
+        # global) and populate the request-scoped ContextVar that
+        # SmartCrusher's deep-stack `record_compression` reads. See
+        # `headroom/proxy/tenant_key.py` for the threat model and the
+        # resolution rules.
+        tenant_key, tenant_key_source = resolve_tenant_key(request)
+        request.state.tenant_key = tenant_key
+        request.state.tenant_key_source = tenant_key_source
+        set_request_tenant_key(tenant_key)
 
         # Check request body size
         content_length = request.headers.get("content-length")
@@ -2241,6 +2252,16 @@ class OpenAIHandlerMixin:
         auth_mode = classify_auth_mode(request.headers)
         request.state.auth_mode = auth_mode
         logger.debug(f"[{request_id}] auth_mode_classified mode={auth_mode.value}")
+
+        # Phase F PR-F3: resolve per-tenant TOIN key (header / hash /
+        # global) and populate the request-scoped ContextVar that
+        # SmartCrusher's deep-stack `record_compression` reads. See
+        # `headroom/proxy/tenant_key.py` for the threat model and the
+        # resolution rules.
+        tenant_key, tenant_key_source = resolve_tenant_key(request)
+        request.state.tenant_key = tenant_key
+        request.state.tenant_key_source = tenant_key_source
+        set_request_tenant_key(tenant_key)
 
         # Check request body size
         content_length = request.headers.get("content-length")

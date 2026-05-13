@@ -1366,7 +1366,18 @@ def _strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
     if mode == "disabled":
         # Always return a copy so callers can mutate without surprise.
         return dict(headers)
-    return {k: v for k, v in headers.items() if not k.lower().startswith(_INTERNAL_HEADER_PREFIX)}
+    from headroom.proxy.tenant_key import (
+        DEFAULT_TENANT_KEY_HEADER,
+        TENANT_KEY_HEADER_ENV_VAR,
+    )
+
+    tenant_header = os.environ.get(TENANT_KEY_HEADER_ENV_VAR, DEFAULT_TENANT_KEY_HEADER)
+    tenant_header_lower = tenant_header.lower()
+    return {
+        k: v
+        for k, v in headers.items()
+        if not k.lower().startswith(_INTERNAL_HEADER_PREFIX) and k.lower() != tenant_header_lower
+    }
 
 
 def log_outbound_headers(

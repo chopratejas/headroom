@@ -95,6 +95,7 @@ def _toml_escape(s: str) -> str:
 
 def _format_row(
     *,
+    tenant_key: str,
     auth_mode: str,
     model_family: str,
     structure_hash: str,
@@ -105,6 +106,7 @@ def _format_row(
     """Render one ``[[recommendation]]`` block."""
     return (
         "[[recommendation]]\n"
+        f'tenant_key = "{_toml_escape(tenant_key)}"\n'
         f'auth_mode = "{_toml_escape(auth_mode)}"\n'
         f'model_family = "{_toml_escape(model_family)}"\n'
         f'structure_hash = "{_toml_escape(structure_hash)}"\n'
@@ -131,9 +133,15 @@ def _eligible_rows(
         observations = pattern.total_compressions
         if observations < min_observations:
             continue
-        auth_mode, model_family, sig_hash = key
+        # PR-F3: keys are now 4-tuples
+        # `(tenant_key, auth_mode, model_family, sig_hash)`. We carry
+        # `tenant_key` through to the published row so the loaded
+        # `recommendations.toml` is self-describing — operators can
+        # filter recommendations per tenant when reviewing them.
+        tenant_key, auth_mode, model_family, sig_hash = key
         rows.append(
             {
+                "tenant_key": tenant_key,
                 "auth_mode": auth_mode,
                 "model_family": model_family,
                 "structure_hash": sig_hash,
@@ -144,7 +152,12 @@ def _eligible_rows(
         )
 
     rows.sort(
-        key=lambda r: (r["auth_mode"], r["model_family"], r["structure_hash"]),
+        key=lambda r: (
+            r["tenant_key"],
+            r["auth_mode"],
+            r["model_family"],
+            r["structure_hash"],
+        ),
     )
     return rows
 
