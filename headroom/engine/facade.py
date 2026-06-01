@@ -1107,29 +1107,29 @@ class HeadroomEngine:
         )
 
         optimized_messages = messages
-        # session_id is derived once (outside the compress block) so CCR can
-        # use it even when compression was skipped (sticky tool logic needs it).
-        session_id: str | None = None
-        frozen_message_count = 0
         request_id = ctx.request_id
 
-        if _decision.should_compress and not _bypass:
-            # --- Session / frozen-count derivation ---
-            session_id = oc.session_tracker_store.compute_session_id(ctx, model, messages)
-            prefix_tracker = oc.session_tracker_store.get_or_create(session_id, "openai")
-            frozen_message_count = prefix_tracker.get_frozen_message_count()
-            if is_cache_mode(oc.config.mode):
-                frozen_message_count = _strict_previous_turn_frozen_count(
-                    original_client_messages, frozen_message_count
-                )
+        # --- Session / prefix-tracker / frozen-count derivation ---
+        # Mirrors handle_openai_chat lines 1387-1438: derived UNCONDITIONALLY,
+        # before the should_compress gate, for two reasons the handler relies on:
+        #   1. the cache-mode _restore_frozen_prefix below must use the same
+        #      frozen count the handler does — even when compression is skipped;
+        #   2. the CCR sticky-tool logic needs session_id regardless.
+        session_id = oc.session_tracker_store.compute_session_id(ctx, model, messages)
+        prefix_tracker = oc.session_tracker_store.get_or_create(session_id, "openai")
+        frozen_message_count = prefix_tracker.get_frozen_message_count()
+        if is_cache_mode(oc.config.mode):
+            frozen_message_count = _strict_previous_turn_frozen_count(
+                original_client_messages, frozen_message_count
+            )
 
+        if _decision.should_compress and not _bypass:
             # --- Context limit ---
             context_limit = oc.provider.get_context_limit(model)
 
             biases = None
 
             # --- Mode branch: token / non-cache / cache-delta ---
-            assert session_id is not None  # set 3 lines above; mypy flow narrowing
             if is_token_mode(oc.config.mode):
                 comp_cache = oc.get_compression_cache(session_id)
 
@@ -1186,11 +1186,6 @@ class HeadroomEngine:
         ccr_tool_injected = False
 
         if ccr is not None and not _bypass:
-            # Derive session_id for sticky-tool registration even when
-            # compression was skipped (_decision.should_compress=False).
-            if session_id is None:
-                session_id = oc.session_tracker_store.compute_session_id(ctx, model, messages)
-
             if oc.config.ccr_inject_tool or oc.config.ccr_inject_system_instructions:
                 from headroom.ccr import CCRToolInjector
                 from headroom.proxy.helpers import apply_session_sticky_ccr_tool
@@ -1224,6 +1219,29 @@ class HeadroomEngine:
                             injector.has_compressed_content,
                             len(injector.detected_hashes),
                         )
+
+        # ── Cache-mode frozen-prefix restore (Chunk 5.2 — OpenAI) ────────────
+        # Mirrors handle_openai_chat lines ~1656-1666: in cache mode, force the
+        # frozen prefix back to the exact original client bytes AFTER compression
+        # + CCR injection, so the cache hot zone is never mutated (invariant I2).
+        # Without this the engine forwards compression/CCR-mutated prefix bytes
+        # that differ from the prior turn → prompt-cache bust. Placed before
+        # memory injection to match the handler's order byte-for-byte.
+        if is_cache_mode(oc.config.mode):
+            from headroom.proxy.handlers.openai import OpenAIHandlerMixin
+
+            optimized_messages, restored_count = OpenAIHandlerMixin._restore_frozen_prefix(
+                original_client_messages,
+                optimized_messages,
+                frozen_message_count=frozen_message_count,
+            )
+            if restored_count > 0:
+                logger.warning(
+                    "[%s] Restored %d frozen prefix message(s) to preserve "
+                    "cache stability (engine/openai)",
+                    request_id,
+                    restored_count,
+                )
 
         # ── Memory injection (Chunk 5.2 — OpenAI) ────────────────────────────
         # Mirrors ``handle_openai_chat`` lines ~1643-1733.
