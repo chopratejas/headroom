@@ -21,6 +21,7 @@
 </p>
 
 <p align="center">
+  <a href="README.zh-CN.md">简体中文</a> ·
   <a href="https://headroom-docs.vercel.app/docs">Docs</a> ·
   <a href="#get-started-60-seconds">Install</a> ·
   <a href="#proof">Proof</a> ·
