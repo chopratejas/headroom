@@ -234,6 +234,94 @@ def test_apply_copilot_api_auth_replaces_authorization(monkeypatch: pytest.Monke
     assert "authorization" not in headers
 
 
+def test_apply_copilot_api_auth_passes_through_existing_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        raise AssertionError("provider should not be called for existing API token")
+
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {"authorization": "Bearer tid_existing_copilot_token"},
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["authorization"] == "Bearer tid_existing_copilot_token"
+
+
+def test_apply_copilot_api_auth_replaces_github_oauth_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        return copilot_auth.CopilotAPIToken(
+            token="copilot-session",
+            expires_at=time.time() + 3600,
+            api_url=copilot_auth.DEFAULT_API_URL,
+        )
+
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {"authorization": "Bearer gho_downstream_oauth"},
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["Authorization"] == "Bearer copilot-session"
+    assert "authorization" not in headers
+
+
+def test_is_copilot_api_token_matches_expected_prefixes() -> None:
+    assert copilot_auth._is_copilot_api_token("tid_session_token") is True
+    assert copilot_auth._is_copilot_api_token("gho_oauth") is False
+    assert copilot_auth._is_copilot_api_token("ghs_oauth") is False
+    assert copilot_auth._is_copilot_api_token("ghp_oauth") is False
+    assert copilot_auth._is_copilot_api_token("github_pat_example") is False
+    assert copilot_auth._is_copilot_api_token("Bearer maybe") is False
+
+
+def test_apply_copilot_api_auth_injects_required_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        return copilot_auth.CopilotAPIToken(
+            token="copilot-session",
+            expires_at=time.time() + 3600,
+            api_url=copilot_auth.DEFAULT_API_URL,
+        )
+
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+    monkeypatch.delenv("GITHUB_COPILOT_INTEGRATION_ID", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_EDITOR_VERSION", raising=False)
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {},
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["Authorization"] == "Bearer copilot-session"
+    assert headers["Copilot-Integration-Id"] == "vscode-chat"
+    assert headers["editor-version"] == "vscode/1.104.1"
+
+
 def test_token_provider_reuses_oauth_token_without_exchange(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
