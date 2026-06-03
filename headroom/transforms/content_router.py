@@ -658,13 +658,38 @@ def _extract_json_block(lines: list[str], start: int) -> tuple[str | None, int]:
     bracket_count = 0
     brace_count = 0
     json_lines = []
+    in_string = False
+    escaped = False
 
     for i in range(start, len(lines)):
         line = lines[i]
         json_lines.append(line)
 
-        bracket_count += line.count("[") - line.count("]")
-        brace_count += line.count("{") - line.count("}")
+        # Count brackets/braces, but ignore any that appear inside a JSON
+        # string literal — a naive line.count() treats e.g. the "]" in
+        # {"path": "a]b"} as a closing bracket and terminates the block
+        # early, splitting one array across multiple sections.
+        for ch in line:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                if in_string:
+                    escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "[":
+                bracket_count += 1
+            elif ch == "]":
+                bracket_count -= 1
+            elif ch == "{":
+                brace_count += 1
+            elif ch == "}":
+                brace_count -= 1
 
         if bracket_count <= 0 and brace_count <= 0 and json_lines:
             return "\n".join(json_lines), i
