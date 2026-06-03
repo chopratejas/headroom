@@ -171,6 +171,66 @@ def test_mixed_content_section_splitting_and_json_extraction() -> None:
     assert _extract_json_block(["{", '"a": 1'], 0) == (None, 0)
 
 
+def test_extract_json_block_ignores_brackets_inside_strings() -> None:
+    """Brackets/braces inside JSON string values must not end the block early.
+
+    Regression: counting raw ``[``/``]``/``{``/``}`` per line treated the
+    ``]`` inside ``{"path": "a]b"}`` as a closing bracket, so the array was
+    truncated mid-way and the remaining rows leaked into later sections.
+    """
+    import json as _json
+
+    lines = [
+        "[",
+        '  {"path": "a]b"},',
+        '  {"path": "c"}',
+        "]",
+    ]
+    block, end_idx = _extract_json_block(lines, 0)
+    assert end_idx == 3
+    assert block is not None
+    parsed = _json.loads(block)
+    assert parsed == [{"path": "a]b"}, {"path": "c"}]
+
+    # Braces inside a string value must likewise be ignored.
+    obj_lines = [
+        "{",
+        '  "msg": "use {curly} and [square]",',
+        '  "n": 1',
+        "}",
+    ]
+    obj_block, obj_end = _extract_json_block(obj_lines, 0)
+    assert obj_end == 3
+    assert obj_block is not None
+    assert _json.loads(obj_block) == {"msg": "use {curly} and [square]", "n": 1}
+
+
+def test_split_into_sections_keeps_json_array_with_bracket_in_string() -> None:
+    """A JSON array embedded in prose stays one JSON section, not fragments.
+
+    With the bracket-in-string bug, the array below split into a truncated
+    JSON section plus a stray ``]`` glued onto the trailing prose.
+    """
+    import json as _json
+
+    content = "\n".join(
+        [
+            "prose line here that is long enough to matter",
+            "[",
+            '  {"path": "a]b"},',
+            '  {"path": "c"}',
+            "]",
+            "trailing prose",
+        ]
+    )
+
+    sections = split_into_sections(content)
+    json_sections = [s for s in sections if s.content_type == ContentType.JSON_ARRAY]
+    assert len(json_sections) == 1
+    parsed = _json.loads(json_sections[0].content)
+    assert parsed == [{"path": "a]b"}, {"path": "c"}]
+
+
 def test_content_router_strategy_and_compress_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     router = ContentRouter(ContentRouterConfig(prefer_code_aware_for_code=False))
 

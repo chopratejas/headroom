@@ -34,6 +34,23 @@ class TestTiktokenCounter:
         assert counter.model == "gpt-4"
         assert counter.encoding_name == "cl100k_base"
 
+    def test_unknown_gpt4_snapshot_uses_cl100k(self):
+        """Unknown gpt-4 (non-o, non-turbo) snapshots must use cl100k_base.
+
+        Regression: the prefix matcher scanned MODEL_TO_ENCODING for the
+        first key starting with the prefix. For prefix "gpt-4" that matched
+        the "gpt-4o" entry first and wrongly returned o200k_base for any
+        gpt-4 snapshot not in the table (e.g. a future dated build).
+        """
+        from headroom.tokenizers.tiktoken_counter import get_encoding_for_model
+
+        assert get_encoding_for_model("gpt-4-2025-01-01") == "cl100k_base"
+        assert get_encoding_for_model("gpt-4-future") == "cl100k_base"
+        # gpt-4o snapshots still resolve to o200k_base (most-specific first).
+        assert get_encoding_for_model("gpt-4o-2099-12-31") == "o200k_base"
+        # gpt-4-turbo snapshots use cl100k_base.
+        assert get_encoding_for_model("gpt-4-turbo-2099") == "cl100k_base"
+
     def test_count_text_empty(self):
         """Test counting empty text."""
         counter = TiktokenCounter()
