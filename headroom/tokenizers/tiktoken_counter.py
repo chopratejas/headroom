@@ -97,13 +97,22 @@ def get_encoding_for_model(model: str) -> str:
     if model in MODEL_TO_ENCODING:
         return MODEL_TO_ENCODING[model]
 
-    # Try prefix matching for versioned models
-    for prefix in ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5", "o1", "o3"]:
+    # Try prefix matching for versioned models. Ordered most-specific first
+    # so that, e.g., "gpt-4o-*" resolves before "gpt-4-*". Each prefix maps
+    # directly to its encoding: scanning MODEL_TO_ENCODING for the first key
+    # that merely starts with the prefix is order-dependent and wrong — the
+    # "gpt-4" prefix would match the "gpt-4o" dict entry first and return
+    # o200k_base instead of cl100k_base for unknown gpt-4 snapshots.
+    for prefix, encoding in (
+        ("gpt-4o", "o200k_base"),
+        ("gpt-4-turbo", "cl100k_base"),
+        ("gpt-4", "cl100k_base"),
+        ("gpt-3.5", "cl100k_base"),
+        ("o1", "o200k_base"),
+        ("o3", "o200k_base"),
+    ):
         if model.startswith(prefix):
-            # Find any model with this prefix
-            for known_model, encoding in MODEL_TO_ENCODING.items():
-                if known_model.startswith(prefix):
-                    return encoding
+            return encoding
 
     return DEFAULT_ENCODING
 
