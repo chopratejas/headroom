@@ -118,3 +118,9 @@ def openclaw_config_path() -> Path:
     """Return the OpenClaw config path."""
 
     return Path.home() / ".openclaw" / "openclaw.json"
+
+
+def opencode_config_path() -> Path:
+    """Return the OpenCode user config path."""
+
+    return Path.home() / ".config" / "opencode" / "opencode.json"

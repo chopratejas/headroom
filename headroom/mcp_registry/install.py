@@ -17,7 +17,7 @@ def get_all_registrars() -> list[MCPRegistrar]:
 
     The list grows as we add adapters for Cursor, Continue, Cline, etc.
     """
-    return [ClaudeRegistrar(), CodexRegistrar()]
+    return [ClaudeRegistrar(), CodexRegistrar(), OpenCodeRegistrar()]
 
 
 def build_headroom_spec(proxy_url: str = DEFAULT_PROXY_URL) -> ServerSpec:

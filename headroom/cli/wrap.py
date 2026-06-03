@@ -7,6 +7,7 @@ Usage:
     headroom wrap aider                     # Start proxy + aider
     headroom wrap cursor                    # Start proxy + print Cursor config instructions
     headroom wrap openclaw                  # Install + configure OpenClaw plugin
+    headroom wrap opencode                  # Start proxy + OpenCode (GitHub Copilot backend)
     headroom wrap claude --no-context-tool  # Without CLI context-tool setup
     headroom wrap claude --port 9999        # Custom proxy port
     headroom wrap claude -- --model opus    # Pass args to claude
@@ -3691,6 +3692,123 @@ def unwrap_openclaw(
     if not no_stop_proxy:
         _echo_unwrap_proxy_stop_status(_stop_local_proxy_for_unwrap(proxy_port), proxy_port)
     click.echo()
+
+
+# =============================================================================
+# OpenCode
+# =============================================================================
+
+
+@wrap.command(context_settings={"ignore_unknown_options": True})
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
+@click.option(
+    "--no-context-tool",
+    "--no-rtk",
+    "no_rtk",
+    is_flag=True,
+    help="Skip CLI context-tool setup",
+)
+@click.option(
+    "--code-graph",
+    is_flag=True,
+    help="Enable code graph indexing via codebase-memory-mcp (optional)",
+)
+@click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
+@click.option("--learn", is_flag=True, help="Enable live traffic learning")
+@click.option("--memory", is_flag=True, help="Enable persistent cross-session memory")
+@click.option(
+    "--backend",
+    default="github-copilot",
+    show_default=True,
+    help="API backend: 'github-copilot', 'anthropic', 'openai', etc.",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+@click.option("--prepare-only", is_flag=True, hidden=True)
+@click.argument("opencode_args", nargs=-1, type=click.UNPROCESSED)
+def opencode(
+    port: int,
+    no_rtk: bool,
+    code_graph: bool,
+    no_proxy: bool,
+    learn: bool,
+    memory: bool,
+    backend: str,
+    verbose: bool,
+    prepare_only: bool,
+    opencode_args: tuple,
+) -> None:
+    """Launch OpenCode through Headroom proxy.
+
+    \b
+    Routes OpenCode traffic through headroom so tool outputs, logs, and RAG
+    chunks are compressed before reaching the LLM.
+
+    \b
+    GitHub Copilot (the default provider) requires a GitHub token that headroom
+    can use for token exchange.  Export one before running:
+
+        export GITHUB_TOKEN=$(gh auth token)
+        headroom wrap opencode
+
+    \b
+    Examples:
+        headroom wrap opencode                          # Start proxy + opencode (Copilot backend)
+        headroom wrap opencode --backend anthropic      # Anthropic backend
+        headroom wrap opencode -- run "fix the tests"  # Non-interactive run
+        headroom wrap opencode --no-context-tool        # Skip CLI context-tool setup
+    """
+    from headroom.providers.opencode.runtime import build_launch_env
+
+    # Warn if GITHUB_TOKEN is absent (Copilot backend won't work without it).
+    if backend == "github-copilot" and not (
+        os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("GITHUB_COPILOT_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_COPILOT_API_TOKEN")
+    ):
+        click.echo(
+            "  Warning: no GITHUB_TOKEN found. Run: export GITHUB_TOKEN=$(gh auth token)",
+            err=True,
+        )
+
+    if not no_rtk:
+        if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
+            click.echo("  Setting up lean-ctx for opencode...")
+            _setup_lean_ctx_agent("opencode", verbose=verbose)
+        else:
+            click.echo("  Setting up rtk for opencode...")
+            rtk_path = _ensure_rtk_binary(verbose=verbose)
+            if rtk_path:
+                # OpenCode reads AGENTS.md from the project root.
+                agents_md = Path.cwd() / "AGENTS.md"
+                _inject_rtk_instructions(agents_md, verbose=verbose)
+
+    if prepare_only:
+        return
+
+    opencode_bin = shutil.which("opencode")
+    if not opencode_bin:
+        click.echo("Error: 'opencode' not found in PATH.")
+        click.echo("Install opencode: npm install -g opencode-ai")
+        raise SystemExit(1)
+
+    env, env_vars_display = build_launch_env(port, os.environ, backend=backend)
+
+    _launch_tool(
+        binary=opencode_bin,
+        args=opencode_args,
+        env=env,
+        port=port,
+        no_proxy=no_proxy,
+        tool_label="OPENCODE",
+        env_vars_display=env_vars_display,
+        learn=learn,
+        memory=memory,
+        agent_type="opencode",
+        code_graph=code_graph,
+        backend=backend,
+        anyllm_provider=None,
+        region=None,
+    )
 
 
 # =============================================================================
