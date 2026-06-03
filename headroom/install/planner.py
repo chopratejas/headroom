@@ -132,19 +132,19 @@ def build_manifest(
     resolved_targets = resolve_targets(provider_mode, targets, scope=scope)
     tool_envs = build_tool_envs(port, backend, resolved_targets)
     base_env = {
-        "HEADROOM_PORT": str(port),
-        "HEADROOM_HOST": "127.0.0.1",
-        "HEADROOM_MODE": proxy_mode,
-        "HEADROOM_BACKEND": backend,
+        "HR_PORT": str(port),
+        "HR_HOST": "127.0.0.1",
+        "HR_MODE": proxy_mode,
+        "HR_BACKEND": backend,
     }
     if anyllm_provider:
-        base_env["HEADROOM_ANYLLM_PROVIDER"] = anyllm_provider
+        base_env["HR_ANYLLM_PROVIDER"] = anyllm_provider
     if region:
-        base_env["HEADROOM_REGION"] = region
+        base_env["HR_REGION"] = region
     if not telemetry_enabled:
-        base_env["HEADROOM_TELEMETRY"] = "off"
+        base_env["HR_TELEMETRY"] = "off"
     if memory_enabled:
-        base_env["HEADROOM_MEMORY_ENABLED"] = "1"
+        base_env["HR_MEMORY_ENABLED"] = "1"
 
     proxy_args = [
         "--host",

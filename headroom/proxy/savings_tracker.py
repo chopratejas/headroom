@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
+from headroom.env import get_hr_env
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def get_default_savings_storage_path() -> str:
     # Preserve legacy behavior: when HEADROOM_SAVINGS_PATH is set we return
     # the raw string exactly as supplied (no tilde expansion, no
     # path-separator normalization) to match prior behavior and existing tests.
-    env_path = os.environ.get(HEADROOM_SAVINGS_PATH_ENV_VAR, "").strip()
+    env_path = (get_hr_env("SAVINGS_PATH", "") or "").strip()
     if env_path:
         return env_path
     return str(_paths.savings_path())

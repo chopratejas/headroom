@@ -144,13 +144,14 @@ def test_strip_disabled_mode_returns_copy_not_alias(
 
 
 def test_strip_mode_default_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HR_STRIP_INTERNAL_HEADERS", raising=False)
     monkeypatch.delenv("HEADROOM_STRIP_INTERNAL_HEADERS", raising=False)
     assert get_strip_internal_headers_mode() == "enabled"
 
 
 def test_strip_mode_invalid_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HEADROOM_STRIP_INTERNAL_HEADERS", "garbage")
-    with pytest.raises(ValueError, match="HEADROOM_STRIP_INTERNAL_HEADERS"):
+    monkeypatch.setenv("HR_STRIP_INTERNAL_HEADERS", "garbage")
+    with pytest.raises(ValueError, match="HR_STRIP_INTERNAL_HEADERS"):
         get_strip_internal_headers_mode()
 
 

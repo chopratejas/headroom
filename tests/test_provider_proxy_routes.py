@@ -422,6 +422,7 @@ def test_v1_models_falls_back_to_synthetic_list_under_chatgpt_auth(monkeypatch) 
     synthesize an OpenAI-compatible response with the known-supported
     Codex/ChatGPT model set instead, so Codex's model-picker refresh succeeds.
     """
+
     class FakeAsyncClient:
         async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
             return httpx.Response(403, json={"error": "forbidden"})
@@ -458,6 +459,7 @@ def test_v1_models_get_single_dynamic_under_chatgpt_auth() -> None:
     """The single-model variant (`/v1/models/{id}`) is also called by
     Codex for some flows. It should use the Codex registry first so
     dynamically exposed model slugs validate consistently."""
+
     class FakeAsyncClient:
         def __init__(self) -> None:
             self.calls = 0

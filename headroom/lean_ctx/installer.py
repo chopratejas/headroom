@@ -13,6 +13,8 @@ import zipfile
 from pathlib import Path
 from urllib.request import urlopen
 
+from headroom.env import get_hr_env
+
 from . import LEAN_CTX_BIN_DIR, LEAN_CTX_VERSION
 
 logger = logging.getLogger(__name__)
@@ -59,10 +61,9 @@ def _get_target_triple() -> str:
 
 def _get_explicit_target_triple() -> str:
     """Return the explicitly requested lean-ctx target triple, if any."""
-    return (
-        os.environ.get("HEADROOM_LEAN_CTX_TARGET", "").strip()
-        or os.environ.get("LEAN_CTX_TARGET", "").strip()
-    )
+    return (get_hr_env("LEAN_CTX_TARGET", "") or "").strip() or os.environ.get(
+        "LEAN_CTX_TARGET", ""
+    ).strip()
 
 
 def _binary_name_for_target(target: str) -> str:

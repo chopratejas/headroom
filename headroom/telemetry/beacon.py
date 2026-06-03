@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import platform
 import sys
 import time
 import uuid
 
+from headroom.env import get_hr_env
 from headroom.telemetry.context import detect_install_mode, detect_stack
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ def _build_pipeline_timing(stats: dict) -> dict[str, object]:
 
 def is_telemetry_enabled() -> bool:
     """Check if telemetry is enabled (on by default, opt out with env var)."""
-    val = os.environ.get("HEADROOM_TELEMETRY", "on").lower().strip()
+    val = (get_hr_env("TELEMETRY", "on") or "on").lower().strip()
     return val not in _OFF_VALUES
 
 
@@ -81,7 +81,7 @@ def is_telemetry_warn_enabled() -> bool:
     This is a build/pack-time feature flag intended for operators who want
     to disable the notice without disabling telemetry itself.
     """
-    val = os.environ.get("HEADROOM_TELEMETRY_WARN", "on").lower().strip()
+    val = (get_hr_env("TELEMETRY_WARN", "on") or "on").lower().strip()
     return val not in _OFF_VALUES
 
 

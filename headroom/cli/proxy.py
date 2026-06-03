@@ -7,12 +7,13 @@ from typing import Any, Literal, cast
 import click
 
 from headroom import paths as _paths
+from headroom.env import get_hr_env
 from headroom.providers.registry import resolve_api_overrides, resolve_api_targets
 from headroom.proxy.modes import PROXY_MODE_TOKEN, normalize_proxy_mode
 
 from .main import main
 
-_CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
+_CONTEXT_TOOL_ENV = "HR_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
 _VALID_CONTEXT_TOOLS = {_CONTEXT_TOOL_RTK, _CONTEXT_TOOL_LEAN_CTX}
@@ -26,7 +27,7 @@ def _get_env_bool(name: str, default: bool) -> bool:
 
 
 def _selected_context_tool() -> str:
-    raw = os.environ.get(_CONTEXT_TOOL_ENV, "").strip().lower().replace("_", "-")
+    raw = (get_hr_env("CONTEXT_TOOL", "") or "").strip().lower().replace("_", "-")
     if not raw:
         return _CONTEXT_TOOL_RTK
     if raw == "leanctx":
@@ -42,29 +43,29 @@ def _selected_context_tool() -> str:
 @click.option(
     "--host",
     default="127.0.0.1",
-    envvar="HEADROOM_HOST",
-    help="Host to bind to (default: 127.0.0.1, env: HEADROOM_HOST)",
+    envvar=["HR_HOST", "HEADROOM_HOST"],
+    help="Host to bind to (default: 127.0.0.1, env: HR_HOST)",
 )
 @click.option(
     "--port",
     "-p",
     default=8787,
     type=int,
-    envvar="HEADROOM_PORT",
-    help="Port to bind to (default: 8787, env: HEADROOM_PORT)",
+    envvar=["HR_PORT", "HEADROOM_PORT"],
+    help="Port to bind to (default: 8787, env: HR_PORT)",
 )
 @click.option(
     "--workers",
     default=1,
     type=click.IntRange(min=1),
-    envvar="HEADROOM_WORKERS",
-    help="Number of Uvicorn worker processes (default: 1, env: HEADROOM_WORKERS)",
+    envvar=["HR_WORKERS", "HEADROOM_WORKERS"],
+    help="Number of Uvicorn worker processes (default: 1, env: HR_WORKERS)",
 )
 @click.option(
     "--limit-concurrency",
     default=1000,
     type=click.IntRange(min=1),
-    envvar="HEADROOM_LIMIT_CONCURRENCY",
+    envvar=["HR_LIMIT_CONCURRENCY", "HEADROOM_LIMIT_CONCURRENCY"],
     help=(
         "Maximum concurrent connections before Uvicorn returns 503 "
         "(default: 1000, env: HEADROOM_LIMIT_CONCURRENCY)"
@@ -74,16 +75,16 @@ def _selected_context_tool() -> str:
     "--max-connections",
     default=500,
     type=click.IntRange(min=1),
-    envvar="HEADROOM_MAX_CONNECTIONS",
-    help="Maximum upstream HTTP connections (default: 500, env: HEADROOM_MAX_CONNECTIONS)",
+    envvar=["HR_MAX_CONNECTIONS", "HEADROOM_MAX_CONNECTIONS"],
+    help="Maximum upstream HTTP connections (default: 500, env: HR_MAX_CONNECTIONS)",
 )
 @click.option(
     "--max-keepalive",
     "max_keepalive_connections",
     default=100,
     type=click.IntRange(min=0),
-    envvar="HEADROOM_MAX_KEEPALIVE",
-    help="Maximum upstream keep-alive connections (default: 100, env: HEADROOM_MAX_KEEPALIVE)",
+    envvar=["HR_MAX_KEEPALIVE", "HEADROOM_MAX_KEEPALIVE"],
+    help="Maximum upstream keep-alive connections (default: 100, env: HR_MAX_KEEPALIVE)",
 )
 @click.option(
     "--mode",
@@ -127,7 +128,7 @@ def _selected_context_tool() -> str:
     "--proxy-extension",
     "proxy_extension",
     multiple=True,
-    envvar="HEADROOM_PROXY_EXTENSIONS",
+    envvar=["HR_PROXY_EXTENSIONS", "HEADROOM_PROXY_EXTENSIONS"],
     help=(
         "Enable a registered proxy extension by entry-point name (opt-in). "
         "Repeat the flag or pass a comma-separated list. Use '*' to enable "
@@ -137,7 +138,7 @@ def _selected_context_tool() -> str:
 @click.option(
     "--no-subscription-tracking",
     is_flag=True,
-    envvar="HEADROOM_NO_SUBSCRIPTION_TRACKING",
+    envvar=["HR_NO_SUBSCRIPTION_TRACKING", "HEADROOM_NO_SUBSCRIPTION_TRACKING"],
     help=(
         "Disable the Anthropic Claude Code subscription usage poller "
         "(GET /api/oauth/usage). Env: HEADROOM_NO_SUBSCRIPTION_TRACKING."
@@ -147,7 +148,7 @@ def _selected_context_tool() -> str:
     "--subscription-poll-interval",
     type=int,
     default=None,
-    envvar="HEADROOM_SUBSCRIPTION_POLL_INTERVAL",
+    envvar=["HR_SUBSCRIPTION_POLL_INTERVAL", "HEADROOM_SUBSCRIPTION_POLL_INTERVAL"],
     help=(
         "Seconds between Anthropic subscription usage polls (1–3600, default 300). "
         "Lower values give fresher /stats but risk 429s from Anthropic. "
@@ -170,7 +171,7 @@ def _selected_context_tool() -> str:
     "--anthropic-pre-upstream-concurrency",
     type=int,
     default=None,
-    envvar="HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY",
+    envvar=["HR_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY", "HEADROOM_ANTHROPIC_PRE_UPSTREAM_CONCURRENCY"],
     help=(
         "Cap the number of Anthropic HTTP requests that may run pre-upstream work "
         "(request parse / deep-copy / first compression stage / memory context / upstream connect) "
@@ -184,7 +185,10 @@ def _selected_context_tool() -> str:
     "--anthropic-pre-upstream-acquire-timeout-seconds",
     type=float,
     default=None,
-    envvar="HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS",
+    envvar=[
+        "HR_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS",
+        "HEADROOM_ANTHROPIC_PRE_UPSTREAM_ACQUIRE_TIMEOUT_SECONDS",
+    ],
     help=(
         "Fail-fast timeout for waiting on the Anthropic pre-upstream semaphore "
         "before returning 503 + Retry-After. "
@@ -196,7 +200,10 @@ def _selected_context_tool() -> str:
     "--anthropic-pre-upstream-memory-context-timeout-seconds",
     type=float,
     default=None,
-    envvar="HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS",
+    envvar=[
+        "HR_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS",
+        "HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS",
+    ],
     help=(
         "Fail-open timeout for Anthropic memory-context lookup while the request "
         "still holds a pre-upstream slot. "
@@ -227,8 +234,8 @@ def _selected_context_tool() -> str:
     "--budget",
     type=float,
     default=None,
-    envvar="HEADROOM_BUDGET",
-    help="Daily budget limit in USD (env: HEADROOM_BUDGET)",
+    envvar=["HR_BUDGET", "HEADROOM_BUDGET"],
+    help="Daily budget limit in USD (env: HR_BUDGET)",
 )
 # Code-aware compression (AST-based, requires `pip install headroom-ai[code]`).
 # Pair of flags so users can override the env-var default in either direction.
@@ -364,7 +371,7 @@ def _selected_context_tool() -> str:
     "--min-evidence",
     type=int,
     default=None,
-    envvar="HEADROOM_MIN_EVIDENCE",
+    envvar=["HR_MIN_EVIDENCE", "HEADROOM_MIN_EVIDENCE"],
     help=(
         "Minimum number of times a pattern must be observed before it is "
         "persisted to memory. Higher values reduce one-shot noise at the "
@@ -535,7 +542,7 @@ def proxy(
                 err=True,
             )
             sys.exit(1)
-        os.environ["HEADROOM_INTERCEPT_ENABLED"] = "1"
+        os.environ["HR_INTERCEPT_ENABLED"] = "1"
 
     provider_api_overrides = resolve_api_overrides(
         anthropic_api_url=anthropic_api_url,
@@ -546,15 +553,13 @@ def proxy(
     )
 
     # Resolve anyllm provider: env var takes precedence over CLI default (matches argparse path)
-    effective_anyllm_provider = os.environ.get("HEADROOM_ANYLLM_PROVIDER") or anyllm_provider
+    effective_anyllm_provider = get_hr_env("ANYLLM_PROVIDER") or anyllm_provider
 
     # Resolve mode: CLI flag > env var > default
-    effective_mode: str = normalize_proxy_mode(
-        mode or os.environ.get("HEADROOM_MODE") or PROXY_MODE_TOKEN
-    )
+    effective_mode: str = normalize_proxy_mode(mode or get_hr_env("MODE") or PROXY_MODE_TOKEN)
 
     # Stateless mode: CLI flag or env var
-    is_stateless = stateless or os.environ.get("HEADROOM_STATELESS", "").lower() in (
+    is_stateless = stateless or (get_hr_env("STATELESS", "") or "").lower() in (
         "true",
         "1",
         "yes",
@@ -563,20 +568,20 @@ def proxy(
 
     # Telemetry opt-out: --no-telemetry flag sets the env var
     if no_telemetry:
-        os.environ["HEADROOM_TELEMETRY"] = "off"
+        os.environ["HR_TELEMETRY"] = "off"
 
     if codex_wire_debug or codex_wire_debug_dir:
-        os.environ["HEADROOM_CODEX_WIRE_DEBUG"] = "1"
-        os.environ["HEADROOM_CODEX_WIRE_DEBUG_DIR"] = codex_wire_debug_dir or str(
+        os.environ["HR_CODEX_WIRE_DEBUG"] = "1"
+        os.environ["HR_CODEX_WIRE_DEBUG_DIR"] = codex_wire_debug_dir or str(
             _paths.codex_wire_debug_dir()
         )
 
     # Stateless mode: suppress TOIN filesystem persistence
     if is_stateless:
-        os.environ["HEADROOM_TOIN_BACKEND"] = "none"
+        os.environ["HR_TOIN_BACKEND"] = "none"
 
     # License key for managed/enterprise deployments (optional)
-    license_key = os.environ.get("HEADROOM_LICENSE_KEY")
+    license_key = get_hr_env("LICENSE_KEY")
 
     # Qdrant connection for the qdrant-neo4j backend. CLI flags default
     # to None; when omitted we let ProxyConfig's default_factory resolve
@@ -621,7 +626,7 @@ def proxy(
         max_keepalive_connections=max_keepalive_connections,
         log_file=None if is_stateless else log_file,
         log_full_messages=log_messages
-        or os.environ.get("HEADROOM_LOG_MESSAGES", "").lower() in ("true", "1", "yes", "on"),
+        or (get_hr_env("LOG_MESSAGES", "") or "").lower() in ("true", "1", "yes", "on"),
         budget_limit_usd=budget,
         # Code-aware compression resolution:
         # 1. Explicit --code-aware / --no-code-aware always wins.
@@ -631,7 +636,7 @@ def proxy(
         code_aware_enabled=(
             bool(code_aware_flag)
             if code_aware_flag is not None
-            else os.environ.get("HEADROOM_CODE_AWARE_ENABLED", "").strip().lower()
+            else (get_hr_env("CODE_AWARE_ENABLED", "") or "").strip().lower()
             in ("true", "1", "yes", "on")
         ),
         # Code graph: live file watcher for incremental reindexing
@@ -652,7 +657,7 @@ def proxy(
         # Traffic Learning: only with --learn, never with --no-learn
         # Stateless mode disables learning (requires filesystem)
         traffic_learning_enabled=False if is_stateless else (learn and not no_learn),
-        traffic_learning_agent_type=os.environ.get("HEADROOM_AGENT_TYPE", "unknown"),
+        traffic_learning_agent_type=get_hr_env("AGENT_TYPE", "unknown"),
         traffic_learning_min_evidence=min_evidence if min_evidence is not None else 5,
         # Backend (Anthropic direct, Bedrock, LiteLLM, or any-llm)
         backend=backend,

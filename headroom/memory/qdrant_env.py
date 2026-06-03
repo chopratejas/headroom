@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import os
 
+from headroom.env import get_hr_env
+
 DEFAULT_QDRANT_HOST = "localhost"
 DEFAULT_QDRANT_PORT = 6333
 DEFAULT_QDRANT_GRPC_PORT = 6334
@@ -33,8 +35,15 @@ _FALSY = frozenset({"0", "false", "no", "n", "off"})
 
 
 def _strip_env(name: str) -> str | None:
-    """Return the trimmed env var value, or ``None`` if unset/empty."""
-    raw = os.environ.get(name)
+    """Return the trimmed env var value, or ``None`` if unset/empty.
+
+    When *name* starts with ``HEADROOM_``, also checks the ``HR_`` equivalent
+    (HR_* wins over HEADROOM_*).
+    """
+    if name.startswith("HEADROOM_"):
+        raw = get_hr_env(name[len("HEADROOM_") :])
+    else:
+        raw = os.environ.get(name)
     if raw is None:
         return None
     stripped = raw.strip()

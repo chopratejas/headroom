@@ -79,6 +79,7 @@ from headroom.config import (
     ReadLifecycleConfig,
 )
 from headroom.dashboard import get_dashboard_html
+from headroom.env import get_hr_env
 from headroom.observability import (
     LangfuseTracingConfig,
     OTelMetricsConfig,
@@ -185,7 +186,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("headroom.proxy")
 
-_MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
+_MULTI_WORKER_CONFIG_ENV = "HR_PROXY_CONFIG_JSON"
 
 # Env var that opts out of the Rust core deployment smoke test (Hotfix-A0).
 # Default behavior: hard-fail at startup if `headroom._core` is unimportable
@@ -196,7 +197,7 @@ _MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
 # Set to the literal string "false" to start the proxy in degraded
 # Python-only mode. Any other value (including unset) keeps the
 # fail-loud behavior.
-_RUST_CORE_REQUIRED_ENV = "HEADROOM_REQUIRE_RUST_CORE"
+_RUST_CORE_REQUIRED_ENV = "HR_REQUIRE_RUST_CORE"
 
 # sysexits.h(3) — EX_CONFIG. Process supervisors (systemd, k8s, docker)
 # treat this as a deliberate configuration failure rather than a crash, so
@@ -222,7 +223,7 @@ def _check_rust_core() -> tuple[str, str | None]:
     any value other than ``"false"`` (case-insensitive) keeps the
     fail-loud default.
     """
-    require = os.environ.get(_RUST_CORE_REQUIRED_ENV, "true").strip().lower() != "false"
+    require = (get_hr_env("REQUIRE_RUST_CORE", "true") or "true").strip().lower() != "false"
     try:
         from headroom._core import hello as _rust_hello
 
@@ -680,7 +681,7 @@ class HeadroomProxy(
             from headroom.memory.traffic_learner import TrafficLearner
 
             self.traffic_learner = TrafficLearner(
-                user_id=os.environ.get("HEADROOM_USER_ID", os.environ.get("USER", "default")),
+                user_id=get_hr_env("USER_ID", os.environ.get("USER", "default")),
                 agent_type=config.traffic_learning_agent_type,
                 min_evidence=config.traffic_learning_min_evidence,
             )
@@ -1385,7 +1386,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     _beacon = TelemetryBeacon(
         port=config.port if hasattr(config, "port") else 8787,
-        sdk=os.environ.get("HEADROOM_SDK", "proxy").strip() or "proxy",
+        sdk=(get_hr_env("SDK", "proxy") or "proxy").strip() or "proxy",
         backend=config.backend if hasattr(config, "backend") else "anthropic",
     )
     from headroom import paths as _hr_paths
@@ -1648,14 +1649,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         rust_core_error = getattr(app.state, "rust_core_error", None)
         if rust_core_error:
             payload["rust_core_error"] = rust_core_error
-        deployment_profile = os.environ.get("HEADROOM_DEPLOYMENT_PROFILE")
+        deployment_profile = get_hr_env("DEPLOYMENT_PROFILE")
         if deployment_profile:
             payload["deployment"] = {
                 "profile": deployment_profile,
-                "preset": os.environ.get("HEADROOM_DEPLOYMENT_PRESET"),
-                "runtime": os.environ.get("HEADROOM_DEPLOYMENT_RUNTIME"),
-                "supervisor": os.environ.get("HEADROOM_DEPLOYMENT_SUPERVISOR"),
-                "scope": os.environ.get("HEADROOM_DEPLOYMENT_SCOPE"),
+                "preset": get_hr_env("DEPLOYMENT_PRESET"),
+                "runtime": get_hr_env("DEPLOYMENT_RUNTIME"),
+                "supervisor": get_hr_env("DEPLOYMENT_SUPERVISOR"),
+                "scope": get_hr_env("DEPLOYMENT_SCOPE"),
             }
         if include_config:
             payload["config"] = {
@@ -2939,7 +2940,7 @@ def _proxy_config_payload(config: ProxyConfig) -> dict[str, Any]:
 
 
 def _proxy_config_from_env() -> ProxyConfig:
-    raw_config = os.environ.get(_MULTI_WORKER_CONFIG_ENV)
+    raw_config = get_hr_env("PROXY_CONFIG_JSON")
     if raw_config:
         try:
             return ProxyConfig(**json.loads(raw_config))
@@ -3081,7 +3082,7 @@ def run_server(
             "'Multi-worker deployment — CCR fragmentation'.",
             workers,
         )
-        os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))
+        os.environ["HR_PROXY_CONFIG_JSON"] = json.dumps(_proxy_config_payload(config))
         app_target = "headroom.proxy.server:create_app_from_env"
         uvicorn_kwargs["factory"] = True
     else:
@@ -3148,7 +3149,7 @@ def _parse_exclude_tools(cli_excludes: str | None) -> set[str]:
     DEFAULT_EXCLUDE_TOOLS. Unset/empty -> empty set (DEFAULT_EXCLUDE_TOOLS
     used unchanged).
     """
-    raw = ",".join(s for s in (cli_excludes, os.environ.get("HEADROOM_EXCLUDE_TOOLS")) if s)
+    raw = ",".join(s for s in (cli_excludes, get_hr_env("EXCLUDE_TOOLS")) if s)
     names: set[str] = set()
     for entry in raw.split(","):
         name = entry.strip()
@@ -3173,7 +3174,7 @@ def _parse_tool_profiles(cli_profiles: list[str]) -> dict[str, Any]:
     raw_entries: list[str] = list(cli_profiles)
 
     # Also check env var
-    env_val = os.environ.get("HEADROOM_TOOL_PROFILES", "")
+    env_val = get_hr_env("TOOL_PROFILES", "")
     if env_val:
         raw_entries.extend(e.strip() for e in env_val.split(",") if e.strip())
 
@@ -3378,7 +3379,7 @@ if __name__ == "__main__":
         budget_period=args.budget_period,
         log_file=_get_env_str("HEADROOM_LOG_FILE", args.log_file)
         if args.log_file
-        else os.environ.get("HEADROOM_LOG_FILE"),
+        else get_hr_env("LOG_FILE"),
         log_full_messages=args.log_messages or _get_env_bool("HEADROOM_LOG_MESSAGES", False),
         code_aware_enabled=code_aware_enabled,
         # Connection pool settings

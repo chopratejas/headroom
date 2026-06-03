@@ -14,6 +14,7 @@ class TestProxyTelemetrySDKEnv:
 
     def test_proxy_telemetry_sdk_defaults_to_proxy(self, monkeypatch):
         """Telemetry beacon uses the default SDK label when env var is unset."""
+        monkeypatch.delenv("HR_SDK", raising=False)
         monkeypatch.delenv("HEADROOM_SDK", raising=False)
 
         with patch("headroom.telemetry.beacon.TelemetryBeacon") as mock_beacon:
@@ -28,8 +29,8 @@ class TestProxyTelemetrySDKEnv:
         assert mock_beacon.call_args.kwargs["sdk"] == "proxy"
 
     def test_proxy_telemetry_sdk_uses_env_override(self, monkeypatch):
-        """Telemetry beacon uses HEADROOM_SDK when it is non-empty."""
-        monkeypatch.setenv("HEADROOM_SDK", "headroom-app")
+        """Telemetry beacon uses HR_SDK when it is non-empty."""
+        monkeypatch.setenv("HR_SDK", "headroom-app")
 
         with patch("headroom.telemetry.beacon.TelemetryBeacon") as mock_beacon:
             create_app(
@@ -42,9 +43,25 @@ class TestProxyTelemetrySDKEnv:
 
         assert mock_beacon.call_args.kwargs["sdk"] == "headroom-app"
 
+    def test_proxy_telemetry_sdk_uses_legacy_env_override(self, monkeypatch):
+        """Telemetry beacon uses HEADROOM_SDK as deprecated fallback (still works)."""
+        monkeypatch.delenv("HR_SDK", raising=False)
+        monkeypatch.setenv("HEADROOM_SDK", "headroom-app-legacy")
+
+        with patch("headroom.telemetry.beacon.TelemetryBeacon") as mock_beacon:
+            create_app(
+                ProxyConfig(
+                    cache_enabled=False,
+                    rate_limit_enabled=False,
+                    cost_tracking_enabled=False,
+                )
+            )
+
+        assert mock_beacon.call_args.kwargs["sdk"] == "headroom-app-legacy"
+
     def test_proxy_telemetry_sdk_empty_env_falls_back_to_proxy(self, monkeypatch):
-        """Telemetry beacon falls back to proxy when HEADROOM_SDK is blank."""
-        monkeypatch.setenv("HEADROOM_SDK", "   ")
+        """Telemetry beacon falls back to proxy when HR_SDK is blank."""
+        monkeypatch.setenv("HR_SDK", "   ")
 
         with patch("headroom.telemetry.beacon.TelemetryBeacon") as mock_beacon:
             create_app(

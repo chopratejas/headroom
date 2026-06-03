@@ -16,6 +16,7 @@ from functools import lru_cache
 from typing import Any, cast
 
 from headroom import paths as _paths
+from headroom.env import get_hr_env
 
 from .base import Provider, TokenCounter
 
@@ -152,7 +153,7 @@ def _load_custom_model_config() -> dict[str, Any]:
     config: dict[str, Any] = {"context_limits": {}, "pricing": {}, "encodings": {}}
 
     # Check environment variable
-    env_config = os.environ.get("HEADROOM_MODEL_LIMITS", "")
+    env_config = get_hr_env("MODEL_LIMITS", "")
     if env_config:
         try:
             # Check if it's a file path

@@ -18,9 +18,9 @@ docstring (per-mode rationale, why-a-struct, etc.).
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
+from headroom.env import get_hr_env
 from headroom.proxy.auth_mode import AuthMode
 
 # ── F2.2 per-mode default values (CONSERVATIVE pending bake telemetry) ──
@@ -167,7 +167,7 @@ def policy_default_payg() -> CompressionPolicy:
     return policy_for_mode(AuthMode.PAYG)
 
 
-_ENFORCEMENT_ENV = "HEADROOM_PROXY_AUTH_MODE_POLICY_ENFORCEMENT"
+_ENFORCEMENT_ENV = "HR_PROXY_AUTH_MODE_POLICY_ENFORCEMENT"
 
 
 def is_enforcement_enabled() -> bool:
@@ -182,7 +182,7 @@ def is_enforcement_enabled() -> bool:
     in a hot-reload scenario. The cost is one ``dict.get`` per call,
     well below noise.
     """
-    val = os.environ.get(_ENFORCEMENT_ENV, "enabled").strip().lower()
+    val = (get_hr_env("PROXY_AUTH_MODE_POLICY_ENFORCEMENT", "enabled") or "enabled").strip().lower()
     # Same set of off-values the telemetry beacon honours
     # (`headroom/telemetry/beacon.py::_OFF_VALUES`) so operators don't
     # have to remember a different vocabulary per flag.

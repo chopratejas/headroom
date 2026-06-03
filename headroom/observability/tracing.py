@@ -11,6 +11,8 @@ from typing import Any
 
 from opentelemetry import trace
 
+from headroom.env import get_hr_env
+
 from .metrics import _headroom_version, _parse_bool, _parse_key_value_pairs
 
 logger = logging.getLogger(__name__)
@@ -57,7 +59,7 @@ class LangfuseTracingConfig:
 
         return cls(
             enabled=_parse_bool(
-                os.environ.get("HEADROOM_LANGFUSE_ENABLED"),
+                get_hr_env("LANGFUSE_ENABLED"),
                 default=False,
             ),
             public_key=public_key,
@@ -67,13 +69,11 @@ class LangfuseTracingConfig:
                 or os.environ.get("LANGFUSE_OTEL_HOST")
                 or "https://cloud.langfuse.com"
             ).strip(),
-            service_name=os.environ.get(
-                "HEADROOM_LANGFUSE_SERVICE_NAME", default_service_name
+            service_name=(
+                get_hr_env("LANGFUSE_SERVICE_NAME", default_service_name) or default_service_name
             ).strip()
             or default_service_name,
-            resource_attributes=_parse_key_value_pairs(
-                os.environ.get("HEADROOM_LANGFUSE_RESOURCE_ATTRIBUTES")
-            ),
+            resource_attributes=_parse_key_value_pairs(get_hr_env("LANGFUSE_RESOURCE_ATTRIBUTES")),
         )
 
     def is_complete(self) -> bool:

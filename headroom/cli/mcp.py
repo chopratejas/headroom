@@ -293,7 +293,7 @@ def mcp_status() -> None:
 @click.option(
     "--proxy-url",
     default=None,
-    envvar="HEADROOM_PROXY_URL",
+    envvar=["HR_PROXY_URL", "HEADROOM_PROXY_URL"],
     help=f"Headroom proxy URL (default: {DEFAULT_PROXY_URL})",
 )
 @click.option(

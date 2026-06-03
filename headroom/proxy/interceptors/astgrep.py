@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from headroom import binaries
+from headroom.env import get_hr_env
 
 from . import base
 
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 # rejects any rewrite that doesn't actually shrink tokens, so we don't need
 # a "big enough to matter" check here, only a "big enough to justify the
 # fork()" check.
-MIN_CHARS_TO_REWRITE = int(os.environ.get("HEADROOM_INTERCEPT_READ_MIN_CHARS", "500"))
+MIN_CHARS_TO_REWRITE = int(get_hr_env("INTERCEPT_READ_MIN_CHARS", "500") or "500")
 
 # Tool_input keys that indicate the model targeted a specific line range;
 # outlining would frustrate that intent and likely cause a re-read.

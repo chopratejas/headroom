@@ -114,7 +114,9 @@ def test_merge_helper_no_double_inject_when_already_present() -> None:
 @pytest.fixture(autouse=True)
 def _isolate_tracker(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reset the process-wide tracker singleton + env flags between tests."""
+    monkeypatch.delenv("HR_BETA_HEADER_STICKY", raising=False)
     monkeypatch.delenv("HEADROOM_BETA_HEADER_STICKY", raising=False)
+    monkeypatch.delenv("HR_BETA_TRACKER_MAX_SESSIONS", raising=False)
     monkeypatch.delenv("HEADROOM_BETA_TRACKER_MAX_SESSIONS", raising=False)
     _reset_session_beta_tracker_for_test()
     yield
@@ -249,8 +251,8 @@ def test_disabled_mode_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_disabled_mode_invalid_value_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown values raise loudly — no silent fallback."""
-    monkeypatch.setenv("HEADROOM_BETA_HEADER_STICKY", "yolo")
-    with pytest.raises(ValueError, match="HEADROOM_BETA_HEADER_STICKY"):
+    monkeypatch.setenv("HR_BETA_HEADER_STICKY", "yolo")
+    with pytest.raises(ValueError, match="HR_BETA_HEADER_STICKY"):
         get_beta_header_sticky_mode()
 
 

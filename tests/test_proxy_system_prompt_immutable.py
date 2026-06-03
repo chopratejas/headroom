@@ -276,16 +276,16 @@ def test_invalid_injection_mode_raises() -> None:
 
     from headroom.proxy.helpers import get_memory_injection_mode
 
-    prev = os.environ.get("HEADROOM_MEMORY_INJECTION_MODE")
-    os.environ["HEADROOM_MEMORY_INJECTION_MODE"] = "system_prompt"
+    prev = os.environ.get("HR_MEMORY_INJECTION_MODE")
+    os.environ["HR_MEMORY_INJECTION_MODE"] = "system_prompt"
     try:
-        with pytest.raises(ValueError, match="Invalid HEADROOM_MEMORY_INJECTION_MODE"):
+        with pytest.raises(ValueError, match="Invalid HR_MEMORY_INJECTION_MODE"):
             get_memory_injection_mode()
     finally:
         if prev is None:
-            os.environ.pop("HEADROOM_MEMORY_INJECTION_MODE", None)
+            os.environ.pop("HR_MEMORY_INJECTION_MODE", None)
         else:
-            os.environ["HEADROOM_MEMORY_INJECTION_MODE"] = prev
+            os.environ["HR_MEMORY_INJECTION_MODE"] = prev
 
 
 # ---------------------------------------------------------------------------

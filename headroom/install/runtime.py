@@ -16,6 +16,7 @@ from .models import DeploymentManifest, InstallPreset, RuntimeKind
 from .paths import log_path, pid_path
 
 PASSTHROUGH_ENV_PREFIXES = (
+    "HR_",
     "HEADROOM_",
     "ANTHROPIC_",
     "OPENAI_",
@@ -47,11 +48,11 @@ def _is_windows() -> bool:
 
 def _deployment_env(manifest: DeploymentManifest) -> dict[str, str]:
     return {
-        "HEADROOM_DEPLOYMENT_PROFILE": manifest.profile,
-        "HEADROOM_DEPLOYMENT_PRESET": manifest.preset,
-        "HEADROOM_DEPLOYMENT_RUNTIME": manifest.runtime_kind,
-        "HEADROOM_DEPLOYMENT_SUPERVISOR": manifest.supervisor_kind,
-        "HEADROOM_DEPLOYMENT_SCOPE": manifest.scope,
+        "HR_DEPLOYMENT_PROFILE": manifest.profile,
+        "HR_DEPLOYMENT_PRESET": manifest.preset,
+        "HR_DEPLOYMENT_RUNTIME": manifest.runtime_kind,
+        "HR_DEPLOYMENT_SUPERVISOR": manifest.supervisor_kind,
+        "HR_DEPLOYMENT_SCOPE": manifest.scope,
     }
 
 
@@ -107,9 +108,9 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
         "PYTHONUNBUFFERED=1",
         # Canonical Headroom filesystem contract (issue #175).
         "--env",
-        f"HEADROOM_WORKSPACE_DIR={container_home}/.headroom",
+        f"HR_WORKSPACE_DIR={container_home}/.headroom",
         "--env",
-        f"HEADROOM_CONFIG_DIR={container_home}/.headroom/config",
+        f"HR_CONFIG_DIR={container_home}/.headroom/config",
         "--volume",
         f"{_mount_source(home, '.headroom')}:{container_home}/.headroom",
         "--volume",

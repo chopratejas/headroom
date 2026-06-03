@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import MutableMapping
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from headroom.env import get_hr_env
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +78,9 @@ class CompressionMiddleware:
         self._hooks = hooks
 
         # Cloud mode: if api_key is set, compress via Headroom Cloud API
-        self._api_key = api_key or os.environ.get("HEADROOM_API_KEY", "").strip() or None
+        self._api_key = api_key or (get_hr_env("API_KEY", "") or "").strip() or None
         self._api_url = (
-            api_url or os.environ.get("HEADROOM_API_URL", "").strip() or _DEFAULT_CLOUD_URL
+            api_url or (get_hr_env("API_URL", "") or "").strip() or _DEFAULT_CLOUD_URL
         ).rstrip("/")
         self._client: Any = None  # Lazy-initialized httpx.AsyncClient
 

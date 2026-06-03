@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -12,6 +11,8 @@ from typing import Any, Literal
 
 from opentelemetry import metrics
 from opentelemetry.metrics import CallbackOptions, Observation
+
+from headroom.env import get_hr_env
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +88,7 @@ class OTelMetricsConfig:
     @classmethod
     def from_env(cls, *, default_service_name: str = "headroom") -> OTelMetricsConfig:
         exporter_raw = (
-            os.environ.get("HEADROOM_OTEL_METRICS_EXPORTER", "otlp_http")
-            .strip()
-            .lower()
-            .replace("-", "_")
+            get_hr_env("OTEL_METRICS_EXPORTER", "otlp_http").strip().lower().replace("-", "_")
         )
         if exporter_raw not in {"console", "otlp_http"}:
             logger.warning(
@@ -100,19 +98,19 @@ class OTelMetricsConfig:
             exporter_raw = "otlp_http"
 
         return cls(
-            enabled=_parse_bool(os.environ.get("HEADROOM_OTEL_METRICS_ENABLED"), default=False),
-            service_name=os.environ.get("HEADROOM_OTEL_SERVICE_NAME", default_service_name).strip()
+            enabled=_parse_bool(get_hr_env("OTEL_METRICS_ENABLED"), default=False),
+            service_name=(
+                get_hr_env("OTEL_SERVICE_NAME", default_service_name) or default_service_name
+            ).strip()
             or default_service_name,
             exporter=exporter_raw,  # type: ignore[arg-type]
-            endpoint=os.environ.get("HEADROOM_OTEL_METRICS_ENDPOINT") or None,
-            headers=_parse_key_value_pairs(os.environ.get("HEADROOM_OTEL_METRICS_HEADERS")),
+            endpoint=get_hr_env("OTEL_METRICS_ENDPOINT") or None,
+            headers=_parse_key_value_pairs(get_hr_env("OTEL_METRICS_HEADERS")),
             export_interval_millis=_parse_int(
-                os.environ.get("HEADROOM_OTEL_METRICS_EXPORT_INTERVAL_MS"),
+                get_hr_env("OTEL_METRICS_EXPORT_INTERVAL_MS"),
                 _DEFAULT_EXPORT_INTERVAL_MS,
             ),
-            resource_attributes=_parse_key_value_pairs(
-                os.environ.get("HEADROOM_OTEL_RESOURCE_ATTRIBUTES")
-            ),
+            resource_attributes=_parse_key_value_pairs(get_hr_env("OTEL_RESOURCE_ATTRIBUTES")),
         )
 
     def status(self) -> dict[str, Any]:

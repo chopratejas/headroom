@@ -37,13 +37,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from headroom.env import get_hr_env
 
 from ..config import DEFAULT_EXCLUDE_TOOLS, ReadLifecycleConfig, TransformResult
 from ..tokenizer import Tokenizer
@@ -2128,9 +2129,7 @@ class ContentRouter(Transform):
 
         # --- Pass 2: Parallel compression of all cache-miss messages ---
         if pending_tasks:
-            max_workers = min(
-                len(pending_tasks), int(os.environ.get("HEADROOM_COMPRESS_WORKERS", "4"))
-            )
+            max_workers = min(len(pending_tasks), int(get_hr_env("COMPRESS_WORKERS", "4") or "4"))
             t_parallel_start = time.perf_counter()
 
             if max_workers <= 1 or len(pending_tasks) == 1:

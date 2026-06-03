@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
+from headroom.env import get_hr_env
 from headroom.subscription.base import QuotaTracker
 from headroom.subscription.client import SubscriptionClient
 from headroom.subscription.models import (
@@ -62,7 +63,7 @@ _DEFAULT_PERSIST_FILE = "subscription_state.json"
 #
 # Loud / configurable / no silent fallback: unknown values raise loudly via
 # the parser below — they do not silently default to ``enabled``.
-_RTK_WIRING_ENV = "HEADROOM_RTK_WIRING"
+_RTK_WIRING_ENV = "HR_RTK_WIRING"
 _RTK_WIRING_DEFAULT = "enabled"
 _RTK_WIRING_ALLOWED = ("enabled", "disabled")
 
@@ -83,7 +84,7 @@ _RTK_WIRING_ALLOWED = ("enabled", "disabled")
 # Loud / no silent fallback: when ``fcntl`` is unavailable (Windows), every
 # worker polls — but the explicit ``WindowsNoLockMode`` log line surfaces
 # the choice so operators see it in startup logs.
-_RTK_POLL_LOCK_ENV = "HEADROOM_RTK_POLL_LOCK"
+_RTK_POLL_LOCK_ENV = "HR_RTK_POLL_LOCK"
 
 
 def _rtk_wiring_mode() -> str:
@@ -91,12 +92,12 @@ def _rtk_wiring_mode() -> str:
 
     Read at call-time so operators can flip the env var without a restart.
     """
-    raw = os.environ.get(_RTK_WIRING_ENV, "").strip().lower()
+    raw = (get_hr_env("RTK_WIRING", "") or "").strip().lower()
     if not raw:
         return _RTK_WIRING_DEFAULT
     if raw in _RTK_WIRING_ALLOWED:
         return raw
-    raise ValueError(f"Invalid {_RTK_WIRING_ENV}={raw!r}; expected one of {_RTK_WIRING_ALLOWED}")
+    raise ValueError(f"Invalid HR_RTK_WIRING={raw!r}; expected one of {_RTK_WIRING_ALLOWED}")
 
 
 def _validate_rtk_env_at_startup() -> None:
@@ -532,7 +533,7 @@ class SubscriptionTracker(QuotaTracker):
 
     def _rtk_poll_lock_path(self) -> Path:
         """Return the path to the RTK poll lock file."""
-        override = os.environ.get(_RTK_POLL_LOCK_ENV, "").strip()
+        override = (get_hr_env("RTK_POLL_LOCK", "") or "").strip()
         if override:
             return Path(override)
         return self._persist_path.parent / ".rtk_poll_lock"

@@ -37,8 +37,8 @@ def test_build_manifest_for_persistent_docker_sets_expected_defaults() -> None:
     assert manifest.supervisor_kind == "none"
     assert manifest.runtime_kind == "docker"
     assert manifest.health_url == "http://127.0.0.1:8787/readyz"
-    assert manifest.base_env["HEADROOM_PORT"] == "8787"
-    assert manifest.base_env["HEADROOM_TELEMETRY"] == "off"
+    assert manifest.base_env["HR_PORT"] == "8787"
+    assert manifest.base_env["HR_TELEMETRY"] == "off"
     assert manifest.tool_envs["claude"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787"
     assert manifest.tool_envs["copilot"]["COPILOT_PROVIDER_TYPE"] == "anthropic"
     assert "--memory" in manifest.proxy_args

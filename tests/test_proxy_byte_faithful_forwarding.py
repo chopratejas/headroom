@@ -167,6 +167,7 @@ def test_legacy_json_kwarg_mode_falls_back() -> None:
 def test_python_forwarder_mode_default_is_byte_faithful(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("HR_PROXY_PYTHON_FORWARDER_MODE", raising=False)
     monkeypatch.delenv("HEADROOM_PROXY_PYTHON_FORWARDER_MODE", raising=False)
     assert get_python_forwarder_mode() == "byte_faithful"
 
@@ -174,15 +175,15 @@ def test_python_forwarder_mode_default_is_byte_faithful(
 def test_python_forwarder_mode_invalid_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("HEADROOM_PROXY_PYTHON_FORWARDER_MODE", "garbage")
-    with pytest.raises(ValueError, match="HEADROOM_PROXY_PYTHON_FORWARDER_MODE"):
+    monkeypatch.setenv("HR_PROXY_PYTHON_FORWARDER_MODE", "garbage")
+    with pytest.raises(ValueError, match="HR_PROXY_PYTHON_FORWARDER_MODE"):
         get_python_forwarder_mode()
 
 
 def test_python_forwarder_mode_legacy_value_accepted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("HEADROOM_PROXY_PYTHON_FORWARDER_MODE", "legacy_json_kwarg")
+    monkeypatch.setenv("HR_PROXY_PYTHON_FORWARDER_MODE", "legacy_json_kwarg")
     assert get_python_forwarder_mode() == "legacy_json_kwarg"
 
 

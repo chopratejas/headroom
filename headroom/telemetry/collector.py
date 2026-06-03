@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from headroom.env import get_hr_env
 
 from .models import (
     AnonymizedToolStats,
@@ -752,7 +753,7 @@ def get_telemetry_collector(
                 # HEADROOM_TELEMETRY_DISABLED stays accepted for back-compat.
                 from headroom.telemetry.beacon import is_telemetry_enabled
 
-                disabled_legacy = os.environ.get("HEADROOM_TELEMETRY_DISABLED", "").lower() in (
+                disabled_legacy = (get_hr_env("TELEMETRY_DISABLED", "") or "").lower() in (
                     "1",
                     "true",
                 )

@@ -20,6 +20,8 @@ import os
 import shutil
 import subprocess
 
+from headroom.env import get_hr_env
+
 from .models import (
     AnalysisResult,
     ProjectInfo,
@@ -73,7 +75,7 @@ def _detect_default_model() -> str:
             return model
 
     # 2. Explicit CLI selection via environment variable
-    cli_override = os.environ.get("HEADROOM_LEARN_CLI")
+    cli_override = get_hr_env("LEARN_CLI")
     if cli_override:
         for cli_name, model, _cmd in _CLI_BACKENDS:
             if cli_name == cli_override:

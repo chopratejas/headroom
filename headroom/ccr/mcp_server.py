@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
+from headroom.env import get_hr_env
 
 # fcntl is Unix-only; on Windows we skip file locking (stats are best-effort).
 # Keep the module typed as Any so Windows mypy runs don't try to resolve Unix-only attrs.
@@ -75,7 +76,7 @@ logger = logging.getLogger("headroom.ccr.mcp")
 
 # Feature flag: enable headroom_read tool (file read caching via CCR)
 # Set HEADROOM_MCP_READ=on to enable
-_READ_ENABLED = os.environ.get("HEADROOM_MCP_READ", "off").lower().strip() in (
+_READ_ENABLED = (get_hr_env("MCP_READ", "off") or "off").lower().strip() in (
     "on",
     "true",
     "1",
@@ -83,7 +84,7 @@ _READ_ENABLED = os.environ.get("HEADROOM_MCP_READ", "off").lower().strip() in (
     "enabled",
 )
 
-DEFAULT_PROXY_URL = os.environ.get("HEADROOM_PROXY_URL", "http://127.0.0.1:8787")
+DEFAULT_PROXY_URL = get_hr_env("PROXY_URL", "http://127.0.0.1:8787")
 
 
 def _format_session_summary(summary: dict[str, Any], local_stats: dict[str, Any]) -> str:

@@ -35,6 +35,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from headroom.env import get_hr_env
+
 # ---------------------------------------------------------------------------
 # Canonical env var names
 # ---------------------------------------------------------------------------
@@ -92,16 +94,30 @@ def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def _hr_env(suffix: str) -> str:
+    """Return a trimmed HR_/HEADROOM_ environment value, or ``""`` when unset/blank."""
+
+    return (get_hr_env(suffix) or "").strip()
+
+
 def _resolve(explicit: str | os.PathLike[str] | None, env_var: str, derived: Path) -> Path:
     """Apply the standard precedence: explicit > env > derived.
 
     ``explicit`` and the env-var value are both passed through ``expanduser()``
     so that callers can pass ``"~/foo/bar"`` and have it resolve naturally.
+
+    When *env_var* starts with ``HEADROOM_``, the HR_* equivalent is also
+    checked (HR_* wins over HEADROOM_*).
     """
 
     if explicit is not None and str(explicit) != "":
         return Path(explicit).expanduser()
-    env_value = _env(env_var)
+    # Support HR_* as canonical prefix for any HEADROOM_* env var passed here.
+    if env_var.startswith("HEADROOM_"):
+        suffix = env_var[len("HEADROOM_") :]
+        env_value = (get_hr_env(suffix) or "").strip()
+    else:
+        env_value = _env(env_var)
     if env_value:
         return Path(env_value).expanduser()
     return derived
@@ -117,11 +133,11 @@ def workspace_dir() -> Path:
 
     Resolution order:
 
-    1. ``$HEADROOM_WORKSPACE_DIR`` (trimmed, tilde-expanded) if set.
+    1. ``$HR_WORKSPACE_DIR`` / ``$HEADROOM_WORKSPACE_DIR`` (trimmed, tilde-expanded) if set.
     2. ``~/.headroom`` otherwise.
     """
 
-    env_value = _env(HEADROOM_WORKSPACE_DIR_ENV)
+    env_value = _hr_env("WORKSPACE_DIR")
     if env_value:
         return Path(env_value).expanduser()
     return Path.home() / _WORKSPACE_DIR_DEFAULT
@@ -132,16 +148,17 @@ def config_dir() -> Path:
 
     Resolution order:
 
-    1. ``$HEADROOM_CONFIG_DIR`` (trimmed, tilde-expanded) if set.
-    2. ``$HEADROOM_WORKSPACE_DIR/config`` when the workspace env var is set
-       so that a single override relocates both roots coherently.
+    1. ``$HR_CONFIG_DIR`` / ``$HEADROOM_CONFIG_DIR`` (trimmed, tilde-expanded) if set.
+    2. ``$HR_WORKSPACE_DIR/config`` / ``$HEADROOM_WORKSPACE_DIR/config`` when the
+       workspace env var is set so that a single override relocates both roots
+       coherently.
     3. ``~/.headroom/config`` otherwise.
     """
 
-    env_value = _env(HEADROOM_CONFIG_DIR_ENV)
+    env_value = _hr_env("CONFIG_DIR")
     if env_value:
         return Path(env_value).expanduser()
-    workspace_env = _env(HEADROOM_WORKSPACE_DIR_ENV)
+    workspace_env = _hr_env("WORKSPACE_DIR")
     if workspace_env:
         return Path(workspace_env).expanduser() / _CONFIG_DIR_DEFAULT_SUFFIX
     return Path.home() / _WORKSPACE_DIR_DEFAULT / _CONFIG_DIR_DEFAULT_SUFFIX

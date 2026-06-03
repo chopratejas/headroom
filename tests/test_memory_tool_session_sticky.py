@@ -328,8 +328,8 @@ def test_sticky_mode_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_sticky_mode_invalid_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HEADROOM_TOOL_INJECTION_STICKY", "yolo")
-    with pytest.raises(ValueError, match="HEADROOM_TOOL_INJECTION_STICKY"):
+    monkeypatch.setenv("HR_TOOL_INJECTION_STICKY", "yolo")
+    with pytest.raises(ValueError, match="HR_TOOL_INJECTION_STICKY"):
         get_tool_injection_sticky_mode()
 
 

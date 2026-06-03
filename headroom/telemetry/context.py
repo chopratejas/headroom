@@ -14,9 +14,10 @@ must not break the proxy.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any
+
+from headroom.env import get_hr_env
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def detect_install_mode(port: int) -> str:
     """
 
     try:
-        if os.environ.get("HEADROOM_AGENT_TYPE"):
+        if get_hr_env("AGENT_TYPE"):
             return "wrapped"
 
         try:
@@ -112,11 +113,11 @@ def detect_stack(stats: dict[str, Any] | None = None) -> str:
     """
 
     try:
-        explicit = normalize_stack(os.environ.get("HEADROOM_STACK"))
+        explicit = normalize_stack(get_hr_env("STACK"))
         if explicit:
             return explicit
 
-        agent_type = os.environ.get("HEADROOM_AGENT_TYPE")
+        agent_type = get_hr_env("AGENT_TYPE")
         if agent_type:
             return _slug_from_agent_type(agent_type)
 

@@ -12,7 +12,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import random
 import subprocess
 import threading
@@ -23,14 +22,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from headroom import paths as _paths
+from headroom.env import get_hr_env
 
 if TYPE_CHECKING:
     from fastapi import Request
 
 logger = logging.getLogger("headroom.proxy")
 
-_CODEX_WIRE_DEBUG_ENV = "HEADROOM_CODEX_WIRE_DEBUG"
-_CODEX_WIRE_DEBUG_DIR_ENV = "HEADROOM_CODEX_WIRE_DEBUG_DIR"
+_CODEX_WIRE_DEBUG_ENV = "HR_CODEX_WIRE_DEBUG"
+_CODEX_WIRE_DEBUG_DIR_ENV = "HR_CODEX_WIRE_DEBUG_DIR"
 _CODEX_WIRE_REDACTED = "[REDACTED]"
 _CODEX_WIRE_SECRET_KEYS = (
     "authorization",
@@ -54,7 +54,7 @@ _CODEX_WIRE_SECRET_KEYS = (
 def codex_wire_debug_enabled() -> bool:
     """Return whether opt-in Codex wire capture is enabled."""
 
-    return os.environ.get(_CODEX_WIRE_DEBUG_ENV, "").strip().lower() in (
+    return (get_hr_env("CODEX_WIRE_DEBUG", "") or "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -63,7 +63,7 @@ def codex_wire_debug_enabled() -> bool:
 
 
 def _codex_wire_debug_dir() -> Path:
-    explicit = os.environ.get(_CODEX_WIRE_DEBUG_DIR_ENV, "").strip()
+    explicit = (get_hr_env("CODEX_WIRE_DEBUG_DIR", "") or "").strip()
     if explicit:
         return Path(explicit).expanduser()
     return _paths.codex_wire_debug_dir()
@@ -221,7 +221,7 @@ def capture_codex_wire_debug(
 # Configurable via HEADROOM_MEMORY_INJECTION_MODE env var. There is no
 # "system_prompt" option — that path is permanently retired by I2 (cache hot
 # zone never modified). See REALIGNMENT/02-architecture.md §2.2.
-_MEMORY_INJECTION_MODE_ENV = "HEADROOM_MEMORY_INJECTION_MODE"
+_MEMORY_INJECTION_MODE_ENV = "HR_MEMORY_INJECTION_MODE"
 _MEMORY_INJECTION_MODE_DEFAULT: Literal["live_zone_tail", "disabled"] = "live_zone_tail"
 MemoryInjectionMode = Literal["live_zone_tail", "disabled"]
 
@@ -232,7 +232,7 @@ def get_memory_injection_mode() -> MemoryInjectionMode:
     Read at request time so the env var can be flipped without restart for
     smoke tests. Unknown values are rejected loudly (no silent fallback).
     """
-    raw = os.environ.get(_MEMORY_INJECTION_MODE_ENV, "").strip().lower()
+    raw = (get_hr_env("MEMORY_INJECTION_MODE", "") or "").strip().lower()
     if not raw:
         return _MEMORY_INJECTION_MODE_DEFAULT
     if raw in ("live_zone_tail", "disabled"):
@@ -271,7 +271,7 @@ def hash_query_for_log(query: str) -> str:
 # pick the right path. Memory-injection / compression / image-rewrite sites
 # call ``tracker.mark_mutated(reason)``.
 
-_PYTHON_FORWARDER_MODE_ENV = "HEADROOM_PROXY_PYTHON_FORWARDER_MODE"
+_PYTHON_FORWARDER_MODE_ENV = "HR_PROXY_PYTHON_FORWARDER_MODE"
 PythonForwarderMode = Literal["byte_faithful", "legacy_json_kwarg"]
 _PYTHON_FORWARDER_MODE_DEFAULT: PythonForwarderMode = "byte_faithful"
 
@@ -283,7 +283,7 @@ def get_python_forwarder_mode() -> PythonForwarderMode:
     fallback build constraint. The ``legacy_json_kwarg`` value is an
     explicit operator opt-in for emergency rollback — NOT a fallback.
     """
-    raw = os.environ.get(_PYTHON_FORWARDER_MODE_ENV, "").strip().lower()
+    raw = (get_hr_env("PROXY_PYTHON_FORWARDER_MODE", "") or "").strip().lower()
     if not raw:
         return _PYTHON_FORWARDER_MODE_DEFAULT
     if raw in ("byte_faithful", "legacy_json_kwarg"):
@@ -589,11 +589,11 @@ def append_text_to_latest_user_input_item(
     return body_input, 0
 
 
-_CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
+_CONTEXT_TOOL_ENV = "HR_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
 
-RTK_STATS_CACHE_TTL_SECONDS = float(os.environ.get("HEADROOM_CONTEXT_TOOL_STATS_TTL_SECONDS", "60"))
+RTK_STATS_CACHE_TTL_SECONDS = float(get_hr_env("CONTEXT_TOOL_STATS_TTL_SECONDS", "60"))  # type: ignore[arg-type]
 CONTEXT_TOOL_STATS_CACHE_TTL_SECONDS = RTK_STATS_CACHE_TTL_SECONDS
 _context_tool_stats_cache_lock = threading.Lock()
 _context_tool_stats_cache: dict[str, Any] = {
@@ -626,7 +626,7 @@ MAX_SSE_BUFFER_SIZE = 10 * 1024 * 1024
 # HEADROOM_SSE_BUFFER_MAX_BYTES. Guards against pathological huge events
 # (a single event > 1 MB by default is treated as an upstream protocol bug
 # and surfaces loudly rather than silently growing the buffer).
-_SSE_EVENT_MAX_BYTES_ENV = "HEADROOM_SSE_BUFFER_MAX_BYTES"
+_SSE_EVENT_MAX_BYTES_ENV = "HR_SSE_BUFFER_MAX_BYTES"
 _SSE_EVENT_MAX_BYTES_DEFAULT = 1 * 1024 * 1024  # 1 MB
 
 
@@ -636,7 +636,7 @@ def get_sse_event_max_bytes() -> int:
     Read at request time so operators can flip the env var without a
     restart. Negative values are rejected loudly (no silent fallback).
     """
-    raw = os.environ.get(_SSE_EVENT_MAX_BYTES_ENV)
+    raw = get_hr_env("SSE_BUFFER_MAX_BYTES")
     if raw is None or raw == "":
         return _SSE_EVENT_MAX_BYTES_DEFAULT
     try:
@@ -651,13 +651,13 @@ def get_sse_event_max_bytes() -> int:
 # Body-too-large status code (PR-A8 / P5-59). Default 413 (RFC 7231 §6.5.11).
 # Configurable via HEADROOM_PROXY_BODY_TOO_LARGE_STATUS for operators who need
 # to override (no expected production use; documentation knob).
-_BODY_TOO_LARGE_STATUS_ENV = "HEADROOM_PROXY_BODY_TOO_LARGE_STATUS"
+_BODY_TOO_LARGE_STATUS_ENV = "HR_PROXY_BODY_TOO_LARGE_STATUS"
 _BODY_TOO_LARGE_STATUS_DEFAULT = 413
 
 
 def get_body_too_large_status() -> int:
     """Return the HTTP status code for body-too-large rejections."""
-    raw = os.environ.get(_BODY_TOO_LARGE_STATUS_ENV)
+    raw = get_hr_env("PROXY_BODY_TOO_LARGE_STATUS")
     if raw is None or raw == "":
         return _BODY_TOO_LARGE_STATUS_DEFAULT
     try:
@@ -778,8 +778,8 @@ MAX_COMPRESSION_CACHE_SESSIONS = 500
 # below which transient errors still fall through to passthrough is
 # configurable via ``HEADROOM_WS_COMPRESSION_FAIL_THRESHOLD_BYTES``
 # (default 256 KiB ≈ 64K tokens).
-WS_COMPRESSION_FAIL_OPEN_ENV = "HEADROOM_WS_FAIL_OPEN_ON_COMPRESSION_FAILURE"
-WS_COMPRESSION_OVERSIZE_BYTES_ENV = "HEADROOM_WS_COMPRESSION_FAIL_THRESHOLD_BYTES"
+WS_COMPRESSION_FAIL_OPEN_ENV = "HR_WS_FAIL_OPEN_ON_COMPRESSION_FAILURE"
+WS_COMPRESSION_OVERSIZE_BYTES_ENV = "HR_WS_COMPRESSION_FAIL_THRESHOLD_BYTES"
 WS_COMPRESSION_OVERSIZE_BYTES_DEFAULT = 256 * 1024
 
 
@@ -821,7 +821,7 @@ def decide_compression_failure_action(
     * otherwise → forward (a transient pipeline error on a small frame
       shouldn't break the request).
     """
-    fail_open = os.environ.get(WS_COMPRESSION_FAIL_OPEN_ENV, "").strip().lower() in (
+    fail_open = (get_hr_env("WS_FAIL_OPEN_ON_COMPRESSION_FAILURE", "") or "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -835,7 +835,7 @@ def decide_compression_failure_action(
         )
 
     threshold = WS_COMPRESSION_OVERSIZE_BYTES_DEFAULT
-    raw_threshold = os.environ.get(WS_COMPRESSION_OVERSIZE_BYTES_ENV, "").strip()
+    raw_threshold = (get_hr_env("WS_COMPRESSION_FAIL_THRESHOLD_BYTES", "") or "").strip()
     if raw_threshold:
         try:
             parsed = int(raw_threshold)
@@ -947,7 +947,7 @@ def _setup_file_logging() -> None:
 
 
 def _selected_context_tool() -> str:
-    raw = os.environ.get(_CONTEXT_TOOL_ENV, _CONTEXT_TOOL_RTK).strip().lower()
+    raw = (get_hr_env("CONTEXT_TOOL", _CONTEXT_TOOL_RTK) or _CONTEXT_TOOL_RTK).strip().lower()
     normalized = raw.replace("_", "-")
     if normalized in ("leanctx", _CONTEXT_TOOL_LEAN_CTX):
         return _CONTEXT_TOOL_LEAN_CTX
@@ -1473,7 +1473,7 @@ _INTERNAL_HEADER_PREFIX = "x-headroom-"
 # ``disabled`` is an explicit operator opt-in for diagnostic shadow
 # tracing — NOT a fallback. Per realignment build constraint #4 the
 # behaviour is loud, configurable, and never silent.
-_STRIP_INTERNAL_HEADERS_ENV = "HEADROOM_STRIP_INTERNAL_HEADERS"
+_STRIP_INTERNAL_HEADERS_ENV = "HR_STRIP_INTERNAL_HEADERS"
 StripInternalHeadersMode = Literal["enabled", "disabled"]
 _STRIP_INTERNAL_HEADERS_DEFAULT: StripInternalHeadersMode = "enabled"
 
@@ -1485,7 +1485,7 @@ def get_strip_internal_headers_mode() -> StripInternalHeadersMode:
     restart. Unknown values raise loudly per the no-silent-fallback
     build constraint.
     """
-    raw = os.environ.get(_STRIP_INTERNAL_HEADERS_ENV, "").strip().lower()
+    raw = (get_hr_env("STRIP_INTERNAL_HEADERS", "") or "").strip().lower()
     if not raw:
         return _STRIP_INTERNAL_HEADERS_DEFAULT
     if raw in ("enabled", "disabled"):
@@ -1575,11 +1575,11 @@ def log_outbound_headers(
 # the tracker (returns the client value verbatim). That mode is loud and
 # explicit per realignment build constraint #4 — NOT a silent fallback.
 
-_BETA_HEADER_STICKY_ENV = "HEADROOM_BETA_HEADER_STICKY"
+_BETA_HEADER_STICKY_ENV = "HR_BETA_HEADER_STICKY"
 BetaHeaderStickyMode = Literal["enabled", "disabled"]
 _BETA_HEADER_STICKY_DEFAULT: BetaHeaderStickyMode = "enabled"
 
-_BETA_TRACKER_MAX_SESSIONS_ENV = "HEADROOM_BETA_TRACKER_MAX_SESSIONS"
+_BETA_TRACKER_MAX_SESSIONS_ENV = "HR_BETA_TRACKER_MAX_SESSIONS"
 _BETA_TRACKER_MAX_SESSIONS_DEFAULT = 1000
 
 
@@ -1590,7 +1590,7 @@ def get_beta_header_sticky_mode() -> BetaHeaderStickyMode:
     restart. Unknown values raise loudly per the no-silent-fallback
     build constraint.
     """
-    raw = os.environ.get(_BETA_HEADER_STICKY_ENV, "").strip().lower()
+    raw = (get_hr_env("BETA_HEADER_STICKY", "") or "").strip().lower()
     if not raw:
         return _BETA_HEADER_STICKY_DEFAULT
     if raw in ("enabled", "disabled"):
@@ -1600,7 +1600,7 @@ def get_beta_header_sticky_mode() -> BetaHeaderStickyMode:
 
 def get_beta_tracker_max_sessions() -> int:
     """Return the LRU bound for `SessionBetaTracker` (sessions cap)."""
-    raw = os.environ.get(_BETA_TRACKER_MAX_SESSIONS_ENV, "").strip()
+    raw = (get_hr_env("BETA_TRACKER_MAX_SESSIONS", "") or "").strip()
     if not raw:
         return _BETA_TRACKER_MAX_SESSIONS_DEFAULT
     try:
@@ -1892,11 +1892,11 @@ def log_beta_header_merge(
 # silent fallback. It exists for diagnostic shadow tracing / emergency
 # rollback only.
 
-_TOOL_INJECTION_STICKY_ENV = "HEADROOM_TOOL_INJECTION_STICKY"
+_TOOL_INJECTION_STICKY_ENV = "HR_TOOL_INJECTION_STICKY"
 ToolInjectionStickyMode = Literal["enabled", "disabled"]
 _TOOL_INJECTION_STICKY_DEFAULT: ToolInjectionStickyMode = "enabled"
 
-_TOOL_TRACKER_MAX_SESSIONS_ENV = "HEADROOM_TOOL_TRACKER_MAX_SESSIONS"
+_TOOL_TRACKER_MAX_SESSIONS_ENV = "HR_TOOL_TRACKER_MAX_SESSIONS"
 _TOOL_TRACKER_MAX_SESSIONS_DEFAULT = 1000
 
 
@@ -1907,7 +1907,7 @@ def get_tool_injection_sticky_mode() -> ToolInjectionStickyMode:
     restart. Unknown values raise loudly per the no-silent-fallback
     build constraint.
     """
-    raw = os.environ.get(_TOOL_INJECTION_STICKY_ENV, "").strip().lower()
+    raw = (get_hr_env("TOOL_INJECTION_STICKY", "") or "").strip().lower()
     if not raw:
         return _TOOL_INJECTION_STICKY_DEFAULT
     if raw in ("enabled", "disabled"):
@@ -1919,7 +1919,7 @@ def get_tool_injection_sticky_mode() -> ToolInjectionStickyMode:
 
 def get_tool_tracker_max_sessions() -> int:
     """Return the LRU bound for `SessionToolTracker` (sessions cap)."""
-    raw = os.environ.get(_TOOL_TRACKER_MAX_SESSIONS_ENV, "").strip()
+    raw = (get_hr_env("TOOL_TRACKER_MAX_SESSIONS", "") or "").strip()
     if not raw:
         return _TOOL_TRACKER_MAX_SESSIONS_DEFAULT
     try:

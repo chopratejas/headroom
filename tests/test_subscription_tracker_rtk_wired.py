@@ -404,7 +404,7 @@ def test_garbage_wiring_env_raises_at_startup(monkeypatch: pytest.MonkeyPatch) -
     # Reset the singleton so configure() actually runs the validator.
     monkeypatch.setattr(tracker_module, "_tracker_instance", None)
 
-    with pytest.raises(ValueError, match="HEADROOM_RTK_WIRING"):
+    with pytest.raises(ValueError, match="HR_RTK_WIRING"):
         tracker_module.configure_subscription_tracker(enabled=True)
 
 

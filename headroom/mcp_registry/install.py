@@ -28,7 +28,7 @@ def build_headroom_spec(proxy_url: str = DEFAULT_PROXY_URL) -> ServerSpec:
     """
     env: dict[str, str] = {}
     if proxy_url and proxy_url != DEFAULT_PROXY_URL:
-        env["HEADROOM_PROXY_URL"] = proxy_url
+        env["HR_PROXY_URL"] = proxy_url
     return ServerSpec(
         name="headroom",
         command="headroom",

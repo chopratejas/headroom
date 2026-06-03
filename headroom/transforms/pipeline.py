@@ -77,10 +77,10 @@ class TransformPipeline:
         # non-config callers (CLI / SDK / tests) the env var
         # HEADROOM_INTERCEPT_ENABLED=1. Off by default while this ships — lets
         # users try it and compare before we make it the default.
-        import os as _os
+        from headroom.env import get_hr_env as _get_hr_env
 
-        if getattr(self.config, "intercept_tool_results", False) or _os.environ.get(
-            "HEADROOM_INTERCEPT_ENABLED"
+        if getattr(self.config, "intercept_tool_results", False) or _get_hr_env(
+            "INTERCEPT_ENABLED"
         ):
             from headroom.proxy.interceptors import ToolResultInterceptorTransform
 

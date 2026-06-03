@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import platform
 import stat
 import subprocess
@@ -12,6 +11,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 from urllib.request import urlopen
+
+from headroom.env import get_hr_env
 
 from . import RTK_BIN_DIR, RTK_BIN_PATH, RTK_VERSION
 
@@ -40,7 +41,7 @@ def _detect_runtime_target_triple() -> str:
 
 def _get_target_triple() -> str:
     """Return the requested rtk target triple, honoring explicit overrides."""
-    return os.environ.get("HEADROOM_RTK_TARGET", "").strip() or _detect_runtime_target_triple()
+    return (get_hr_env("RTK_TARGET", "") or "").strip() or _detect_runtime_target_triple()
 
 
 def _binary_name_for_target(target: str) -> str:

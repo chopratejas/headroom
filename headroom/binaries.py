@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from headroom.env import get_hr_env
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -144,7 +146,7 @@ def detect_platform() -> PlatformKey:
 
 
 def cache_dir() -> Path:
-    override = os.environ.get("HEADROOM_BINARIES_CACHE")
+    override = get_hr_env("BINARIES_CACHE")
     if override:
         return Path(override).expanduser().resolve()
     if sys.platform.startswith("win"):
@@ -202,7 +204,7 @@ def _asset_for_platform(tool: str, plat: PlatformKey) -> dict[str, Any]:
 
 
 def _mirror_url(url: str) -> str:
-    mirror = os.environ.get("HEADROOM_BINARIES_MIRROR")
+    mirror = get_hr_env("BINARIES_MIRROR")
     if not mirror:
         return url
     # Only substitute the github.com host so that paths remain intact.
@@ -216,8 +218,8 @@ def _mirror_url(url: str) -> str:
 
 
 def _download(url: str, dest: Path, *, progress: bool = True) -> None:
-    if os.environ.get("HEADROOM_BINARIES_OFFLINE"):
-        raise OfflineError(f"offline mode (HEADROOM_BINARIES_OFFLINE=1) but fetch required: {url}")
+    if get_hr_env("BINARIES_OFFLINE"):
+        raise OfflineError(f"offline mode (HR_BINARIES_OFFLINE=1) but fetch required: {url}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     final_url = _mirror_url(url)
     req = urllib.request.Request(final_url, headers={"User-Agent": "headroom-binaries/1"})

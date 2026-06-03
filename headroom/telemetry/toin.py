@@ -63,13 +63,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import threading
 import time
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final
+
+from headroom.env import get_hr_env
 
 from .models import FieldSemantics, ToolSignature
 
@@ -163,7 +164,7 @@ def get_default_toin_storage_path() -> str:
     # raw string exactly as the user supplied it (no tilde expansion, no
     # path-separator normalization). This matches what existing tests and
     # users have relied on since the env var was introduced.
-    env_path = os.environ.get(TOIN_PATH_ENV_VAR, "").strip()
+    env_path = (get_hr_env("TOIN_PATH", "") or "").strip()
     if env_path:
         return env_path
 
@@ -1526,7 +1527,7 @@ def _create_default_toin_backend() -> Any:
     Loads adapters via setuptools entry point 'headroom.toin_backend'.
     Returns None to use default FileSystemTOINBackend.
     """
-    backend_type = (os.environ.get(TOIN_BACKEND_ENV_VAR) or "").strip().lower()
+    backend_type = (get_hr_env("TOIN_BACKEND") or "").strip().lower()
     if not backend_type or backend_type == "filesystem":
         return None
     if backend_type == "none":
@@ -1551,8 +1552,8 @@ def _create_default_toin_backend() -> Any:
         # `model_family`, so `tenant_prefix` is now functionally redundant
         # for *learning* — it only matters for storage layout. Keep it.
         kwargs = {
-            "url": os.environ.get("HEADROOM_TOIN_URL", ""),
-            "tenant_prefix": os.environ.get("HEADROOM_TOIN_TENANT_PREFIX", ""),
+            "url": get_hr_env("TOIN_URL", ""),
+            "tenant_prefix": get_hr_env("TOIN_TENANT_PREFIX", ""),
         }
         return fn(**kwargs)
     except Exception as e:

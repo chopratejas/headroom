@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Environment variable prefix renamed `HEADROOM_*` → `HR_*`.**
+  All runtime knobs now use the shorter `HR_` prefix (e.g. `HR_TELEMETRY`,
+  `HR_BACKEND`, `HR_PORT`).  Old `HEADROOM_*` names continue to work but emit a
+  `DeprecationWarning` at runtime and a `logging.warning` via the
+  `headroom.env` logger.  Migrating is a simple find-and-replace in any
+  `.env` file or shell configuration.
+  A new central helper `headroom.env.get_hr_env(suffix, default=None)` reads
+  `HR_<suffix>` first, then falls back to `HEADROOM_<suffix>`, and
+  deduplicates the deprecation warning per key per process.
+
 ### Fixed
 - **PyPI install clarity and release gating.** Documented `pipx --python python3.13`
   for environments where unsupported Python wheel tags cause older-version

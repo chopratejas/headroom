@@ -46,14 +46,14 @@ def test_build_runtime_command_for_docker_includes_deployment_env(
 
     joined = " ".join(command)
     assert command[:3] == ["docker", "run", "--rm"]
-    assert "HEADROOM_DEPLOYMENT_PROFILE=default" in joined
-    assert "HEADROOM_DEPLOYMENT_PRESET=persistent-docker" in joined
+    assert "HR_DEPLOYMENT_PROFILE=default" in joined
+    assert "HR_DEPLOYMENT_PRESET=persistent-docker" in joined
     assert "127.0.0.1:8787:8787" in joined
     assert "ghcr.io/chopratejas/headroom:latest" in command
     # Canonical Headroom filesystem contract (issue #175) forwarded into
     # the container.
-    assert "HEADROOM_WORKSPACE_DIR=/tmp/headroom-home/.headroom" in command
-    assert "HEADROOM_CONFIG_DIR=/tmp/headroom-home/.headroom/config" in command
+    assert "HR_WORKSPACE_DIR=/tmp/headroom-home/.headroom" in command
+    assert "HR_CONFIG_DIR=/tmp/headroom-home/.headroom/config" in command
 
 
 def test_build_runtime_command_for_docker_matches_wrapper_parity(
@@ -121,15 +121,15 @@ def test_runtime_env_and_mount_source(monkeypatch) -> None:
     monkeypatch.setattr("headroom.install.runtime.os.environ", {"BASE": "x"})
 
     assert _deployment_env(manifest) == {
-        "HEADROOM_DEPLOYMENT_PROFILE": "default",
-        "HEADROOM_DEPLOYMENT_PRESET": "persistent-service",
-        "HEADROOM_DEPLOYMENT_RUNTIME": "python",
-        "HEADROOM_DEPLOYMENT_SUPERVISOR": "service",
-        "HEADROOM_DEPLOYMENT_SCOPE": "user",
+        "HR_DEPLOYMENT_PROFILE": "default",
+        "HR_DEPLOYMENT_PRESET": "persistent-service",
+        "HR_DEPLOYMENT_RUNTIME": "python",
+        "HR_DEPLOYMENT_SUPERVISOR": "service",
+        "HR_DEPLOYMENT_SCOPE": "user",
     }
     assert _runtime_env(manifest)["BASE"] == "x"
     assert _runtime_env(manifest)["EXTRA"] == "1"
-    assert _runtime_env(manifest)["HEADROOM_DEPLOYMENT_PROFILE"] == "default"
+    assert _runtime_env(manifest)["HR_DEPLOYMENT_PROFILE"] == "default"
 
     monkeypatch.setattr("headroom.install.runtime.sys.platform", "win32")
     assert _mount_source("C:\\Users\\me", ".headroom") == "C:\\Users\\me\\.headroom"

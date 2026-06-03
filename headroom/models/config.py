@@ -16,8 +16,9 @@ Usage:
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
+
+from headroom.env import get_hr_env
 
 
 @dataclass
@@ -55,23 +56,21 @@ class MLModelConfig:
 
     # Text Embeddings (SentenceTransformer)
     sentence_transformer: str = field(
-        default_factory=lambda: os.environ.get("HEADROOM_SENTENCE_TRANSFORMER", "all-MiniLM-L6-v2")
+        default_factory=lambda: get_hr_env("SENTENCE_TRANSFORMER", "all-MiniLM-L6-v2")
     )
     sentence_transformer_dim: int = 384
 
     # Image Embeddings (SIGLIP)
     siglip: str = field(
-        default_factory=lambda: os.environ.get("HEADROOM_SIGLIP", "google/siglip-base-patch16-224")
+        default_factory=lambda: get_hr_env("SIGLIP", "google/siglip-base-patch16-224")
     )
 
     # Named Entity Recognition (spaCy)
-    spacy: str = field(default_factory=lambda: os.environ.get("HEADROOM_SPACY", "en_core_web_sm"))
+    spacy: str = field(default_factory=lambda: get_hr_env("SPACY", "en_core_web_sm"))
 
     # Image Technique Router
     technique_router: str = field(
-        default_factory=lambda: os.environ.get(
-            "HEADROOM_TECHNIQUE_ROUTER", "chopratejas/technique-router"
-        )
+        default_factory=lambda: get_hr_env("TECHNIQUE_ROUTER", "chopratejas/technique-router")
     )
 
     # Memory estimates in MB (for monitoring)

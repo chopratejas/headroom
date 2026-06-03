@@ -37,13 +37,14 @@ import hashlib
 import heapq
 import json
 import logging
-import os
 import re
 import threading
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
+
+from headroom.env import get_hr_env
 
 from ..relevance.bm25 import BM25Scorer
 
@@ -1105,7 +1106,7 @@ def _create_default_ccr_backend() -> CompressionStoreBackend | None:
     Loads adapters via setuptools entry point 'headroom.ccr_backend'.
     Returns None to use default InMemoryBackend.
     """
-    backend_type = (os.environ.get("HEADROOM_CCR_BACKEND") or "").strip().lower()
+    backend_type = (get_hr_env("CCR_BACKEND") or "").strip().lower()
     if not backend_type or backend_type == "memory":
         return None
     try:
@@ -1122,8 +1123,8 @@ def _create_default_ccr_backend() -> CompressionStoreBackend | None:
             return None
         fn = ep.load()
         kwargs = {
-            "url": os.environ.get("HEADROOM_REDIS_URL", ""),
-            "tenant_prefix": os.environ.get("HEADROOM_CCR_TENANT_PREFIX", ""),
+            "url": get_hr_env("REDIS_URL", ""),
+            "tenant_prefix": get_hr_env("CCR_TENANT_PREFIX", ""),
         }
         backend: CompressionStoreBackend = fn(**kwargs)
         return backend

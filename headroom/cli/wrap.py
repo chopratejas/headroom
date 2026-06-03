@@ -39,6 +39,7 @@ import click
 from headroom._version import __version__ as _HEADROOM_VERSION
 from headroom.copilot_auth import DEFAULT_API_URL as COPILOT_API_URL
 from headroom.copilot_auth import has_oauth_auth, resolve_client_bearer_token
+from headroom.env import get_hr_env
 from headroom.providers.aider import build_launch_env as _build_aider_launch_env
 from headroom.providers.claude import proxy_base_url as _claude_proxy_base_url
 from headroom.providers.codex import build_launch_env as _build_codex_launch_env
@@ -79,7 +80,7 @@ from headroom.providers.openclaw import (
 
 from .main import main
 
-_CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
+_CONTEXT_TOOL_ENV = "HR_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
 _VALID_CONTEXT_TOOLS = {_CONTEXT_TOOL_RTK, _CONTEXT_TOOL_LEAN_CTX}
@@ -98,7 +99,7 @@ def _selected_context_tool() -> str:
     coding agent instead.
     """
 
-    raw = os.environ.get(_CONTEXT_TOOL_ENV, "").strip().lower().replace("_", "-")
+    raw = (get_hr_env("CONTEXT_TOOL", "") or "").strip().lower().replace("_", "-")
     if not raw:
         return _CONTEXT_TOOL_RTK
     if raw == "leanctx":
@@ -167,7 +168,7 @@ def _start_proxy(
     cmd = [sys.executable, "-m", "headroom.cli", "proxy", "--port", str(port)]
 
     # Forward HEADROOM_MODE env var so the proxy respects the user's mode choice
-    headroom_mode = os.environ.get("HEADROOM_MODE")
+    headroom_mode = get_hr_env("MODE")
     if headroom_mode:
         cmd.extend(["--mode", headroom_mode])
 
@@ -184,15 +185,15 @@ def _start_proxy(
         cmd.append("--code-graph")
 
     # Forward backend configuration to proxy subprocess
-    _backend = backend or os.environ.get("HEADROOM_BACKEND")
+    _backend = backend or get_hr_env("BACKEND")
     if _backend:
         cmd.extend(["--backend", _backend])
 
-    _anyllm = anyllm_provider or os.environ.get("HEADROOM_ANYLLM_PROVIDER")
+    _anyllm = anyllm_provider or get_hr_env("ANYLLM_PROVIDER")
     if _anyllm:
         cmd.extend(["--anyllm-provider", _anyllm])
 
-    _region = region or os.environ.get("HEADROOM_REGION")
+    _region = region or get_hr_env("REGION")
     if _region:
         cmd.extend(["--region", _region])
 
@@ -208,8 +209,8 @@ def _start_proxy(
 
     # Tell the proxy which agent is being wrapped (for traffic learning output)
     if agent_type != "unknown":
-        proxy_env["HEADROOM_AGENT_TYPE"] = agent_type
-        proxy_env.setdefault("HEADROOM_STACK", f"wrap_{agent_type}")
+        proxy_env["HR_AGENT_TYPE"] = agent_type
+        proxy_env.setdefault("HR_STACK", f"wrap_{agent_type}")
 
     proc = subprocess.Popen(
         cmd,
@@ -1561,7 +1562,7 @@ def _should_use_copilot_oauth(
     if provider_type == "anthropic":
         return False
 
-    effective_backend = backend or os.environ.get("HEADROOM_BACKEND")
+    effective_backend = backend or get_hr_env("BACKEND")
     if effective_backend not in (None, "", "anthropic"):
         return False
 
@@ -2400,7 +2401,7 @@ def copilot(
         )
         raise SystemExit(1)
 
-    effective_backend = backend or os.environ.get("HEADROOM_BACKEND")
+    effective_backend = backend or get_hr_env("BACKEND")
     if _check_proxy(port):
         running_backend = _detect_running_proxy_backend(port)
         if effective_backend and running_backend and effective_backend != running_backend:

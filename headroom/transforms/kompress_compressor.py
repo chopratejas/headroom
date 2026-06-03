@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from headroom.env import get_hr_env
+
 from ..config import TransformResult
 from ..onnx_runtime import create_cpu_session_options, trim_process_heap
 from ..tokenizer import Tokenizer
@@ -33,12 +35,12 @@ logger = logging.getLogger(__name__)
 
 # Default HuggingFace model ID
 HF_MODEL_ID = "chopratejas/kompress-base"
-KOMPRESS_BACKEND_ENV = "HEADROOM_KOMPRESS_BACKEND"
-KOMPRESS_ONNX_INTRA_THREADS_ENV = "HEADROOM_KOMPRESS_ONNX_INTRA_THREADS"
-KOMPRESS_ONNX_INTER_THREADS_ENV = "HEADROOM_KOMPRESS_ONNX_INTER_THREADS"
-KOMPRESS_COREML_CACHE_DIR_ENV = "HEADROOM_KOMPRESS_COREML_CACHE_DIR"
-KOMPRESS_MAX_CONCURRENT_ENV = "HEADROOM_KOMPRESS_MAX_CONCURRENT"
-KOMPRESS_BATCH_SIZE_ENV = "HEADROOM_KOMPRESS_BATCH_SIZE"
+KOMPRESS_BACKEND_ENV = "HR_KOMPRESS_BACKEND"
+KOMPRESS_ONNX_INTRA_THREADS_ENV = "HR_KOMPRESS_ONNX_INTRA_THREADS"
+KOMPRESS_ONNX_INTER_THREADS_ENV = "HR_KOMPRESS_ONNX_INTER_THREADS"
+KOMPRESS_COREML_CACHE_DIR_ENV = "HR_KOMPRESS_COREML_CACHE_DIR"
+KOMPRESS_MAX_CONCURRENT_ENV = "HR_KOMPRESS_MAX_CONCURRENT"
+KOMPRESS_BATCH_SIZE_ENV = "HR_KOMPRESS_BATCH_SIZE"
 
 KompressBackend = Literal["auto", "onnx", "onnx_cpu", "onnx_coreml", "pytorch", "pytorch_mps"]
 
@@ -51,7 +53,7 @@ _execution_semaphores_lock = threading.Lock()
 
 
 def _selected_backend() -> KompressBackend:
-    raw = os.environ.get(KOMPRESS_BACKEND_ENV, "auto").strip().lower().replace("-", "_")
+    raw = (get_hr_env("KOMPRESS_BACKEND", "auto") or "auto").strip().lower().replace("-", "_")
     aliases = {
         "": "auto",
         "cpu": "onnx_cpu",
@@ -70,7 +72,12 @@ def _selected_backend() -> KompressBackend:
 
 
 def _env_int(name: str) -> int | None:
-    raw = os.environ.get(name)
+    # Support both HR_KOMPRESS_* and HEADROOM_KOMPRESS_* via get_hr_env
+    # name is already an HR_* constant; strip the HR_ prefix to use get_hr_env
+    if name.startswith("HR_"):
+        raw = get_hr_env(name[3:])
+    else:
+        raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return None
     try:
@@ -339,7 +346,7 @@ def _load_kompress_onnx(
         if use_coreml:
             from headroom import paths as _paths
 
-            coreml_cache_dir = os.environ.get(KOMPRESS_COREML_CACHE_DIR_ENV, "").strip()
+            coreml_cache_dir = (get_hr_env("KOMPRESS_COREML_CACHE_DIR", "") or "").strip()
             cache_dir = (
                 coreml_cache_dir
                 if coreml_cache_dir

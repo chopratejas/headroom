@@ -15,6 +15,7 @@ from typing import Any
 
 import click
 
+from headroom.env import get_hr_env
 from headroom.install.models import ConfigScope, InstallPreset, RuntimeKind, SupervisorKind
 from headroom.install.paths import claude_settings_path, codex_config_path, validate_profile_name
 from headroom.install.planner import build_manifest
@@ -481,7 +482,7 @@ def _resolve_copilot_env(port: int, backend: str) -> dict[str, str]:
 
 
 def _marketplace_source() -> str:
-    override = os.environ.get("HEADROOM_MARKETPLACE_SOURCE")
+    override = get_hr_env("MARKETPLACE_SOURCE")
     if override:
         return override
     repo_root = Path(__file__).resolve().parents[2]

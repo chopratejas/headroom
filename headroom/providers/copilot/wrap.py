@@ -20,7 +20,9 @@ def resolve_provider_type(
         return provider_type
 
     env = environ or os.environ
-    effective_backend = backend or env.get("HEADROOM_BACKEND") or "anthropic"
+    effective_backend = (
+        backend or env.get("HR_BACKEND") or env.get("HEADROOM_BACKEND") or "anthropic"
+    )
     return "anthropic" if effective_backend == "anthropic" else "openai"
 
 
