@@ -120,7 +120,7 @@ def _read_gh_cli_oauth_token() -> str | None:
     return token or None
 
 
-def _read_windows_copilot_cli_oauth_token() -> str | None:
+def _read_windows_copilot_cli_oauth_token() -> str | None:  # pragma: no cover - Windows-only
     if os.name != "nt":
         return None
 
@@ -480,9 +480,7 @@ async def apply_copilot_api_auth(headers: dict[str, str], *, url: str) -> dict[s
             "GITHUB_COPILOT_EDITOR_VERSION", _DEFAULT_EDITOR_VERSION
         )
 
-    incoming_auth = next(
-        (v for k, v in resolved.items() if k.lower() == "authorization"), None
-    )
+    incoming_auth = next((v for k, v in resolved.items() if k.lower() == "authorization"), None)
     if incoming_auth:
         scheme, _, raw_token = incoming_auth.partition(" ")
         if scheme.lower() == "bearer" and raw_token and _is_copilot_api_token(raw_token):

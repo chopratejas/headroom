@@ -283,6 +283,33 @@ def test_apply_copilot_api_auth_replaces_github_oauth_bearer(
     assert "authorization" not in headers
 
 
+def test_apply_copilot_api_auth_replaces_non_bearer_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        return copilot_auth.CopilotAPIToken(
+            token="copilot-session",
+            expires_at=time.time() + 3600,
+            api_url=copilot_auth.DEFAULT_API_URL,
+        )
+
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {"authorization": "Basic abc123"},
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["Authorization"] == "Bearer copilot-session"
+    assert "authorization" not in headers
+
+
 def test_is_copilot_api_token_matches_expected_prefixes() -> None:
     assert copilot_auth._is_copilot_api_token("tid_session_token") is True
     assert copilot_auth._is_copilot_api_token("gho_oauth") is False
@@ -320,6 +347,40 @@ def test_apply_copilot_api_auth_injects_required_headers(
     assert headers["Authorization"] == "Bearer copilot-session"
     assert headers["Copilot-Integration-Id"] == "vscode-chat"
     assert headers["editor-version"] == "vscode/1.104.1"
+
+
+def test_apply_copilot_api_auth_preserves_existing_copilot_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        return copilot_auth.CopilotAPIToken(
+            token="copilot-session",
+            expires_at=time.time() + 3600,
+            api_url=copilot_auth.DEFAULT_API_URL,
+        )
+
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+    monkeypatch.setenv("GITHUB_COPILOT_INTEGRATION_ID", "should-not-override")
+    monkeypatch.setenv("GITHUB_COPILOT_EDITOR_VERSION", "should-not-override")
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {
+                "Authorization": "Bearer downstream-token",
+                "Copilot-Integration-Id": "custom-integration",
+                "Editor-Version": "custom-editor",
+            },
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["Copilot-Integration-Id"] == "custom-integration"
+    assert headers["Editor-Version"] == "custom-editor"
+    assert headers["Authorization"] == "Bearer copilot-session"
 
 
 def test_token_provider_reuses_oauth_token_without_exchange(
