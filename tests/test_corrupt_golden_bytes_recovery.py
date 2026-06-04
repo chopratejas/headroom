@@ -13,7 +13,6 @@ Covers both injection sites:
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -21,8 +20,6 @@ from typing import Any
 import pytest
 
 from headroom.proxy.helpers import (
-    SessionCcrTracker,
-    SessionToolTracker,
     _reset_session_ccr_tracker_for_test,
     _reset_session_tool_tracker_for_test,
     apply_session_sticky_ccr_tool,
@@ -31,7 +28,6 @@ from headroom.proxy.helpers import (
     get_session_tool_tracker,
     serialize_tool_definition_canonical,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test isolation
