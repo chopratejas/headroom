@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -44,6 +45,24 @@ def _reset_trackers() -> None:
     yield
     _reset_session_tool_tracker_for_test()
     _reset_session_ccr_tracker_for_test()
+
+
+@pytest.fixture(autouse=True)
+def _enable_headroom_log_propagation() -> Iterator[None]:
+    """Re-enable propagation on the headroom logger during tests.
+
+    configure_proxy_logging() calls headroom_logger.propagate = False to prevent
+    duplicate writes when the proxy redirects stderr to a log file. In CI the proxy
+    may initialise its logging before the test suite runs, leaving propagation
+    disabled. pytest's caplog attaches its handler to the root logger, so it only
+    sees records that propagate all the way up. This fixture re-enables propagation
+    for the duration of each test so caplog captures headroom log records correctly.
+    """
+    headroom_logger = logging.getLogger("headroom")
+    original = headroom_logger.propagate
+    headroom_logger.propagate = True
+    yield
+    headroom_logger.propagate = original
 
 
 # ---------------------------------------------------------------------------
