@@ -22,11 +22,21 @@ Header schema (parsed by codex-rs ``rate_limits.rs``):
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 
 from headroom.subscription.base import QuotaTracker
+
+logger = logging.getLogger("headroom.subscription")
+
+# JSON-backed persistence path. The in-memory singleton is otherwise reset to
+# ``None`` on every proxy restart, and on streaming/WS-only traffic it may take
+# a long time to be refilled — so we persist the latest snapshot best-effort.
+_PERSIST_PATH = Path.home() / ".headroom" / "codex_rate_limits.json"
 
 
 @dataclass
@@ -62,6 +72,14 @@ class CodexRateLimitWindow:
             "seconds_until_reset": self.seconds_until_reset,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> CodexRateLimitWindow:
+        return cls(
+            used_percent=float(data["used_percent"]),
+            window_minutes=data.get("window_minutes"),
+            resets_at=data.get("resets_at"),
+        )
+
 
 @dataclass
 class CodexCreditsSnapshot:
@@ -77,6 +95,14 @@ class CodexCreditsSnapshot:
             "unlimited": self.unlimited,
             "balance": self.balance,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CodexCreditsSnapshot:
+        return cls(
+            has_credits=bool(data["has_credits"]),
+            unlimited=bool(data.get("unlimited", False)),
+            balance=data.get("balance"),
+        )
 
 
 @dataclass
@@ -101,6 +127,21 @@ class CodexRateLimitSnapshot:
             "promo_message": self.promo_message,
             "captured_at": self.captured_at,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CodexRateLimitSnapshot:
+        primary = data.get("primary")
+        secondary = data.get("secondary")
+        credits = data.get("credits")
+        return cls(
+            limit_id=data.get("limit_id", "codex"),
+            limit_name=data.get("limit_name"),
+            primary=CodexRateLimitWindow.from_dict(primary) if primary else None,
+            secondary=CodexRateLimitWindow.from_dict(secondary) if secondary else None,
+            credits=CodexCreditsSnapshot.from_dict(credits) if credits else None,
+            promo_message=data.get("promo_message"),
+            captured_at=data.get("captured_at", time.time()),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +255,15 @@ class CodexRateLimitState(QuotaTracker):
     def __init__(self) -> None:
         self._lock = Lock()
         self._latest: CodexRateLimitSnapshot | None = None
+        # Best-effort load of the last-known snapshot from disk so the
+        # tracker survives proxy restarts even when traffic is streaming/WS
+        # only and would otherwise take a long time to refill.
+        try:
+            if _PERSIST_PATH.exists():
+                data = json.loads(_PERSIST_PATH.read_text())
+                self._latest = CodexRateLimitSnapshot.from_dict(data)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+            logger.debug("Failed to load persisted Codex rate limits: %s", e)
 
     def update_from_headers(self, headers: dict[str, str]) -> None:
         """Update state from a response header dict (no-op if no Codex headers)."""
@@ -222,6 +272,13 @@ class CodexRateLimitState(QuotaTracker):
             return
         with self._lock:
             self._latest = snapshot
+        # Persist to disk (best-effort) so the snapshot survives restarts.
+        # Failures here must never break the request path.
+        try:
+            _PERSIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _PERSIST_PATH.write_text(json.dumps(snapshot.to_dict()))
+        except OSError as e:
+            logger.debug("Failed to persist Codex rate limits: %s", e)
 
     @property
     def latest(self) -> CodexRateLimitSnapshot | None:

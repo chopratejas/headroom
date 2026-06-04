@@ -1050,9 +1050,23 @@ class StreamingMixin:
                 headers=response_headers,
             )
 
-        # Forward upstream ratelimit headers to the client
+        # Capture Codex rate-limit window data from the streaming upstream
+        # response headers. Codex CLI almost always uses streaming SSE, so
+        # without this the `/stats` view and dashboard never update for the
+        # common case. update_from_headers() is a no-op when no x-codex-*
+        # headers are present (e.g. Anthropic or non-Codex OpenAI responses).
+        from headroom.subscription.codex_rate_limits import get_codex_rate_limit_state
+
+        get_codex_rate_limit_state().update_from_headers(dict(upstream_response.headers))
+
+        # Forward upstream ratelimit headers to the client. We pass standard
+        # `*ratelimit*` headers as well as Codex's `x-codex-*` headers so the
+        # Codex CLI's own session/weekly usage display keeps updating through
+        # the proxy.
         forwarded_headers = {
-            k: v for k, v in upstream_response.headers.items() if "ratelimit" in k.lower()
+            k: v
+            for k, v in upstream_response.headers.items()
+            if "ratelimit" in k.lower() or k.lower().startswith("x-codex")
         }
 
         async def generate():
