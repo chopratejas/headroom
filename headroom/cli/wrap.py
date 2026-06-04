@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import os
@@ -83,6 +84,10 @@ _CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
 _VALID_CONTEXT_TOOLS = {_CONTEXT_TOOL_RTK, _CONTEXT_TOOL_LEAN_CTX}
+_WRAP_PROXY_TIMEOUT_ENV = "HEADROOM_WRAP_PROXY_TIMEOUT"
+_WRAP_PROXY_TIMEOUT_DEFAULT_SECONDS = 45
+_WRAP_PROXY_TIMEOUT_ML_DEFAULT_SECONDS = 90
+_WRAP_PROXY_TIMEOUT_ML_MODULES = ("torch", "sentence_transformers", "spacy")
 
 
 def _live_wrap_module() -> Any:
@@ -108,6 +113,49 @@ def _selected_context_tool() -> str:
             f"{_CONTEXT_TOOL_ENV} must be one of: {', '.join(sorted(_VALID_CONTEXT_TOOLS))}"
         )
     return raw
+
+
+def _module_available(module_name: str) -> bool:
+    """Return whether an optional module is installed without importing it."""
+
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def _ml_wrap_extras_detected() -> bool:
+    """Detect slow optional ML stacks without triggering their import cost."""
+
+    return any(_module_available(module_name) for module_name in _WRAP_PROXY_TIMEOUT_ML_MODULES)
+
+
+def _default_wrap_proxy_timeout_seconds() -> int:
+    """Return the default wrap proxy startup timeout for this environment."""
+
+    if _ml_wrap_extras_detected():
+        return _WRAP_PROXY_TIMEOUT_ML_DEFAULT_SECONDS
+    return _WRAP_PROXY_TIMEOUT_DEFAULT_SECONDS
+
+
+def _resolve_wrap_proxy_timeout_seconds() -> int:
+    """Resolve the wrap proxy readiness timeout from env or defaults."""
+
+    raw = os.environ.get(_WRAP_PROXY_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _default_wrap_proxy_timeout_seconds()
+
+    try:
+        timeout_seconds = int(raw)
+    except ValueError:
+        raise RuntimeError(
+            f"{_WRAP_PROXY_TIMEOUT_ENV} must be a positive integer number of seconds (got {raw!r})"
+        ) from None
+    if timeout_seconds <= 0:
+        raise RuntimeError(
+            f"{_WRAP_PROXY_TIMEOUT_ENV} must be a positive integer number of seconds (got {raw!r})"
+        )
+    return timeout_seconds
 
 
 def _print_telemetry_notice() -> None:
@@ -199,6 +247,7 @@ def _start_proxy(
     if openai_api_url:
         cmd.extend(["--openai-api-url", openai_api_url])
 
+    timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
 
@@ -219,10 +268,10 @@ def _start_proxy(
         start_new_session=os.name == "posix",
     )
 
-    # Wait for proxy to be ready (up to 45 seconds).
+    # Wait for proxy to be ready.
     # ML components (Kompress, Magika, Tree-sitter) load synchronously before
     # uvicorn binds the port. On slower machines this can take 20-30 seconds.
-    for _i in range(45):
+    for _i in range(timeout_seconds):
         time.sleep(1)
         if _check_proxy(port):
             click.echo(f"  Logs: {log_path}")
@@ -239,7 +288,10 @@ def _start_proxy(
 
     proc.kill()
     log_file.close()
-    raise RuntimeError(f"Proxy failed to start on port {port} within 45 seconds")
+    raise RuntimeError(
+        f"Proxy failed to start on port {port} within {timeout_seconds} seconds. "
+        f"Set {_WRAP_PROXY_TIMEOUT_ENV} to a larger number of seconds for slow startup."
+    )
 
 
 def _setup_rtk(verbose: bool = False) -> Path | None:
