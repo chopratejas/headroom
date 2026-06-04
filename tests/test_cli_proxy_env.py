@@ -187,6 +187,53 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].gemini_api_url == "http://my-gemini:5000"
 
+    def test_headroom_anthropic_base_url_from_env(self, runner):
+        """HEADROOM_ANTHROPIC_BASE_URL should configure the upstream Anthropic target."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"HEADROOM_ANTHROPIC_BASE_URL": "http://my-litellm:4000/v1"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].anthropic_api_url == "http://my-litellm:4000/v1"
+
+    def test_anthropic_base_url_is_not_upstream_env(self, runner):
+        """ANTHROPIC_BASE_URL remains the client->Headroom URL and is not read as upstream."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k
+            not in {
+                "ANTHROPIC_TARGET_API_URL",
+                "HEADROOM_ANTHROPIC_BASE_URL",
+                "HEADROOM_ANTHROPIC_API_URL",
+                "ANTHROPIC_UPSTREAM_BASE_URL",
+            }
+        }
+        env["ANTHROPIC_BASE_URL"] = "http://localhost:8787"
+
+        with (
+            patch("headroom.proxy.server.run_server", mock_run_server),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            result = runner.invoke(main, ["proxy"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].anthropic_api_url is None
+
     def test_openai_api_url_cli_flag(self, runner):
         """--openai-api-url CLI flag should take precedence."""
         captured_config = {}
@@ -203,6 +250,23 @@ class TestCLIProxyEnvVars:
 
         assert result.exit_code == 0, result.output
         assert captured_config["config"].openai_api_url == "http://from-cli:4000"
+
+    def test_anthropic_base_url_cli_alias(self, runner):
+        """--anthropic-base-url should configure the upstream Anthropic target."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy", "--anthropic-base-url", "http://from-cli-litellm:4000"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].anthropic_api_url == "http://from-cli-litellm:4000"
 
     def test_cli_flag_overrides_env_var(self, runner):
         """CLI flag should take precedence over env var."""

@@ -13,6 +13,12 @@ from headroom.providers.codex import DEFAULT_API_URL as DEFAULT_OPENAI_API_URL
 from headroom.providers.gemini import DEFAULT_API_URL as DEFAULT_GEMINI_API_URL
 
 DEFAULT_CLOUDCODE_API_URL = "https://cloudcode-pa.googleapis.com"
+ANTHROPIC_UPSTREAM_URL_ENV_VARS = (
+    "ANTHROPIC_TARGET_API_URL",
+    "HEADROOM_ANTHROPIC_BASE_URL",
+    "HEADROOM_ANTHROPIC_API_URL",
+    "ANTHROPIC_UPSTREAM_BASE_URL",
+)
 
 if TYPE_CHECKING:
     from headroom.backends.base import Backend
@@ -89,6 +95,14 @@ def _normalize_api_url(url: str | None, *, default: str) -> str:
     return normalized
 
 
+def _first_env(env: Mapping[str, str], names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = env.get(name)
+        if value:
+            return value
+    return None
+
+
 def resolve_api_overrides(
     *,
     anthropic_api_url: str | None,
@@ -100,7 +114,7 @@ def resolve_api_overrides(
     """Resolve provider API URL overrides from CLI/config inputs and environment."""
     env = environ or os.environ
     return ProviderApiOverrides(
-        anthropic=anthropic_api_url or env.get("ANTHROPIC_TARGET_API_URL"),
+        anthropic=anthropic_api_url or _first_env(env, ANTHROPIC_UPSTREAM_URL_ENV_VARS),
         openai=openai_api_url or env.get("OPENAI_TARGET_API_URL"),
         gemini=gemini_api_url or env.get("GEMINI_TARGET_API_URL"),
         cloudcode=cloudcode_api_url or env.get("CLOUDCODE_TARGET_API_URL"),

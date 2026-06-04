@@ -387,8 +387,14 @@ def _selected_context_tool() -> str:
 )
 @click.option(
     "--anthropic-api-url",
+    "--anthropic-base-url",
+    "anthropic_api_url",
     default=None,
-    help="Custom Anthropic API URL for passthrough endpoints (env: ANTHROPIC_TARGET_API_URL)",
+    help=(
+        "Custom upstream Anthropic-compatible base URL for passthrough endpoints "
+        "(env: ANTHROPIC_TARGET_API_URL, HEADROOM_ANTHROPIC_BASE_URL, "
+        "ANTHROPIC_UPSTREAM_BASE_URL)"
+    ),
 )
 @click.option(
     "--openai-api-url",

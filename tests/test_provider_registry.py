@@ -32,6 +32,52 @@ def test_resolve_api_overrides_prefers_explicit_values_over_environment(monkeypa
     )
 
 
+def test_resolve_api_overrides_reads_headroom_anthropic_base_url(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_TARGET_API_URL", raising=False)
+    monkeypatch.setenv("HEADROOM_ANTHROPIC_BASE_URL", "https://litellm.internal/v1")
+
+    overrides = resolve_api_overrides(
+        anthropic_api_url=None,
+        openai_api_url=None,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+    )
+
+    assert overrides.anthropic == "https://litellm.internal/v1"
+
+
+def test_resolve_api_overrides_ignores_client_anthropic_base_url(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_TARGET_API_URL", raising=False)
+    monkeypatch.delenv("HEADROOM_ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("HEADROOM_ANTHROPIC_API_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_UPSTREAM_BASE_URL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://localhost:8787")
+
+    overrides = resolve_api_overrides(
+        anthropic_api_url=None,
+        openai_api_url=None,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+    )
+
+    assert overrides.anthropic is None
+
+
+def test_resolve_api_overrides_supports_anthropic_upstream_alias(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_TARGET_API_URL", raising=False)
+    monkeypatch.delenv("HEADROOM_ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_UPSTREAM_BASE_URL", "https://litellm-upstream.internal")
+
+    overrides = resolve_api_overrides(
+        anthropic_api_url=None,
+        openai_api_url=None,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+    )
+
+    assert overrides.anthropic == "https://litellm-upstream.internal"
+
+
 def test_resolve_api_targets_normalizes_trailing_v1() -> None:
     targets = resolve_api_targets(
         ProviderApiOverrides(

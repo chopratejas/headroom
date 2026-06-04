@@ -99,6 +99,7 @@ from headroom.providers.registry import (
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
+    resolve_api_overrides,
 )
 
 # =============================================================================
@@ -2948,11 +2949,21 @@ def _proxy_config_from_env() -> ProxyConfig:
                 "Invalid %s; falling back to HEADROOM_* env vars", _MULTI_WORKER_CONFIG_ENV
             )
 
+    provider_api_overrides = resolve_api_overrides(
+        anthropic_api_url=None,
+        openai_api_url=None,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+        environ=os.environ,
+    )
+
     return ProxyConfig(
         host=_get_env_str("HEADROOM_HOST", "127.0.0.1"),
         port=_get_env_int("HEADROOM_PORT", 8787),
-        openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
-        anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
+        openai_api_url=provider_api_overrides.openai,
+        anthropic_api_url=provider_api_overrides.anthropic,
+        gemini_api_url=provider_api_overrides.gemini,
+        cloudcode_api_url=provider_api_overrides.cloudcode,
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
@@ -3208,7 +3219,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--anthropic-api-url",
-        help=f"Custom Anthropic API URL (default: {DEFAULT_ANTHROPIC_API_URL})",
+        "--anthropic-base-url",
+        dest="anthropic_api_url",
+        help=(
+            "Custom upstream Anthropic-compatible base URL "
+            f"(default: {DEFAULT_ANTHROPIC_API_URL})"
+        ),
     )
 
     # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
@@ -3355,12 +3371,19 @@ if __name__ == "__main__":
     tool_profiles = _parse_tool_profiles(args.tool_profile)
     # Parse extra never-compress tools from CLI and env var
     exclude_tools = _parse_exclude_tools(args.exclude_tools)
+    provider_api_overrides = resolve_api_overrides(
+        anthropic_api_url=args.anthropic_api_url,
+        openai_api_url=args.openai_api_url,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+        environ=os.environ,
+    )
 
     config = ProxyConfig(
         host=_get_env_str("HEADROOM_HOST", args.host),
         port=_get_env_int("HEADROOM_PORT", args.port),
-        openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
-        anthropic_api_url=_get_env_str("ANTHROPIC_TARGET_API_URL", args.anthropic_api_url),
+        openai_api_url=provider_api_overrides.openai,
+        anthropic_api_url=provider_api_overrides.anthropic,
         # Backend settings
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),
