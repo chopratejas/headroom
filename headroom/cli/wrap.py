@@ -2439,6 +2439,13 @@ def copilot(
         headroom wrap copilot --provider-type openai --wire-api responses -- --model gpt-5.4
         headroom wrap copilot --subscription -- --model gpt-4.1
         headroom wrap copilot --no-context-tool -- --prompt "explain this file"
+
+    \b
+    Copilot hosted API (--subscription and the implicit OAuth path) routes to the
+    generic host https://api.githubcopilot.com, which serves the full model set.
+    Enterprise / data-residency accounts provisioned on a dedicated host pin it
+    explicitly with GITHUB_COPILOT_API_URL (the override flows through to upstream).
+    See TESTING-copilot-subscription.md for details.
     """
     copilot_bin = shutil.which("copilot")
     if not copilot_bin:
@@ -2534,6 +2541,15 @@ def copilot(
                 else "COPILOT_AUTH_MODE=github-oauth"
             ),
         ]
+        # Resolve the Copilot API host: an explicit GITHUB_COPILOT_API_URL wins,
+        # otherwise the generic public host (api.githubcopilot.com). This is the
+        # same policy for --subscription and the implicit OAuth path. The
+        # account-specific endpoints.api advertised by /copilot_internal/user is
+        # deliberately NOT used to route — it returns a segmented host (e.g.
+        # api.individual.githubcopilot.com) that does not serve newer models on
+        # the responses API (#610), and it is not the host the official Copilot
+        # client routes with. Accounts that require a dedicated host (enterprise /
+        # data residency) set GITHUB_COPILOT_API_URL explicitly.
         openai_api_url = resolve_copilot_api_url(client_bearer)
         env["GITHUB_COPILOT_API_URL"] = openai_api_url
         env["OPENAI_TARGET_API_URL"] = openai_api_url
