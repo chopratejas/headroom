@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _MODEL_DEFAULTS: list[tuple[str, str]] = [
     ("ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
     ("OPENAI_API_KEY", "gpt-4o"),
-    ("GEMINI_API_KEY", "gemini/gemini-2.0-flash"),
+    ("GEMINI_API_KEY", "gemini/gemini-flash-latest"),
 ]
 
 _MAX_DIGEST_TOKENS = 80_000  # Budget for the digest (leave room for prompt + output)
@@ -94,7 +94,7 @@ def _detect_default_model() -> str:
         "No LLM API key found. headroom learn needs one of:\n"
         "  export ANTHROPIC_API_KEY=sk-ant-...   → uses claude-sonnet-4-6\n"
         "  export OPENAI_API_KEY=sk-...          → uses gpt-4o\n"
-        "  export GEMINI_API_KEY=...             → uses gemini-2.0-flash\n"
+        "  export GEMINI_API_KEY=...             → uses gemini-flash-latest\n"
         "Or set HEADROOM_LEARN_CLI to a coding agent CLI (claude, gemini, codex).\n"
         "Or install one of those CLIs for auto-detection.\n"
         "Or specify a model directly: headroom learn --model <litellm-model-name>"

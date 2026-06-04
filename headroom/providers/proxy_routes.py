@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, cast
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response
@@ -51,8 +53,9 @@ def _select_passthrough_base_url(proxy: Any, headers: dict[str, str]) -> str:
 # bearer tokens (issue #478). Codex polls `/v1/models` every few seconds
 # to populate its model-picker UI, so the 403 storm is noisy and breaks
 # refresh. The fix: when Codex hits `/v1/models` under ChatGPT auth,
-# synthesize an OpenAI-compatible response from the known-supported
-# Codex/ChatGPT model set instead of forwarding to a 403.
+# fetch the Codex-specific registry first and synthesize an
+# OpenAI-compatible response from its slugs. If that registry is
+# unavailable, fall back to the known-supported static set.
 #
 # The list mirrors what Codex itself ships in its built-in model
 # registry (the same models its provider config exposes); it's the
@@ -68,10 +71,15 @@ _CHATGPT_AUTH_CODEX_MODELS: tuple[str, ...] = (
 )
 
 
-def _synthetic_models_list_response() -> Response:
-    """OpenAI-compatible `/v1/models` payload for Codex ChatGPT auth."""
-    import json
+def _codex_client_version(requested_client_version: str | None = None) -> str:
+    """Return the Codex client version to use for model-registry requests."""
+    if requested_client_version:
+        return requested_client_version
+    return "0.130.0"
 
+
+def _models_list_response(model_ids: tuple[str, ...]) -> Response:
+    """Build an OpenAI-compatible model-list response for Codex metadata callers."""
     payload = {
         "object": "list",
         "data": [
@@ -81,7 +89,7 @@ def _synthetic_models_list_response() -> Response:
                 "created": 0,
                 "owned_by": "openai",
             }
-            for model_id in _CHATGPT_AUTH_CODEX_MODELS
+            for model_id in model_ids
         ],
     }
     return Response(
@@ -91,10 +99,13 @@ def _synthetic_models_list_response() -> Response:
     )
 
 
+def _synthetic_models_list_response() -> Response:
+    """OpenAI-compatible `/v1/models` payload for Codex ChatGPT auth."""
+    return _models_list_response(_CHATGPT_AUTH_CODEX_MODELS)
+
+
 def _synthetic_model_get_response(model_id: str) -> Response:
     """OpenAI-compatible `/v1/models/{id}` payload."""
-    import json
-
     if model_id not in _CHATGPT_AUTH_CODEX_MODELS:
         return Response(
             content=json.dumps(
@@ -123,6 +134,125 @@ def _synthetic_model_get_response(model_id: str) -> Response:
     )
 
 
+def _normalize_codex_registry_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Prepare inbound ChatGPT auth headers for the Codex model registry."""
+    upstream_headers = dict(headers)
+    upstream_headers.pop("host", None)
+    account_id = (
+        upstream_headers.get("chatgpt-account-id")
+        or upstream_headers.get("ChatGPT-Account-ID")
+        or ""
+    )
+    if account_id:
+        upstream_headers["chatgpt-account-id"] = account_id
+        upstream_headers.pop("ChatGPT-Account-ID", None)
+    upstream_headers["accept"] = "application/json"
+    upstream_headers.pop("Accept", None)
+    return upstream_headers
+
+
+async def _fetch_chatgpt_codex_model_ids(
+    proxy: Any,
+    headers: dict[str, str],
+    requested_client_version: str | None,
+) -> tuple[str, ...] | None:
+    """Fetch Codex model slugs from ChatGPT, returning None when fallback should apply."""
+    client_version = _codex_client_version(requested_client_version)
+    upstream_headers = _normalize_codex_registry_headers(headers)
+    url = (
+        "https://chatgpt.com/backend-api/codex/models"
+        f"?client_version={quote(client_version, safe='')}"
+    )
+    try:
+        assert proxy.http_client is not None
+        resp = await proxy.http_client.get(
+            url,
+            headers=upstream_headers,
+            timeout=15.0,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                "Codex model registry fetch failed: HTTP %s: %s",
+                resp.status_code,
+                resp.text[:300],
+            )
+            return None
+
+        data = resp.json()
+        models_raw = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models_raw, list):
+            logger.warning("Codex model registry response did not contain models[]")
+            return None
+
+        model_ids = tuple(
+            slug
+            for entry in models_raw
+            if isinstance(entry, dict)
+            for slug in (entry.get("slug"),)
+            if isinstance(slug, str) and slug
+        )
+        if not model_ids:
+            logger.warning("Codex model registry returned no model slugs")
+            return None
+
+        logger.info("Fetched %d Codex models from upstream model registry", len(model_ids))
+        logger.debug("Fetched Codex model IDs from upstream model registry: %s", list(model_ids))
+        return model_ids
+    except Exception:
+        logger.exception("Codex model registry fetch failed")
+        return None
+
+
+async def _fetch_chatgpt_codex_models_response(
+    proxy: Any,
+    headers: dict[str, str],
+    requested_client_version: str | None,
+) -> Response | None:
+    """Build a dynamic `/v1/models` response from the Codex registry when available."""
+    model_ids = await _fetch_chatgpt_codex_model_ids(proxy, headers, requested_client_version)
+    if model_ids is None:
+        return None
+    return _models_list_response(model_ids)
+
+
+async def _fetch_chatgpt_codex_model_get_response(
+    proxy: Any,
+    headers: dict[str, str],
+    model_id: str,
+    requested_client_version: str | None,
+) -> Response | None:
+    """Build a dynamic `/v1/models/{id}` response from the Codex registry when available."""
+    model_ids = await _fetch_chatgpt_codex_model_ids(proxy, headers, requested_client_version)
+    if model_ids is None:
+        return None
+    if model_id in model_ids:
+        return Response(
+            content=json.dumps(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "openai",
+                }
+            ),
+            status_code=200,
+            headers={"content-type": "application/json"},
+        )
+    return Response(
+        content=json.dumps(
+            {
+                "error": {
+                    "message": f"Model {model_id!r} not available under ChatGPT auth",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                }
+            }
+        ),
+        status_code=404,
+        headers={"content-type": "application/json"},
+    )
+
+
 async def _handle_chatgpt_model_metadata(
     proxy: Any,
     request: Request,
@@ -134,13 +264,28 @@ async def _handle_chatgpt_model_metadata(
     if not is_chatgpt_auth:
         return None
 
-    # Short-circuit `/backend-api/models[/{id}]` — chatgpt.com returns
-    # 403 here for OAuth tokens; synthesize a Codex-compatible response
-    # locally so the model-picker refresh succeeds (issue #478).
+    # Avoid generic `/backend-api/models[/{id}]`, which returns 403 for
+    # OAuth tokens, but prefer the Codex-specific registry when available.
+    requested_client_version = request.query_params.get("client_version")
     if upstream_path == "/backend-api/models":
+        upstream_response = await _fetch_chatgpt_codex_models_response(
+            proxy,
+            headers,
+            requested_client_version,
+        )
+        if upstream_response is not None:
+            return upstream_response
         return _synthetic_models_list_response()
     if upstream_path.startswith("/backend-api/models/"):
         model_id = upstream_path[len("/backend-api/models/") :]
+        upstream_response = await _fetch_chatgpt_codex_model_get_response(
+            proxy,
+            headers,
+            model_id,
+            requested_client_version,
+        )
+        if upstream_response is not None:
+            return upstream_response
         return _synthetic_model_get_response(model_id)
 
     url = f"https://chatgpt.com{upstream_path}"

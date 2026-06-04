@@ -16,7 +16,6 @@
   <a href="https://pypi.org/project/headroom-ai/"><img src="https://img.shields.io/pypi/v/headroom-ai.svg" alt="PyPI"></a>
   <a href="https://www.npmjs.com/package/headroom-ai"><img src="https://img.shields.io/npm/v/headroom-ai.svg" alt="npm"></a>
   <a href="https://huggingface.co/chopratejas/kompress-base"><img src="https://img.shields.io/badge/model-Kompress--base-yellow.svg" alt="Model: Kompress-base"></a>
-  <a href="https://headroomlabs.ai/dashboard"><img src="https://img.shields.io/badge/tokens%20saved-60B%2B-2ea44f" alt="Tokens saved: 60B+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <a href="https://headroom-docs.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Docs"></a>
 </p>
@@ -35,6 +34,7 @@
 </sub></p>
 
 ---
+<a href="https://trendshift.io/repositories/20881" target="_blank"><img src="https://trendshift.io/api/badge/repositories/20881" alt="chopratejas%2Fheadroom | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 > Headroom compresses everything your AI agent reads — tool outputs, logs, RAG chunks, files, and conversation history — before it reaches the LLM. Same answers, fraction of the tokens.
 
@@ -62,13 +62,13 @@
         ▼
     ┌────────────────────────────────────────────────────┐
     │  Headroom   (runs locally — your data stays here)  │
-    │  ───────────────────────────────────────────────   │
-    │  CacheAligner  →  ContentRouter  →  CCR             │
-    │                    ├─ SmartCrusher   (JSON)         │
-    │                    ├─ CodeCompressor (AST)          │
-    │                    └─ Kompress-base  (text, HF)     │
-    │                                                     │
-    │  Cross-agent memory  ·  headroom learn  ·  MCP      │
+    │  ────────────────────────────────────────────────  │
+    │  CacheAligner  →  ContentRouter  →  CCR            │
+    │                    ├─ SmartCrusher   (JSON)        │
+    │                    ├─ CodeCompressor (AST)         │
+    │                    └─ Kompress-base  (text, HF)    │
+    │                                                    │
+    │  Cross-agent memory  ·  headroom learn  ·  MCP     │
     └────────────────────────────────────────────────────┘
         │   compressed prompt  +  retrieval tool
         ▼
@@ -95,7 +95,7 @@ headroom proxy --port 8787              # drop-in proxy, zero code changes
 # or: from headroom import compress      # inline library
 
 # 3 — See the savings
-headroom stats
+headroom perf
 ```
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[agno]`, `[langchain]`, `[evals]`. Requires **Python 3.10+**.
@@ -122,13 +122,6 @@ Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[agno]`, `[langchain]`, `[evals]`.
 
 Reproduce: `python -m headroom.evals suite --tier 1` · [Full benchmarks & methodology](https://headroom-docs.vercel.app/docs/benchmarks)
 
-<p align="center">
-  <a href="https://headroomlabs.ai/dashboard">
-    <img src="headroom-savings.png" alt="60B+ tokens saved — community leaderboard" width="820">
-  </a>
-  <br/><b><a href="https://headroomlabs.ai/dashboard">60B+ tokens saved by the community — live leaderboard →</a></b>
-</p>
-
 ## Agent compatibility matrix
 
 | Agent       | `headroom wrap` | Notes                            |
@@ -141,6 +134,18 @@ Reproduce: `python -m headroom.evals suite --tier 1` · [Full benchmarks & metho
 | OpenClaw    | ●               | installs as ContextEngine plugin |
 
 Any OpenAI-compatible client works via `headroom proxy`. MCP-native: `headroom mcp install`.
+
+### GitHub Copilot CLI subscription mode
+
+Headroom can route GitHub Copilot CLI subscription traffic through the local proxy:
+
+```bash
+headroom wrap copilot --subscription -- --model gpt-4o
+```
+
+This lets Headroom intercept OpenAI-compatible Copilot CLI requests and apply the same proxy compression pipeline before forwarding to GitHub Copilot's hosted API. The wrapper resolves the account-specific Copilot API endpoint and prints it as `COPILOT_PROVIDER_API_URL=...` during launch.
+
+Platform support note: macOS auth reuse via Copilot CLI Keychain storage has been smoke-tested. Windows Credential Manager, Linux Secret Service / `secret-tool`, and Docker/CI token-injection paths are implemented or planned as auth-discovery paths, but still need real OS validation before they should be considered fully vetted. For Docker and CI, prefer passing an explicit `GITHUB_COPILOT_TOKEN` or `GITHUB_COPILOT_GITHUB_TOKEN` rather than relying on host keychain access.
 
 ## When to use · When to skip
 
@@ -270,7 +275,6 @@ Devcontainers in `.devcontainer/` (default + `memory-stack` with Qdrant & Neo4j)
 
 ## Community
 
-- **[Live leaderboard](https://headroomlabs.ai/dashboard)** — 60B+ tokens saved and counting.
 - **[Discord](https://discord.gg/yRmaUNpsPJ)** — questions, feedback, war stories.
 - **[Kompress-base on HuggingFace](https://huggingface.co/chopratejas/kompress-base)** — the model behind our text compression.
 

@@ -339,14 +339,99 @@ def test_gemini_batch_embed_contents_passthrough_uses_gemini_target(monkeypatch)
     ]
 
 
-def test_v1_models_returns_synthetic_list_under_chatgpt_auth() -> None:
+def test_v1_models_fetches_codex_registry_under_chatgpt_auth(monkeypatch) -> None:
+    proxy_routes = importlib.import_module("headroom.providers.proxy_routes")
+    debug_messages: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        proxy_routes.logger,
+        "debug",
+        lambda message, *args: debug_messages.append((message, args)),
+    )
+
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append(("GET", url, dict(kwargs.get("headers", {}))))
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"slug": "gpt-5.5"},
+                        {"slug": "gpt-5.3-codex-spark"},
+                    ]
+                },
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    with TestClient(_app()) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
+        response = client.get(
+            "/v1/models?client_version=0.135.0",
+            headers={
+                "authorization": "Bearer eyJ-chatgpt-oauth-token",
+                "chatgpt-account-id": "test-account",
+                "originator": "Codex Desktop",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "object": "list",
+        "data": [
+            {
+                "id": "gpt-5.5",
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            },
+            {
+                "id": "gpt-5.3-codex-spark",
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            },
+        ],
+    }
+    assert len(fake_http_client.calls) == 1
+    method, url, headers = fake_http_client.calls[0]
+    assert method == "GET"
+    assert url == "https://chatgpt.com/backend-api/codex/models?client_version=0.135.0"
+    assert headers["authorization"] == "Bearer eyJ-chatgpt-oauth-token"
+    assert headers["chatgpt-account-id"] == "test-account"
+    assert headers["originator"] == "Codex Desktop"
+    assert headers["accept"] == "application/json"
+    assert "Accept" not in headers
+    assert debug_messages == [
+        (
+            "Fetched Codex model IDs from upstream model registry: %s",
+            (["gpt-5.5", "gpt-5.3-codex-spark"],),
+        ),
+    ]
+
+
+def test_v1_models_falls_back_to_synthetic_list_under_chatgpt_auth(monkeypatch) -> None:
     """Issue #478: under Codex ChatGPT-subscription OAuth, the proxy
     must NOT forward `/v1/models` to chatgpt.com/backend-api/models
-    (which returns 403). Synthesize an OpenAI-compatible response with
-    the known-supported Codex/ChatGPT model set instead, so Codex's
-    model-picker refresh succeeds.
+    (which returns 403). If the Codex-specific registry also fails,
+    synthesize an OpenAI-compatible response with the known-supported
+    Codex/ChatGPT model set instead, so Codex's model-picker refresh succeeds.
     """
+
+    class FakeAsyncClient:
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            return httpx.Response(403, json={"error": "forbidden"})
+
+        async def aclose(self) -> None:
+            return None
+
     with TestClient(_app()) as client:
+        client.app.state.proxy.http_client = FakeAsyncClient()
         # ChatGPT auth detected via Bearer + ChatGPT account header
         # (mirrors what Codex Desktop sends).
         response = client.get(
@@ -370,13 +455,30 @@ def test_v1_models_returns_synthetic_list_under_chatgpt_auth() -> None:
         assert entry["owned_by"] == "openai"
 
 
-def test_v1_models_get_single_synthetic_under_chatgpt_auth() -> None:
+def test_v1_models_get_single_dynamic_under_chatgpt_auth() -> None:
     """The single-model variant (`/v1/models/{id}`) is also called by
-    Codex for some flows. Must return a synthetic OpenAI-compatible
-    payload for known models, 404 for unknown."""
+    Codex for some flows. It should use the Codex registry first so
+    dynamically exposed model slugs validate consistently."""
+
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return httpx.Response(
+                200,
+                json={"models": [{"slug": "gpt-5.5"}, {"slug": "gpt-5.3-codex-spark"}]},
+            )
+
+        async def aclose(self) -> None:
+            return None
+
     with TestClient(_app()) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
         ok = client.get(
-            "/v1/models/gpt-5.5",
+            "/v1/models/gpt-5.3-codex-spark",
             headers={
                 "authorization": "Bearer eyJ-chatgpt-oauth-token",
                 "chatgpt-account-id": "test-account",
@@ -391,12 +493,13 @@ def test_v1_models_get_single_synthetic_under_chatgpt_auth() -> None:
         )
     assert ok.status_code == 200
     assert ok.json() == {
-        "id": "gpt-5.5",
+        "id": "gpt-5.3-codex-spark",
         "object": "model",
         "created": 0,
         "owned_by": "openai",
     }
     assert unknown.status_code == 404
+    assert fake_http_client.calls == 2
 
 
 def test_v1_models_still_forwards_under_non_chatgpt_auth() -> None:
