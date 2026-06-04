@@ -1051,7 +1051,11 @@ class AnthropicHandlerMixin:
                                     request_id=request_id,
                                     compression_policy=compression_policy,
                                 ),
-                                timeout=getattr(self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS),
+                                timeout=getattr(
+                                    self.config,
+                                    "compression_timeout_seconds",
+                                    COMPRESSION_TIMEOUT_SECONDS,
+                                ),
                             )
 
                         # Cache newly compressed messages (index-aligned diff)
@@ -1091,7 +1095,11 @@ class AnthropicHandlerMixin:
                                     request_id=request_id,
                                     compression_policy=compression_policy,
                                 ),
-                                timeout=getattr(self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS),
+                                timeout=getattr(
+                                    self.config,
+                                    "compression_timeout_seconds",
+                                    COMPRESSION_TIMEOUT_SECONDS,
+                                ),
                             )
 
                         if result.messages != messages:
@@ -1122,7 +1130,11 @@ class AnthropicHandlerMixin:
                                         request_id=request_id,
                                         compression_policy=compression_policy,
                                     ),
-                                    timeout=getattr(self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS),
+                                    timeout=getattr(
+                                        self.config,
+                                        "compression_timeout_seconds",
+                                        COMPRESSION_TIMEOUT_SECONDS,
+                                    ),
                                 )
                                 optimized_messages = stable_forwarded_prefix + result.messages
                                 transforms_applied = result.transforms_applied

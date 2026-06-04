@@ -778,6 +778,7 @@ def compression_timeout_seconds_from_env() -> float:
     """Resolve the compression timeout from the process environment."""
     return parse_compression_timeout_seconds(os.environ.get(COMPRESSION_TIMEOUT_ENV))
 
+
 # Maximum compression cache sessions (prevents unbounded memory growth)
 MAX_COMPRESSION_CACHE_SESSIONS = 500
 

@@ -1091,7 +1091,9 @@ class OpenAIHandlerMixin:
 
         result = await self._run_compression_in_executor(
             _compress,
-            timeout=getattr(self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS),
+            timeout=getattr(
+                self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS
+            ),
         )
         if len(result) == 8:
             return (*result, timing)
@@ -1477,7 +1479,9 @@ class OpenAIHandlerMixin:
                             biases=_hook_biases,
                             compression_policy=compression_policy,
                         ),
-                        timeout=getattr(self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS),
+                        timeout=getattr(
+                            self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS
+                        ),
                     )
 
                     if result.messages != working_messages:
@@ -1501,7 +1505,9 @@ class OpenAIHandlerMixin:
                             biases=_hook_biases,
                             compression_policy=compression_policy,
                         ),
-                        timeout=getattr(self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS),
+                        timeout=getattr(
+                            self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS
+                        ),
                     )
 
                     if result.messages != messages:

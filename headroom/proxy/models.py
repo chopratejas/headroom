@@ -297,9 +297,7 @@ class ProxyConfig:
     # cannot be preempted once it starts running Rust/Python compression work,
     # but the request awaiter stops waiting after this deadline and applies
     # the compression-failure policy. Env: ``HEADROOM_COMPRESSION_TIMEOUT_SECONDS``.
-    compression_timeout_seconds: float = field(
-        default_factory=compression_timeout_seconds_from_env
-    )
+    compression_timeout_seconds: float = field(default_factory=compression_timeout_seconds_from_env)
 
     # Bound the dedicated compression threadpool. CPU-bound Rust work runs
     # here; the pool is separate from asyncio's default executor so other

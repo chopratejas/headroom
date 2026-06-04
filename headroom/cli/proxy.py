@@ -518,8 +518,8 @@ def proxy(
     """
     # Import here to avoid slow startup
     try:
-        from headroom.proxy.server import ProxyConfig, run_server
         from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
+        from headroom.proxy.server import ProxyConfig, run_server
     except ImportError as e:
         click.echo("Error: Proxy dependencies not installed. Run: pip install headroom[proxy]")
         click.echo(f"Details: {e}")
