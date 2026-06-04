@@ -101,3 +101,35 @@ def test_proxy_server_import_skips_litellm_backend() -> None:
     assert data["litellm_backend_loaded"] is False
     assert data["anyllm_backend_loaded"] is False
     assert data["litellm_loaded"] is False
+
+
+def test_proxy_import_stays_lazy() -> None:
+    script = textwrap.dedent(
+        """
+        import json
+        import sys
+
+        import headroom.proxy
+
+        print(json.dumps({
+            "server_loaded": "headroom.proxy.server" in sys.modules,
+        }))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    data = json.loads(result.stdout.strip())
+    assert data["server_loaded"] is False
+
+
+def test_proxy_lazy_exports_resolve() -> None:
+    from headroom.proxy import create_app, run_server
+    assert create_app is not None
+    assert run_server is not None
+
