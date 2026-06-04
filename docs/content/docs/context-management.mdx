@@ -74,7 +74,7 @@ The last N user/assistant turns are always preserved, ensuring the model has imm
 
 ## Configuration
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 ```ts twoslash
 import { compress } from "headroom-ai";
@@ -171,6 +171,37 @@ response = client.chat.completions.create(
     headroom_output_buffer_tokens=8000,  # More room for long responses
     headroom_keep_turns=5,               # Protect last 5 turns
 )
+```
+</Tab>
+<Tab value="Go">
+```go
+import "github.com/headroomlabs/headroom/sdk/golang"
+
+cfg := &headroom.Config{
+    IntelligentContext: &headroom.IntelligentContextConfig{
+        Enabled:              headroom.Bool(true),
+        KeepSystem:           headroom.Bool(true),
+        KeepLastTurns:        headroom.Int(3),
+        OutputBufferTokens:   headroom.Int(4000),
+        UseImportanceScoring: headroom.Bool(true),
+        ScoringWeights: &headroom.ScoringWeights{
+            Recency:            headroom.Float(0.30),
+            SemanticSimilarity: headroom.Float(0.25),
+            TOINImportance:     headroom.Float(0.20),
+            ErrorIndicator:     headroom.Float(0.10),
+            ForwardReference:   headroom.Float(0.10),
+            TokenDensity:       headroom.Float(0.05),
+        },
+    },
+}
+client := headroom.NewClient(headroom.WithConfig(cfg))
+
+// Per-request override via HeadroomParams:
+out, _ := client.ChatCompletionsCreate(ctx, params, &headroom.HeadroomParams{
+    OutputBufferTokens: 8000,
+    KeepTurns:          5,
+})
+_ = out
 ```
 </Tab>
 </Tabs>

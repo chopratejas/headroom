@@ -30,7 +30,7 @@ The result: a 1,000-item array becomes ~50 items with all the information the LL
 
 ## Quick Start
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 ```ts twoslash
 import { compress } from "headroom-ai";
@@ -64,11 +64,33 @@ tool_output = {"results": ["...1000 items..."]}
 compressed = crusher.crush(tool_output, query="user's question")
 ```
 </Tab>
+<Tab value="Go">
+```go
+import (
+    "encoding/json"
+    headroom "github.com/headroomlabs/headroom/sdk/golang"
+)
+
+items := make([]map[string]any, 1000)
+for i := range items { items[i] = map[string]any{"status": "ok"} }
+body, _ := json.Marshal(map[string]any{"results": items})
+
+messages := []headroom.Message{
+    {Role: "system", Content: headroom.TextContent("You are a helpful assistant.")},
+    {Role: "user", Content: headroom.TextContent("Find errors in the last 24 hours")},
+    {Role: "tool", ToolCallID: "call_1", Content: headroom.TextContent(string(body))},
+}
+
+result, _ := client.Compress(ctx, messages, headroom.CompressOptions{})
+fmt.Printf("Tokens saved: %d\n", result.TokensSaved)
+// SmartCrusher keeps errors, anomalies, and relevant items.
+```
+</Tab>
 </Tabs>
 
 ## Configuration
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 ```ts twoslash
 import { compress } from "headroom-ai";
@@ -99,6 +121,29 @@ config = SmartCrusherConfig(
 
 crusher = SmartCrusher(config)
 compressed = crusher.crush(tool_output, query="find payment failures")
+```
+</Tab>
+<Tab value="Go">
+```go
+cfg := &headroom.Config{
+    SmartCrusher: &headroom.SmartCrusherConfig{
+        Enabled:             headroom.Bool(true),
+        MinTokensToCrush:    headroom.Int(200),
+        MaxItemsAfterCrush:  headroom.Int(50),
+        VarianceThreshold:   headroom.Float(2.0),
+        DedupIdenticalItems: headroom.Bool(true),
+        Relevance: &headroom.RelevanceScorerConfig{
+            Tier:               headroom.TierHybrid,
+            RelevanceThreshold: headroom.Float(0.3),
+        },
+    },
+}
+client := headroom.NewClient(headroom.WithConfig(cfg))
+result, _ := client.Compress(ctx, messages, headroom.CompressOptions{
+    Model:       "gpt-4o",
+    TokenBudget: 10000,
+})
+fmt.Println("Transforms:", result.TransformsApplied)
 ```
 </Tab>
 </Tabs>

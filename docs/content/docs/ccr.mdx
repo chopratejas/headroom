@@ -113,7 +113,7 @@ This runs a BM25 search over the cached items, returning only the relevant subse
 
 CCR works automatically through the proxy, but you can also retrieve cached data programmatically:
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 ```ts twoslash
 import { compress } from "headroom-ai";
@@ -158,6 +158,32 @@ response = client.chat.completions.create(
 
 # CCR is enabled by default in the current proxy path. Use --no-optimize for
 # full passthrough behavior.
+```
+</Tab>
+<Tab value="Go">
+```go
+import "github.com/headroomlabs/headroom/sdk/golang"
+
+client := headroom.NewClient()
+
+// CCR happens server-side automatically. To retrieve a cached payload by
+// hash (returned in result.CCRHashes when present):
+result, _ := client.Compress(ctx, msgs, headroom.CompressOptions{Model: "gpt-4o"})
+for _, hash := range result.CCRHashes {
+    original, _ := client.Retrieve(ctx, hash, "" /* optional BM25 query */)
+    fmt.Printf("%d original tokens for tool %q\n", original.OriginalTokens, original.ToolName)
+}
+
+// CCR config knobs:
+cfg := &headroom.Config{CCR: &headroom.CCRConfig{
+    Enabled:               headroom.Bool(true),
+    InjectTool:            headroom.Bool(true),
+    InjectRetrievalMarker: headroom.Bool(true),
+    FeedbackEnabled:       headroom.Bool(true),
+    StoreMaxEntries:       headroom.Int(1000),
+    StoreTTLSeconds:       headroom.Int(3600),
+}}
+client = headroom.NewClient(headroom.WithConfig(cfg))
 ```
 </Tab>
 </Tabs>

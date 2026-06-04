@@ -64,7 +64,7 @@ Headroom can manage CachedContent lifecycle automatically, creating and refreshi
 
 ## Configuration
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 ```ts twoslash
 import { compress } from "headroom-ai";
@@ -144,6 +144,25 @@ client = HeadroomClient(
     provider=GoogleProvider(enable_context_caching=True),
     enable_cache_optimizer=True,
 )
+```
+</Tab>
+<Tab value="Go">
+```go
+import "github.com/headroomlabs/headroom/sdk/golang"
+
+cfg := &headroom.Config{
+    CacheAligner: &headroom.CacheAlignerConfig{
+        Enabled:             headroom.Bool(true),
+        UseDynamicDetector:  headroom.Bool(true),
+        NormalizeWhitespace: headroom.Bool(true),
+    },
+    CacheOptimizer: &headroom.CacheOptimizerConfig{
+        Enabled:            headroom.Bool(true),
+        AutoDetectProvider: headroom.Bool(true),
+        MinCacheableTokens: headroom.Int(1024),
+    },
+}
+client := headroom.NewClient(headroom.WithConfig(cfg))
 ```
 </Tab>
 </Tabs>

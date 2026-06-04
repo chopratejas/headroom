@@ -11,7 +11,7 @@ Complete API reference for the Headroom Python and TypeScript SDKs.
 
 The main entry point for the Headroom SDK.
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -64,13 +64,45 @@ client = HeadroomClient(
 ```
 
 </Tab>
+<Tab value="Go">
+
+**Functional options** (all optional):
+
+| Option | Type | Description |
+|---|---|---|
+| `WithBaseURL(string)` | `Option` | Proxy URL (default `http://localhost:8787`) |
+| `WithAPIKey(string)` | `Option` | Headroom Cloud API key |
+| `WithProviderAPIKey(string)` | `Option` | Upstream provider key for chat/messages passthrough |
+| `WithTimeout(time.Duration)` | `Option` | Request timeout (default 30s) |
+| `WithRetries(int)` | `Option` | Retry attempts on 5xx (default 1) |
+| `WithFallback(bool)` | `Option` | Return original messages on failure (default true) |
+| `WithHTTPClient(*http.Client)` | `Option` | Custom HTTP client |
+| `WithConfig(*Config)` | `Option` | Default `Config` for compress requests |
+| `WithDefaultMode(HeadroomMode)` | `Option` | Default mode for passthrough requests |
+
+```go
+import (
+    "time"
+    headroom "github.com/headroomlabs/headroom/sdk/golang"
+)
+
+client := headroom.NewClient(
+    headroom.WithBaseURL("http://localhost:8787"),
+    headroom.WithAPIKey("your-api-key"),
+    headroom.WithTimeout(30*time.Second),
+    headroom.WithFallback(true),
+    headroom.WithRetries(2),
+)
+```
+
+</Tab>
 </Tabs>
 
 ### chat.completions.create()
 
 Create a chat completion with optional optimization.
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 The TypeScript SDK uses `compress()` to optimize messages before sending them to your LLM client:
@@ -109,6 +141,34 @@ response = client.chat.completions.create(
         "important_tool": {"skip_compression": True},
     },
 )
+```
+
+</Tab>
+<Tab value="Go">
+
+`Client.ChatCompletionsCreate(ctx, params, *HeadroomParams)` posts to
+`/v1/chat/completions`. `HeadroomParams` carries headroom_* overrides:
+
+| Field | Type | Description |
+|---|---|---|
+| `Mode` | `HeadroomMode` | Per-request mode override |
+| `CachePrefixTokens` | `int` | Override prefix-cache target |
+| `OutputBufferTokens` | `int` | Reserved output buffer |
+| `KeepTurns` | `int` | Last-N turns to protect |
+| `ToolProfiles` | `map[string]map[string]any` | Per-tool overrides |
+
+```go
+out, err := client.ChatCompletionsCreate(ctx, map[string]any{
+    "model":    "gpt-4o",
+    "messages": messages,
+}, &headroom.HeadroomParams{
+    Mode:      headroom.ModeOptimize,
+    KeepTurns: 5,
+    ToolProfiles: map[string]map[string]any{
+        "important_tool": {"skip_compression": true},
+    },
+})
+_ = out; _ = err
 ```
 
 </Tab>
@@ -209,7 +269,7 @@ if not result["valid"]:
 
 ### SmartCrusherConfig
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -259,11 +319,30 @@ config = SmartCrusherConfig(
 ```
 
 </Tab>
+<Tab value="Go">
+
+```go
+import "github.com/headroomlabs/headroom/sdk/golang"
+
+config := &headroom.SmartCrusherConfig{
+    Enabled:             headroom.Bool(true),
+    MinTokensToCrush:    headroom.Int(200),
+    MaxItemsAfterCrush:  headroom.Int(50),
+    VarianceThreshold:   headroom.Float(2.0),
+    DedupIdenticalItems: headroom.Bool(true),
+    Relevance: &headroom.RelevanceScorerConfig{
+        Tier:               headroom.TierHybrid,
+        RelevanceThreshold: headroom.Float(0.3),
+    },
+}
+```
+
+</Tab>
 </Tabs>
 
 ### CacheAlignerConfig
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -301,11 +380,24 @@ config = CacheAlignerConfig(
 ```
 
 </Tab>
+<Tab value="Go">
+
+```go
+config := &headroom.CacheAlignerConfig{
+    Enabled:             headroom.Bool(true),
+    UseDynamicDetector:  headroom.Bool(true),
+    NormalizeWhitespace: headroom.Bool(true),
+    CollapseBlankLines:  headroom.Bool(true),
+    EntropyThreshold:    headroom.Float(3.5),
+}
+```
+
+</Tab>
 </Tabs>
 
 ### RollingWindowConfig
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -338,11 +430,23 @@ config = RollingWindowConfig(
 ```
 
 </Tab>
+<Tab value="Go">
+
+```go
+config := &headroom.RollingWindowConfig{
+    Enabled:            headroom.Bool(true),
+    KeepSystem:         headroom.Bool(true),
+    KeepLastTurns:      headroom.Int(5),
+    OutputBufferTokens: headroom.Int(4000),
+}
+```
+
+</Tab>
 </Tabs>
 
 ### IntelligentContextConfig
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -392,11 +496,27 @@ config = IntelligentContextConfig(
 ```
 
 </Tab>
+<Tab value="Go">
+
+```go
+config := &headroom.IntelligentContextConfig{
+    Enabled:              headroom.Bool(true),
+    KeepSystem:           headroom.Bool(true),
+    KeepLastTurns:        headroom.Int(2),
+    OutputBufferTokens:   headroom.Int(4000),
+    UseImportanceScoring: headroom.Bool(true),
+    TOINIntegration:      headroom.Bool(true),
+    RecencyDecayRate:     headroom.Float(0.1),
+    CompressThreshold:    headroom.Float(0.1),
+}
+```
+
+</Tab>
 </Tabs>
 
 ### ScoringWeights
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -423,11 +543,25 @@ config = IntelligentContextConfig(
 Weights are automatically normalized to sum to 1.0.
 
 </Tab>
+<Tab value="Go">
+
+```go
+weights := &headroom.ScoringWeights{
+    Recency:            headroom.Float(0.20),
+    SemanticSimilarity: headroom.Float(0.20),
+    TOINImportance:     headroom.Float(0.25),
+    ErrorIndicator:     headroom.Float(0.15),
+    ForwardReference:   headroom.Float(0.15),
+    TokenDensity:       headroom.Float(0.05),
+}
+```
+
+</Tab>
 </Tabs>
 
 ### HeadroomConfig
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -461,11 +595,31 @@ config.rolling_window.preserve_recent_turns = 3
 ```
 
 </Tab>
+<Tab value="Go">
+
+`headroom.Config` is the top-level container; pass it via `WithConfig`:
+
+```go
+cfg := &headroom.Config{
+    DefaultMode: headroom.ModeOptimize,
+    SmartCrusher: &headroom.SmartCrusherConfig{
+        Enabled:          headroom.Bool(true),
+        MinTokensToCrush: headroom.Int(100),
+    },
+    CacheAligner:   &headroom.CacheAlignerConfig{Enabled: headroom.Bool(true)},
+    RollingWindow:  &headroom.RollingWindowConfig{KeepLastTurns: headroom.Int(3)},
+    CCR:            &headroom.CCRConfig{Enabled: headroom.Bool(true)},
+    CacheOptimizer: &headroom.CacheOptimizerConfig{AutoDetectProvider: headroom.Bool(true)},
+}
+client := headroom.NewClient(headroom.WithConfig(cfg))
+```
+
+</Tab>
 </Tabs>
 
 ### RelevanceScorerConfig
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 <TypeTable type={{
@@ -486,6 +640,18 @@ config.rolling_window.preserve_recent_turns = 3
   embedding_model: { type: 'str | None', description: 'Model name for embedding scorer', default: 'None' },
   hybrid_alpha: { type: 'float', description: 'Weight for hybrid scoring (0=embedding, 1=bm25)', default: '0.5' },
 }} />
+
+</Tab>
+<Tab value="Go">
+
+```go
+config := &headroom.RelevanceScorerConfig{
+    Tier:               headroom.TierHybrid, // TierBM25 | TierEmbedding | TierHybrid
+    HybridAlpha:        headroom.Float(0.5),
+    AdaptiveAlpha:      headroom.Bool(true),
+    RelevanceThreshold: headroom.Float(0.25),
+}
+```
 
 </Tab>
 </Tabs>
@@ -703,7 +869,7 @@ result = pipeline.transform(messages)
 
 ## Errors
 
-<Tabs groupId="lang" items={['TypeScript', 'Python']}>
+<Tabs groupId="lang" items={['TypeScript', 'Python', 'Go']}>
 <Tab value="TypeScript">
 
 | Exception | Meaning |
@@ -735,6 +901,34 @@ Use `mapProxyError(status, type, message)` to convert proxy error responses to t
 | `ValidationError` | Setup validation failed |
 
 All exceptions include a `details` dict with additional context.
+
+</Tab>
+<Tab value="Go">
+
+| Sentinel | `Kind` | Meaning |
+|---|---|---|
+| `headroom.ErrConnection` | `connection` | Cannot reach proxy |
+| `headroom.ErrAuth` | `auth` | 401 from proxy |
+| `headroom.ErrCompress` | `compress` | Wrapped in `*CompressError` with `StatusCode`/`ErrorType` |
+| `headroom.ErrConfiguration` | `configuration` | Invalid configuration |
+| `headroom.ErrProvider` | `provider` | Provider issues |
+| `headroom.ErrStorage` | `storage` | Storage failures |
+| `headroom.ErrTokenization` | `tokenization` | Token counting failed |
+| `headroom.ErrCache` | `cache` | Cache operations failed |
+| `headroom.ErrValidation` | `validation` | Validation failures |
+| `headroom.ErrTransform` | `transform` | Transform execution failed |
+
+Use `errors.Is(err, headroom.ErrXxx)` to match by kind, or
+`headroom.AsCompressError(err)` to get HTTP status and error type.
+
+```go
+import "errors"
+
+if errors.Is(err, headroom.ErrAuth) { /* … */ }
+if ce, ok := headroom.AsCompressError(err); ok {
+    log.Printf("HTTP %d type=%s", ce.StatusCode, ce.ErrorType)
+}
+```
 
 </Tab>
 </Tabs>
