@@ -28,9 +28,9 @@ def hf_hub_download_local_first(repo_id: str, filename: str) -> str:
     from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
     try:
-        return hf_hub_download(repo_id, filename, local_files_only=True)
+        return str(hf_hub_download(repo_id, filename, local_files_only=True))
     except (LocalEntryNotFoundError, EntryNotFoundError, OSError):
-        return hf_hub_download(repo_id, filename)
+        return str(hf_hub_download(repo_id, filename))
 
 
 def create_cpu_session_options(
