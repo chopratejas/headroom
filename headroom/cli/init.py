@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
@@ -16,11 +17,17 @@ from typing import Any
 import click
 
 from headroom.install.models import ConfigScope, InstallPreset, RuntimeKind, SupervisorKind
-from headroom.install.paths import claude_settings_path, codex_config_path, validate_profile_name
+from headroom.install.paths import (
+    claude_settings_path,
+    codex_config_path,
+    profile_root,
+    validate_profile_name,
+)
 from headroom.install.planner import build_manifest
 from headroom.install.providers import _apply_unix_env_scope, _apply_windows_env_scope
 from headroom.install.runtime import (
     resolve_headroom_command,
+    runtime_status,
     start_detached_agent,
     start_persistent_docker,
     stop_runtime,
@@ -46,6 +53,8 @@ _CODEX_FEATURE_MARKER_END = "# --- end Headroom init features ---"
 _SUPPORTED_TARGETS = ("claude", "copilot", "codex", "openclaw")
 _LOCAL_TARGETS = {"claude", "codex"}
 _GLOBAL_TARGETS = {"claude", "copilot", "codex", "openclaw"}
+
+_START_LOCK_TTL_SECONDS = 120
 
 
 def _command_string(parts: list[str]) -> str:
@@ -546,13 +555,67 @@ def _install_copilot_marketplace() -> None:
     )
 
 
+def _profile_start_lock_path(profile: str) -> Path:
+    return profile_root(profile) / "startup.lock"
+
+
+def _acquire_profile_start_lock(profile: str) -> int | None:
+    path = _profile_start_lock_path(profile)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            stale = time.time() - path.stat().st_mtime > _START_LOCK_TTL_SECONDS
+        except OSError:
+            return None
+        if not stale:
+            return None
+        try:
+            path.unlink()
+        except OSError:
+            return None
+        try:
+            return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return None
+
+
+def _release_profile_start_lock(profile: str, fd: int) -> None:
+    os.close(fd)
+    try:
+        _profile_start_lock_path(profile).unlink()
+    except OSError:
+        pass
+
+
+def _runtime_is_running(manifest: Any) -> bool:
+    try:
+        return runtime_status(manifest) == "running"
+    except Exception:
+        return False
+
+
 def _ensure_profile_running(profile: str) -> None:
     manifest = load_manifest(profile)
     if manifest is None:
         return
     if wait_ready(manifest, timeout_seconds=1):
         return
+    if _runtime_is_running(manifest):
+        wait_ready(manifest, timeout_seconds=15)
+        return
+    lock_fd = _acquire_profile_start_lock(manifest.profile)
+    if lock_fd is None:
+        wait_ready(manifest, timeout_seconds=15)
+        return
     try:
+        os.write(lock_fd, str(os.getpid()).encode())
+        if wait_ready(manifest, timeout_seconds=1):
+            return
+        if _runtime_is_running(manifest):
+            wait_ready(manifest, timeout_seconds=15)
+            return
         if manifest.preset == InstallPreset.PERSISTENT_DOCKER.value:
             start_persistent_docker(manifest)
         elif manifest.supervisor_kind == SupervisorKind.SERVICE.value:
@@ -562,6 +625,8 @@ def _ensure_profile_running(profile: str) -> None:
         wait_ready(manifest, timeout_seconds=45)
     except Exception:
         return
+    finally:
+        _release_profile_start_lock(manifest.profile, lock_fd)
 
 
 def _probe_init_targets(global_scope: bool) -> list[tuple[str, str | None]]:

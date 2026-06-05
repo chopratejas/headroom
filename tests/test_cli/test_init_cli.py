@@ -779,6 +779,8 @@ def test_ensure_profile_running_covers_runtime_modes(monkeypatch) -> None:
     detached_calls: list[str] = []
     wait_calls: list[tuple[str, int]] = []
 
+    monkeypatch.setattr(init_cli, "runtime_status", lambda manifest: "stopped")
+
     monkeypatch.setattr(init_cli, "load_manifest", lambda profile: manifests.get(profile))
 
     def fake_wait_ready(manifest, timeout_seconds: int) -> bool:
@@ -810,6 +812,95 @@ def test_ensure_profile_running_covers_runtime_modes(monkeypatch) -> None:
     assert ("docker-profile", 45) in wait_calls
 
 
+def test_ensure_profile_running_skips_spawn_while_runtime_is_starting(monkeypatch) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    manifest = SimpleNamespace(
+        preset=init_cli.InstallPreset.PERSISTENT_TASK.value,
+        supervisor_kind=init_cli.SupervisorKind.NONE.value,
+        profile="task-profile",
+    )
+    detached_calls: list[str] = []
+    wait_calls: list[int] = []
+
+    monkeypatch.setattr(init_cli, "load_manifest", lambda profile: manifest)
+    monkeypatch.setattr(init_cli, "runtime_status", lambda manifest: "running")
+
+    def fake_wait_ready(manifest, timeout_seconds: int) -> bool:
+        wait_calls.append(timeout_seconds)
+        return False
+
+    monkeypatch.setattr(init_cli, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(
+        init_cli,
+        "start_detached_agent",
+        lambda profile: detached_calls.append(profile),
+    )
+
+    init_cli._ensure_profile_running("task-profile")
+
+    assert detached_calls == []
+    assert wait_calls == [1, 15]
+
+
+def test_ensure_profile_running_skips_spawn_when_start_lock_exists(
+    monkeypatch, tmp_path: Path
+) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    manifest = SimpleNamespace(
+        preset=init_cli.InstallPreset.PERSISTENT_TASK.value,
+        supervisor_kind=init_cli.SupervisorKind.NONE.value,
+        profile="task-profile",
+    )
+    detached_calls: list[str] = []
+    wait_calls: list[int] = []
+
+    monkeypatch.setattr(init_cli.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(init_cli, "load_manifest", lambda profile: manifest)
+    monkeypatch.setattr(init_cli, "runtime_status", lambda manifest: "stopped")
+
+    def fake_wait_ready(manifest, timeout_seconds: int) -> bool:
+        wait_calls.append(timeout_seconds)
+        return False
+
+    monkeypatch.setattr(init_cli, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(
+        init_cli,
+        "start_detached_agent",
+        lambda profile: detached_calls.append(profile),
+    )
+
+    lock_fd = init_cli._acquire_profile_start_lock("task-profile")
+    assert lock_fd is not None
+    try:
+        init_cli._ensure_profile_running("task-profile")
+    finally:
+        init_cli._release_profile_start_lock("task-profile", lock_fd)
+
+    assert detached_calls == []
+    assert wait_calls == [1, 15]
+
+
+def test_profile_start_lock_replaces_stale_lock(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(init_cli.Path, "home", lambda: tmp_path)
+    path = init_cli._profile_start_lock_path("task-profile")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("old", encoding="utf-8")
+    old_mtime = path.stat().st_mtime
+    monkeypatch.setattr(
+        init_cli.time,
+        "time",
+        lambda: old_mtime + init_cli._START_LOCK_TTL_SECONDS + 1,
+    )
+
+    lock_fd = init_cli._acquire_profile_start_lock("task-profile")
+    assert lock_fd is not None
+    try:
+        assert path.exists()
+    finally:
+        init_cli._release_profile_start_lock("task-profile", lock_fd)
+
+
 def test_ensure_profile_running_returns_when_ready_or_on_exception(monkeypatch) -> None:
     init_cli, _ = _load_init_module(monkeypatch)
     manifest = SimpleNamespace(
@@ -818,6 +909,7 @@ def test_ensure_profile_running_returns_when_ready_or_on_exception(monkeypatch) 
         profile="task-profile",
     )
     detached_calls: list[str] = []
+    monkeypatch.setattr(init_cli, "runtime_status", lambda manifest: "stopped")
     monkeypatch.setattr(init_cli, "load_manifest", lambda profile: manifest)
     monkeypatch.setattr(init_cli, "wait_ready", lambda manifest, timeout_seconds: True)
     monkeypatch.setattr(
