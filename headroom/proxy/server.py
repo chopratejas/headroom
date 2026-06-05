@@ -1018,17 +1018,31 @@ class HeadroomProxy(
                     handle=self.memory_handler,
                     backend=memory_status.get("backend"),
                 )
-                # Force one embed call so the ONNX graph is compiled now,
-                # not lazily during the first request. Best-effort — any
-                # failure is swallowed inside warmup_embedder.
-                self.warmup.memory_embedder.mark_loading()
-                warmed = await self.memory_handler.warmup_embedder()
-                if warmed:
-                    self.warmup.memory_embedder.mark_loaded()
-                else:
-                    # Not an error — e.g. qdrant-neo4j has no embedder slot
-                    # we can reach, or the backend simply exposes no handle.
+                # Optionally skip the eager embedder warm-up to save ~86 MB
+                # of ONNX model heap per worker on startup.  Set
+                # HEADROOM_SKIP_MEMORY_WARMUP=1 when you want the first embed
+                # call to bear the cold-start cost (~100 ms for ONNX) rather
+                # than paying it at startup on every worker.  Default: warm up
+                # eagerly so the first real memory request has no latency spike.
+                _skip_warmup = os.environ.get("HEADROOM_SKIP_MEMORY_WARMUP", "").strip()
+                if _skip_warmup in {"1", "true", "yes"}:
                     self.warmup.memory_embedder.mark_null()
+                    logger.info(
+                        "Memory embedder warmup: SKIPPED (HEADROOM_SKIP_MEMORY_WARMUP=1); "
+                        "first memory request will load the model lazily"
+                    )
+                else:
+                    # Force one embed call so the ONNX graph is compiled now,
+                    # not lazily during the first request. Best-effort — any
+                    # failure is swallowed inside warmup_embedder.
+                    self.warmup.memory_embedder.mark_loading()
+                    warmed = await self.memory_handler.warmup_embedder()
+                    if warmed:
+                        self.warmup.memory_embedder.mark_loaded()
+                    else:
+                        # Not an error — e.g. qdrant-neo4j has no embedder slot
+                        # we can reach, or the backend simply exposes no handle.
+                        self.warmup.memory_embedder.mark_null()
             else:
                 if self.warmup.memory_backend.status != "error":
                     self.warmup.memory_backend.mark_null()
@@ -2452,6 +2466,107 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         report = tracker.get_report()
         return report.to_dict()
+
+    @app.get("/debug/rss", dependencies=[Depends(_require_loopback)])
+    async def debug_rss():
+        """Process-level RSS profiling endpoint.
+
+        Returns a lightweight snapshot of this worker's memory footprint:
+        - Process RSS / VMS via resource.getrusage (no psutil required)
+        - GC generation stats and object type top-10
+        - ML model registry summary (which models are loaded, estimated MB)
+        - Key cache sizes: HNSW element count, compression cache sessions,
+          TOIN pattern count, request logger deque length
+        - Python interpreter version
+
+        Loopback-only — not reachable from outside the host.
+        """
+        import gc
+        import resource
+        import sys
+        from collections import Counter
+
+        pid = os.getpid()
+
+        # RSS via POSIX getrusage (always available, no psutil needed).
+        # ru_maxrss is kilobytes on Linux, bytes on macOS.
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        _ru_maxrss = rusage.ru_maxrss
+        import platform
+
+        if platform.system() == "Darwin":
+            rss_mb = round(_ru_maxrss / (1024 * 1024), 1)
+        else:
+            rss_mb = round(_ru_maxrss / 1024, 1)
+
+        # GC stats
+        gc.collect()
+        gc_stats = [
+            {"generation": i, "collections": s["collections"], "collected": s["collected"]}
+            for i, s in enumerate(gc.get_stats())
+        ]
+
+        # Top object types by count (cheap — uses gc.get_objects())
+        type_counter: Counter[str] = Counter()
+        for obj in gc.get_objects():
+            type_counter[type(obj).__name__] += 1
+        top_types = [
+            {"type": name, "count": cnt} for name, cnt in type_counter.most_common(10)
+        ]
+
+        # ML model registry
+        from headroom.models.ml_models import MLModelRegistry
+
+        ml_stats = MLModelRegistry.get_memory_stats()
+
+        # HNSW element count (best-effort — may not be initialized)
+        hnsw_elements: int | None = None
+        try:
+            if proxy.memory_handler and proxy.memory_handler._backend is not None:
+                _backend = proxy.memory_handler._backend
+                if hasattr(_backend, "_vector_index") and _backend._vector_index is not None:
+                    hnsw_elements = _backend._vector_index.size
+        except Exception:
+            pass
+
+        # Compression cache session count
+        compression_cache_sessions: int | None = None
+        try:
+            with proxy._compression_caches_lock:
+                compression_cache_sessions = len(proxy._compression_caches)
+        except Exception:
+            pass
+
+        # TOIN pattern count
+        toin_patterns: int | None = None
+        try:
+            from headroom.telemetry.toin import get_toin
+
+            toin_patterns = get_toin().get_stats().get("patterns_tracked")
+        except Exception:
+            pass
+
+        # Request logger deque size
+        request_log_count: int | None = None
+        try:
+            if proxy.logger is not None:
+                request_log_count = len(proxy.logger._logs)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        return {
+            "pid": pid,
+            "rss_mb": rss_mb,
+            "python_version": sys.version,
+            "gc_stats": gc_stats,
+            "top_types": top_types,
+            "ml_models": ml_stats,
+            "hnsw_elements": hnsw_elements,
+            "compression_cache_sessions": compression_cache_sessions,
+            "toin_patterns": toin_patterns,
+            "request_log_count": request_log_count,
+            "memory_embedder_warmed": proxy.warmup.memory_embedder.status == "loaded",
+        }
 
     @app.post("/cache/clear")
     async def clear_cache():
