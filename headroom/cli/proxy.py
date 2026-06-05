@@ -900,6 +900,11 @@ Starting proxy server...
 {stateless_line}{telemetry_line}
 {backend_section}{tuning_section}
 
+{memory_section}
+Usage:
+  Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
+  Codex / OpenAI: OPENAI_BASE_URL=http://{config.host}:{config.port}/v1 your-app
+
 Routing:
   /v1/messages                    → {anthropic_url}
   /v1/chat/completions            → {openai_url}
@@ -907,10 +912,6 @@ Routing:
   /v1internal:streamGenerateContent → {cloudcode_url}
   /v1/projects/.../publishers/... → {vertex_url}
 
-Usage:
-  Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
-  Codex / OpenAI: OPENAI_BASE_URL=http://{config.host}:{config.port}/v1 your-app
-{memory_section}
 Endpoints:
   GET  /livez      Process liveness
   GET  /readyz     Traffic readiness
