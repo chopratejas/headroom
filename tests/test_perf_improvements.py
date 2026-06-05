@@ -786,29 +786,9 @@ class TestCacheSkipNotPoisonedByConservativeMode:
         ]
         router.apply(msgs_early, tok)
 
-        # In early turns, conservative mode skips Kompress-bound content
-        # (full_compress_calls may or may not be populated at this point)
-
-        # Now build a long conversation (past stability threshold) with same content
-        msgs_late = []
-        for t in range(8):
-            tc = f"tc_{t}_extra"
-            msgs_late.append(_user_message(f"turn {t}"))
-            msgs_late.append(_assistant_with_tool_call(tc, "WebFetch"))
-            msgs_late.append(_tool_message(tc, f"other content turn {t} " * 50))
-
-        # Add our original content at the end (now in full-compression territory)
-        msgs_late.append(_user_message("final"))
-        msgs_late.append(_assistant_with_tool_call("tc_final", "WebFetch"))
-        msgs_late.append(_tool_message("tc_final", content))
-
-        router.apply(msgs_late, tok)
-
-        # The skip set should NOT have been poisoned — compress() may now be called
-        # for the original content in full mode (session_turn_count > stable_after=5)
-        # This is a regression test: if mark_skip was called during conservative phase,
-        # the content would be silently skipped here.
-        # We verify by checking the skip set directly.
+        # Check immediately after the conservative-phase call: the skip set must not
+        # have been poisoned. (Full-mode calls are allowed to add to skip set later —
+        # that is correct behaviour — so we check here, before the full-mode call.)
         content_key = hash(content)
         assert not router._cache.is_skipped(content_key), (
             "Content passed through in conservative mode must not be in skip set"
