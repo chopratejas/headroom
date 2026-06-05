@@ -65,6 +65,43 @@ def validate_configuration(
         )
 
 
+def _normalized_model_name(model: str | None) -> str:
+    """Return a lowercase model name without provider/path prefixes."""
+    if not model:
+        return ""
+    value = model.strip().lower()
+    for separator in ("/", ":"):
+        if separator in value:
+            value = value.rsplit(separator, 1)[-1]
+    return value
+
+
+def model_prefers_responses_api(model: str | None) -> bool:
+    """Return True for OpenAI reasoning models served via /responses."""
+    value = _normalized_model_name(model)
+    return value.startswith(("gpt-5", "o1", "o3"))
+
+
+def copilot_model_from_args(
+    copilot_args: tuple[str, ...],
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve the Copilot model from CLI args or environment variables."""
+    for idx, arg in enumerate(copilot_args):
+        if arg == "--model" and idx + 1 < len(copilot_args):
+            return copilot_args[idx + 1]
+        if arg.startswith("--model="):
+            return arg.split("=", 1)[1]
+
+    source = env or os.environ
+    return source.get("COPILOT_MODEL") or source.get("COPILOT_PROVIDER_MODEL_ID")
+
+
+def default_wire_api_for_model(model: str | None) -> str:
+    """Choose the Copilot OpenAI-compatible wire API for a model."""
+    return "responses" if model_prefers_responses_api(model) else "completions"
+
+
 def provider_key_source(provider_type: str) -> str:
     """Return the preferred provider key variable for the selected provider type."""
     return "ANTHROPIC_API_KEY" if provider_type == "anthropic" else "OPENAI_API_KEY"
