@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **compression:** pin decisions in first N turns for prefix stability — skips non-deterministic Kompress for tool outputs in early turns to prevent upstream provider prefix-cache invalidation. Configure via `HEADROOM_COMPRESSION_STABLE_AFTER_TURN` (default 0 = disabled; set to 5 to enable for first 5 turns).
 * **routing:** compress stale Read/Glob tool outputs older than N turns — reduces excluded-from-compression ratio from ~40% toward ~20% by allowing compression of old excluded-tool outputs. Configure via `HEADROOM_STALE_READ_COMPRESS_AFTER_TURNS` (default 0 = disabled; set to 10 for typical sessions; 999 = protect all for backward compat).
+* **fix:** conservative passthrough results no longer poison the `CompressionCache` skip set — content that passes through in the stability phase is eligible for full compression once the session matures past the stability threshold.
 
 ### Bug Fixes
 
