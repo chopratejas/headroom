@@ -114,7 +114,7 @@ class EmbeddingServer:
     async def start(self) -> None:
         """Initialize resources."""
         self._executor = ThreadPoolExecutor(max_workers=self.embed_threads)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(self._executor, self._load_resources)
         # Start micro-batch processor
         self._batch_task = asyncio.create_task(self._batch_processor())
@@ -172,7 +172,7 @@ class EmbeddingServer:
             # Run batch through embedder in thread pool
             texts = [item.text for item in batch]
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 embeddings: list[np.ndarray] = await loop.run_in_executor(
                     self._executor,
                     self._sync_embed_batch,
@@ -251,7 +251,7 @@ class EmbeddingServer:
         texts: list[str] = request.get("texts", [])
         if not texts:
             return {"embeddings": []}
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         embeddings = await loop.run_in_executor(
             self._executor,
             self._sync_embed_batch,
@@ -419,7 +419,7 @@ async def serve(
         os.makedirs(socket_dir, exist_ok=True)
 
     # Set up graceful shutdown on SIGTERM
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
     def _handle_sigterm() -> None:
