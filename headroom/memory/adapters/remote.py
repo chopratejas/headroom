@@ -86,7 +86,8 @@ class _EmbeddingServerConnection:
 
     @staticmethod
     def _read_frame_sync(data: bytes) -> dict[str, Any]:
-        return json.loads(data.decode("utf-8"))
+        result: dict[str, Any] = json.loads(data.decode("utf-8"))
+        return result
 
     async def _read_frame(self) -> bytes:
         assert self._reader is not None
@@ -123,7 +124,7 @@ class _EmbeddingServerConnection:
                         self._read_frame(),
                         timeout=self.request_timeout,
                     )
-                response = json.loads(response_bytes.decode("utf-8"))
+                response: dict[str, Any] = json.loads(response_bytes.decode("utf-8"))
                 if "error" in response:
                     raise RuntimeError(f"Server error: {response['error']}")
                 return response
