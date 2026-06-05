@@ -1694,7 +1694,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     # Using allow_origin_regex instead of allow_origins=["*"] because the
     # wildcard+credentials combination is forbidden by the CORS spec (CWE-346)
     # and would be silently rejected by browsers anyway.
-    _default_cors_regex = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
+    # Covers: http and https, IPv4 loopback (localhost, 127.0.0.1), IPv6 loopback ([::1]).
+    _default_cors_regex = r"https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
     _cors_origin_regex = os.environ.get("HEADROOM_CORS_ORIGIN_REGEX", _default_cors_regex)
     app.add_middleware(
         CORSMiddleware,

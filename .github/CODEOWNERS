@@ -7,4 +7,5 @@
 Dockerfile                 @chopratejas
 docker-bake.hcl            @chopratejas
 pyproject.toml             @chopratejas
-scripts/install.sh         @chopratejas
+Cargo.toml                 @chopratejas
+scripts/                   @chopratejas

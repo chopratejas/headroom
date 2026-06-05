@@ -1,0 +1,17 @@
+# cargo audit configuration.
+# Add advisory suppressions here when a known CVE affects a transitive
+# dependency that cannot be updated (unmaintained crate, no fix available).
+# Each ignore entry must include a justification comment.
+#
+# Example:
+# [[advisories.ignore]]
+# id = "RUSTSEC-2023-0071"
+# reason = "rsa crate is a transitive dep of X; no update available yet"
+#
+# Run: cargo audit --deny warnings
+# Docs: https://docs.rs/cargo-audit/latest/cargo_audit/config/
+
+[advisories]
+# No suppressions yet. If CI hard-fails due to a transitive dep advisory,
+# add a suppression entry above with justification.
+ignore = []
