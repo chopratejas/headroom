@@ -14,8 +14,10 @@ Usage:
     Set base URL in Cursor settings to http://localhost:8787
 """
 
-from typing import Any
 from importlib import import_module
+from typing import Any
+
+__all__ = ["create_app", "run_server"]
 
 _LAZY_EXPORTS = {
     "create_app": ("headroom.proxy.server", "create_app"),
@@ -34,4 +36,3 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY_EXPORTS.keys()))
-
