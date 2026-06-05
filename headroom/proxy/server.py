@@ -187,6 +187,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger("headroom.proxy")
 
+
+class _SuppressCancelledErrorFilter(logging.Filter):
+    """Suppress the noisy 'Exception in ASGI application' log record from
+    uvicorn when the underlying exception is asyncio.CancelledError.
+
+    uvicorn's h11_impl.run_asgi() catches BaseException (not just Exception),
+    so CancelledError — which is raised on every in-flight request at shutdown
+    — surfaces as an ERROR log entry. The error is expected during shutdown and
+    does not indicate a bug; suppressing it keeps operator logs clean.
+
+    Installed on the ``uvicorn.error`` logger inside ``run_server()`` so it
+    only applies when the proxy is actually running, not in test imports.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.ERROR and record.exc_info:
+            exc_type = record.exc_info[0]
+            if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
+                return False
+        return True
+
+
 _MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
 
 # Env var that opts out of the Rust core deployment smoke test (Hotfix-A0).
@@ -1494,6 +1516,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 raise
         finally:
             app.state.ready = False
+            logger.info("event=proxy_shutdown reason=signal pid=%d", os.getpid())
             # Shutdown
             if _beacon_is_owner[0]:
                 await _beacon.stop()
@@ -3090,6 +3113,13 @@ def run_server(
 ╚══════════════════════════════════════════════════════════════════════╝
 """)
 
+    # Fix: suppress CancelledError noise from uvicorn on Ctrl+C.
+    # uvicorn's run_asgi() catches BaseException, so CancelledError raised by
+    # in-flight requests at shutdown gets logged as "Exception in ASGI
+    # application". This is expected behaviour during shutdown, not a bug.
+    _cancelled_filter = _SuppressCancelledErrorFilter()
+    logging.getLogger("uvicorn.error").addFilter(_cancelled_filter)
+
     app_target: Any
     uvicorn_kwargs: dict[str, Any] = {}
     if workers > 1:
@@ -3130,6 +3160,12 @@ def run_server(
         # default. Disabling proxy_headers here guarantees the guard sees the
         # real peer address regardless of env.
         proxy_headers=False,
+        # Reliable shutdown: force-cancel in-flight requests after 10 s so
+        # that workers blocked in C-extension calls (hnswlib, tree-sitter,
+        # ONNX) do not prevent Ctrl+C from completing. Without this, the
+        # timeout is None (wait forever) and a single stuck request hangs
+        # the whole shutdown in multi-worker mode.
+        timeout_graceful_shutdown=10,
         **uvicorn_kwargs,
     )
 
