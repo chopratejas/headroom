@@ -45,7 +45,7 @@ from headroom.copilot_auth import (
     has_oauth_auth,
     resolve_client_bearer_token,
     resolve_copilot_api_url,
-    resolve_subscription_bearer_token,
+    resolve_subscription_bearer_token_details,
 )
 from headroom.providers.aider import build_launch_env as _build_aider_launch_env
 from headroom.providers.claude import proxy_base_url as _claude_proxy_base_url
@@ -3025,19 +3025,24 @@ def copilot(
     env = os.environ.copy()
     openai_api_url: str | None = None
     copilot_proxy_token: str | None = None
+    subscription_resolution = None
     if _should_use_copilot_oauth(
         backend=effective_backend,
         provider_type=provider_type,
         env=env,
         force_subscription=subscription,
     ):
-        client_bearer = (
-            resolve_subscription_bearer_token() if subscription else resolve_client_bearer_token()
-        )
+        if subscription:
+            subscription_resolution = resolve_subscription_bearer_token_details()
+            client_bearer = (
+                subscription_resolution.token if subscription_resolution is not None else None
+            )
+        else:
+            client_bearer = resolve_client_bearer_token()
         if not client_bearer:
             raise click.ClickException(
                 "GitHub Copilot subscription mode requires a reusable GitHub/Copilot bearer "
-                "token, but none could be resolved. Run `copilot auth login` first, or set "
+                "token, but none could be resolved. Run `headroom copilot-auth login` first, or set "
                 "GITHUB_COPILOT_TOKEN / GITHUB_COPILOT_GITHUB_TOKEN."
             )
 
@@ -3075,16 +3080,15 @@ def copilot(
                 else "COPILOT_AUTH_MODE=github-oauth"
             ),
         ]
-        # Resolve the Copilot API host: an explicit GITHUB_COPILOT_API_URL wins,
-        # otherwise the generic public host (api.githubcopilot.com). This is the
-        # same policy for --subscription and the implicit OAuth path. The
-        # account-specific endpoints.api advertised by /copilot_internal/user is
-        # deliberately NOT used to route — it returns a segmented host (e.g.
-        # api.individual.githubcopilot.com) that does not serve newer models on
-        # the responses API (#610), and it is not the host the official Copilot
-        # client routes with. Accounts that require a dedicated host (enterprise /
-        # data residency) set GITHUB_COPILOT_API_URL explicitly.
-        openai_api_url = resolve_copilot_api_url(client_bearer)
+        # Non-subscription OAuth keeps upstream's generic-host policy from
+        # #610. Subscription mode can use the endpoint returned by the Copilot
+        # token exchange, which is how Business accounts advertise their API
+        # host without requiring users to configure it manually.
+        openai_api_url = (
+            subscription_resolution.api_url
+            if subscription_resolution is not None
+            else resolve_copilot_api_url(client_bearer)
+        )
         env["GITHUB_COPILOT_API_URL"] = openai_api_url
         env["OPENAI_TARGET_API_URL"] = openai_api_url
         env_vars_display.append(f"COPILOT_PROVIDER_API_URL={openai_api_url}")
