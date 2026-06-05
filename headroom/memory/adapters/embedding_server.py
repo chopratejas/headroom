@@ -99,6 +99,19 @@ class EmbeddingServer:
         from headroom.memory.adapters.embedders import OnnxLocalEmbedder
         from headroom.memory.adapters.hnsw import HNSWVectorIndex
 
+        # Check hnswlib before loading the 86 MB ONNX model so a missing
+        # dependency fails fast. Exit code 3 signals a permanent (non-retryable)
+        # error to the watchdog.
+        try:
+            import hnswlib as _hnswlib  # noqa: F401
+        except ImportError:
+            logger.error(
+                "event=embedding_server_missing_dep dep=hnswlib "
+                "fix='uv sync --extra memory'  OR  pip install hnswlib"
+            )
+            import sys
+            sys.exit(3)
+
         logger.info("event=embedding_server_loading")
         self._embedder = OnnxLocalEmbedder()
         # Force-load the model now so the first request is fast

@@ -146,6 +146,18 @@ class EmbeddingServerWatchdog:
                 self._max_restarts,
             )
 
+            # Exit code 3 = permanent dependency error (e.g. missing hnswlib).
+            # Retrying will never help — give up immediately.
+            if exit_code == 3:
+                logger.error(
+                    "event=embedding_server_giving_up "
+                    "socket=%s reason=missing_dependency -- "
+                    "install with: uv sync --extra memory  OR  pip install hnswlib",
+                    self._socket_path,
+                )
+                self._started = False
+                return
+
             if self._consecutive_crashes > self._max_restarts:
                 logger.error(
                     "event=embedding_server_giving_up "

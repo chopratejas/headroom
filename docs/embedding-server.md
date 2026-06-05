@@ -1,5 +1,23 @@
 # Embedding Server Sidecar (Option E)
 
+## Prerequisites
+
+`--embedding-server` requires the `memory` extra (provides `hnswlib` and
+`sentence-transformers`):
+
+```bash
+# uv (recommended)
+uv sync --extra memory
+
+# pip
+pip install headroom-ai[memory]
+```
+
+The sidecar detects a missing `hnswlib` at startup, logs
+`event=embedding_server_missing_dep`, and exits with code 3. The watchdog
+treats exit code 3 as a permanent error and does **not** retry — check the
+log for the exact install command.
+
 ## Problem
 
 The headroom proxy spawns 8 uvicorn worker processes (multiprocessing spawn mode).
