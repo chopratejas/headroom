@@ -66,9 +66,15 @@ class TestEmbeddingServerUnit:
         server.socket_path = "/tmp/test.sock"
         server.max_elements = 1000
         server.embed_threads = 1
+        import collections
+
         server._total_requests = 0
         server._total_embed_calls = 0
         server._total_latency_ms = 0.0
+        server._total_batches = 0
+        server._total_batched_items = 0
+        server._op_counts = collections.defaultdict(int)
+        server._latency_window = collections.deque(maxlen=1000)
         server._start_time = time.monotonic()
         server._shutdown_event = asyncio.Event()
 
@@ -115,7 +121,8 @@ class TestEmbeddingServerUnit:
         response = await server.handle_request({"op": "stats", "id": "t"})
         assert "index_size" in response
         assert "total_requests" in response
-        assert "avg_latency_ms" in response
+        assert "latency_ms" in response
+        assert "avg" in response["latency_ms"]
 
     async def test_delete_found(self) -> None:
         server = await self._make_server()
@@ -367,17 +374,39 @@ class TestEmbeddingServerWatchdog:
 
 
 def _onnx_available() -> bool:
-    """Check if the ONNX model is available for integration tests."""
+    """Check if onnxruntime is installed AND the model is locally cached (no download needed)."""
     try:
         import onnxruntime  # noqa: F401
-
-        return True
     except ImportError:
         return False
 
+    # Verify the model files are present in the HuggingFace cache so tests
+    # don't depend on network access or HF rate limits.
+    import os
 
-@pytest.mark.skipif(not _onnx_available(), reason="onnxruntime not installed")
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        model_cached = try_to_load_from_cache("Qdrant/all-MiniLM-L6-v2-onnx", "model.onnx")
+        tok_cached = try_to_load_from_cache("Qdrant/all-MiniLM-L6-v2-onnx", "tokenizer.json")
+        return bool(model_cached) and bool(tok_cached)
+    except Exception:
+        # Fallback: check the default cache directory directly
+        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        repo_dir = os.path.join(cache_dir, "models--Qdrant--all-MiniLM-L6-v2-onnx")
+        return os.path.isdir(repo_dir)
+
+
+@pytest.fixture(autouse=False)
+def hf_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force HuggingFace Hub to use local cache only (no network calls)."""
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+
+
+@pytest.mark.skipif(not _onnx_available(), reason="onnxruntime or cached model not available")
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("hf_offline")
 class TestEmbeddingServerIntegration:
     """Integration tests: actually start the server and connect to it."""
 
@@ -468,8 +497,9 @@ class TestEmbeddingServerIntegration:
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not _onnx_available(), reason="onnxruntime not installed")
+@pytest.mark.skipif(not _onnx_available(), reason="onnxruntime or cached model not available")
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("hf_offline")
 async def test_embed_100_sequential_performance(tmp_path: Any) -> None:
     """100 sequential embeds should complete in under 2s."""
     from headroom.memory.adapters.embedding_server import serve

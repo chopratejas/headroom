@@ -15,17 +15,18 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+def test_remote_embedder_implements_embedder_protocol() -> None:
+    """RemoteEmbedder should satisfy the Embedder protocol at runtime."""
+    from headroom.memory.adapters.remote import RemoteEmbedder
+    from headroom.memory.ports import Embedder
+
+    embedder = RemoteEmbedder("/tmp/test.sock")
+    assert isinstance(embedder, Embedder)
+
+
 @pytest.mark.asyncio
 class TestRemoteEmbedderProtocol:
     """Test that RemoteEmbedder implements the Embedder protocol correctly."""
-
-    def test_implements_embedder_protocol(self) -> None:
-        """RemoteEmbedder should satisfy the Embedder protocol at runtime."""
-        from headroom.memory.adapters.remote import RemoteEmbedder
-        from headroom.memory.ports import Embedder
-
-        embedder = RemoteEmbedder("/tmp/test.sock")
-        assert isinstance(embedder, Embedder)
 
     async def test_embed_returns_float32_array(self) -> None:
         from headroom.memory.adapters.remote import RemoteEmbedder
@@ -171,6 +172,12 @@ class TestRemoteVectorIndex:
 # ---------------------------------------------------------------------------
 
 
+def test_is_runtime_error_subclass() -> None:
+    from headroom.memory.adapters.remote import EmbeddingServerUnavailable
+
+    assert issubclass(EmbeddingServerUnavailable, RuntimeError)
+
+
 @pytest.mark.asyncio
 class TestEmbeddingServerUnavailable:
     """Test the EmbeddingServerUnavailable exception."""
@@ -181,11 +188,6 @@ class TestEmbeddingServerUnavailable:
         embedder = RemoteEmbedder("/tmp/this-socket-really-does-not-exist-abc123.sock")
         with pytest.raises(EmbeddingServerUnavailable):
             await embedder.embed("test")
-
-    def test_is_runtime_error_subclass(self) -> None:
-        from headroom.memory.adapters.remote import EmbeddingServerUnavailable
-
-        assert issubclass(EmbeddingServerUnavailable, RuntimeError)
 
     async def test_ping_false_when_unavailable(self) -> None:
         from headroom.memory.adapters.remote import RemoteEmbedder
