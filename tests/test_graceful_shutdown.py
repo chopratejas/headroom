@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -213,9 +212,7 @@ def test_lifespan_shutdown_completes_when_beacon_hangs(monkeypatch: pytest.Monke
         await asyncio.sleep(9999)  # simulate a blocked network call
 
     # Prevent sys.exit(78) from the Rust-core check
-    monkeypatch.setattr(
-        "headroom.proxy.server._check_rust_core", lambda: ("disabled", "test-mock")
-    )
+    monkeypatch.setattr("headroom.proxy.server._check_rust_core", lambda: ("disabled", "test-mock"))
 
     config = ProxyConfig(
         optimize=False,
@@ -236,10 +233,10 @@ def test_lifespan_shutdown_completes_when_beacon_hangs(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(beacon_mod.TelemetryBeacon, "stop", lambda self: hanging_stop())
 
-    from fastapi.testclient import TestClient
-
     # If the fix is absent this would hang; with the fix it returns quickly.
     import time
+
+    from fastapi.testclient import TestClient
 
     start = time.monotonic()
     with TestClient(app, raise_server_exceptions=False):
@@ -258,14 +255,11 @@ def test_lifespan_shutdown_completes_when_proxy_shutdown_raises(
     The _timed wrapper catches both TimeoutError and arbitrary exceptions,
     logs a warning, and continues so all subsequent teardown steps still run.
     """
-    import asyncio
 
     async def raising_shutdown() -> None:
         raise RuntimeError("simulated shutdown failure")
 
-    monkeypatch.setattr(
-        "headroom.proxy.server._check_rust_core", lambda: ("disabled", "test-mock")
-    )
+    monkeypatch.setattr("headroom.proxy.server._check_rust_core", lambda: ("disabled", "test-mock"))
 
     config = ProxyConfig(
         optimize=False,

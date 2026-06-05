@@ -1517,6 +1517,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         finally:
             app.state.ready = False
             logger.info("event=proxy_shutdown reason=signal pid=%d", os.getpid())
+
             # Shutdown — every await is bounded so the lifespan teardown
             # completes within ~15 s on the first Ctrl+C without needing
             # a second signal to force-exit.
@@ -1543,9 +1544,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 await _timed(_beacon.stop(), label="beacon.stop", timeout=3.0)
                 _release_beacon_lock()
             if proxy.usage_reporter:
-                await _timed(
-                    proxy.usage_reporter.stop(), label="usage_reporter.stop", timeout=3.0
-                )
+                await _timed(proxy.usage_reporter.stop(), label="usage_reporter.stop", timeout=3.0)
             if proxy.traffic_learner:
                 await _timed(
                     proxy.traffic_learner.stop(), label="traffic_learner.stop", timeout=3.0
