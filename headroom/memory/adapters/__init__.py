@@ -23,8 +23,6 @@ deferred until the adapter is actually used.
 from headroom.memory.adapters.cache import LRUMemoryCache
 from headroom.memory.adapters.fts5 import FTS5TextIndex
 from headroom.memory.adapters.graph import InMemoryGraphStore
-from headroom.memory.adapters.sqlite import SQLiteMemoryStore
-from headroom.memory.adapters.sqlite_graph import SQLiteGraphStore
 
 # Embedding server sidecar adapters (stdlib-only dependencies)
 from headroom.memory.adapters.remote import (
@@ -33,6 +31,8 @@ from headroom.memory.adapters.remote import (
     RemoteVectorIndex,
     _EmbeddingServerConnection,
 )
+from headroom.memory.adapters.sqlite import SQLiteMemoryStore
+from headroom.memory.adapters.sqlite_graph import SQLiteGraphStore
 from headroom.memory.adapters.watchdog import EmbeddingServerWatchdog
 
 # Check for optional dependencies availability
@@ -118,6 +118,12 @@ __all__ = [
     "LRUMemoryCache",
     "SQLiteGraphStore",
     "SQLiteMemoryStore",
+    # Embedding server sidecar adapters
+    "EmbeddingServerUnavailable",
+    "EmbeddingServerWatchdog",
+    "RemoteEmbedder",
+    "RemoteVectorIndex",
+    "_EmbeddingServerConnection",
     # Optional adapters (lazy-loaded)
     "HNSWVectorIndex",
     "SQLiteVectorIndex",
