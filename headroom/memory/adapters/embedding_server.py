@@ -110,6 +110,7 @@ class EmbeddingServer:
                 "fix='uv sync --extra memory'  OR  pip install hnswlib"
             )
             import sys
+
             sys.exit(3)
 
         logger.info("event=embedding_server_loading")
