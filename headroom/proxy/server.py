@@ -1018,9 +1018,7 @@ class HeadroomProxy(
                 # Detect embedding server sidecar (Option E)
                 _embed_socket = os.environ.get("HEADROOM_EMBEDDING_SERVER_SOCKET")
                 if _embed_socket:
-                    logger.info(
-                        "event=using_remote_embedding_server socket=%s", _embed_socket
-                    )
+                    logger.info("event=using_remote_embedding_server socket=%s", _embed_socket)
                 else:
                     logger.info("event=using_local_embedder")
 
