@@ -225,11 +225,14 @@ def classify_client(headers: Mapping[str, Any] | Any) -> str | None:
     1. **``X-Client`` header** (explicit override) — clients that
        know they're talking to Headroom can self-identify with a
        short name. Trimmed, lowercased. Wins over UA matching.
-    2. **User-Agent substring match** against :data:`CLIENT_UA_MAP`
-       — covers the unmodified-client case. Substring, not prefix,
+    2. **``originator: Codex Desktop`` header** - Codex Desktop
+       sends this on subscription-auth traffic even when its User-Agent
+       does not include ``codex-cli/``.
+    3. **User-Agent substring match** against :data:`CLIENT_UA_MAP`
+       - covers the unmodified-client case. Substring, not prefix,
        because some clients prepend a corporate-wrapper UA before
        their own.
-    3. **None** when neither produces a hit. ``None`` is the loud
+    4. **None** when neither produces a hit. ``None`` is the loud
        "unknown harness" signal; downstream consumers can group
        these as "unidentified" rather than silently bucketing them
        into a default.
@@ -243,7 +246,11 @@ def classify_client(headers: Mapping[str, Any] | Any) -> str | None:
     explicit = _header_get(headers, "x-client").strip().lower()
     if explicit:
         return explicit
-    # 2. User-Agent substring match
+    # 2. Codex Desktop originator header
+    originator = _header_get(headers, "originator").strip().lower()
+    if originator in {"codex", "codex desktop"}:
+        return "codex"
+    # 3. User-Agent substring match
     ua_lower = _header_get(headers, "user-agent").lower()
     if not ua_lower:
         return None
