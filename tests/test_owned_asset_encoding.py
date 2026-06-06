@@ -42,8 +42,9 @@ def test_get_dashboard_html_reads_as_utf8(monkeypatch) -> None:
 
     assert captured["encoding"] == "utf-8"
     assert html  # non-empty
-    # Content must equal an explicit UTF-8 decode of the raw template.
-    expected = (TEMPLATES_DIR / "dashboard.html").read_bytes().decode("utf-8")
+    # Content must equal an explicit UTF-8 text read of the template. Use the
+    # original Path.read_text so the spy above only observes get_dashboard_html.
+    expected = original(TEMPLATES_DIR / "dashboard.html", encoding="utf-8")
     assert html == expected
 
 
