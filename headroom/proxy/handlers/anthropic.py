@@ -415,6 +415,7 @@ class AnthropicHandlerMixin:
 
         from headroom.cache.compression_store import get_compression_store
         from headroom.ccr import CCRToolInjector
+        from headroom.providers.anthropic import sanitize_anthropic_model_id
         from headroom.proxy.helpers import (
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
@@ -589,7 +590,15 @@ class AnthropicHandlerMixin:
                         },
                     },
                 )
-            model = body.get("model", "unknown")
+            raw_model = body.get("model", "unknown")
+            model = (
+                sanitize_anthropic_model_id(raw_model)
+                if isinstance(raw_model, str)
+                else raw_model
+            )
+            if isinstance(raw_model, str) and model != raw_model:
+                body["model"] = model
+                body_mutation_tracker.mark_mutated("sanitize_model_id")
             messages = body.get("messages", [])
             with stage_timer.measure("deep_copy"):
                 original_client_messages = copy.deepcopy(messages)

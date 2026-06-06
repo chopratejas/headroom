@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, unquote
 
 from headroom.proxy.helpers import (
     COMPRESSION_TIMEOUT_SECONDS,
@@ -5771,6 +5772,13 @@ class OpenAIHandlerMixin:
 
         start_time = time.time()
         path = request.url.path
+        if provider == "anthropic" and endpoint_name == "models" and path.startswith("/v1/models/"):
+            from headroom.providers.anthropic import sanitize_anthropic_model_id
+
+            raw_model_id = path[len("/v1/models/") :]
+            clean_model_id = sanitize_anthropic_model_id(unquote(raw_model_id))
+            if clean_model_id != unquote(raw_model_id):
+                path = "/v1/models/" + quote(clean_model_id, safe="")
         url = build_copilot_upstream_url(base_url, path)
 
         # Preserve query string parameters
@@ -5828,6 +5836,23 @@ class OpenAIHandlerMixin:
         response_headers = dict(response.headers)
         response_headers.pop("content-encoding", None)
         response_headers.pop("content-length", None)  # Length changed after decompression
+        response_content = response.content
+
+        if provider == "anthropic" and endpoint_name == "models":
+            from headroom.providers.anthropic import sanitize_anthropic_model_metadata
+
+            try:
+                payload = response.json()
+                sanitized_payload = sanitize_anthropic_model_metadata(payload)
+            except (TypeError, ValueError):
+                sanitized_payload = None
+            if sanitized_payload is not None and sanitized_payload != payload:
+                response_content = json.dumps(
+                    sanitized_payload,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                response_headers["content-type"] = "application/json"
 
         # Passthrough request: forwarded upstream with no transforms.
         # Still recorded so dashboards see traffic on the passthrough
@@ -5853,7 +5878,7 @@ class OpenAIHandlerMixin:
             )
 
         return Response(
-            content=response.content,
+            content=response_content,
             status_code=response.status_code,
             headers=response_headers,
         )
