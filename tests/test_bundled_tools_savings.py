@@ -13,6 +13,7 @@ in the environment (loaded from .env if python-dotenv is available).
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import subprocess
@@ -41,6 +42,17 @@ ENC = tiktoken.get_encoding("cl100k_base")
 
 def _tokens(text: str) -> int:
     return len(ENC.encode(text))
+
+
+def _unified_diff_text(before: Path, after: Path) -> str:
+    return "".join(
+        difflib.unified_diff(
+            before.read_text().splitlines(keepends=True),
+            after.read_text().splitlines(keepends=True),
+            fromfile=str(before),
+            tofile=str(after),
+        )
+    )
 
 
 SAMPLE_PY = textwrap.dedent(
@@ -174,14 +186,19 @@ def test_ast_grep_slice_saves_tokens(repo: Path):
     assert savings_pct >= 40, f"expected ≥40% savings, got {savings_pct:.1f}%"
 
 
+def test_unified_diff_baseline_is_available_without_posix_diff(repo: Path):
+    """The line-diff baseline should not depend on `/usr/bin/diff`."""
+    line_diff = _unified_diff_text(repo / "payments.py", repo / "payments_v2.py")
+
+    assert line_diff.startswith("---")
+    assert '-        return subtotal * Decimal("0.9")' in line_diff
+    assert '+        return subtotal * Decimal("0.85")' in line_diff
+
+
 def test_difftastic_saves_tokens_vs_line_diff(repo: Path):
     """Structural diff should compress smaller than unified line diff."""
-    # Baseline: unified line diff via /usr/bin/diff.
-    line_diff = subprocess.run(
-        ["diff", "-u", str(repo / "payments.py"), str(repo / "payments_v2.py")],
-        capture_output=True,
-        text=True,
-    ).stdout
+    # Baseline: unified line diff without requiring a POSIX `diff` binary.
+    line_diff = _unified_diff_text(repo / "payments.py", repo / "payments_v2.py")
     line_tokens = _tokens(line_diff)
 
     # difftastic in a compact display mode.
