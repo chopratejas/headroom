@@ -41,7 +41,8 @@ use headroom_core::transforms::{
     SearchCompressorConfig as RustSearchConfig, SearchCompressorStats as RustSearchStats,
 };
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyString};
+use pyo3::types::{PyBytes, PyDict};
+use pyo3::IntoPyObjectExt;
 
 /// Identity stub used by the Python smoke test to verify linkage.
 #[pyfunction]
@@ -65,7 +66,7 @@ fn type_name(v: &serde_json::Value) -> &'static str {
 /// fail when keys are static str literals and values are owned String /
 /// Option<String> / Option<&'static str>) without tripping the
 /// `clippy::useless_conversion` false positive that fires inside the
-/// pyo3 0.22 method-attribute macro.
+/// PyO3 method-attribute macro.
 fn build_crush_array_dict<'py>(
     py: Python<'py>,
     kept_json: String,
@@ -75,7 +76,7 @@ fn build_crush_array_dict<'py>(
     compacted: Option<String>,
     compaction_kind: Option<&'static str>,
 ) -> Bound<'py, PyDict> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("items", kept_json).unwrap();
     dict.set_item("ccr_hash", ccr_hash).unwrap();
     dict.set_item("dropped_summary", dropped_summary).unwrap();
@@ -859,30 +860,30 @@ impl PyDetectionResult {
     /// the underlying Rust value.
     #[getter]
     fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (k, v) in &self.inner.metadata {
             // Convert each JSON value into the closest Python primitive.
             // Detection metadata is always a flat dict of scalars (ints,
             // bools, strings) so we don't need to recurse.
             let py_value: PyObject = match v {
-                serde_json::Value::Bool(b) => b.into_py(py),
+                serde_json::Value::Bool(b) => b.into_py_any(py)?,
                 serde_json::Value::Number(n) => {
                     if let Some(i) = n.as_u64() {
-                        i.into_py(py)
+                        i.into_py_any(py)?
                     } else if let Some(i) = n.as_i64() {
-                        i.into_py(py)
+                        i.into_py_any(py)?
                     } else if let Some(f) = n.as_f64() {
-                        f.into_py(py)
+                        f.into_py_any(py)?
                     } else {
                         py.None()
                     }
                 }
-                serde_json::Value::String(s) => PyString::new_bound(py, s).into_py(py),
+                serde_json::Value::String(s) => s.into_py_any(py)?,
                 serde_json::Value::Null => py.None(),
                 // Detection never emits arrays / objects in metadata
                 // today; if it ever does, fall through to JSON-string for
                 // visibility rather than silently dropping.
-                other => PyString::new_bound(py, &other.to_string()).into_py(py),
+                other => other.to_string().into_py_any(py)?,
             };
             dict.set_item(k, py_value)?;
         }
@@ -957,7 +958,7 @@ fn shared_keyword_detector() -> &'static KeywordDetector {
 }
 
 /// Returns `Some(ctx)` for known names and `None` otherwise — caller
-/// converts to PyValueError. Avoids the pyo3-0.22 + clippy
+/// converts to PyValueError. Avoids a PyO3 macro + clippy
 /// `useless_conversion` false positive that fires when `?` propagates a
 /// `PyResult<_>` through another `PyResult<_>`.
 fn ctx_from_str(name: &str) -> Option<ImportanceContext> {
@@ -986,7 +987,7 @@ fn category_to_str(cat: ImportanceCategory) -> &'static str {
 /// contexts (`text|search|diff|log`) and `None` for an unknown context
 /// — the Python shim translates `None` into `ValueError` for the
 /// caller. Returning `Option` instead of `PyResult` dodges the
-/// pyo3-0.22 + clippy `useless_conversion` false positive that the
+/// PyO3 macro + clippy `useless_conversion` false positive that the
 /// `#[pyfunction]` macro triggers when its inner result-shape carries
 /// `PyErr`. The bridge layer is the right place for this conversion;
 /// keeping the Rust signature panic-free and `PyResult`-free is worth
@@ -1014,12 +1015,12 @@ fn content_has_error_indicators(text: &str) -> bool {
 /// shim can recompile the legacy `re.Pattern` objects without
 /// re-declaring keyword data on the Python side. Uses `.unwrap()` on
 /// `set_item` because keys are static str literals and values are
-/// `Vec<&'static str>`, which can't fail — and avoids the pyo3-0.22
+/// `Vec<&'static str>`, which can't fail — and avoids a PyO3 macro
 /// `useless_conversion` clippy false positive.
 #[pyfunction]
 fn keyword_registry_snapshot(py: Python<'_>) -> Py<PyDict> {
     let registry = KeywordRegistry::default_set();
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (key, words) in registry.as_map() {
         dict.set_item(key, words).unwrap();
     }
@@ -1130,7 +1131,7 @@ impl PySearchCompressionResult {
     }
     #[getter]
     fn summaries<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (k, v) in &self.inner.summaries {
             dict.set_item(k, v).unwrap();
         }
@@ -1330,7 +1331,7 @@ impl PyLogCompressionResult {
     }
     #[getter]
     fn stats<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (k, v) in &self.inner.stats {
             dict.set_item(k, v).unwrap();
         }
@@ -1522,7 +1523,7 @@ fn compress_openai_responses_live_zone(
                 .collect();
             let reason = rust_summarize_openai_responses_no_change_reason(&manifest).to_string();
             (
-                PyBytes::new_bound(py, body).unbind(),
+                PyBytes::new(py, body).unbind(),
                 false,
                 saved,
                 transforms,
@@ -1540,7 +1541,7 @@ fn compress_openai_responses_live_zone(
                 .map(String::from)
                 .collect();
             (
-                PyBytes::new_bound(py, bytes).unbind(),
+                PyBytes::new(py, bytes).unbind(),
                 true,
                 saved,
                 transforms,
@@ -1551,7 +1552,7 @@ fn compress_openai_responses_live_zone(
             // BodyNotJson / NoMessagesArray are non-fatal: nothing to
             // compress, fall through to passthrough byte-for-byte.
             (
-                PyBytes::new_bound(py, body).unbind(),
+                PyBytes::new(py, body).unbind(),
                 false,
                 0,
                 Vec::new(),

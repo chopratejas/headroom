@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _semver_tuple(version: str) -> tuple[int, int, int]:
+    parts = version.split(".", 2)
+    assert len(parts) == 3
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 def test_docker_workflow_normalizes_repository_name_for_signing() -> None:
@@ -36,6 +47,15 @@ def test_release_workflow_publishes_python_distributions_to_github_release() -> 
     )
     assert "Publish Node package tarballs to GitHub Release" in content
     assert 'gh release upload "$TAG" release-assets/*.tgz --clobber' in content
+
+
+def test_cargo_lock_keeps_pyo3_above_rustsec_2025_0020_floor() -> None:
+    """PyO3 < 0.24.1 is affected by RUSTSEC-2025-0020."""
+    cargo_lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    pyo3_packages = [package for package in cargo_lock["package"] if package["name"] == "pyo3"]
+
+    assert len(pyo3_packages) == 1
+    assert _semver_tuple(pyo3_packages[0]["version"]) >= (0, 24, 1)
 
 
 def test_create_release_requires_successful_build_and_pypi_publish() -> None:
