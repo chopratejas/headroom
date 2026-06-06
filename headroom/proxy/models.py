@@ -200,6 +200,9 @@ class ProxyConfig:
     # Timeouts
     request_timeout_seconds: int = 300
     connect_timeout_seconds: int = 10
+    # Bound how long a streaming upstream response may stay silent after
+    # headers are received. Set to <= 0 to disable the first-byte guard.
+    stream_first_byte_timeout_seconds: float = 60.0
 
     # Connection pool
     max_connections: int = 500

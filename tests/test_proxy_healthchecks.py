@@ -57,6 +57,7 @@ def test_readyz_reports_core_subsystem_checks(client):
     assert runtime["anthropic_pre_upstream"]["compression_timeout_seconds"] == 30.0
     assert runtime["anthropic_pre_upstream"]["memory_context_timeout_seconds"] == 2.0
     assert runtime["anthropic_pre_upstream"]["codex_ws_gated"] is False
+    assert runtime["streaming"]["first_byte_timeout_seconds"] == 60.0
     assert runtime["websocket_sessions"]["active_sessions"] == 0
     assert runtime["websocket_sessions"]["active_relay_tasks"] == 0
 

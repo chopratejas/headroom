@@ -167,6 +167,17 @@ def _selected_context_tool() -> str:
     help="Upstream connection timeout in seconds (default: 10)",
 )
 @click.option(
+    "--stream-first-byte-timeout-seconds",
+    type=float,
+    default=None,
+    envvar="HEADROOM_STREAM_FIRST_BYTE_TIMEOUT_SECONDS",
+    help=(
+        "Timeout for the first byte of an upstream streaming response "
+        "(default: 60.0 seconds; <=0 disables). "
+        "Env: HEADROOM_STREAM_FIRST_BYTE_TIMEOUT_SECONDS."
+    ),
+)
+@click.option(
     "--anthropic-pre-upstream-concurrency",
     type=int,
     default=None,
@@ -451,6 +462,7 @@ def proxy(
     subscription_poll_interval: int | None,
     retry_max_attempts: int | None,
     connect_timeout_seconds: int | None,
+    stream_first_byte_timeout_seconds: float | None,
     anthropic_pre_upstream_concurrency: int | None,
     anthropic_pre_upstream_acquire_timeout_seconds: float | None,
     anthropic_pre_upstream_memory_context_timeout_seconds: float | None,
@@ -617,6 +629,11 @@ def proxy(
         connect_timeout_seconds=connect_timeout_seconds
         if connect_timeout_seconds is not None
         else 10,
+        stream_first_byte_timeout_seconds=(
+            stream_first_byte_timeout_seconds
+            if stream_first_byte_timeout_seconds is not None
+            else 60.0
+        ),
         max_connections=max_connections,
         max_keepalive_connections=max_keepalive_connections,
         log_file=None if is_stateless else log_file,

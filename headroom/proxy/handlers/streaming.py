@@ -26,6 +26,34 @@ from headroom.copilot_auth import apply_copilot_api_auth
 logger = logging.getLogger("headroom.proxy")
 
 
+class _FirstByteTimeoutError(TimeoutError):
+    """Raised when upstream stream headers arrive but the first body byte stalls."""
+
+    def __init__(self, timeout_seconds: float):
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"upstream stream did not send a first byte within {timeout_seconds:g}s")
+
+
+async def _aiter_bytes_with_first_byte_timeout(byte_iter: Any, timeout_seconds: float):
+    """Apply a timeout only to the first upstream stream chunk."""
+    if timeout_seconds <= 0:
+        async for chunk in byte_iter:
+            yield chunk
+        return
+
+    try:
+        first_chunk = await asyncio.wait_for(anext(byte_iter), timeout=timeout_seconds)
+    except StopAsyncIteration:
+        return
+    except TimeoutError as exc:
+        raise _FirstByteTimeoutError(timeout_seconds) from exc
+
+    yield first_chunk
+
+    async for chunk in byte_iter:
+        yield chunk
+
+
 def _parse_completion_tokens_from_sse_chunk(chunk_bytes: bytes) -> int | None:
     """Extract `usage.completion_tokens` from a single SSE chunk if present.
 
@@ -1071,7 +1099,13 @@ class StreamingMixin:
             try:
                 async with contextlib.aclosing(upstream_response) as response:
                     sse_chunk_index = 0
-                    async for chunk in response.aiter_bytes():
+                    first_byte_timeout_seconds = float(
+                        getattr(self.config, "stream_first_byte_timeout_seconds", 60.0)
+                    )
+                    async for chunk in _aiter_bytes_with_first_byte_timeout(
+                        response.aiter_bytes(),
+                        first_byte_timeout_seconds,
+                    ):
                         sse_chunk_index += 1
                         # Record TTFB on first chunk
                         if stream_state["ttfb_ms"] is None:
@@ -1245,6 +1279,24 @@ class StreamingMixin:
                     "error": {
                         "type": "connection_error",
                         "message": f"Failed to connect to upstream API: {e}",
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
+            except _FirstByteTimeoutError as e:
+                logger.error(
+                    "[%s] Upstream stream first-byte timeout after %.3fs: %s",
+                    request_id,
+                    e.timeout_seconds,
+                    url,
+                )
+                error_event = {
+                    "type": "error",
+                    "error": {
+                        "type": "upstream_first_byte_timeout",
+                        "message": (
+                            "Upstream API did not send the first streaming byte "
+                            f"within {e.timeout_seconds:g}s"
+                        ),
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()

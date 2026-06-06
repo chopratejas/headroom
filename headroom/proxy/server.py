@@ -1619,6 +1619,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 ),
                 "codex_ws_gated": False,
             },
+            "streaming": {
+                "first_byte_timeout_seconds": proxy.config.stream_first_byte_timeout_seconds,
+            },
             "compression_executor": {
                 "max_workers": proxy.compression_max_workers,
                 "queued": _comp_queued,

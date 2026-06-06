@@ -8,6 +8,7 @@ via dict(response.headers), but streaming responses used StreamingResponse
 without passing any upstream headers — silently dropping ratelimit info.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -47,6 +48,7 @@ class TestStreamingRatelimitHeaderForwarding:
         proxy._config.retry_max_attempts = 3
         proxy._config.retry_base_delay_ms = 0
         proxy._config.retry_max_delay_ms = 0
+        proxy._config.stream_first_byte_timeout_seconds = 60.0
         proxy.config = proxy._config
         proxy._parse_sse_usage_from_buffer = MagicMock(return_value=None)
         proxy.memory_handler = None
@@ -397,3 +399,53 @@ class TestStreamingRatelimitHeaderForwarding:
 
         assert attempts["count"] == 2
         assert chunks
+
+    @pytest.mark.asyncio
+    async def test_first_byte_timeout_returns_sse_error_and_closes_response(self):
+        """A stalled upstream stream should not leave the client waiting forever."""
+        proxy = self._create_mock_proxy()
+        proxy.config.stream_first_byte_timeout_seconds = 0.01
+        mock_response = self._create_mock_upstream_response()
+
+        async def stalled_before_first_byte():
+            await asyncio.sleep(10)
+            yield b'event: message_start\ndata: {"type":"message_start"}\n\n'
+
+        mock_response.aiter_bytes = stalled_before_first_byte
+
+        mock_request = MagicMock()
+        proxy.http_client.build_request = MagicMock(return_value=mock_request)
+        proxy.http_client.send = AsyncMock(return_value=mock_response)
+
+        result = await proxy._stream_response(
+            url="https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": "sk-test"},
+            body={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 100,
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            provider="anthropic",
+            model="claude-sonnet-4-20250514",
+            request_id="test-first-byte-timeout",
+            original_tokens=10,
+            optimized_tokens=10,
+            tokens_saved=0,
+            transforms_applied=[],
+            tags={},
+            optimization_latency=0.0,
+        )
+
+        async def collect_chunks():
+            return [chunk async for chunk in result.body_iterator]
+
+        chunks = await asyncio.wait_for(collect_chunks(), timeout=0.5)
+
+        assert len(chunks) == 1
+        raw = chunks[0].decode("utf-8")
+        assert "event: error" in raw
+        error_data = json.loads(raw.split("data: ")[1].strip())
+        assert error_data["error"]["type"] == "upstream_first_byte_timeout"
+        assert "first streaming byte" in error_data["error"]["message"]
+        mock_response.aclose.assert_awaited_once()

@@ -283,6 +283,8 @@ class TestCLIProxyEnvVars:
                     "1",
                     "--connect-timeout-seconds",
                     "3",
+                    "--stream-first-byte-timeout-seconds",
+                    "7.5",
                 ],
                 catch_exceptions=False,
             )
@@ -290,6 +292,25 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].retry_max_attempts == 1
         assert captured_config["config"].connect_timeout_seconds == 3
+        assert captured_config["config"].stream_first_byte_timeout_seconds == 7.5
+
+    def test_stream_first_byte_timeout_from_env(self, runner):
+        """Streaming first-byte timeout can be tuned with an env var."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"HEADROOM_STREAM_FIRST_BYTE_TIMEOUT_SECONDS": "12.5"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].stream_first_byte_timeout_seconds == 12.5
 
     def test_production_scaling_env_vars(self, runner):
         captured = {}
