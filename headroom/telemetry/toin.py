@@ -68,7 +68,7 @@ import threading
 import time
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
 from .models import FieldSemantics, ToolSignature
@@ -1518,19 +1518,21 @@ _toin_lock = threading.Lock()
 
 # Environment variable for custom TOIN backend
 TOIN_BACKEND_ENV_VAR = "HEADROOM_TOIN_BACKEND"
+_IN_MEMORY_TOIN_BACKEND = object()
 
 
 def _create_default_toin_backend() -> Any:
     """Create a TOIN backend from env (e.g. HEADROOM_TOIN_BACKEND=redis).
 
     Loads adapters via setuptools entry point 'headroom.toin_backend'.
-    Returns None to use default FileSystemTOINBackend.
+    Returns None to use default FileSystemTOINBackend. Returns an internal
+    sentinel when the env var explicitly requests in-memory storage.
     """
     backend_type = (os.environ.get(TOIN_BACKEND_ENV_VAR) or "").strip().lower()
     if not backend_type or backend_type == "filesystem":
         return None
     if backend_type == "none":
-        return None  # Explicit in-memory-only (e.g. --stateless mode)
+        return _IN_MEMORY_TOIN_BACKEND
     try:
         from importlib.metadata import entry_points
 
@@ -1584,6 +1586,13 @@ def get_toin(config: TOINConfig | None = None) -> ToolIntelligenceNetwork:
     with _toin_lock:
         if _toin_instance is None:
             backend = _create_default_toin_backend()
+            if backend is _IN_MEMORY_TOIN_BACKEND:
+                backend = None
+                config = (
+                    replace(config, storage_path="")
+                    if config is not None
+                    else TOINConfig(storage_path="")
+                )
             _toin_instance = ToolIntelligenceNetwork(config, backend=backend)
         elif config is not None:
             # Warn when config is silently ignored

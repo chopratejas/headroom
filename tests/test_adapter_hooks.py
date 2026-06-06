@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -287,6 +288,28 @@ class TestTOINEntryPointLoading:
         assert toin is not None
         # Should use FileSystemTOINBackend since no HEADROOM_TOIN_BACKEND set
         assert toin._backend is not None
+
+    def test_backend_none_uses_in_memory_toin(self, monkeypatch, tmp_toin_path):
+        """HEADROOM_TOIN_BACKEND=none must not fall back to filesystem storage."""
+        monkeypatch.setenv("HEADROOM_TOIN_BACKEND", "none")
+        monkeypatch.setenv("HEADROOM_TOIN_PATH", tmp_toin_path)
+
+        toin = get_toin()
+
+        assert toin._backend is None
+        assert toin._config.storage_path == ""
+
+        toin.record_compression(
+            tool_signature=_make_tool_signature(),
+            original_count=5,
+            compressed_count=2,
+            original_tokens=100,
+            compressed_tokens=40,
+            strategy="smart_crusher",
+        )
+        toin.save()
+
+        assert not Path(tmp_toin_path).exists()
 
 
 # =============================================================================
