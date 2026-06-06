@@ -59,6 +59,16 @@ curl "http://localhost:8787/stats-history?format=csv&series=daily"
 curl "http://localhost:8787/stats-history?format=csv&series=monthly"
 ```
 
+The same local savings history can be exported without a running proxy:
+
+```bash
+headroom analytics
+headroom analytics --format json --export report.json
+headroom analytics --series weekly --export weekly-savings.csv
+```
+
+`headroom analytics` reads `~/.headroom/proxy_savings.json` by default. Use `HEADROOM_SAVINGS_PATH` or `--savings-path` to point it at another proxy savings file.
+
 ### Prometheus Metrics
 
 ```bash

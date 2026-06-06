@@ -13,6 +13,7 @@ survives that kind of sys.modules mutation.
 """
 
 from . import (  # noqa: F401
+    analytics,
     evals,
     init,
     install,
