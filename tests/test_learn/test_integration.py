@@ -14,6 +14,8 @@ Key behaviors tested:
 
 from __future__ import annotations
 
+import builtins
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -113,6 +115,107 @@ class TestFalsePositiveFiltering:
             "FileNotFoundError: [Errno 2] No such file or directory: '/bad/path'"
         )
         assert is_error_content("bash: unknown_cmd: command not found")
+
+
+class TestCodexScanner:
+    def test_jsonl_sessions_are_read_as_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.learn.scanner import CodexScanner
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        session_file = sessions_dir / "session.jsonl"
+        session_file.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {"type": "session_meta", "payload": {"id": "sess_utf8"}},
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call",
+                                "call_id": "call_1",
+                                "name": "shell",
+                                "arguments": json.dumps(
+                                    {"command": ["pwsh", "Write-Output 'done ✅'"]},
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "function_call_output",
+                                "call_id": "call_1",
+                                "output": "done ✅",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        real_open = builtins.open
+
+        def _cp1251_default_open(
+            file,
+            mode="r",
+            buffering=-1,
+            encoding=None,
+            errors=None,
+            newline=None,
+            closefd=True,
+            opener=None,
+        ):
+            if (
+                isinstance(file, (str, os.PathLike))
+                and Path(file) == session_file
+                and "r" in mode
+                and "b" not in mode
+                and encoding is None
+            ):
+                encoding = "cp1251"
+
+            if "b" in mode:
+                return real_open(
+                    file,
+                    mode,
+                    buffering=buffering,
+                    closefd=closefd,
+                    opener=opener,
+                )
+            return real_open(
+                file,
+                mode,
+                buffering=buffering,
+                encoding=encoding,
+                errors=errors,
+                newline=newline,
+                closefd=closefd,
+                opener=opener,
+            )
+
+        monkeypatch.setattr(builtins, "open", _cp1251_default_open)
+
+        scanner = CodexScanner(codex_dir=tmp_path)
+        project = ProjectInfo(name="codex", project_path=tmp_path, data_path=sessions_dir)
+
+        sessions = scanner.scan_project(project)
+
+        assert len(sessions) == 1
+        tool_call = sessions[0].tool_calls[0]
+        assert tool_call.name == "Bash"
+        assert tool_call.output == "done ✅"
 
 
 # =============================================================================
