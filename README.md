@@ -236,7 +236,8 @@ Using `pipx`? Choose a supported interpreter explicitly:
 pipx install --python python3.13 "headroom-ai[all]"
 ```
 
-→ [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Docker tags, persistent service, PowerShell, devcontainers.
+- [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Python, npm, Docker tags, PowerShell, and native build prerequisites.
+- [Persistent installs](https://headroom-docs.vercel.app/docs/persistent-installs) — background services, scheduled watchdog tasks, and restartable Docker deployments.
 
 ## headroom learn
 

@@ -121,6 +121,14 @@ Live session statistics plus durable `persistent_savings` totals. Stored at `~/.
 curl http://localhost:8787/stats
 ```
 
+### `GET /dashboard`
+
+Browser dashboard for live request activity, token savings, cost estimates, subscription windows, and durable history charts.
+
+```text
+http://localhost:8787/dashboard
+```
+
 ### `GET /stats-history`
 
 Durable history with hourly, daily, weekly, and monthly rollups. Powers the `/dashboard` view.
