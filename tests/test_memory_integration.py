@@ -11,7 +11,6 @@ Requirements:
 from __future__ import annotations
 
 import os
-import tempfile
 import uuid
 
 import pytest
@@ -34,15 +33,17 @@ class TestMemoryIntegration:
         return OpenAI()
 
     @pytest.fixture
-    def temp_db_path(self):
+    def requires_memory_extra(self):
+        """Skip LocalBackend integration tests unless memory extras are installed."""
+        pytest.importorskip(
+            "sentence_transformers",
+            reason="headroom-ai[memory] extra is not installed",
+        )
+
+    @pytest.fixture
+    def temp_db_path(self, tmp_path):
         """Create a temporary database path."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            yield f.name
-        # Cleanup
-        try:
-            os.unlink(f.name)
-        except OSError:
-            pass
+        return str(tmp_path / "memory.db")
 
     @pytest.fixture
     def user_id(self):
@@ -155,7 +156,7 @@ class TestMemoryIntegration:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_local_backend_pre_extraction(self, temp_db_path, user_id):
+    async def test_local_backend_pre_extraction(self, requires_memory_extra, temp_db_path, user_id):
         """Test LocalBackend save_memory with pre-extraction fields."""
         from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 
@@ -226,7 +227,9 @@ class TestMemoryIntegration:
     # Test 5: End-to-end with real LLM - Standard Mode
     # =========================================================================
 
-    def test_e2e_standard_mode_llm_call(self, openai_client, temp_db_path, user_id):
+    def test_e2e_standard_mode_llm_call(
+        self, requires_memory_extra, openai_client, temp_db_path, user_id
+    ):
         """Test end-to-end flow with real LLM call in standard mode."""
         from headroom.memory import with_memory_tools
         from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
@@ -277,7 +280,9 @@ class TestMemoryIntegration:
     # Test 6: End-to-end with real LLM - Optimized Mode
     # =========================================================================
 
-    def test_e2e_optimized_mode_llm_call(self, openai_client, temp_db_path, user_id):
+    def test_e2e_optimized_mode_llm_call(
+        self, requires_memory_extra, openai_client, temp_db_path, user_id
+    ):
         """Test end-to-end flow with real LLM call in optimized mode."""
         from headroom.memory import with_memory_tools
         from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
@@ -335,7 +340,7 @@ class TestMemoryIntegration:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_memory_search_after_save(self, temp_db_path, user_id):
+    async def test_memory_search_after_save(self, requires_memory_extra, temp_db_path, user_id):
         """Test that saved memories can be searched."""
         from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 
@@ -389,7 +394,9 @@ class TestMemoryIntegration:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_include_related_graph_expansion(self, temp_db_path, user_id):
+    async def test_include_related_graph_expansion(
+        self, requires_memory_extra, temp_db_path, user_id
+    ):
         """Test that include_related expands results via graph."""
         from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 
@@ -466,7 +473,7 @@ class TestMemoryIntegration:
     # =========================================================================
 
     @pytest.mark.asyncio
-    async def test_memory_system_tool_dispatch(self, temp_db_path, user_id):
+    async def test_memory_system_tool_dispatch(self, requires_memory_extra, temp_db_path, user_id):
         """Test MemorySystem processes tool calls correctly."""
         from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
         from headroom.memory.system import MemorySystem
@@ -504,7 +511,9 @@ class TestMemoryIntegration:
     # Test 10: Full flow - LLM saves, then retrieves via search
     # =========================================================================
 
-    def test_full_flow_save_then_search(self, openai_client, temp_db_path, user_id):
+    def test_full_flow_save_then_search(
+        self, requires_memory_extra, openai_client, temp_db_path, user_id
+    ):
         """Test complete flow: LLM saves memory, then searches for it."""
         import json
 
