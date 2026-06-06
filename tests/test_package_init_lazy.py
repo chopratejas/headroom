@@ -130,6 +130,6 @@ def test_proxy_import_stays_lazy() -> None:
 
 def test_proxy_lazy_exports_resolve() -> None:
     from headroom.proxy import create_app, run_server
+
     assert create_app is not None
     assert run_server is not None
-
