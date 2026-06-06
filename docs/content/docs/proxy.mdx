@@ -44,6 +44,9 @@ Telemetry is enabled by default. Opt out with `HEADROOM_TELEMETRY=off` or `--no-
 | `--openai-api-url` | `https://api.openai.com` | Custom OpenAI API URL |
 | `--anthropic-api-url` | Anthropic default | Custom Anthropic API URL |
 | `--gemini-api-url` | Gemini default | Custom Gemini API URL |
+| `--openai-chat-path` | `/v1/chat/completions` | Upstream path for inbound OpenAI chat requests |
+| `--openai-responses-path` | `/v1/responses` | Upstream path for inbound OpenAI Responses requests |
+| `--anthropic-messages-path` | `/v1/messages` | Upstream path for inbound Anthropic Messages requests |
 | `--backend` | `anthropic` | Backend: `anthropic`, `bedrock`, `openrouter`, `anyllm`, or `litellm-<provider>` |
 | `--no-telemetry` | `false` | Disable anonymous telemetry |
 | `--stateless` | `false` | Disable filesystem writes and keep runtime state in memory |
@@ -258,6 +261,16 @@ export ANTHROPIC_TARGET_API_URL=https://litellm.company.internal
 
 headroom proxy
 ```
+
+If the upstream proxy does not expose OpenAI-compatible routes under `/v1`, keep the client pointed at Headroom's normal paths and override only the upstream target path:
+
+```bash
+headroom proxy \
+  --openai-api-url https://proxy.company.internal \
+  --openai-chat-path /litellm/chat/completions
+```
+
+This makes clients call `http://localhost:8787/v1/chat/completions` while Headroom forwards to `https://proxy.company.internal/litellm/chat/completions`. The same pattern is available for `HEADROOM_OPENAI_RESPONSES_PATH` and `HEADROOM_ANTHROPIC_MESSAGES_PATH`.
 
 ## Production deployment
 

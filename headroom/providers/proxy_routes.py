@@ -27,6 +27,14 @@ def _api_target(proxy: Any, provider_name: str) -> str:
     return cast(str, getattr(proxy, legacy_attr, proxy.provider_runtime.api_target(provider_name)))
 
 
+def _endpoint_path(proxy: Any, attr_name: str, default: str) -> str:
+    return cast(str, getattr(proxy.config, attr_name, default) or default)
+
+
+def _join_endpoint_subpath(endpoint_path: str, sub_path: str) -> str:
+    return f"{endpoint_path.rstrip('/')}/{sub_path.lstrip('/')}"
+
+
 def _select_passthrough_base_url(proxy: Any, headers: dict[str, str]) -> str:
     # Codex CLI subscription mode hits a wide surface under
     # `/backend-api/*` (rate-limit polling, agent identity, JWT
@@ -385,7 +393,11 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         if is_chatgpt_auth:
             url = f"https://chatgpt.com/backend-api/codex/responses/{sub_path}"
         else:
-            url = f"{_api_target(proxy, 'openai')}/v1/responses/{sub_path}"
+            upstream_path = _join_endpoint_subpath(
+                _endpoint_path(proxy, "openai_responses_path", "/v1/responses"),
+                sub_path,
+            )
+            url = f"{_api_target(proxy, 'openai')}{upstream_path}"
 
         if request.url.query:
             url = f"{url}?{request.url.query}"

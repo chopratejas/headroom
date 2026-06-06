@@ -396,6 +396,33 @@ def _selected_context_tool() -> str:
     help="Custom OpenAI API URL for passthrough endpoints (env: OPENAI_TARGET_API_URL)",
 )
 @click.option(
+    "--anthropic-messages-path",
+    default=None,
+    envvar="HEADROOM_ANTHROPIC_MESSAGES_PATH",
+    help=(
+        "Upstream path for inbound /v1/messages requests "
+        "(default: /v1/messages, env: HEADROOM_ANTHROPIC_MESSAGES_PATH)"
+    ),
+)
+@click.option(
+    "--openai-chat-path",
+    default=None,
+    envvar="HEADROOM_OPENAI_CHAT_PATH",
+    help=(
+        "Upstream path for inbound /v1/chat/completions requests "
+        "(default: /v1/chat/completions, env: HEADROOM_OPENAI_CHAT_PATH)"
+    ),
+)
+@click.option(
+    "--openai-responses-path",
+    default=None,
+    envvar="HEADROOM_OPENAI_RESPONSES_PATH",
+    help=(
+        "Upstream path for inbound /v1/responses requests "
+        "(default: /v1/responses, env: HEADROOM_OPENAI_RESPONSES_PATH)"
+    ),
+)
+@click.option(
     "--gemini-api-url",
     default=None,
     help="Custom Gemini API URL for passthrough endpoints (env: GEMINI_TARGET_API_URL)",
@@ -480,6 +507,9 @@ def proxy(
     anyllm_provider: str,
     anthropic_api_url: str | None,
     openai_api_url: str | None,
+    anthropic_messages_path: str | None,
+    openai_chat_path: str | None,
+    openai_responses_path: str | None,
     gemini_api_url: str | None,
     cloudcode_api_url: str | None,
     region: str,
@@ -598,6 +628,9 @@ def proxy(
         openai_api_url=provider_api_overrides.openai,
         gemini_api_url=provider_api_overrides.gemini,
         cloudcode_api_url=provider_api_overrides.cloudcode,
+        anthropic_messages_path=anthropic_messages_path,
+        openai_chat_path=openai_chat_path,
+        openai_responses_path=openai_responses_path,
         mode=effective_mode,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
@@ -693,6 +726,9 @@ def proxy(
     anthropic_url = provider_api_targets.anthropic
     openai_url = provider_api_targets.openai
     cloudcode_url = provider_api_targets.cloudcode
+    anthropic_messages_url = f"{anthropic_url}{config.anthropic_messages_path}"
+    openai_chat_url = f"{openai_url}{config.openai_chat_path}"
+    openai_responses_url = f"{openai_url}{config.openai_responses_path}"
     backend_section = ""
 
     if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
@@ -811,9 +847,9 @@ Starting proxy server...
 {stateless_line}{telemetry_line}
 {backend_section}
 Routing:
-  /v1/messages                    → {anthropic_url}
-  /v1/chat/completions            → {openai_url}
-  /v1/responses                   → {openai_url}  (HTTP + WebSocket)
+  /v1/messages                    → {anthropic_messages_url}
+  /v1/chat/completions            → {openai_chat_url}
+  /v1/responses                   → {openai_responses_url}  (HTTP + WebSocket)
   /v1internal:streamGenerateContent → {cloudcode_url}
 
 Usage:

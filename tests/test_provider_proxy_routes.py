@@ -285,6 +285,42 @@ def test_openai_response_subpath_passthrough_uses_openai_target() -> None:
     assert headers["authorization"] == "Bearer sk-proj-test"
 
 
+def test_openai_response_subpath_passthrough_uses_configured_responses_path() -> None:
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def request(self, method, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append((method, url))
+            return httpx.Response(200, json={"url": url})
+
+        async def aclose(self) -> None:
+            return None
+
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            openai_api_url="https://api.openai.test",
+            openai_responses_path="/litellm/responses",
+        )
+    )
+
+    with TestClient(app) as client:
+        fake = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake
+        response = client.delete(
+            "/v1/responses/items/resp_123?trace=7",
+            headers={"Authorization": "Bearer sk-proj-test"},
+        )
+
+    assert response.status_code == 200
+    assert fake.calls == [
+        ("DELETE", "https://api.openai.test/litellm/responses/items/resp_123?trace=7")
+    ]
+
+
 def test_openai_response_subpath_aliases_and_chatgpt_auth_use_expected_targets(monkeypatch) -> None:
     monkeypatch.setattr(
         "headroom.providers.proxy_routes._resolve_codex_routing_headers",

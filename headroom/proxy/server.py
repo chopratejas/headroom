@@ -2969,6 +2969,9 @@ def _proxy_config_from_env() -> ProxyConfig:
         port=_get_env_int("HEADROOM_PORT", 8787),
         openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
         anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
+        anthropic_messages_path=os.environ.get("HEADROOM_ANTHROPIC_MESSAGES_PATH"),
+        openai_chat_path=os.environ.get("HEADROOM_OPENAI_CHAT_PATH"),
+        openai_responses_path=os.environ.get("HEADROOM_OPENAI_RESPONSES_PATH"),
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
@@ -3226,6 +3229,21 @@ if __name__ == "__main__":
         "--anthropic-api-url",
         help=f"Custom Anthropic API URL (default: {DEFAULT_ANTHROPIC_API_URL})",
     )
+    parser.add_argument(
+        "--anthropic-messages-path",
+        help="Upstream path for inbound /v1/messages requests (default: /v1/messages)",
+    )
+    parser.add_argument(
+        "--openai-chat-path",
+        help=(
+            "Upstream path for inbound /v1/chat/completions requests "
+            "(default: /v1/chat/completions)"
+        ),
+    )
+    parser.add_argument(
+        "--openai-responses-path",
+        help="Upstream path for inbound /v1/responses requests (default: /v1/responses)",
+    )
 
     # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
     parser.add_argument(
@@ -3377,6 +3395,15 @@ if __name__ == "__main__":
         port=_get_env_int("HEADROOM_PORT", args.port),
         openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
         anthropic_api_url=_get_env_str("ANTHROPIC_TARGET_API_URL", args.anthropic_api_url),
+        anthropic_messages_path=_get_env_str(
+            "HEADROOM_ANTHROPIC_MESSAGES_PATH",
+            args.anthropic_messages_path,
+        ),
+        openai_chat_path=_get_env_str("HEADROOM_OPENAI_CHAT_PATH", args.openai_chat_path),
+        openai_responses_path=_get_env_str(
+            "HEADROOM_OPENAI_RESPONSES_PATH",
+            args.openai_responses_path,
+        ),
         # Backend settings
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),

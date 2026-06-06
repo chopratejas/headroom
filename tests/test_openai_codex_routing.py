@@ -134,6 +134,7 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
             retry_base_delay_ms=10,
             retry_max_delay_ms=50,
             connect_timeout_seconds=10,
+            openai_responses_path="/v1/responses",
         )
         self.usage_reporter = None
         self.openai_provider = SimpleNamespace(get_context_limit=lambda model: 128_000)
@@ -268,6 +269,27 @@ def test_handle_openai_responses_routes_api_key_auth_direct_to_openai(monkeypatc
     method, url, headers, body = handler.captured_request
     assert method == "POST"
     assert url == "https://api.openai.com/v1/responses"
+    assert headers.get("ChatGPT-Account-ID") is None
+    assert body["input"] == "hello"
+    assert response.status_code == 200
+
+
+def test_handle_openai_responses_api_key_auth_uses_configured_upstream_path(monkeypatch):
+    request = _build_request(
+        {"model": "gpt-4o-mini", "input": "hello"},
+        {"Authorization": "Bearer sk-test"},
+    )
+    handler = _DummyOpenAIHandler()
+    handler.config.openai_responses_path = "/litellm/responses"
+
+    monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda model: _DummyTokenizer())
+
+    response = anyio.run(handler.handle_openai_responses, request)
+
+    assert handler.captured_request is not None
+    method, url, headers, body = handler.captured_request
+    assert method == "POST"
+    assert url == "https://api.openai.com/litellm/responses"
     assert headers.get("ChatGPT-Account-ID") is None
     assert body["input"] == "hello"
     assert response.status_code == 200

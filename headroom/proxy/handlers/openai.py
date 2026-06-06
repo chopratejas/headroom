@@ -2162,8 +2162,11 @@ class OpenAIHandlerMixin:
                     },
                 )
 
-        # Direct OpenAI API (no backend configured)
-        url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/chat/completions")
+        # Direct OpenAI-compatible API (no translated backend configured).
+        url = build_copilot_upstream_url(
+            self.OPENAI_API_URL,
+            getattr(self.config, "openai_chat_path", "/v1/chat/completions"),
+        )
 
         try:
             if stream:
@@ -2892,7 +2895,10 @@ class OpenAIHandlerMixin:
         if is_chatgpt_auth:
             url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/responses")
+            url = build_copilot_upstream_url(
+                self.OPENAI_API_URL,
+                getattr(self.config, "openai_responses_path", "/v1/responses"),
+            )
 
         # The standalone Rust proxy has native /v1/responses item handling,
         # but the default CLI runtime is this Python proxy. Compress the
@@ -3435,7 +3441,10 @@ class OpenAIHandlerMixin:
             # API key auth → route to configured OpenAI API URL
             base = self.OPENAI_API_URL
             ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-            upstream_url = build_copilot_upstream_url(ws_base, "/v1/responses")
+            upstream_url = build_copilot_upstream_url(
+                ws_base,
+                getattr(self.config, "openai_responses_path", "/v1/responses"),
+            )
 
         capture_codex_wire_debug(
             "ws_upstream_handshake",
@@ -5450,7 +5459,10 @@ class OpenAIHandlerMixin:
         if "chatgpt-account-id" in _lower:
             http_url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            http_url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/responses")
+            http_url = build_copilot_upstream_url(
+                self.OPENAI_API_URL,
+                getattr(self.config, "openai_responses_path", "/v1/responses"),
+            )
 
         # Build HTTP body from the WS response.create payload.
         # WS messages use {"type": "response.create", "response": {...}} wrapper.

@@ -1812,7 +1812,8 @@ class AnthropicHandlerMixin:
                     )
 
             # Direct Anthropic API
-            url = f"{self.ANTHROPIC_API_URL}/v1/messages"
+            messages_path = getattr(self.config, "anthropic_messages_path", "/v1/messages")
+            url = f"{self.ANTHROPIC_API_URL}{messages_path}"
 
             try:
                 if stream:

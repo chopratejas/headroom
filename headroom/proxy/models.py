@@ -18,6 +18,19 @@ from headroom.providers.registry import ProviderApiOverrides
 # =============================================================================
 
 
+def _normalize_endpoint_path(value: str | None, *, default: str) -> str:
+    """Normalize an upstream endpoint path override."""
+    if value is None:
+        return default
+
+    path = str(value).strip()
+    if not path:
+        return default
+    if "://" in path:
+        raise ValueError("endpoint path overrides must be paths, not full URLs")
+    return path if path.startswith("/") else f"/{path}"
+
+
 @dataclass
 class RequestLog:
     """Complete log of a single request."""
@@ -96,6 +109,9 @@ class ProxyConfig:
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
     cloudcode_api_url: str | None = None  # Custom Cloud Code Assist API URL override
+    anthropic_messages_path: str | None = "/v1/messages"
+    openai_chat_path: str | None = "/v1/chat/completions"
+    openai_responses_path: str | None = "/v1/responses"
 
     # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     backend: str = "anthropic"
@@ -314,6 +330,18 @@ class ProxyConfig:
     def __post_init__(self, smart_routing: bool | None = None) -> None:
         if self.retry_enabled and self.retry_max_attempts < 1:
             raise ValueError("retry_max_attempts must be >= 1 when retry_enabled=True")
+        self.anthropic_messages_path = _normalize_endpoint_path(
+            self.anthropic_messages_path,
+            default="/v1/messages",
+        )
+        self.openai_chat_path = _normalize_endpoint_path(
+            self.openai_chat_path,
+            default="/v1/chat/completions",
+        )
+        self.openai_responses_path = _normalize_endpoint_path(
+            self.openai_responses_path,
+            default="/v1/responses",
+        )
 
     @property
     def provider_api_overrides(self) -> ProviderApiOverrides:

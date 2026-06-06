@@ -204,6 +204,60 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].openai_api_url == "http://from-cli:4000"
 
+    def test_endpoint_path_overrides_from_env(self, runner):
+        """Endpoint path override env vars should be passed to ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={
+                    "HEADROOM_ANTHROPIC_MESSAGES_PATH": "anthropic/messages",
+                    "HEADROOM_OPENAI_CHAT_PATH": "/litellm/chat/completions",
+                    "HEADROOM_OPENAI_RESPONSES_PATH": "/litellm/responses",
+                },
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        config = captured_config["config"]
+        assert config.anthropic_messages_path == "/anthropic/messages"
+        assert config.openai_chat_path == "/litellm/chat/completions"
+        assert config.openai_responses_path == "/litellm/responses"
+
+    def test_endpoint_path_cli_flags_override_env_vars(self, runner):
+        """Endpoint path CLI flags should win over env vars."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                [
+                    "proxy",
+                    "--openai-chat-path",
+                    "/cli/chat/completions",
+                    "--openai-responses-path",
+                    "/cli/responses",
+                ],
+                env={
+                    "HEADROOM_OPENAI_CHAT_PATH": "/env/chat/completions",
+                    "HEADROOM_OPENAI_RESPONSES_PATH": "/env/responses",
+                },
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        config = captured_config["config"]
+        assert config.openai_chat_path == "/cli/chat/completions"
+        assert config.openai_responses_path == "/cli/responses"
+
     def test_cli_flag_overrides_env_var(self, runner):
         """CLI flag should take precedence over env var."""
         captured_config = {}
