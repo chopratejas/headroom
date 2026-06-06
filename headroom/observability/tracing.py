@@ -167,9 +167,7 @@ def configure_langfuse_tracing(
             try:
                 previous_provider.shutdown()
             except Exception:
-                logger.debug(
-                    "Failed to shut down previous Langfuse tracer provider", exc_info=True
-                )
+                logger.debug("Failed to shut down previous Langfuse tracer provider", exc_info=True)
 
         return get_headroom_tracer()
 
