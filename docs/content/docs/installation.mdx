@@ -168,6 +168,22 @@ docker run -p 8787:8787 ghcr.io/chopratejas/headroom:latest
 If you want a host `headroom` CLI that keeps Headroom itself inside a container — with mounted state, a one-line installer, and a persistent Docker lifecycle — see [Docker-Native Install](/docs/docker-install).
 </Callout>
 
+## Persistent service
+
+If you want Headroom to keep running after the terminal closes, use the native
+persistent install flow:
+
+```bash
+pip install "headroom-ai[all]"
+headroom install apply --preset persistent-service --providers auto
+headroom install status
+```
+
+This installs a local background service, preserves proxy state under the
+Headroom workspace directory, and keeps `/dashboard` available while the
+service is running. See [Persistent Installs](/docs/persistent-installs) for
+service, task, and Docker lifecycle commands.
+
 ### Image tags
 
 | Tag | Extras | Base image | Description |
@@ -232,6 +248,7 @@ These variables configure Headroom at runtime. Set them in your shell, `.env` fi
 <Cards>
   <Card title="Quickstart" href="/docs/quickstart" />
   <Card title="Proxy Server" href="/docs/proxy" />
+  <Card title="Persistent Installs" href="/docs/persistent-installs" />
+  <Card title="Dashboard" href="/docs/dashboard" />
   <Card title="Configuration" href="/docs/configuration" />
-  <Card title="Vercel AI SDK" href="/docs/vercel-ai-sdk" />
 </Cards>

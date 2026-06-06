@@ -236,7 +236,7 @@ Using `pipx`? Choose a supported interpreter explicitly:
 pipx install --python python3.13 "headroom-ai[all]"
 ```
 
-→ [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Docker tags, persistent service, PowerShell, devcontainers.
+→ [Installation guide](https://headroom-docs.vercel.app/docs/installation) · [Persistent installs](https://headroom-docs.vercel.app/docs/persistent-installs) · [Docker-native install](https://headroom-docs.vercel.app/docs/docker-install).
 
 ## headroom learn
 
@@ -252,6 +252,7 @@ pipx install --python python3.13 "headroom-ai[all]"
 |-------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
 | [Quickstart](https://headroom-docs.vercel.app/docs/quickstart)                | [Architecture](https://headroom-docs.vercel.app/docs/architecture)                 |
 | [Proxy](https://headroom-docs.vercel.app/docs/proxy)                          | [How compression works](https://headroom-docs.vercel.app/docs/how-compression-works) |
+| [Dashboard](https://headroom-docs.vercel.app/docs/dashboard)                  | [Persistent installs](https://headroom-docs.vercel.app/docs/persistent-installs)     |
 | [MCP tools](https://headroom-docs.vercel.app/docs/mcp)                        | [CCR — reversible compression](https://headroom-docs.vercel.app/docs/ccr)          |
 | [Memory](https://headroom-docs.vercel.app/docs/memory)                        | [Cache optimization](https://headroom-docs.vercel.app/docs/cache-optimization)     |
 | [Failure learning](https://headroom-docs.vercel.app/docs/failure-learning)    | [Benchmarks](https://headroom-docs.vercel.app/docs/benchmarks)                    |

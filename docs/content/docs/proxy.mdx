@@ -130,6 +130,19 @@ curl http://localhost:8787/stats-history
 curl "http://localhost:8787/stats-history?format=csv&series=weekly"
 ```
 
+### `GET /dashboard`
+
+Browser UI for live proxy health, current-session stats, durable savings
+history, recent transformations, and CSV/JSON history exports.
+
+```bash
+open http://localhost:8787/dashboard
+```
+
+The dashboard is served by the proxy itself and reads `/health`,
+`/stats?cached=1`, `/stats-history`, and `/transformations/feed?limit=50`.
+See [Dashboard](/docs/dashboard).
+
 ### `GET /metrics`
 
 Prometheus-format metrics for monitoring.

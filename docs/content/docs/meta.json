@@ -37,6 +37,7 @@
     "configuration",
     "filesystem-contract",
     "---Observability---",
+    "dashboard",
     "metrics",
     "simulation",
     "---API Reference---",

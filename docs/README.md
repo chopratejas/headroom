@@ -28,11 +28,14 @@ In the project, you can see:
 | `app/docs`                | The documentation layout and pages.                    |
 | `app/api/search/route.ts` | The Route Handler for search.                          |
 
-### Fumadocs MDX
+### Content
 
-A `source.config.ts` config file has been included, you can customise different options like frontmatter schema.
+Documentation pages live in `content/docs`. The docs home page is
+`content/docs/index.mdx`, and navigation order is controlled by
+`content/docs/meta.json`.
 
-Read the [Introduction](https://fumadocs.dev/docs/mdx) for further details.
+When adding a user-facing page, add it to both the MDX docs tree and the
+`../wiki` mirror when the same topic exists there.
 
 ## Learn More
 

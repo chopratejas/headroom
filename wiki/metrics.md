@@ -154,6 +154,13 @@ curl "http://localhost:8787/stats-history?history_mode=full"
 CSV exports are available for `history`, `hourly`, `daily`, `weekly`, and
 `monthly`. Plain JSON remains the default response format.
 
+The local [Dashboard](dashboard.md) uses this endpoint for its historical
+charts and export buttons. Open it while the proxy is running:
+
+```bash
+open http://localhost:8787/dashboard
+```
+
 ### Prometheus Metrics
 
 ```bash

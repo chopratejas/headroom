@@ -409,6 +409,8 @@ Requires Python 3.10+.
 ## Next Steps
 
 - **[Quickstart](quickstart.md)** — Running in 5 minutes
+- **[Dashboard](dashboard.md)** - Local proxy UI for health, savings history, and exports
+- **[Persistent Installs](persistent-installs.md)** - Keep the proxy running as a local service/task
 - **[Integration Guide](integration-guide.md)** — Every way to add Headroom to your stack
 - **[Architecture](ARCHITECTURE.md)** — How the pipeline works under the hood
 - **[Benchmarks](benchmarks.md)** — Accuracy and latency data

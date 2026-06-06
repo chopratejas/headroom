@@ -252,6 +252,17 @@ curl "http://localhost:8787/stats-history?format=csv&series=monthly"
 curl "http://localhost:8787/stats-history?history_mode=full"
 ```
 
+### Dashboard
+
+```bash
+open http://localhost:8787/dashboard
+```
+
+`/dashboard` is the browser UI served by the proxy. It shows live health,
+current-session stats, durable savings history, recent transformations, and
+history exports. It reads `/health`, `/stats?cached=1`, `/stats-history`, and
+`/transformations/feed?limit=50`. See [Dashboard](dashboard.md).
+
 ### Prometheus Metrics
 
 ```bash

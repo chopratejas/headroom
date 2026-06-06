@@ -59,6 +59,13 @@ curl "http://localhost:8787/stats-history?format=csv&series=daily"
 curl "http://localhost:8787/stats-history?format=csv&series=monthly"
 ```
 
+The local [Dashboard](/docs/dashboard) uses this endpoint for its historical
+charts and export buttons. Open it while the proxy is running:
+
+```bash
+open http://localhost:8787/dashboard
+```
+
 ### Prometheus Metrics
 
 ```bash
