@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import headroom.integrations.mcp.server as mcp_server_module
 from headroom.integrations.mcp import (
     HeadroomMCPClientWrapper,
     HeadroomMCPCompressor,
@@ -24,6 +25,18 @@ from headroom.transforms.smart_crusher import strip_ccr_sentinels
 # ============================================================================
 # Test Fixtures
 # ============================================================================
+
+
+def test_mcp_module_docstring_advertises_existing_public_apis():
+    """The module docs should not point users to missing proxy/middleware classes."""
+    doc = mcp_server_module.__doc__ or ""
+
+    assert "HeadroomMCPCompressor" in doc
+    assert "HeadroomMCPClientWrapper" in doc
+    assert "compress_tool_result()" in doc
+    assert "headroom mcp serve" in doc
+    assert "HeadroomMCPProxy(" not in doc
+    assert "HeadroomMCPMiddleware" not in doc
 
 
 @pytest.fixture

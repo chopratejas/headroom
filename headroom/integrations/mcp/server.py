@@ -1,25 +1,21 @@
-"""Headroom MCP Integration: Compress tool outputs from MCP servers.
+"""Headroom MCP integration: compress tool outputs from MCP clients.
 
-This module provides multiple ways to integrate Headroom with MCP:
+This module provides three supported ways to use Headroom with MCP data:
 
-1. HeadroomMCPProxy - A proxy server that wraps upstream MCP servers
+1. HeadroomMCPCompressor - Core compression logic for MCP tool results
 2. compress_tool_result() - Standalone function for host applications
-3. HeadroomMCPMiddleware - Transport-level middleware
+3. HeadroomMCPClientWrapper - Client wrapper that compresses call_tool output
 
 The key insight: MCP tool outputs are the PERFECT use case for Headroom.
 They're often large (100s-1000s of items), structured (JSON), and contain
 mostly low-relevance data with a few critical items (errors, matches).
 
-Example - Proxy Server:
+For the ready-made Headroom MCP server, use the CLI:
     ```python
-    # Configure proxy to wrap your MCP servers
-    proxy = HeadroomMCPProxy(
-        upstream_servers=["slack", "database", "github"],
-        config=HeadroomConfig(),
-    )
-
-    # Run as MCP server - clients connect to this instead
-    proxy.run()
+    # Register the stdio MCP server with a supported client
+    # or run it directly for a custom MCP host.
+    #   headroom mcp install
+    #   headroom mcp serve
     ```
 
 Example - Standalone Function:
@@ -36,11 +32,13 @@ Example - Standalone Function:
     )
     ```
 
-Example - Middleware (for MCP client libraries):
+Example - Client Wrapper:
     ```python
-    # Wrap your MCP client's transport
-    middleware = HeadroomMCPMiddleware(config)
-    client = MCPClient(transport=middleware.wrap(base_transport))
+    from headroom.integrations.mcp import HeadroomMCPClientWrapper
+
+    base_client = MCPClient(transport)
+    client = HeadroomMCPClientWrapper(base_client)
+    result = await client.call_tool("search_logs", {"service": "api"})
     ```
 """
 
@@ -511,21 +509,22 @@ def create_headroom_mcp_proxy(
     upstream_servers: list[tuple[str, MCPServer]],
     config: HeadroomConfig | None = None,
 ) -> dict[str, Any]:
-    """Create configuration for a Headroom MCP proxy server.
+    """Create config pieces for custom MCP proxy implementations.
 
-    This returns a configuration dict that can be used to set up
-    a proxy server that wraps upstream MCP servers.
+    This helper does not start or return a runnable MCP server. It bundles
+    upstream server references with a Headroom compressor so an application can
+    build its own MCP proxy layer around them.
 
     Args:
         upstream_servers: List of (name, server) tuples.
         config: Headroom configuration.
 
     Returns:
-        Configuration dict for proxy server.
+        Configuration dict for custom proxy wiring.
 
     Example:
         ```python
-        # In your MCP server setup
+        # In your own MCP server setup
         proxy_config = create_headroom_mcp_proxy(
             upstream_servers=[
                 ("slack", slack_server),
@@ -533,7 +532,7 @@ def create_headroom_mcp_proxy(
             ]
         )
 
-        # Use proxy_config to initialize your proxy server
+        # Use proxy_config["compressor"] while forwarding upstream tool calls.
         ```
     """
     return {
