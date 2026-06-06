@@ -2,10 +2,11 @@
 
 Claude Code 2.x stores MCP server configuration in ``~/.claude/.claude.json``
 and ships a CLI (``claude mcp add/remove/list/get``) that owns the file.
-Older Claude Code releases (and the Claude Desktop app) read
-``~/.claude/mcp.json``. This registrar prefers the CLI for writes when
-available, and reads the underlying JSON files directly for compare /
-``get_server`` so it is robust to CLI output format changes.
+Older Claude Code releases can read ``~/.claude/mcp.json``. Claude Desktop
+uses its own ``claude_desktop_config.json`` path and is documented separately.
+This registrar prefers the CLI for writes when available, and reads the
+underlying JSON files directly for compare / ``get_server`` so it is robust to
+CLI output format changes.
 """
 
 from __future__ import annotations

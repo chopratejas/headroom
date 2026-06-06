@@ -37,6 +37,42 @@ headroom proxy
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
 ```
 
+## Claude Desktop (Claude.app)
+
+Claude Desktop can use Headroom's MCP tools when you configure Headroom as a local stdio MCP server. This gives Claude Desktop on-demand access to `headroom_compress`, `headroom_retrieve`, and `headroom_stats`.
+
+Add Headroom to your Claude Desktop `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "headroom": {
+      "type": "stdio",
+      "command": "headroom",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+If Claude Desktop cannot find `headroom`, replace `"command": "headroom"` with the full executable path from `which headroom` or `where headroom`.
+
+If you also run a persistent Headroom proxy, pass its URL so retrieval and stats come from that proxy:
+
+```json
+{
+  "mcpServers": {
+    "headroom": {
+      "type": "stdio",
+      "command": "headroom",
+      "args": ["mcp", "serve", "--proxy-url", "http://127.0.0.1:8788"]
+    }
+  }
+}
+```
+
+This is not the same as transparent proxy mode. `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` is for Claude Code and other API clients that honor Anthropic API base URL settings. Headroom does not currently provide a supported way to route the normal Claude Desktop chat app through the HTTP proxy layer or through system-level network interception.
+
 ## Tools
 
 ### headroom_compress
@@ -159,6 +195,7 @@ Do not assume that a running proxy exposes an HTTP MCP endpoint at `/mcp`. If `h
 | Tool | MCP Support | Setup |
 |------|-------------|-------|
 | Claude Code | Native | `headroom mcp install` |
+| Claude Desktop | Manual | Add `headroom mcp serve` to `claude_desktop_config.json` |
 | Cursor | Supported | Add to Cursor MCP settings |
 | Codex | If supported | Configure MCP server |
 | Any MCP host | Yes | Point to `headroom mcp serve` |

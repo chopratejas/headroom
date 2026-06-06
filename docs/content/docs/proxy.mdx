@@ -1,9 +1,9 @@
 ---
 title: Proxy Server
-description: Run the Headroom proxy to compress LLM traffic for any client — Claude Code, Cursor, OpenAI SDK, or custom apps.
+description: Run the Headroom proxy to compress LLM traffic for API clients that support custom base URLs.
 ---
 
-The Headroom proxy is a standalone HTTP server that compresses all LLM traffic passing through it. Point any client at the proxy and get automatic context optimization.
+The Headroom proxy is a standalone HTTP server that compresses LLM API traffic passing through it. Point a compatible API client at the proxy and get automatic context optimization.
 
 ## Starting the proxy
 
@@ -226,6 +226,10 @@ ANTHROPIC_BASE_URL=http://localhost:8787 claude
 # Cursor / any OpenAI-compatible client
 OPENAI_BASE_URL=http://localhost:8787/v1 cursor
 ```
+
+<Callout type="info" title="Claude Desktop is different">
+Claude Desktop (Claude.app) is not launched through `headroom wrap` and Headroom does not currently provide a supported way to route its normal chat traffic through the HTTP proxy. Use Headroom with Claude Desktop through the stdio MCP server (`headroom mcp serve`) instead; see [MCP Tools](/docs/mcp).
+</Callout>
 
 ## Cloud providers
 
