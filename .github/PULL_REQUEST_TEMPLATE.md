@@ -1,56 +1,77 @@
-## Description
+## Summary
 
-Brief description of changes and motivation.
+What changed, and why?
 
 Fixes #(issue number)
 
-## Type of Change
+## Type
 
-- [ ] Bug fix (non-breaking change that fixes an issue)
-- [ ] New feature (non-breaking change that adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to change)
-- [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Code refactoring (no functional changes)
+- [ ] Bug fix
+- [ ] Feature
+- [ ] Documentation
+- [ ] Tests / CI
+- [ ] Dependency / packaging
+- [ ] Refactor tied to a concrete fix
 
-## Changes Made
+## Scope and risk
 
-- Change 1
-- Change 2
-- Change 3
+- User-facing behavior changed: yes / no
+- Public API, CLI flag, config, env var, file format, or network behavior changed: yes / no
+- Provider / wrapper / installer / Docker behavior changed: yes / no
+- Security, privacy, telemetry, auth, or dependency surface changed: yes / no
 
-## Testing
+Notes:
 
-Describe the tests you ran to verify your changes:
+## Reproduction / spec
 
-- [ ] Unit tests pass (`pytest`)
-- [ ] Linting passes (`ruff check .`)
-- [ ] Type checking passes (`mypy headroom`)
-- [ ] New tests added for new functionality
-- [ ] Manual testing performed
+For bug fixes:
 
-## Test Output
+- Broken behavior before this PR:
+- Minimal repro or failing test:
+- Regression test added:
+
+For features:
+
+- Linked feature request or spec:
+- User story / expected flow:
+- Important failure mode covered:
+- Why this belongs in core rather than a plugin, docs recipe, or provider-specific extension:
+
+For dependency or package changes:
+
+- Why the change is needed:
+- Alternatives considered:
+- Runtime/dev/docs/optional-extra surface:
+- Supply-chain notes (maintainer, activity, license, native code, known advisories):
+
+## Real behavior proof
+
+Unit tests are useful, but please also show the behavior you actually checked.
+
+- Setup tested on:
+- Commands or steps run after the patch:
+- Observed result:
+- What was not tested:
+
+## Tests
+
+- [ ] Targeted tests pass
+- [ ] Relevant integration/e2e checks pass, or not practical and explained above
+- [ ] `ruff check .` for Python changes, or not applicable
+- [ ] `ruff format .` for Python changes, or not applicable
+- [ ] Docs/type checks updated or not applicable
+
+Paste the useful output:
+
+```text
 
 ```
-# Paste relevant test output here
-pytest -v tests/test_your_feature.py
-```
 
-## Checklist
+## Docs and release notes
 
-- [ ] My code follows the project's style guidelines
-- [ ] I have performed a self-review of my code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] I have updated the CHANGELOG.md if applicable
+- [ ] Docs, CLI help, examples, or migration notes updated where needed
+- [ ] `CHANGELOG.md` updated for user-facing changes, or not applicable
 
-## Screenshots (if applicable)
+## Reviewer notes
 
-Add screenshots to help explain your changes.
-
-## Additional Notes
-
-Any additional information that reviewers should know.
+Anything reviewers should look at first, known tradeoffs, or follow-up work.

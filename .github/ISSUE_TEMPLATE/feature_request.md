@@ -27,6 +27,43 @@ Explain your use case and why this feature would be valuable:
 
 Describe any alternative solutions or features you've considered.
 
+## Proposed Surface
+
+What would this change expose?
+
+- Public API:
+- CLI flags:
+- Config / env vars:
+- File formats:
+- Network behavior:
+- Telemetry / logging / metrics:
+
+## User Stories
+
+Use Given / When / Then if possible.
+
+- Given ...
+- When ...
+- Then ...
+
+## Failure Modes
+
+What should happen when the provider, network, filesystem, auth, subprocess, Docker runtime, or optional dependency is unavailable?
+
+## Security and Privacy
+
+Does this touch prompts, logs, credentials, telemetry, local files, network routing, or dependencies?
+
+## Core vs Extension
+
+Why should this live in core Headroom instead of a plugin, provider adapter, optional extra, docs recipe, or external integration package?
+
+## Test and Docs Plan
+
+- Tests needed:
+- E2E/manual checks needed:
+- Docs or examples needed:
+
 ## Example API (Optional)
 
 If you have ideas about how the API should look:

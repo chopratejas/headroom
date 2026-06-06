@@ -84,6 +84,13 @@ A human maintainer reviews every dep change. PRs that add or bump a package must
 
 **Review:** CI green, one maintainer review, coverage held/improved.
 
+## Process and automation changes
+
+Review gates start as templates and reviewer guidance. If you want to add a hard CI check,
+label rule, CODEOWNERS rule, dependency-diff gate, or required PR-body validation, open a
+process/governance issue first and describe the smallest useful version, expected maintainer
+time saved, contributor friction added, and rollback plan.
+
 ## Development setup
 
 ```bash

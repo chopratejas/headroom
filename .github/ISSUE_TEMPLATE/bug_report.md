@@ -10,13 +10,24 @@ assignees: ''
 
 A clear and concise description of what the bug is.
 
-## To Reproduce
+## Environment
+
+- **Headroom version**: (run `python -c "import headroom; print(headroom.__version__)"`)
+- **Python version**: (run `python --version`)
+- **OS**: (e.g., macOS 14.0, Ubuntu 22.04, Windows 11)
+- **Install mode**: (pip, pipx, Docker, native wrapper, editable checkout)
+- **Client / wrapper**: (e.g., Claude Code, Codex, Cursor, Copilot CLI, direct SDK)
+- **LLM Provider**: (e.g., OpenAI, Anthropic, Bedrock, Copilot subscription)
+
+## Reproduction
 
 Steps to reproduce the behavior:
 
 1. Install headroom with '...'
 2. Run this code '...'
 3. See error
+
+Please include the smallest command, script, request body, config, or log snippet that still reproduces the issue.
 
 ## Expected Behavior
 
@@ -41,12 +52,14 @@ from headroom import HeadroomClient
 Paste any error messages or stack traces here
 ```
 
-## Environment
+## Compatibility Notes
 
-- **Headroom version**: (run `python -c "import headroom; print(headroom.__version__)"`)
-- **Python version**: (run `python --version`)
-- **OS**: (e.g., macOS 14.0, Ubuntu 22.04, Windows 11)
-- **LLM Provider**: (e.g., OpenAI, Anthropic)
+- Does this happen only on a specific OS, shell, provider, model, install mode, wrapper, Docker/native mode, or Python version?
+- Did this work in an older Headroom version?
+
+## Regression Test Idea
+
+If you know where this could be covered, mention the narrowest useful test layer: unit, integration, e2e, docs example, or manual reproduction.
 
 ## Additional Context
 
