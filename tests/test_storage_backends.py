@@ -143,6 +143,31 @@ def test_create_storage_builtin_entrypoint_and_fallback(monkeypatch, tmp_path: P
     plain.close()
 
 
+def test_create_storage_normalizes_windows_drive_file_uri_paths(monkeypatch) -> None:
+    import headroom.storage as storage_module
+
+    sqlite_paths: list[str] = []
+    jsonl_paths: list[str] = []
+
+    class FakeSQLiteStorage:
+        def __init__(self, db_path: str) -> None:
+            sqlite_paths.append(db_path)
+
+    class FakeJSONLStorage:
+        def __init__(self, file_path: str) -> None:
+            jsonl_paths.append(file_path)
+
+    monkeypatch.setattr(storage_module.os, "name", "nt")
+    monkeypatch.setattr("headroom.storage.SQLiteStorage", FakeSQLiteStorage)
+    monkeypatch.setattr("headroom.storage.JSONLStorage", FakeJSONLStorage)
+
+    create_storage("sqlite:///C:/Users/test/headroom.db")
+    create_storage("jsonl:///C:/Users/test/headroom%20requests.jsonl")
+
+    assert sqlite_paths == ["C:/Users/test/headroom.db"]
+    assert jsonl_paths == ["C:/Users/test/headroom requests.jsonl"]
+
+
 def test_jsonl_storage_round_trip_query_count_and_summary(tmp_path: Path) -> None:
     storage = JSONLStorage(str(tmp_path / "metrics.jsonl"))
     now = datetime(2026, 4, 23, 12, 0, 0)
