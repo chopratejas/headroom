@@ -711,6 +711,126 @@ def test_compression_is_not_bypassed_when_gated(stage_log_capture):
     assert sem._value == 2
 
 
+def test_large_token_mode_request_forwards_compressed_result_without_waste_signal_delay(
+    monkeypatch,
+):
+    """Slow waste-signal parsing must not make token-mode discard compression.
+
+    Regression for #296: TransformPipeline logs "Pipeline complete" before
+    waste-signal detection. On huge Claude Code transcripts that diagnostic
+    pass can exceed the Anthropic compression timeout, causing the proxy to
+    fail open with the original request even though the compression result is
+    already available.
+    """
+
+    from headroom.config import HeadroomConfig, TransformResult
+    from headroom.transforms.base import Transform
+    from headroom.transforms.pipeline import TransformPipeline
+
+    class _LengthTokenizer:
+        def count_messages(self, messages) -> int:
+            total = 0
+            for message in messages:
+                content = message.get("content", "")
+                if isinstance(content, str):
+                    total += len(content)
+                elif isinstance(content, list):
+                    total += sum(
+                        len(part.get("text", "")) for part in content if isinstance(part, dict)
+                    )
+            return total
+
+        def count_text(self, text) -> int:
+            return len(str(text))
+
+    class _ShrinkTransform(Transform):
+        name = "test_shrink"
+
+        def apply(self, messages, tokenizer, **kwargs):
+            optimized = [dict(message) for message in messages]
+            optimized[-1] = {**optimized[-1], "content": "compressed"}
+            return TransformResult(
+                messages=optimized,
+                tokens_before=tokenizer.count_messages(messages),
+                tokens_after=tokenizer.count_messages(optimized),
+                transforms_applied=["test:shrink"],
+            )
+
+    tokenizer = _LengthTokenizer()
+    monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda _model: tokenizer)
+    monkeypatch.setattr("headroom.proxy.helpers.COMPRESSION_TIMEOUT_SECONDS", 0.05)
+
+    import headroom.parser as parser_mod
+
+    parse_called = False
+
+    def _slow_parse_messages(messages, tokenizer):
+        nonlocal parse_called
+        parse_called = True
+        time.sleep(0.2)
+        return [], {}, None
+
+    monkeypatch.setattr(parser_mod, "parse_messages", _slow_parse_messages)
+
+    sem = asyncio.Semaphore(1)
+    handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem)
+    handler.config = ProxyConfig(
+        optimize=True,
+        image_optimize=False,
+        retry_max_attempts=1,
+        retry_base_delay_ms=1,
+        retry_max_delay_ms=1,
+        connect_timeout_seconds=10,
+        mode="token",
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        fallback_enabled=False,
+        fallback_provider=None,
+        prefix_freeze_enabled=False,
+        memory_enabled=False,
+        anthropic_pre_upstream_concurrency=1,
+    )
+    handler.anthropic_pipeline = TransformPipeline(
+        config=HeadroomConfig(),
+        transforms=[_ShrinkTransform()],
+    )
+
+    captured: dict[str, dict] = {}
+
+    async def _capture_retry(
+        method,
+        url,
+        headers,
+        body,
+        *,
+        original_body_bytes=None,
+        body_mutated=True,
+        mutation_reasons=None,
+        request_id=None,
+        forwarder_name="test_dummy",
+        path_for_log=None,
+    ):
+        del method, url, headers, original_body_bytes, body_mutated
+        del mutation_reasons, request_id, forwarder_name, path_for_log
+        captured["body"] = body
+        return _ResponseStub()
+
+    handler._retry_request = _capture_retry
+    request = _build_request(
+        {
+            "model": "claude-3-5-sonnet-latest",
+            "messages": [{"role": "user", "content": "x" * 120_000}],
+        },
+        {"authorization": "Bearer sk-ant-api-test"},
+    )
+
+    anyio.run(handler.handle_anthropic_messages, request)
+
+    assert captured["body"]["messages"][0]["content"] == "compressed"
+    assert parse_called is False
+    assert sem._value == 1
+
+
 # --------------------------------------------------------------------------- #
 # CLI: --anthropic-pre-upstream-concurrency plumbs into ProxyConfig.           #
 # --------------------------------------------------------------------------- #

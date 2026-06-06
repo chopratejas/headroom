@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MAX_WASTE_SIGNAL_DETECTION_TOKENS = 100_000
+
 
 class TransformPipeline:
     """
@@ -156,6 +158,10 @@ class TransformPipeline:
             Combined TransformResult.
         """
         record_metrics = kwargs.pop("record_metrics", True)
+        detect_waste_signals = kwargs.pop("detect_waste_signals", True)
+        waste_signal_token_limit = int(
+            kwargs.pop("waste_signal_token_limit", MAX_WASTE_SIGNAL_DETECTION_TOKENS)
+        )
         tokenizer = self._get_tokenizer(model)
         provider_name = self._provider_name()
 
@@ -354,7 +360,12 @@ class TransformPipeline:
 
             # Detect waste signals in original messages (only when significant compression)
             waste_signals: WasteSignals | None = None
-            if tokens_before > tokens_after and (tokens_before - tokens_after) > 100:
+            should_detect_waste_signals = (
+                detect_waste_signals
+                and tokens_before > tokens_after
+                and (tokens_before - tokens_after) > 100
+            )
+            if should_detect_waste_signals and tokens_before <= waste_signal_token_limit:
                 try:
                     from ..parser import parse_messages
 
@@ -363,6 +374,14 @@ class TransformPipeline:
                         waste_signals = None
                 except Exception:
                     pass
+            elif should_detect_waste_signals:
+                logger.debug(
+                    "%sSkipping waste-signal detection for %d-token request "
+                    "(limit=%d) to keep compression result on the critical path",
+                    log_prefix,
+                    tokens_before,
+                    waste_signal_token_limit,
+                )
 
             if pipeline_span is not None and pipeline_span.is_recording():
                 pipeline_span.set_attribute("headroom.tokens.after", tokens_after)
