@@ -145,6 +145,7 @@ def test_get_rtk_stats_memoizes_subprocess_calls(monkeypatch: pytest.MonkeyPatch
 
 def test_get_context_tool_stats_reads_lean_ctx_gain(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+    lean_ctx_path = Path("/usr/bin/lean-ctx")
     now = {"value": 100.0}
     calls = {"run": 0}
     totals = [
@@ -166,14 +167,14 @@ def test_get_context_tool_stats_reads_lean_ctx_gain(monkeypatch: pytest.MonkeyPa
 
     def _fake_run(args, **kwargs):
         calls["run"] += 1
-        assert args == ["/usr/bin/lean-ctx", "gain", "--json"]
+        assert args == [str(lean_ctx_path), "gain", "--json"]
         summary = totals[min(calls["run"] - 1, len(totals) - 1)]
         return SimpleNamespace(returncode=0, stdout=json.dumps({"summary": summary}))
 
     monkeypatch.setattr(proxy_helpers.time, "monotonic", lambda: now["value"])
     monkeypatch.setattr(
         "headroom.lean_ctx.get_lean_ctx_path",
-        lambda: Path("/usr/bin/lean-ctx"),
+        lambda: lean_ctx_path,
     )
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
