@@ -247,6 +247,7 @@ class TestOnnxRouter:
         tech, _ = router.classify_query("Count every item in this image carefully")
         assert tech in (Technique.PRESERVE, Technique.FULL_LOW)
 
+    @needs_pillow
     def test_full_classify_with_image(self):
         """Full classification with query + image analysis."""
         from headroom.image.onnx_router import OnnxTechniqueRouter
