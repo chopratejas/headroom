@@ -1,0 +1,82 @@
+---
+title: Telemetry Surfaces
+description: A single inventory of the data Headroom can expose, persist, or export while the proxy is running.
+---
+
+Headroom has several observability surfaces: anonymous aggregate telemetry,
+local metrics, durable savings history, dashboard endpoints, optional OTEL
+export, optional Langfuse tracing, TOIN aggregation, request logs, and debug
+captures. Use this page and the CLI inventory when reviewing what Headroom can
+emit or store.
+
+```bash
+headroom telemetry list
+headroom telemetry list --json
+```
+
+The CLI command inspects local environment variables and canonical paths only.
+It does not start the proxy, call the proxy, contact an external endpoint, or
+create files.
+
+## Inventory
+
+| Surface | Emits | Default | Prompt content | Leaves host | Observe / export | Retention | Controls |
+|---|---|---|---|---|---|---|---|
+| `HEADROOM_TELEMETRY` beacon | Anonymous aggregate proxy stats: version, platform, install mode, request counts, token savings, cache/latency and strategy aggregates | On | No | Yes, when enabled | Startup banner, `/stats` `anon_telemetry_shipping`; posts to Headroom anonymous telemetry endpoint | Remote service controlled; not persisted locally by the beacon | `HEADROOM_TELEMETRY=off`, `headroom proxy --no-telemetry` |
+| Prometheus `/metrics` | Request, token, cache, latency, compression, subscription and health metrics | On when proxy runs | No | No active export; reachable if the proxy is exposed | `GET /metrics`; Prometheus or compatible scrape | In-memory counters for the running proxy process | Proxy host/port binding, network policy |
+| OTEL metrics | Operational counters and histograms from the proxy metrics facade | Off | No | Yes when enabled with OTLP/HTTP exporter; no for console exporter | Collector output or console exporter | Exporter controlled | `HEADROOM_OTEL_METRICS_ENABLED`, `HEADROOM_OTEL_METRICS_EXPORTER`, `HEADROOM_OTEL_METRICS_ENDPOINT`, `HEADROOM_OTEL_METRICS_HEADERS` |
+| Langfuse tracing | Compression pipeline spans with model/provider, token counts and transform names | Off | No by default | Yes when enabled and keys are present | Langfuse dashboard or `/stats` `langfuse` block | Langfuse controlled | `HEADROOM_LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_OTEL_HOST` |
+| Savings tracker | Durable token/cost savings totals and bounded history rollups | On | No | No | `GET /stats-history`, `/dashboard`, JSON/CSV export, savings JSON file | Bounded history plus lifetime totals until the file is removed | `HEADROOM_SAVINGS_PATH`, `HEADROOM_WORKSPACE_DIR` |
+| Dashboard | Live proxy, savings, request, cache, quota, TOIN and subscription views | On when proxy runs | No by default | No active export; reachable if the proxy is exposed | `GET /dashboard`; reads `/stats` and `/stats-history` | Browser/session only; backed by runtime stats and savings history | Proxy host/port binding, network policy |
+| Stats endpoints | Live stats, durable history, quotas, request metadata and subsystem status | On when proxy runs | No by default | No active export; reachable if the proxy is exposed | `GET /stats`, `/stats-history`, `/quota` | In-memory stats plus savings ledger for history | Proxy host/port binding, network policy |
+| TOIN aggregation | Aggregated tool-output compression/retrieval patterns and strategy outcomes | On | No raw values; structure and outcome aggregates only | No unless a custom backend points outside the host | `GET /v1/toin/stats`, filesystem JSON, or custom backend | Backend controlled; filesystem data remains until removed | `HEADROOM_TOIN_BACKEND`, `HEADROOM_TOIN_PATH`, `HEADROOM_TOIN_URL`, `HEADROOM_TOIN_TENANT_PREFIX` |
+| Proxy request log | Recent request metadata, outcomes, tags, token counts, model/provider and timings | Metadata in memory; file off unless configured | No by default; opt in with `HEADROOM_LOG_MESSAGES=true` or `--log-messages` | No | `/stats` `recent_requests`, `/transformations/feed`, optional JSONL file | Up to 10,000 in-memory entries; file retention is operator controlled | `HEADROOM_LOG_FILE`, `--log-file`, `HEADROOM_LOG_MESSAGES`, `--log-messages` |
+| HTTP 400 debug dumps | Full local diagnostic JSON for upstream errors, including sent/original messages and system prompt | On for upstream error diagnostics | Yes, on upstream 4xx error dumps | No | Files under `${HEADROOM_WORKSPACE_DIR}/logs/debug_400/` | Until files are removed by the operator | `HEADROOM_WORKSPACE_DIR` controls location; no dedicated off switch is currently exposed |
+| Codex wire debug captures | Opt-in Codex wire snapshots and matching proxy log frame traces | Off | Yes when explicitly enabled; secrets are redacted | No | Files under `${HEADROOM_WORKSPACE_DIR}/logs/codex_wire/` or `HEADROOM_CODEX_WIRE_DEBUG_DIR` | Until files are removed by the operator | `HEADROOM_CODEX_WIRE_DEBUG`, `HEADROOM_CODEX_WIRE_DEBUG_DIR`, `--codex-wire-debug`, `--codex-wire-debug-dir` |
+
+## Content Handling
+
+Most surfaces expose aggregate metrics or request metadata only. The important
+exceptions are local diagnostic surfaces:
+
+| Surface | When content can appear |
+|---|---|
+| HTTP 400 debug dumps | On upstream 4xx errors, Headroom writes a local JSON diagnostic dump containing the sent/original messages, tools, and system prompt. |
+| Proxy request log | Only when `HEADROOM_LOG_MESSAGES=true` or `--log-messages` is enabled. |
+| Codex wire debug captures | Only when `HEADROOM_CODEX_WIRE_DEBUG=true` or `--codex-wire-debug` is enabled. Secrets are redacted, but wire payload content can still be present. |
+
+## Common Checks
+
+Disable the anonymous aggregate beacon:
+
+```bash
+HEADROOM_TELEMETRY=off headroom proxy
+headroom proxy --no-telemetry
+```
+
+Inspect the current local policy as JSON:
+
+```bash
+headroom telemetry list --json
+```
+
+Run with OTEL metrics export:
+
+```bash
+HEADROOM_OTEL_METRICS_ENABLED=true \
+HEADROOM_OTEL_METRICS_ENDPOINT=http://collector:4318/v1/metrics \
+headroom proxy
+```
+
+Keep request content out of logs and live feed:
+
+```bash
+unset HEADROOM_LOG_MESSAGES
+headroom proxy
+```
+
+Relocate local state for managed deployments:
+
+```bash
+HEADROOM_WORKSPACE_DIR=/var/lib/headroom headroom proxy
+```
