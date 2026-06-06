@@ -82,9 +82,9 @@ class TestTOINDefaultStoragePath:
         assert config.storage_path, "TOINConfig should have a default storage_path"
 
         # Verify it points to expected location
-        expected_suffix = ".headroom/toin.json"
-        assert config.storage_path.endswith(expected_suffix), (
-            f"Default path should end with {expected_suffix}, got: {config.storage_path}"
+        expected_suffix = (".headroom", "toin.json")
+        assert Path(config.storage_path).parts[-2:] == expected_suffix, (
+            f"Default path should end with {Path(*expected_suffix)}, got: {config.storage_path}"
         )
 
         # Verify the get_default_toin_storage_path function works
@@ -149,7 +149,7 @@ class TestTOINDefaultStoragePath:
             print(f"get_default_toin_storage_path(): {default_path}")
 
             # Should fall back to default ~/.headroom/toin.json
-            assert ".headroom/toin.json" in default_path, (
+            assert Path(default_path).parts[-2:] == (".headroom", "toin.json"), (
                 f"Empty env var should use default, got: {default_path}"
             )
 
