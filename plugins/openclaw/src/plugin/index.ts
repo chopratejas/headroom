@@ -80,11 +80,14 @@ export default function headroomPlugin(api: any) {
   api.registerContextEngine("headroom", () => engine);
 
   // Register CCR retrieval tool (active once proxy is running)
-  api.registerTool((ctx: any) => {
-    const activeProxyUrl = engine.getProxyUrl() ?? proxyUrl;
-    if (!activeProxyUrl) return null;
-    return createHeadroomRetrieveTool({ proxyUrl: activeProxyUrl });
-  });
+  api.registerTool(
+    (ctx: any) => {
+      const activeProxyUrl = engine.getProxyUrl() ?? proxyUrl;
+      if (!activeProxyUrl) return null;
+      return createHeadroomRetrieveTool({ proxyUrl: activeProxyUrl });
+    },
+    { name: "headroom_retrieve" },
+  );
 
   api.on("gateway_start", async () => {
     await ensureGatewayRouting();

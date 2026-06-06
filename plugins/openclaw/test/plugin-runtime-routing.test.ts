@@ -102,6 +102,9 @@ describe("headroomPlugin runtime routing", () => {
 
     expect(mocked.ensureProxyUrl).not.toHaveBeenCalled();
     expect(mocked.ensureProxyStarted).toHaveBeenCalledTimes(1);
+    expect(api.registerTool).toHaveBeenCalledWith(expect.any(Function), {
+      name: "headroom_retrieve",
+    });
     expect(writeConfigFile).not.toHaveBeenCalled();
     expect(loadConfig).not.toHaveBeenCalled();
     expect(api.config.models.providers["openai-codex"]).toBeUndefined();
