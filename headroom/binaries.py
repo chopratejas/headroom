@@ -502,13 +502,20 @@ def status() -> list[dict[str, Any]]:
             "path": None,
             "state": "missing",
         }
-        # Honor PATH.
-        on_path = shutil.which(name) or (
-            shutil.which(entry["binary"]) if entry.get("binary") else None
-        )
+        # Honor PATH and this interpreter's Scripts/bin directory for PyPI
+        # console scripts when the venv is not activated.
+        on_path = _path_lookup(name)
         if on_path:
-            row["path"] = on_path
+            row["path"] = str(on_path)
             row["state"] = "on-path"
+            out.append(row)
+            continue
+        if _is_pypi_tool(name):
+            row["state"] = "missing"
+            row["detail"] = (
+                f"{name}: distributed via PyPI only; expected `{entry.get('binary', name)}` "
+                "on PATH or in this interpreter's Scripts/bin directory."
+            )
             out.append(row)
             continue
         try:

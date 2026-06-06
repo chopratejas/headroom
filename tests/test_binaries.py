@@ -10,6 +10,7 @@ import io
 import sys
 import tarfile
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -352,3 +353,19 @@ def test_status_reports_every_registered_tool(monkeypatch):
     assert {"difft", "scc", "ast-grep"} <= names
     for r in rows:
         assert r["state"] in ("on-path", "cached", "missing", "unsupported-platform")
+
+
+def test_status_uses_interpreter_script_lookup_for_pypi_tools(monkeypatch):
+    _set_platform(monkeypatch, sys_plat="win32", machine="AMD64")
+    fake_path = Path("C:/venv/Scripts/ast-grep.exe")
+    monkeypatch.setattr(binaries.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        binaries,
+        "_path_lookup",
+        lambda name: fake_path if name == "ast-grep" else None,
+    )
+
+    rows = {row["tool"]: row for row in binaries.status()}
+
+    assert rows["ast-grep"]["state"] == "on-path"
+    assert rows["ast-grep"]["path"] == str(fake_path)
