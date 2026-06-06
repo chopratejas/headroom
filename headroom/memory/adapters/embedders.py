@@ -17,13 +17,45 @@ import warnings
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
-
-from headroom.models.config import ML_MODEL_DEFAULTS
-from headroom.onnx_runtime import create_cpu_session_options, hf_hub_download_local_first
-
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
+
+
+_THREAD_CAP_DISABLE_VALUES = {"0", "auto", "false", "none", "off"}
+_BLAS_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+
+
+def _memory_embed_thread_cap() -> int | None:
+    raw = os.environ.get("HEADROOM_MEMORY_EMBED_THREADS", "1").strip().lower()
+    if raw in _THREAD_CAP_DISABLE_VALUES:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value > 0 else None
+
+
+_MEMORY_EMBED_THREAD_CAP = _memory_embed_thread_cap()
+if _MEMORY_EMBED_THREAD_CAP is not None:
+    for _thread_env_var in _BLAS_THREAD_ENV_VARS:
+        os.environ.setdefault(_thread_env_var, str(_MEMORY_EMBED_THREAD_CAP))
+
+# Thread env vars must be set before numpy/torch-backed libraries initialize pools.
+import numpy as np  # noqa: E402
+
+from headroom.models.config import ML_MODEL_DEFAULTS  # noqa: E402
+from headroom.onnx_runtime import (  # noqa: E402
+    create_cpu_session_options,
+    hf_hub_download_local_first,
+)
 
 # Suppress HuggingFace Hub warnings about missing tokens and rate limits.
 # These appear whenever hf_hub_download is called without HF_TOKEN set.
@@ -38,6 +70,23 @@ logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_torch_thread_cap(torch_module: Any) -> None:
+    """Apply the local embedder thread cap to torch if torch is already loaded."""
+    if _MEMORY_EMBED_THREAD_CAP is None:
+        return
+
+    for setter_name in ("set_num_threads", "set_num_interop_threads"):
+        setter = getattr(torch_module, setter_name, None)
+        if not callable(setter):
+            continue
+        try:
+            setter(_MEMORY_EMBED_THREAD_CAP)
+        except RuntimeError:
+            logger.debug(
+                "torch.%s already initialized; keeping existing thread setting", setter_name
+            )
 
 
 def _normalize_embedding(embedding: np.ndarray) -> np.ndarray:
@@ -141,6 +190,8 @@ class LocalEmbedder:
             Device string: "cuda", "mps", or "cpu".
         """
         import torch
+
+        _configure_torch_thread_cap(torch)
 
         if torch.cuda.is_available():
             logger.info("CUDA device detected, using GPU")

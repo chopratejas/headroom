@@ -9,8 +9,20 @@ Covers the fixes in:
 
 from __future__ import annotations
 
+import importlib
 import logging
+import os
 import warnings
+from types import SimpleNamespace
+
+_EMBEDDER_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
 
 
 class TestAnthropicWarnParameter:
@@ -105,6 +117,52 @@ class TestEmbedderLogLevels:
 
         assert os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == "1"
         assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "1"
+
+
+class TestEmbedderThreadCaps:
+    """Local sentence-transformers embedding should not oversubscribe BLAS threads."""
+
+    def test_blas_thread_env_defaults_to_one(self, monkeypatch):
+        """Import-time defaults cap BLAS/OpenMP pools unless the user configured them."""
+        for name in (*_EMBEDDER_THREAD_ENV_VARS, "HEADROOM_MEMORY_EMBED_THREADS"):
+            monkeypatch.delenv(name, raising=False)
+
+        import headroom.memory.adapters.embedders as embedders
+
+        importlib.reload(embedders)
+
+        for name in _EMBEDDER_THREAD_ENV_VARS:
+            assert os.environ.get(name) == "1"
+
+    def test_blas_thread_env_respects_existing_values(self, monkeypatch):
+        """Existing BLAS/OpenMP env vars must win over Headroom defaults."""
+        for name in _EMBEDDER_THREAD_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("HEADROOM_MEMORY_EMBED_THREADS", "2")
+        monkeypatch.setenv("OMP_NUM_THREADS", "4")
+
+        import headroom.memory.adapters.embedders as embedders
+
+        importlib.reload(embedders)
+
+        assert os.environ["OMP_NUM_THREADS"] == "4"
+        assert os.environ["MKL_NUM_THREADS"] == "2"
+
+    def test_configure_torch_thread_cap_calls_torch_setters(self, monkeypatch):
+        """If torch is already imported, apply the same cap through torch APIs."""
+        import headroom.memory.adapters.embedders as embedders
+
+        calls: list[tuple[str, int]] = []
+        fake_torch = SimpleNamespace(
+            set_num_threads=lambda value: calls.append(("threads", value)),
+            set_num_interop_threads=lambda value: calls.append(("interop", value)),
+        )
+
+        monkeypatch.setattr(embedders, "_MEMORY_EMBED_THREAD_CAP", 2)
+
+        embedders._configure_torch_thread_cap(fake_torch)
+
+        assert calls == [("threads", 2), ("interop", 2)]
 
 
 class TestLiteLLMLogSuppression:
