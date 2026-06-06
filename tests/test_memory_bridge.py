@@ -256,6 +256,11 @@ def bridge_config(tmp_dir):
 @pytest.fixture
 async def backend(tmp_dir):
     """Create a LocalBackend with temp database."""
+    pytest.importorskip(
+        "sentence_transformers",
+        reason="Memory bridge backend tests require sentence-transformers",
+    )
+
     from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 
     config = LocalBackendConfig(db_path=str(tmp_dir / "test_memory.db"))
