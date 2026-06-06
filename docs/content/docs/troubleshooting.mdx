@@ -37,6 +37,58 @@ curl http://localhost:8787/health
 ps aux | grep headroom
 ```
 
+### OpenClaw compresses context but proxy stats stay at 0 requests
+
+**Symptom**: OpenClaw logs show Headroom compression, but
+`http://localhost:8787/stats` shows 0 proxy requests, and a local OpenAI-compatible
+server such as vLLM still hits context overflow after several turns.
+
+**Cause**: The OpenClaw Headroom context engine can compress context locally, but
+it does not automatically rewrite the LLM provider `baseUrl`. If OpenClaw still
+points directly at vLLM, model traffic bypasses the Headroom proxy.
+
+Run Headroom as the provider-facing proxy and point it at the vLLM server:
+
+```bash
+headroom proxy \
+  --host 0.0.0.0 \
+  --port 8787 \
+  --openai-api-url http://192.168.110.178:30000/v1
+```
+
+Then point OpenClaw's OpenAI-compatible provider at Headroom, not at vLLM:
+
+```json
+{
+  "openai": {
+    "baseUrl": "http://127.0.0.1:8787/v1",
+    "api": "openai-completions",
+    "apiKey": "Boost2024",
+    "models": [
+      {
+        "id": "Qwen3.5-35B-A3B",
+        "name": "Qwen3.5-35B-A3B (via Headroom)",
+        "contextWindow": 256000,
+        "maxTokens": 32000
+      }
+    ]
+  }
+}
+```
+
+If OpenClaw runs in another container or on another machine, replace
+`127.0.0.1` with the LAN address or Docker service name that reaches the
+Headroom proxy. Keep the Headroom plugin `proxyUrl` pointed at the same reachable
+proxy URL if you also use OpenClaw's context-engine integration.
+
+After one chat request, check the proxy directly:
+
+```bash
+curl http://127.0.0.1:8787/stats
+```
+
+If `total_requests` is still 0, OpenClaw is still bypassing the proxy.
+
 ### Proxy returns errors for some requests
 
 **Symptom**: Some requests work, others fail with 502/503.
