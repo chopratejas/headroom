@@ -95,6 +95,15 @@ _CODE_PATTERNS = {
         re.compile(r"^\s*@\w+"),  # annotations
         re.compile(r"^\s*package\s+[\w.]+;"),
     ],
+    "php": [
+        re.compile(r"^\s*<\?php\b"),
+        re.compile(r"^\s*declare\s*\("),
+        re.compile(r"^\s*namespace\s+[\w\\]+;"),
+        re.compile(r"^\s*use\s+[\w\\]+(?:\s+as\s+\w+)?;"),
+        re.compile(r"^\s*(final\s+|abstract\s+)?(class|interface|trait|enum)\s+\w+"),
+        re.compile(r"^\s*(public|private|protected)?\s*(static\s+)?function\s+\w+\s*\("),
+        re.compile(r"\$this->\w+"),
+    ],
 }
 
 # Log/build output patterns

@@ -16,7 +16,7 @@ Supported Languages (Tier 1):
 - Python, JavaScript, TypeScript
 
 Supported Languages (Tier 2):
-- Go, Rust, Java, C, C++
+- Go, Rust, Java, PHP, C, C++
 
 Compression Strategy:
 1. Parse code into AST using tree-sitter
@@ -129,7 +129,7 @@ def _get_parser(language: str) -> Any:
         except Exception as e:
             raise ValueError(
                 f"Language '{language}' is not supported by tree-sitter. "
-                f"Supported: python, javascript, typescript, go, rust, java, c, cpp. "
+                f"Supported: python, javascript, typescript, go, rust, java, php, c, cpp. "
                 f"Error: {e}"
             ) from e
 
@@ -181,6 +181,7 @@ class CodeLanguage(Enum):
     GO = "go"
     RUST = "rust"
     JAVA = "java"
+    PHP = "php"
     C = "c"
     CPP = "cpp"
     UNKNOWN = "unknown"
@@ -294,6 +295,31 @@ _LANG_CONFIGS: dict[CodeLanguage, LangConfig] = {
         uses_colon_after_signature=False,
         package_node="package_declaration",
         detection_hints=("public ", "private ", "protected ", "class ", "interface "),
+    ),
+    CodeLanguage.PHP: LangConfig(
+        import_nodes=frozenset(
+            {
+                "php_tag",
+                "declare_statement",
+                "namespace_definition",
+                "namespace_use_declaration",
+            }
+        ),
+        function_nodes=frozenset({"function_definition", "method_declaration"}),
+        class_nodes=frozenset(
+            {
+                "class_declaration",
+                "interface_declaration",
+                "trait_declaration",
+                "enum_declaration",
+            }
+        ),
+        type_nodes=frozenset(),
+        body_node_types=frozenset({"compound_statement", "declaration_list"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("<?php", "namespace ", "use ", "function ", "$this->"),
     ),
     CodeLanguage.C: LangConfig(
         import_nodes=frozenset({"preproc_include"}),
@@ -495,6 +521,21 @@ _LANGUAGE_PREFILTER: dict[CodeLanguage, list[re.Pattern[str]]] = {
     CodeLanguage.JAVA: [
         re.compile(r"^\s*(public|private|protected)\s+(class|interface|enum)", re.MULTILINE),
         re.compile(r"^\s*package\s+[\w.]+;", re.MULTILINE),
+    ],
+    CodeLanguage.PHP: [
+        re.compile(r"^\s*<\?php\b", re.MULTILINE),
+        re.compile(r"^\s*declare\s*\(", re.MULTILINE),
+        re.compile(r"^\s*namespace\s+[\w\\]+;", re.MULTILINE),
+        re.compile(r"^\s*use\s+[\w\\]+(?:\s+as\s+\w+)?;", re.MULTILINE),
+        re.compile(
+            r"^\s*(?:final\s+|abstract\s+)?(?:class|interface|trait|enum)\s+\w+",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\s*(?:public|private|protected)?\s*(?:static\s+)?function\s+\w+\s*\(",
+            re.MULTILINE,
+        ),
+        re.compile(r"\$this->\w+", re.MULTILINE),
     ],
     CodeLanguage.C: [
         re.compile(r"^\s*#include\s*[<\"]", re.MULTILINE),
@@ -1585,11 +1626,24 @@ class CodeAwareCompressor(Transform):
         sig_end = body_start_line - node_start_line
         header_lines = node_lines[:sig_end] if sig_end > 0 else [node_lines[0]]
 
+        body_end_line = body_node.end_point[0]
+        body_lines = code_lines[body_start_line : body_end_line + 1]
+        opening_brace_line = None
+        closing_brace_line = None
+        if not lang_config.uses_colon_after_signature and body_lines:
+            if body_lines[0].strip().startswith("{"):
+                opening_brace_line = body_lines[0]
+            if body_lines[-1].strip().endswith("}"):
+                closing_brace_line = body_lines[-1]
+
         # Process each child of the class body individually
         body_parts: list[str] = []
         processed_ranges: list[tuple[int, int]] = []
 
         for child in body_node.children:
+            if not child.is_named and child.type in {"{", "}", ";", ","}:
+                continue
+
             # Use line-based extraction for children too
             child_start = child.start_point[0]
             child_end = child.end_point[0]
@@ -1636,14 +1690,17 @@ class CodeAwareCompressor(Transform):
 
         # Reconstruct class with proper indentation
         result_parts = list(header_lines)
+        if opening_brace_line is not None and not result_parts[-1].strip().endswith("{"):
+            result_parts.append(opening_brace_line)
         for part in body_parts:
             result_parts.append(part)
 
         # Handle closing brace for brace-delimited languages
-        body_end_line = body_node.end_point[0]
         body_end_rel = body_end_line - node_start_line + 1
         after_lines = node_lines[body_end_rel:]
-        if after_lines:
+        if closing_brace_line is not None:
+            result_parts.append(closing_brace_line)
+        elif after_lines:
             result_parts.extend(after_lines)
         elif not lang_config.uses_colon_after_signature:
             # Ensure closing brace

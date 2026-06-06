@@ -207,6 +207,46 @@ def generate_go_code(n_functions: int = 3) -> str:
     return "\n".join(lines)
 
 
+def generate_php_code() -> str:
+    """Generate PHP code for testing."""
+    return """<?php
+
+declare(strict_types=1);
+
+namespace App\\Service;
+
+use App\\Repository\\OrderRepository;
+use RuntimeException;
+
+final class OrderService
+{
+    public function __construct(private OrderRepository $orders) {}
+
+    public function totalForUser(int $userId): int
+    {
+        $total = 0;
+        foreach ($this->orders->findByUser($userId) as $order) {
+            $total += $order->amount();
+        }
+        if ($total < 0) {
+            throw new RuntimeException('invalid total');
+        }
+        return $total;
+    }
+}
+
+function normalize_order_id(string $id): string
+{
+    $normalized = strtolower($id);
+    $normalized = trim($normalized);
+    if ($normalized === '') {
+        return 'unknown';
+    }
+    return $normalized;
+}
+"""
+
+
 # =============================================================================
 # TestCodeCompressorConfig
 # =============================================================================
@@ -382,6 +422,13 @@ func main() {
         assert lang == CodeLanguage.GO
         assert confidence > 0.3
 
+    def test_detect_php_language(self):
+        """PHP language is detected from code patterns."""
+        lang, confidence = detect_language(generate_php_code())
+
+        assert lang == CodeLanguage.PHP
+        assert confidence > 0.5
+
 
 # =============================================================================
 # TestCodeAwareCompressor
@@ -476,6 +523,12 @@ func main() {
 """
         result = compressor.compress(code)
         assert result.language in (CodeLanguage.GO, CodeLanguage.UNKNOWN)
+
+    def test_compress_auto_detects_php(self, compressor):
+        """PHP code is auto-detected during compression."""
+        result = compressor.compress(generate_php_code())
+
+        assert result.language in (CodeLanguage.PHP, CodeLanguage.UNKNOWN)
 
 
 # =============================================================================
@@ -768,6 +821,27 @@ class TestTreeSitterIntegration:
         assert result.syntax_valid is True
         assert result.language == CodeLanguage.GO
         assert result.compressed  # Some output is produced
+
+    def test_actual_php_compression(self):
+        """Test actual compression of PHP code."""
+        config = CodeCompressorConfig(
+            min_tokens_for_compression=10,
+            enable_ccr=False,
+        )
+        compressor = CodeAwareCompressor(config)
+
+        result = compressor.compress(generate_php_code(), language="php")
+
+        assert result.compression_ratio < 1.0
+        assert result.syntax_valid is True
+        assert result.language == CodeLanguage.PHP
+        assert "<?php" in result.compressed
+        assert "declare(strict_types=1);" in result.compressed
+        assert "namespace App\\Service;" in result.compressed
+        assert "use App\\Repository\\OrderRepository;" in result.compressed
+        assert "final class OrderService" in result.compressed
+        assert "public function totalForUser(int $userId): int" in result.compressed
+        assert "function normalize_order_id(string $id): string" in result.compressed
 
     def test_imports_preserved(self):
         """Imports are preserved in compressed output."""

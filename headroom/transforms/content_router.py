@@ -1647,6 +1647,7 @@ class ContentRouter(Transform):
                             "go",
                             "rust",
                             "java",
+                            "php",
                             "c",
                             "cpp",
                         ]

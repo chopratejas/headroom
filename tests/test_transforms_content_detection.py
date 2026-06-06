@@ -168,6 +168,36 @@ def test_code_detection_identifies_language_and_thresholds() -> None:
     assert _try_detect_code("\n\n") is None
 
 
+def test_code_detection_identifies_php() -> None:
+    php_code = "\n".join(
+        [
+            "<?php",
+            "",
+            "declare(strict_types=1);",
+            "",
+            "namespace App\\Service;",
+            "",
+            "use App\\Repository\\OrderRepository;",
+            "use RuntimeException;",
+            "",
+            "final class OrderService",
+            "{",
+            "    public function totalForUser(int $userId): int",
+            "    {",
+            "        return $this->orders->totalForUser($userId);",
+            "    }",
+            "}",
+        ]
+    )
+
+    result = _try_detect_code(php_code)
+
+    assert result is not None
+    assert result.content_type is ContentType.SOURCE_CODE
+    assert result.metadata == {"language": "php", "pattern_matches": 7}
+    assert detect_content_type(php_code).content_type is ContentType.SOURCE_CODE
+
+
 def test_detect_content_type_respects_priority_order() -> None:
     diff_like_search = "\n".join(
         [
