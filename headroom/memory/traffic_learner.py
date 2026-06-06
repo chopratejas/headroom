@@ -1422,6 +1422,14 @@ _CATEGORY_SECTION_TITLE: dict[PatternCategory, str] = {
 }
 
 
+def _project_match_key(path: str) -> str:
+    """Normalize path separators for project-root prefix matching."""
+    normalized = path.replace("\\", "/").rstrip("/")
+    if len(normalized) >= 2 and normalized[1] == ":":
+        normalized = normalized[0].upper() + normalized[1:]
+    return normalized
+
+
 def _project_for_pattern(pattern: ExtractedPattern, roots: list[ProjectInfo]) -> ProjectInfo | None:
     """Return the project whose root most specifically matches this pattern.
 
@@ -1444,18 +1452,19 @@ def _project_for_pattern(pattern: ExtractedPattern, roots: list[ProjectInfo]) ->
         return None
 
     # Longest root first — most specific wins
-    roots_sorted = sorted(roots, key=lambda p: len(str(p.project_path)), reverse=True)
+    roots_sorted = sorted(
+        roots,
+        key=lambda p: len(_project_match_key(str(p.project_path))),
+        reverse=True,
+    )
 
     for cand in candidates:
+        cand_key = _project_match_key(cand)
         for root in roots_sorted:
-            root_str = str(root.project_path).rstrip("/\\")
+            root_str = _project_match_key(str(root.project_path))
             if not root_str:
                 continue
-            if (
-                cand == root_str
-                or cand.startswith(root_str + "/")
-                or cand.startswith(root_str + "\\")
-            ):
+            if cand_key == root_str or cand_key.startswith(root_str + "/"):
                 return root
     return None
 
