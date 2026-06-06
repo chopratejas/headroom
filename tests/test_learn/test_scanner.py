@@ -366,7 +366,7 @@ class TestDecodeProjectPath:
         import shutil
 
         home = Path.home()
-        if len(home.parts) < 3 or home.parts[1] not in ("Users", "home"):
+        if home.drive or len(home.parts) < 3 or home.parts[1] not in ("Users", "home"):
             pytest.skip("decoder branch only activates under /Users or /home")
 
         base = home / f"pytest_headroom_{uuid4().hex}"
