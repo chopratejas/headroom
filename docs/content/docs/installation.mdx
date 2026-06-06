@@ -7,10 +7,14 @@ description: Install Headroom via pip, npm, or Docker. Includes all Python extra
 
 Headroom requires **Python 3.10+** and is published as `headroom-ai` on PyPI.
 Current release wheels are built for Python **3.10 through 3.13** on Linux
-(manylinux_2_28 x86_64 / aarch64) and macOS (Apple Silicon). Other targets —
-**Windows** and **Intel macOS** — fall back to building the Rust extension
-from the sdist and need a working native toolchain. If your installer is
-using a newer Python, force a supported interpreter.
+(manylinux_2_28 x86_64 / aarch64) and macOS (Apple Silicon). **Windows**
+falls back to building the Rust extension from the sdist and needs a working
+native toolchain. **Intel macOS** (`x86_64-apple-darwin`) is not a supported
+native Python install target today because `ort-sys` does not provide
+prebuilt ONNX Runtime binaries for that target. Use the Docker-native install
+or run the proxy container instead.
+
+If your installer is using a newer Python, force a supported interpreter.
 
 ### Core package
 
@@ -84,6 +88,22 @@ To install the prerequisites:
 If you'd rather avoid the native toolchain entirely, run Headroom
 through Docker — see the [Docker](#docker) section below. Native
 Windows wheels are tracked in [#636](https://github.com/chopratejas/headroom/issues/636).
+
+### Intel macOS
+
+Headroom does not currently ship native Python wheels for Intel Macs
+(`x86_64-apple-darwin`). Building from the sdist is also not a reliable
+workaround because the Rust extension depends on `ort-sys`, and that crate
+does not publish prebuilt ONNX Runtime binaries for Intel macOS.
+
+Use one of these paths instead:
+
+- [Docker-Native Install](/docs/docker-install), which keeps Headroom inside Docker while exposing a host `headroom` wrapper.
+- A direct proxy container:
+
+```bash
+docker run --rm -p 8787:8787 ghcr.io/chopratejas/headroom:latest
+```
 
 ### pipx
 

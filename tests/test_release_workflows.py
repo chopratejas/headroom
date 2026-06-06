@@ -281,8 +281,8 @@ def test_build_wheels_matrix_excludes_intel_macos() -> None:
     """`ort-sys 2.0.0-rc.12` (transitive via the ML compression backend)
     has no prebuilt ONNX Runtime binaries for `x86_64-apple-darwin`.
     Building ORT from source would add CMake + ~5 minutes per build.
-    Apple Silicon macOS is fully covered; Intel-mac users install from
-    the platform-independent sdist this matrix also produces.
+    Apple Silicon macOS is fully covered; Intel-mac users should use Docker
+    until the native backend support changes.
 
     We assert against the actual matrix entry shape (`target: <triple>`
     on a non-comment line) so explanatory comments mentioning the
@@ -323,6 +323,30 @@ def test_build_wheels_matrix_excludes_intel_macos() -> None:
         if stripped.startswith("os:"):
             matrix_os.append(stripped.split(":", 1)[1].strip())
     assert "macos-15-intel" not in matrix_os
+
+
+def test_install_docs_do_not_send_intel_macos_users_to_sdist() -> None:
+    """Intel macOS users should not be told that the sdist is the fallback.
+
+    The sdist builds the same Rust extension, and `ort-sys` still lacks
+    prebuilt ONNX Runtime binaries for `x86_64-apple-darwin`.
+    """
+
+    installation = (ROOT / "docs" / "content" / "docs" / "installation.mdx").read_text(
+        encoding="utf-8"
+    )
+    troubleshooting = (ROOT / "docs" / "content" / "docs" / "troubleshooting.mdx").read_text(
+        encoding="utf-8"
+    )
+    release_yml = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    rust_yml = (ROOT / ".github" / "workflows" / "rust.yml").read_text(encoding="utf-8")
+    combined = "\n".join([installation, troubleshooting, release_yml, rust_yml])
+
+    assert "x86_64-apple-darwin" in combined
+    assert "Docker-Native Install" in installation
+    assert "Docker-Native Install" in troubleshooting
+    assert "platform-independent sdist" not in combined
+    assert "build from source locally" not in combined
 
 
 def test_aarch64_wheel_uses_native_arm64_runner() -> None:

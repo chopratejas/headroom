@@ -252,8 +252,10 @@ jobs:
           # ML compression backend) does not provide prebuilt ONNX Runtime
           # binaries for `x86_64-apple-darwin`, and building ORT from
           # source would add CMake + ~5 minutes per build. Apple Silicon
-          # macOS is fully covered below; Intel-mac users install the
-          # platform-independent sdist (also produced by this matrix).
+          # macOS is fully covered below; Intel-mac users should use the
+          # Docker-native install or proxy container until backend support
+          # changes. The sdist still has to build the same Rust extension
+          # and is not a reliable Intel-mac workaround.
           # Tracked as a follow-up: switch to `ort-tract` or upstream a
           # request for x86_64 macOS prebuilts.
           - os: macos-14

@@ -208,6 +208,12 @@ apt-get install -y build-essential && pip install headroom-ai
 xcode-select --install && pip install headroom-ai
 ```
 
+On Intel macOS (`x86_64-apple-darwin`), Xcode Command Line Tools are not
+enough for current Headroom releases because `ort-sys` does not provide
+prebuilt ONNX Runtime binaries for that target. Use the
+[Docker-Native Install](/docs/docker-install) or run the proxy container
+instead.
+
 For Docker, install and remove build tools in one layer:
 
 ```dockerfile

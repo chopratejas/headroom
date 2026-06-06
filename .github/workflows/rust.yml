@@ -80,9 +80,8 @@ jobs:
         # Runtime binaries for `x86_64-apple-darwin`; building from source
         # in CI is a multi-hour cmake job. Apple Silicon has been the
         # default macOS target since 2020 and is sufficient for the wheels
-        # we ship. If a customer needs Intel macOS, build from source
-        # locally (the toolchain works; only prebuilt distribution skips
-        # this target).
+        # we ship. If a customer needs Intel macOS today, use the
+        # Docker-native install or proxy container until ORT support changes.
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
