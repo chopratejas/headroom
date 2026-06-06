@@ -189,7 +189,7 @@ def _create_content_signature(
 
 
 class CompressionCache:
-    """Two-tier compression cache with TTL.
+    """Two-tier compression cache with TTL.  Thread-safe.
 
     Tier 1 (skip set): content hashes that won't compress — instant skip,
     near-zero memory (just ints in a set).
@@ -203,9 +203,17 @@ class CompressionCache:
 
     Uses in-process dict for ultra-fast lookups (~100ns). Could be backed
     by memcached/Redis for multi-process deployments.
+
+    Thread safety: a ``threading.Lock`` guards all read-modify-write
+    operations.  The ``apply()`` path runs compression inside a
+    ``ThreadPoolExecutor``; without the lock concurrent cache misses for
+    the same content would produce duplicate compression work (correct but
+    wasteful) and metrics counters would drift.
     """
 
     def __init__(self, ttl_seconds: int = 1800):
+        import threading
+
         # Tier 2: compressed results {hash: (text, ratio, strategy, timestamp)}
         self._results: dict[int, tuple[str, float, str, float]] = {}
         # Tier 1: hashes of content that won't compress {hash: timestamp}
@@ -218,80 +226,91 @@ class CompressionCache:
         self._evictions = 0
         self._total_lookup_ns = 0
         self._lookup_count = 0
+        self._lock = threading.Lock()
 
     def get(self, key: int) -> tuple[str, float, str] | None:
-        """Get cached compression result.
+        """Get cached compression result.  Thread-safe.
 
         Returns (compressed_text, ratio, strategy) or None if not found/expired.
         Use is_skipped() first to check if content is known non-compressible.
         """
         t0 = time.perf_counter_ns()
-        entry = self._results.get(key)
-        if entry is not None:
-            compressed, ratio, strategy, created_at = entry
-            if (time.time() - created_at) < self._ttl_seconds:
-                self._hits += 1
-                self._total_lookup_ns += time.perf_counter_ns() - t0
-                self._lookup_count += 1
-                return (compressed, ratio, strategy)
-            else:
-                del self._results[key]
-                self._evictions += 1
-        self._misses += 1
-        self._total_lookup_ns += time.perf_counter_ns() - t0
-        self._lookup_count += 1
-        return None
+        with self._lock:
+            entry = self._results.get(key)
+            if entry is not None:
+                compressed, ratio, strategy, created_at = entry
+                if (time.time() - created_at) < self._ttl_seconds:
+                    self._hits += 1
+                    self._total_lookup_ns += time.perf_counter_ns() - t0
+                    self._lookup_count += 1
+                    return (compressed, ratio, strategy)
+                else:
+                    del self._results[key]
+                    self._evictions += 1
+            self._misses += 1
+            self._total_lookup_ns += time.perf_counter_ns() - t0
+            self._lookup_count += 1
+            return None
 
     def is_skipped(self, key: int) -> bool:
-        """Check if content is known non-compressible (Tier 1)."""
-        ts = self._skip.get(key)
-        if ts is not None:
-            if (time.time() - ts) < self._ttl_seconds:
-                self._skip_hits += 1
-                return True
-            else:
-                del self._skip[key]
-                self._evictions += 1
-        return False
+        """Check if content is known non-compressible (Tier 1).  Thread-safe."""
+        with self._lock:
+            ts = self._skip.get(key)
+            if ts is not None:
+                if (time.time() - ts) < self._ttl_seconds:
+                    self._skip_hits += 1
+                    return True
+                else:
+                    del self._skip[key]
+                    self._evictions += 1
+            return False
 
     def put(self, key: int, compressed: str, ratio: float, strategy: str) -> None:
-        """Store a compressed result (Tier 2)."""
-        self._results[key] = (compressed, ratio, strategy, time.time())
+        """Store a compressed result (Tier 2).  Thread-safe."""
+        with self._lock:
+            self._results[key] = (compressed, ratio, strategy, time.time())
 
     def mark_skip(self, key: int) -> None:
-        """Mark content as non-compressible (Tier 1)."""
-        self._skip[key] = time.time()
+        """Mark content as non-compressible (Tier 1).  Thread-safe."""
+        with self._lock:
+            self._skip[key] = time.time()
 
     def move_to_skip(self, key: int) -> None:
-        """Move a result to skip set (threshold tightened, no longer qualifies)."""
-        self._results.pop(key, None)
-        self._skip[key] = time.time()
+        """Move a result to skip set (threshold tightened, no longer qualifies).
+        Thread-safe."""
+        with self._lock:
+            self._results.pop(key, None)
+            self._skip[key] = time.time()
 
     @property
     def size(self) -> int:
-        return len(self._results)
+        with self._lock:
+            return len(self._results)
 
     @property
     def skip_size(self) -> int:
-        return len(self._skip)
+        with self._lock:
+            return len(self._skip)
 
     @property
     def stats(self) -> dict[str, int | float]:
-        avg_ns = self._total_lookup_ns / self._lookup_count if self._lookup_count else 0
-        return {
-            "cache_hits": self._hits,
-            "cache_skip_hits": self._skip_hits,
-            "cache_misses": self._misses,
-            "cache_evictions": self._evictions,
-            "cache_size": len(self._results),
-            "cache_skip_size": len(self._skip),
-            "cache_avg_lookup_ns": avg_ns,
-        }
+        with self._lock:
+            avg_ns = self._total_lookup_ns / self._lookup_count if self._lookup_count else 0
+            return {
+                "cache_hits": self._hits,
+                "cache_skip_hits": self._skip_hits,
+                "cache_misses": self._misses,
+                "cache_evictions": self._evictions,
+                "cache_size": len(self._results),
+                "cache_skip_size": len(self._skip),
+                "cache_avg_lookup_ns": avg_ns,
+            }
 
     def clear(self) -> None:
-        """Clear all entries (e.g., on session end)."""
-        self._results.clear()
-        self._skip.clear()
+        """Clear all entries (e.g., on session end).  Thread-safe."""
+        with self._lock:
+            self._results.clear()
+            self._skip.clear()
 
 
 class CompressionStrategy(Enum):
@@ -1249,21 +1268,11 @@ class ContentRouter(Transform):
                             result.compressed,
                             len(result.compressed.split()),
                         )
-                        smart_crusher_fallback = False
-                        if result.compressed == content:
-                            strategy_chain.append(CompressionStrategy.KOMPRESS.value)
-                            fallback_compressed, fallback_tokens = self._try_ml_compressor(
-                                content, context, question
-                            )
-                            if fallback_tokens < compressed_tokens:
-                                compressed = fallback_compressed
-                                compressed_tokens = fallback_tokens
-                                actual_strategy = CompressionStrategy.KOMPRESS
-                                compressor_name = "KompressCompressor"
-                                decision_reason = "smart_crusher_fallback_kompress_after_no_savings"
-                                smart_crusher_fallback = True
-                        if not smart_crusher_fallback:
-                            decision_reason = "smart_crusher"
+                        decision_reason = "smart_crusher"
+                        # Fallback to Kompress (and possibly Log) is
+                        # handled by the unified post-strategy block below
+                        # — no inline fallback here to avoid duplicate
+                        # Kompress invocations.
 
             elif strategy == CompressionStrategy.SEARCH:
                 if self.config.enable_search_compressor:
@@ -2446,74 +2455,26 @@ class ContentRouter(Transform):
                             route_counts["already_compressed"] += 1
                         continue
 
-                    # Two-tier compression cache
-                    content_key = hash(tool_content)
-
-                    # Tier 1: skip set — instant rejection
-                    if self._cache.is_skipped(content_key):
-                        new_blocks.append(block)
-                        if route_counts is not None:
-                            route_counts["ratio_too_high"] += 1
-                            route_counts.setdefault("cache_hit", 0)
-                            route_counts["cache_hit"] += 1
-                        continue
-
-                    # Tier 2: result cache — reuse compressed output
-                    cached = self._cache.get(content_key)
-                    if cached is not None:
-                        cached_compressed, cached_ratio, cached_strategy = cached
-                        if cached_ratio < min_ratio:
-                            new_blocks.append({**block, "content": cached_compressed})
-                            transforms_applied.append(f"router:tool_result:{cached_strategy}")
-                            if compressed_details is not None:
-                                compressed_details.append(
-                                    f"tool:{cached_strategy}:{cached_ratio:.2f}"
-                                )
-                            any_compressed = True
-                        else:
-                            # Threshold tightened — move to skip
-                            self._cache.move_to_skip(content_key)
-                            new_blocks.append(block)
-                            if route_counts is not None:
-                                route_counts["ratio_too_high"] += 1
-                        if route_counts is not None:
-                            route_counts.setdefault("cache_hit", 0)
-                            route_counts["cache_hit"] += 1
-                        continue
-
-                    # Cache miss — run full compression
-                    if route_counts is not None:
-                        route_counts.setdefault("cache_miss", 0)
-                        route_counts["cache_miss"] += 1
-                    t0 = time.perf_counter()
-                    result = self.compress(tool_content, context=context, bias=bias)
-                    compress_ms = (time.perf_counter() - t0) * 1000
-                    if compressor_timing is not None:
-                        key = f"compressor:{result.strategy_used.value}"
-                        compressor_timing[key] = compressor_timing.get(key, 0.0) + compress_ms
-                    if result.compression_ratio < min_ratio:
-                        # Compressed — store in result cache
-                        self._cache.put(
-                            content_key,
-                            result.compressed,
-                            result.compression_ratio,
-                            result.strategy_used.value,
-                        )
-                        new_blocks.append({**block, "content": result.compressed})
-                        transforms_applied.append(
-                            f"router:tool_result:{result.strategy_used.value}"
-                        )
-                        if compressed_details is not None:
-                            compressed_details.append(
-                                f"tool:{result.strategy_used.value}:{result.compression_ratio:.2f}"
-                            )
+                    # Two-tier compression cache → shared helper
+                    compressed_content, was_compressed = self._compress_block_content(
+                        content=tool_content,
+                        content_key=hash(tool_content),
+                        context=context,
+                        bias=bias,
+                        min_ratio=min_ratio,
+                        compressor_timing=compressor_timing,
+                        transforms_applied=transforms_applied,
+                        route_counts=route_counts,
+                        compressed_details=compressed_details,
+                        strategy_label="tool_result",
+                        details_prefix="tool",
+                    )
+                    if compressed_content is not None:
+                        new_blocks.append({**block, "content": compressed_content})
                         any_compressed = True
-                        continue
                     else:
-                        # Didn't compress — add to skip set
-                        self._cache.mark_skip(content_key)
-                        if route_counts is not None:
-                            route_counts["ratio_too_high"] += 1
+                        new_blocks.append(block)
+                    continue
                 else:
                     if route_counts is not None:
                         route_counts["small"] += 1
@@ -2537,68 +2498,26 @@ class ContentRouter(Transform):
                             route_counts["already_compressed"] += 1
                         continue
 
-                    content_key = hash(text_content)
-
-                    # Tier 1: skip set
-                    if self._cache.is_skipped(content_key):
-                        new_blocks.append(block)
-                        if route_counts is not None:
-                            route_counts["ratio_too_high"] += 1
-                            route_counts.setdefault("cache_hit", 0)
-                            route_counts["cache_hit"] += 1
-                        continue
-
-                    # Tier 2: result cache
-                    cached = self._cache.get(content_key)
-                    if cached is not None:
-                        cached_compressed, cached_ratio, cached_strategy = cached
-                        if cached_ratio < min_ratio:
-                            new_blocks.append({**block, "text": cached_compressed})
-                            transforms_applied.append(f"router:text_block:{cached_strategy}")
-                            if compressed_details is not None:
-                                compressed_details.append(
-                                    f"text:{cached_strategy}:{cached_ratio:.2f}"
-                                )
-                            any_compressed = True
-                        else:
-                            self._cache.move_to_skip(content_key)
-                            new_blocks.append(block)
-                            if route_counts is not None:
-                                route_counts["ratio_too_high"] += 1
-                        if route_counts is not None:
-                            route_counts.setdefault("cache_hit", 0)
-                            route_counts["cache_hit"] += 1
-                        continue
-
-                    # Cache miss — full compression
-                    if route_counts is not None:
-                        route_counts.setdefault("cache_miss", 0)
-                        route_counts["cache_miss"] += 1
-                    t0 = time.perf_counter()
-                    result = self.compress(text_content, context=context, bias=1.0)
-                    compress_ms = (time.perf_counter() - t0) * 1000
-                    if compressor_timing is not None:
-                        key = f"compressor:{result.strategy_used.value}"
-                        compressor_timing[key] = compressor_timing.get(key, 0.0) + compress_ms
-                    if result.compression_ratio < min_ratio:
-                        self._cache.put(
-                            content_key,
-                            result.compressed,
-                            result.compression_ratio,
-                            result.strategy_used.value,
-                        )
-                        new_blocks.append({**block, "text": result.compressed})
-                        transforms_applied.append(f"router:text_block:{result.strategy_used.value}")
-                        if compressed_details is not None:
-                            compressed_details.append(
-                                f"text:{result.strategy_used.value}:{result.compression_ratio:.2f}"
-                            )
+                    # Two-tier compression cache → shared helper
+                    compressed_content, _was_compressed = self._compress_block_content(
+                        content=text_content,
+                        content_key=hash(text_content),
+                        context=context,
+                        bias=1.0,
+                        min_ratio=min_ratio,
+                        compressor_timing=compressor_timing,
+                        transforms_applied=transforms_applied,
+                        route_counts=route_counts,
+                        compressed_details=compressed_details,
+                        strategy_label="text_block",
+                        details_prefix="text",
+                    )
+                    if compressed_content is not None:
+                        new_blocks.append({**block, "text": compressed_content})
                         any_compressed = True
-                        continue
                     else:
-                        self._cache.mark_skip(content_key)
-                        if route_counts is not None:
-                            route_counts["ratio_too_high"] += 1
+                        new_blocks.append(block)
+                    continue
                 else:
                     if route_counts is not None:
                         route_counts["small"] += 1
@@ -2609,6 +2528,104 @@ class ContentRouter(Transform):
         if any_compressed:
             return {**message, "content": new_blocks}
         return message
+
+    def _compress_block_content(
+        self,
+        content: str,
+        content_key: int,
+        context: str,
+        bias: float,
+        min_ratio: float,
+        compressor_timing: dict[str, float] | None,
+        transforms_applied: list[str],
+        route_counts: dict[str, int] | None,
+        compressed_details: list[str] | None,
+        strategy_label: str,
+        details_prefix: str,
+    ) -> tuple[str | None, bool]:
+        """Apply two-tier cache lookup + compression to a single content string.
+
+        Encapsulates the shared cache→compress→store logic used by both
+        ``tool_result`` and ``text`` block paths in ``_process_content_blocks``.
+        Previously this logic was duplicated ~60 lines per path; centralising
+        it ensures both paths stay in sync (cache expiry, pinning, ratio gating).
+
+        Args:
+            content: The string content to compress.
+            content_key: Pre-computed ``hash(content)`` for cache lookups.
+            context: User/query context for relevance-aware compression.
+            bias: Compression bias multiplier (tool-specific or 1.0).
+            min_ratio: Adaptive minimum compression ratio threshold.
+            compressor_timing: Optional dict to accumulate per-strategy timing.
+            transforms_applied: List mutated in-place with transform labels.
+            route_counts: Optional dict mutated in-place with route counters.
+            compressed_details: Optional list mutated with compression details.
+            strategy_label: Transform label prefix (e.g. ``"tool_result"``).
+            details_prefix: Compressed-details prefix (e.g. ``"tool"``).
+
+        Returns:
+            Tuple of ``(compressed_content_or_None, was_compressed)``.
+            When ``compressed_content`` is ``None`` the caller should keep
+            the original block unchanged. When ``was_compressed`` is
+            ``True`` the caller should update the block with the returned
+            content and set ``any_compressed``.
+        """
+        # Tier 1: skip set — instant rejection
+        if self._cache.is_skipped(content_key):
+            if route_counts is not None:
+                route_counts["ratio_too_high"] = route_counts.get("ratio_too_high", 0) + 1
+                route_counts["cache_hit"] = route_counts.get("cache_hit", 0) + 1
+            return None, False
+
+        # Tier 2: result cache — reuse compressed output
+        cached = self._cache.get(content_key)
+        if cached is not None:
+            cached_compressed, cached_ratio, cached_strategy = cached
+            if route_counts is not None:
+                route_counts["cache_hit"] = route_counts.get("cache_hit", 0) + 1
+            if cached_ratio < min_ratio:
+                transforms_applied.append(f"router:{strategy_label}:{cached_strategy}")
+                if compressed_details is not None:
+                    compressed_details.append(
+                        f"{details_prefix}:{cached_strategy}:{cached_ratio:.2f}"
+                    )
+                return cached_compressed, True
+            # Threshold tightened — move result to skip set
+            self._cache.move_to_skip(content_key)
+            if route_counts is not None:
+                route_counts["ratio_too_high"] = route_counts.get("ratio_too_high", 0) + 1
+            return None, False
+
+        # Cache miss — run full compression
+        if route_counts is not None:
+            route_counts["cache_miss"] = route_counts.get("cache_miss", 0) + 1
+        t0 = time.perf_counter()
+        result = self.compress(content, context=context, bias=bias)
+        compress_ms = (time.perf_counter() - t0) * 1000
+        if compressor_timing is not None:
+            key = f"compressor:{result.strategy_used.value}"
+            compressor_timing[key] = compressor_timing.get(key, 0.0) + compress_ms
+        if result.compression_ratio < min_ratio:
+            # Compressed — store in result cache
+            self._cache.put(
+                content_key,
+                result.compressed,
+                result.compression_ratio,
+                result.strategy_used.value,
+            )
+            transforms_applied.append(
+                f"router:{strategy_label}:{result.strategy_used.value}"
+            )
+            if compressed_details is not None:
+                compressed_details.append(
+                    f"{details_prefix}:{result.strategy_used.value}:{result.compression_ratio:.2f}"
+                )
+            return result.compressed, True
+        # Didn't compress enough — add to skip set
+        self._cache.mark_skip(content_key)
+        if route_counts is not None:
+            route_counts["ratio_too_high"] = route_counts.get("ratio_too_high", 0) + 1
+        return None, False
 
     def _detect_analysis_intent(self, messages: list[dict[str, Any]]) -> bool:
         """Detect if user wants to analyze/review code.
