@@ -21,6 +21,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import asyncio
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import headroom.memory.adapters.fts5 as fts5_adapter
+import headroom.memory.adapters.sqlite as sqlite_adapter
 from headroom.memory.adapters.cache import LRUMemoryCache
 from headroom.memory.adapters.fts5 import FTS5TextIndex
 from headroom.memory.adapters.sqlite import SQLiteMemoryStore
@@ -68,6 +71,23 @@ def sample_embedding():
 # =============================================================================
 # Memory Model Tests
 # =============================================================================
+
+
+def _track_sqlite_connection_closes(module, monkeypatch):
+    closed_connections = []
+    real_connect = sqlite3.connect
+
+    class TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed_connections.append(self)
+            super().close()
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(module.sqlite3, "connect", tracking_connect)
+    return closed_connections
 
 
 class TestMemoryModel:
@@ -158,6 +178,21 @@ class TestSQLiteMemoryStore:
     def store(self, temp_db_path):
         """Create a SQLite store for testing."""
         return SQLiteMemoryStore(temp_db_path)
+
+    def test_connection_context_closes_sqlite_connection(self, tmp_path, monkeypatch):
+        """The per-operation connection context must release the database file."""
+        closed_connections = _track_sqlite_connection_closes(sqlite_adapter, monkeypatch)
+
+        store = SQLiteMemoryStore(tmp_path / "memory.db")
+        assert closed_connections
+        closed_connections.clear()
+
+        with store._get_conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+
+        assert closed_connections == [conn]
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
     @pytest.mark.asyncio
     async def test_save_and_get(self, store, sample_memory):
@@ -421,6 +456,21 @@ class TestFTS5TextIndex:
     def text_index(self, temp_db_path):
         """Create a FTS5 text index for testing."""
         return FTS5TextIndex(temp_db_path)
+
+    def test_connection_context_closes_sqlite_connection(self, tmp_path, monkeypatch):
+        """The per-operation connection context must release the database file."""
+        closed_connections = _track_sqlite_connection_closes(fts5_adapter, monkeypatch)
+
+        text_index = FTS5TextIndex(tmp_path / "memory.db")
+        assert closed_connections
+        closed_connections.clear()
+
+        with text_index._get_conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+
+        assert closed_connections == [conn]
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
     def test_index_and_search(self, text_index):
         """Test indexing and searching text."""

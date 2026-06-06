@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -73,15 +75,21 @@ class SQLiteMemoryStore:
         self.db_path = Path(db_path)
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        """Get a new database connection (thread-safe pattern).
+    @contextmanager
+    def _get_conn(self) -> Iterator[sqlite3.Connection]:
+        """Open a short-lived database connection.
 
         Returns:
-            A new SQLite connection with row factory configured.
+            A SQLite connection with row factory configured. The connection is
+            closed when the context exits.
         """
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         """Initialize the database schema with indexes."""
