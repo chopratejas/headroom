@@ -798,13 +798,17 @@ systemctl --user status llm-proxy hermes-xai-proxy       # both active
 export PATH="$HOME/.local/bin:$PATH"
 uv tool install 'headroom-ai[proxy]'                      # once if needed
 
-# Persistent canary (optional)
+# Persistent canary (optional; uses :18787 — falkbot-ops docker owns :8787)
 cp scripts/spot-tech-ci-headroom-hermes.service.example \
   ~/.config/systemd/user/headroom-hermes.service
+systemctl --user daemon-reload
 systemctl --user enable --now headroom-hermes.service
+curl -s http://127.0.0.1:18787/stats | jq '.tokens.saved'
 
 # Live pytest (opt-in; minimal venv on CI host)
 HEADROOM_LIVE_HERMES=1 pytest tests/test_cli/test_hermes_grok_live.py -v
+HEADROOM_LIVE_HERMES=1 HEADROOM_LIVE_CANARY=1 \\
+  pytest tests/test_cli/test_hermes_canary_live.py -v
 
 # Token bench (exits non-zero if savings below regression floor)
 python scripts/bench_hermes_headroom.py
