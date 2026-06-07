@@ -452,6 +452,41 @@ def test_wrap_codex_prepare_only_respects_codex_home(
     assert not (tmp_path / ".codex" / "config.toml").exists()
 
 
+def test_unwrap_codex_without_codex_home_rejects_ambiguous_noop(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    codex_home = tmp_path / "custom-codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    with patch("headroom.cli.wrap._ensure_rtk_binary", return_value=None):
+        wrap_result = runner.invoke(
+            main,
+            [
+                "wrap",
+                "codex",
+                "--prepare-only",
+                "--no-mcp",
+                "--no-serena",
+                "--port",
+                "8787",
+            ],
+        )
+
+    assert wrap_result.exit_code == 0, wrap_result.output
+    config_file = codex_home / "config.toml"
+    assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in config_file.read_text()
+
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    unwrap_result = runner.invoke(main, ["unwrap", "codex", "--no-stop-proxy"])
+
+    assert unwrap_result.exit_code != 0
+    assert "If you wrapped Codex with CODEX_HOME" in unwrap_result.output
+    assert "CODEX_HOME=/path/to/codex-home headroom unwrap codex" in unwrap_result.output
+    assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in config_file.read_text()
+
+
 def test_start_proxy_uses_separate_session_for_signal_isolation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -617,6 +652,7 @@ def test_unwrap_codex_no_stop_proxy_leaves_proxy_alone(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _set_test_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "explicit-codex-home"))
 
     with patch("headroom.cli.wrap._stop_local_proxy_for_unwrap") as stop_proxy:
         result = runner.invoke(main, ["unwrap", "codex", "--no-stop-proxy"])
@@ -654,10 +690,11 @@ def test_stop_local_proxy_for_unwrap_refuses_unidentified_listener(
     kill_proxy.assert_not_called()
 
 
-def test_unwrap_codex_is_safe_noop_with_no_prior_wrap(
+def test_unwrap_codex_is_safe_noop_with_explicit_codex_home(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _set_test_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "explicit-codex-home"))
 
     result = runner.invoke(main, ["unwrap", "codex"])
     assert result.exit_code == 0, result.output
