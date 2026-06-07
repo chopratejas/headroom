@@ -591,8 +591,9 @@ class TestStripFencedJson:
 
 
 class TestCallCliLlm:
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/claude")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_claude_cli_success(self, mock_run: MagicMock):
+    def test_claude_cli_success(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='{"context_file_rules": [], "memory_file_rules": []}',
@@ -602,12 +603,13 @@ class TestCallCliLlm:
         assert result == {"context_file_rules": [], "memory_file_rules": []}
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["claude", "-p"]
+        assert cmd == ["/usr/bin/claude", "-p"]
         # Prompt passed via stdin, not as an argument
         assert mock_run.call_args.kwargs.get("input") is not None
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/codex")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_codex_cli_uses_exec(self, mock_run: MagicMock):
+    def test_codex_cli_uses_exec(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='{"context_file_rules": [], "memory_file_rules": []}',
@@ -616,10 +618,11 @@ class TestCallCliLlm:
         result = _call_cli_llm("test digest", "codex-cli")
         assert result == {"context_file_rules": [], "memory_file_rules": []}
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["codex", "exec"]
+        assert cmd == ["/usr/bin/codex", "exec"]
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/gemini")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_gemini_cli_uses_p_flag(self, mock_run: MagicMock):
+    def test_gemini_cli_uses_p_flag(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='{"context_file_rules": [], "memory_file_rules": []}',
@@ -627,10 +630,11 @@ class TestCallCliLlm:
         )
         _call_cli_llm("test digest", "gemini-cli")
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["gemini", "-p"]
+        assert cmd == ["/usr/bin/gemini", "-p"]
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/claude")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_cli_nonzero_exit_raises(self, mock_run: MagicMock):
+    def test_cli_nonzero_exit_raises(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.return_value = MagicMock(
             returncode=1,
             stdout="",
@@ -639,8 +643,9 @@ class TestCallCliLlm:
         with pytest.raises(RuntimeError, match="failed.*exit 1"):
             _call_cli_llm("test digest", "claude-cli")
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/claude")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_cli_stderr_truncated_in_error(self, mock_run: MagicMock):
+    def test_cli_stderr_truncated_in_error(self, mock_run: MagicMock, mock_which: MagicMock):
         long_stderr = "x" * 5000
         mock_run.return_value = MagicMock(
             returncode=1,
@@ -656,8 +661,9 @@ class TestCallCliLlm:
         with pytest.raises(ValueError, match="Unknown CLI model"):
             _call_cli_llm("test digest", "unknown-cli")
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/claude")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_fenced_output_parsed(self, mock_run: MagicMock):
+    def test_fenced_output_parsed(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='```json\n{"context_file_rules": [], "memory_file_rules": []}\n```',
@@ -666,20 +672,21 @@ class TestCallCliLlm:
         result = _call_cli_llm("test digest", "claude-cli")
         assert result == {"context_file_rules": [], "memory_file_rules": []}
 
-    @patch("headroom.learn.analyzer.subprocess.run")
-    def test_cli_not_installed_raises(self, mock_run: MagicMock):
-        mock_run.side_effect = FileNotFoundError("No such file or directory: 'codex'")
+    @patch("headroom.learn.analyzer.shutil.which", return_value=None)
+    def test_cli_not_installed_raises(self, mock_which: MagicMock):
         with pytest.raises(RuntimeError, match="not found in PATH"):
             _call_cli_llm("test digest", "codex-cli")
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/claude")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_timeout_raises_runtime_error(self, mock_run: MagicMock):
+    def test_timeout_raises_runtime_error(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude", "-p"], timeout=120)
         with pytest.raises(RuntimeError, match="did not respond within"):
             _call_cli_llm("test digest", "claude-cli")
 
+    @patch("headroom.learn.analyzer.shutil.which", return_value="/usr/bin/claude")
     @patch("headroom.learn.analyzer.subprocess.run")
-    def test_unparseable_output_raises_with_context(self, mock_run: MagicMock):
+    def test_unparseable_output_raises_with_context(self, mock_run: MagicMock, mock_which: MagicMock):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="This is not JSON at all",
