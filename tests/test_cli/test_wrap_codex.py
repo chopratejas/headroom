@@ -452,7 +452,7 @@ def test_wrap_codex_prepare_only_respects_codex_home(
     assert not (tmp_path / ".codex" / "config.toml").exists()
 
 
-def test_unwrap_codex_without_codex_home_rejects_ambiguous_noop(
+def test_unwrap_codex_without_codex_home_warns_on_ambiguous_noop(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _set_test_home(monkeypatch, tmp_path)
@@ -481,9 +481,13 @@ def test_unwrap_codex_without_codex_home_rejects_ambiguous_noop(
     monkeypatch.delenv("CODEX_HOME", raising=False)
     unwrap_result = runner.invoke(main, ["unwrap", "codex", "--no-stop-proxy"])
 
-    assert unwrap_result.exit_code != 0
+    assert unwrap_result.exit_code == 0, unwrap_result.output
+    assert "Warning: found no Headroom wrap markers in the default Codex config" in (
+        unwrap_result.output
+    )
     assert "If you wrapped Codex with CODEX_HOME" in unwrap_result.output
     assert "CODEX_HOME=/path/to/codex-home headroom unwrap codex" in unwrap_result.output
+    assert "Nothing to undo" in unwrap_result.output
     assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in config_file.read_text()
 
 
@@ -699,6 +703,7 @@ def test_unwrap_codex_is_safe_noop_with_explicit_codex_home(
     result = runner.invoke(main, ["unwrap", "codex"])
     assert result.exit_code == 0, result.output
     assert "Nothing to undo" in result.output
+    assert "Warning:" not in result.output
     assert not (tmp_path / ".codex" / "config.toml").exists()
 
 

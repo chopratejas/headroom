@@ -3880,13 +3880,11 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
       preserved.
     * If the config only ever contained Headroom-written content, the file
       is removed entirely so Codex falls back to its defaults.
-    * If neither a backup nor a Headroom block is present and ``CODEX_HOME``
-      is unset, fail with a hint to rerun unwrap with the same ``CODEX_HOME``
-      that was used for wrap.  Without that env var, Headroom cannot know
-      whether it is looking at the same Codex config.
-    * If ``CODEX_HOME`` is set and no backup or block is present, this is a
-      safe no-op (the user either never wrapped that config, or already
-      unwrapped it).
+    * If neither a backup nor a Headroom block is present, this is a safe
+      no-op (the user either never wrapped that config, or already unwrapped
+      it). When ``CODEX_HOME`` is unset, print a warning hint because Headroom
+      may be looking at the default config while Codex was wrapped with a
+      custom home.
     """
     click.echo()
     click.echo("  ╔═══════════════════════════════════════════════╗")
@@ -3907,11 +3905,11 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
         click.echo(f"  Removed {config_file} (contained only Headroom-written config).")
     else:
         if not os.environ.get("CODEX_HOME"):
-            raise click.ClickException(
-                "found no Headroom wrap markers in the default Codex config "
-                f"({config_file}). If you wrapped Codex with CODEX_HOME, rerun "
-                "unwrap with the same environment variable, e.g. "
-                "CODEX_HOME=/path/to/codex-home headroom unwrap codex."
+            click.echo(
+                "  Warning: found no Headroom wrap markers in the default Codex config. "
+                "If you wrapped Codex with CODEX_HOME, rerun unwrap with the same "
+                "environment variable, e.g. CODEX_HOME=/path/to/codex-home "
+                "headroom unwrap codex."
             )
         click.echo(f"  Nothing to undo: {config_file} has no Headroom wrap markers.")
 
