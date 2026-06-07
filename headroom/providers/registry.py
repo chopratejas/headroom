@@ -100,7 +100,9 @@ def resolve_api_overrides(
     """Resolve provider API URL overrides from CLI/config inputs and environment."""
     env = environ or os.environ
     return ProviderApiOverrides(
-        anthropic=anthropic_api_url or env.get("ANTHROPIC_TARGET_API_URL"),
+        anthropic=anthropic_api_url
+        or env.get("ANTHROPIC_TARGET_API_URL")
+        or env.get("ANTHROPIC_FOUNDRY_BASE_URL"),
         openai=openai_api_url or env.get("OPENAI_TARGET_API_URL"),
         gemini=gemini_api_url or env.get("GEMINI_TARGET_API_URL"),
         cloudcode=cloudcode_api_url or env.get("CLOUDCODE_TARGET_API_URL"),
