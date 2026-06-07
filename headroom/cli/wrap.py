@@ -683,16 +683,24 @@ _CODEX_TOP_LEVEL_MARKER = "# --- Headroom proxy (auto-injected by headroom wrap 
 _CODEX_END_MARKER = "# --- end Headroom ---"
 _CODEX_MCP_MARKER = "# --- Headroom MCP server ---"
 _CODEX_MCP_END = "# --- end Headroom MCP server ---"
-# File name used for the pre-wrap snapshot of ~/.codex/config.toml.  The
+# File name used for the pre-wrap snapshot of the Codex config file.  The
 # snapshot lets `headroom unwrap codex` restore the exact prior state, even
 # if the user had their own `model_provider` / `[model_providers.*]` config
 # before running wrap.
 _CODEX_CONFIG_BACKUP_SUFFIX = ".headroom-backup"
 
 
+def _codex_home_dir() -> Path:
+    """Return Codex's config directory, respecting ``CODEX_HOME`` when set."""
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser()
+    return Path.home() / ".codex"
+
+
 def _codex_config_paths() -> tuple[Path, Path]:
     """Return ``(config_file, backup_file)`` paths for the Codex TOML config."""
-    config_dir = Path.home() / ".codex"
+    config_dir = _codex_home_dir()
     config_file = config_dir / "config.toml"
     backup_file = config_dir / f"config.toml{_CODEX_CONFIG_BACKUP_SUFFIX}"
     return config_file, backup_file
@@ -832,7 +840,7 @@ def _inject_codex_provider_config(port: int) -> None:
     Safe to call multiple times — the injected block is fully replaced on
     each call, so re-running with a different ``port`` updates the config.
     Before the first injection, the pre-wrap file is snapshotted to
-    ``~/.codex/config.toml.headroom-backup`` so ``headroom unwrap codex``
+    ``config.toml.headroom-backup`` so ``headroom unwrap codex``
     can restore it byte-for-byte.
     """
     config_file, backup_file = _codex_config_paths()
@@ -890,7 +898,7 @@ def _inject_codex_provider_config(port: int) -> None:
 
 
 def _restore_codex_provider_config() -> tuple[str, Path]:
-    """Undo ``_inject_codex_provider_config`` for ``~/.codex/config.toml``.
+    """Undo ``_inject_codex_provider_config`` for the active Codex config file.
 
     Returns a tuple of ``(status, config_file)`` where status is one of:
 
@@ -1112,8 +1120,8 @@ def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
     """
     import sys
 
-    config_dir = Path.home() / ".codex"
-    config_file = config_dir / "config.toml"
+    config_file, _ = _codex_config_paths()
+    config_dir = config_file.parent
 
     # Use forward slashes in TOML paths (works on all platforms, avoids
     # backslash escaping issues on Windows)
@@ -2697,8 +2705,8 @@ def codex(
     Sets OPENAI_BASE_URL to route all OpenAI API calls through Headroom.
     Sets up the selected CLI context tool so Codex uses token-optimized
     commands (60-90% savings on shell output). Also
-    registers the headroom MCP server in ~/.codex/config.toml so Codex
-    can call ``headroom_retrieve`` on compression markers.
+    registers the headroom MCP server in the active Codex config file
+    so Codex can call ``headroom_retrieve`` on compression markers.
 
     \b
     Examples:
@@ -2710,7 +2718,7 @@ def codex(
         headroom wrap codex --port 9999             # Custom proxy port
         headroom wrap codex --backend anyllm --anyllm-provider groq
     """
-    # Snapshot ~/.codex/config.toml BEFORE any wrap-time mutation so
+    # Snapshot Codex config.toml BEFORE any wrap-time mutation so
     # `headroom unwrap codex` can restore the user's pre-wrap state
     # byte-for-byte. The snapshot is a no-op if the backup already exists
     # or if the file already has Headroom markers, so this is safe to
@@ -2732,11 +2740,11 @@ def codex(
                 agents_md = Path.cwd() / "AGENTS.md"
                 _inject_rtk_instructions(agents_md, verbose=verbose)
 
-                # Also inject into global ~/.codex/AGENTS.md
-                global_agents = Path.home() / ".codex" / "AGENTS.md"
+                # Also inject into global Codex AGENTS.md
+                global_agents = _codex_home_dir() / "AGENTS.md"
                 _inject_rtk_instructions(global_agents, verbose=verbose)
 
-    # Register headroom MCP server in ~/.codex/config.toml so Codex can
+    # Register headroom MCP server in Codex config.toml so Codex can
     # call headroom_retrieve on compression markers from the proxy.
     if not no_mcp:
         from headroom.mcp_registry import CodexRegistrar
@@ -3832,7 +3840,7 @@ def unwrap_openclaw(
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
 def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
-    """Undo ``headroom wrap codex`` edits to ``~/.codex/config.toml``.
+    """Undo ``headroom wrap codex`` edits to the active Codex config file.
 
     Behaviour:
 
