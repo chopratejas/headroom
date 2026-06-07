@@ -328,6 +328,23 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     async def anthropic_messages(request: Request):
         return await proxy.handle_anthropic_messages(request)
 
+    # AWS Bedrock InvokeModel passthrough. Registered ONLY when an upstream is
+    # configured (`--bedrock-api-url` / BEDROCK_TARGET_API_URL): without it,
+    # `/model/{id}/invoke` keeps falling through to the catch-all (verbatim,
+    # signature-intact) so existing behavior is unchanged. The `{model_id:path}`
+    # converter captures inference-profile ids that contain dots, colons and
+    # slashes (e.g. `us.anthropic.claude-sonnet-4-5-20250929-v1:0`). See
+    # headroom/proxy/handlers/bedrock.py for the SigV4 caveat.
+    if getattr(proxy.config, "bedrock_api_url", None):
+
+        @app.post("/model/{model_id:path}/invoke")
+        async def bedrock_invoke(request: Request, model_id: str):
+            return await proxy.handle_bedrock_invoke(request, model_id, stream=False)
+
+        @app.post("/model/{model_id:path}/invoke-with-response-stream")
+        async def bedrock_invoke_stream(request: Request, model_id: str):
+            return await proxy.handle_bedrock_invoke(request, model_id, stream=True)
+
     @app.post("/v1/messages/count_tokens")
     async def anthropic_count_tokens(request: Request):
         return await proxy.handle_passthrough(

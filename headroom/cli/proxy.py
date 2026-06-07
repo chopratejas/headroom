@@ -565,6 +565,16 @@ def _selected_context_tool() -> str:
     help="AWS profile name for Bedrock (default: use default credentials)",
 )
 @click.option(
+    "--bedrock-api-url",
+    default=None,
+    help=(
+        "Custom Bedrock InvokeModel upstream for the /model/{id}/invoke "
+        "passthrough routes. Point at a re-signing gateway (LiteLLM, "
+        "LocalStack), NOT raw AWS — rewriting the body breaks SigV4. "
+        "(env: BEDROCK_TARGET_API_URL)"
+    ),
+)
+@click.option(
     "--no-telemetry",
     is_flag=True,
     help="Disable anonymous usage telemetry (env: HEADROOM_TELEMETRY=off)",
@@ -649,6 +659,7 @@ def proxy(
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
+    bedrock_api_url: str | None,
     no_telemetry: bool,
     stateless: bool,
     embedding_server: bool,
@@ -863,6 +874,9 @@ def proxy(
         backend=backend,
         bedrock_region=bedrock_region or region,
         bedrock_profile=bedrock_profile,
+        # CLI flag > env > unset. Matches the BEDROCK_TARGET_API_URL naming of
+        # the sibling *_TARGET_API_URL passthrough overrides.
+        bedrock_api_url=bedrock_api_url or os.environ.get("BEDROCK_TARGET_API_URL"),
         anyllm_provider=effective_anyllm_provider,
         # License / Usage Reporting (managed/enterprise)
         license_key=license_key,
