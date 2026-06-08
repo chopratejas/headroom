@@ -114,6 +114,29 @@ def test_is_loopback_host_rejects_malformed_input():
     assert is_loopback_host("") is False
 
 
+def test_is_loopback_host_rejects_testclient_sentinel():
+    """``"testclient"`` is Starlette's TestClient sentinel host.
+
+    Adding it to the trusted set would silently expand the attack
+    surface if a deployment ever wired the test transport into a real
+    ASGI server. Tests bypass the guard via dependency_overrides
+    instead.
+    """
+    assert is_loopback_host("testclient") is False
+
+
+def test_is_loopback_host_rejects_localhost_lookalikes():
+    """Catch homograph / suffix tricks an attacker might try.
+
+    Starlette's CORS regex would reject these too, but the loopback
+    guard is the second line of defense.
+    """
+    assert is_loopback_host("localhost.evil.com") is False
+    assert is_loopback_host("localhosts") is False
+    assert is_loopback_host("127.0.0.1.evil.com") is False
+    assert is_loopback_host("Localhost") is False  # case-sensitive on purpose
+
+
 def test_require_loopback_raises_404_for_external_client():
     class _FakeClient:
         host = "10.0.0.1"

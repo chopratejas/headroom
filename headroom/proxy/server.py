@@ -1714,9 +1714,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def _record_headroom_stack(request, call_next):
         started = time.perf_counter()
         inbound_id = f"inbound-{time.time_ns()}"
-        path = request.url.path
-        method = request.method
-        query = request.url.query
+        # Sanitize URL components before logging. Uvicorn URL-decodes the path
+        # before populating ASGI scope, so an attacker can send `/foo%0d%0aevent=injected`
+        # and produce two log lines that look like distinct events. Drop CR/LF
+        # and other ASCII control chars and cap the length so log scrapers
+        # see one line per request. `_sanitize_log_token` lives in helpers
+        # for reuse by other handlers that log request data.
+        from headroom.proxy.helpers import _sanitize_log_token
+
+        path = _sanitize_log_token(request.url.path, max_chars=512)
+        method = _sanitize_log_token(request.method, max_chars=16)
+        query = _sanitize_log_token(request.url.query, max_chars=1024)
         headers = dict(request.headers.items())
         client = getattr(request, "client", None)
         client_addr = ""
@@ -1869,16 +1877,23 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         payload["runtime"] = _runtime_payload()
         return JSONResponse(status_code=200, content=payload)
 
-    @app.get("/dashboard", response_class=HTMLResponse)
+    @app.get("/dashboard", response_class=HTMLResponse, dependencies=[Depends(_require_loopback)])
     async def dashboard():
-        """Serve the Headroom dashboard UI."""
+        """Serve the Headroom dashboard UI.
+
+        Loopback-only: the dashboard runs in the user's browser on the same
+        host as the proxy and embeds operational details. With the default
+        ``--host 0.0.0.0`` Docker bind, leaving it open would let any
+        network-reachable client fingerprint the proxy and consume its
+        ``/stats`` feed.
+        """
         return get_dashboard_html()
 
     DASHBOARD_STATS_CACHE_TTL_SECONDS = 5.0
     _stats_snapshot_lock = asyncio.Lock()
     _stats_snapshot: dict[str, Any] = {"expires_at": 0.0, "value": None}
 
-    async def _build_stats_payload() -> dict[str, Any]:
+    async def _build_stats_payload(include_recent_requests: bool = False) -> dict[str, Any]:
         """Build the full `/stats` response payload.
 
         This is the main stats endpoint - it aggregates data from all subsystems:
@@ -1889,6 +1904,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         - Compression (CCR) statistics
         - Telemetry/TOIN (data flywheel) statistics
         - Cache and rate limiter stats
+
+        ``include_recent_requests`` toggles whether the per-request log tail is
+        embedded. It contains request_ids / providers / models / errors which
+        leak operational and customer-routing detail. Callers from loopback
+        (dashboard) get it; anonymous network callers do not.
         """
         m = proxy.metrics
 
@@ -2291,13 +2311,20 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "proxy_inbound": proxy.metrics.inbound_snapshot(),
             "cache": await proxy.cache.stats() if proxy.cache else None,
             "rate_limiter": await proxy.rate_limiter.stats() if proxy.rate_limiter else None,
-            "recent_requests": proxy.logger.get_recent(10) if proxy.logger else [],
+            "recent_requests": (
+                proxy.logger.get_recent(10) if (include_recent_requests and proxy.logger) else []
+            ),
             "log_full_messages": proxy.config.log_full_messages if proxy else False,
             **get_quota_registry().get_all_stats(),
         }
 
     async def _get_cached_stats_payload() -> dict[str, Any]:
-        """Return a short-TTL cached `/stats` snapshot for dashboard polling."""
+        """Return a short-TTL cached `/stats` snapshot for dashboard polling.
+
+        Only used by loopback dashboard callers — caller is responsible for
+        loopback gating. Snapshot includes ``recent_requests`` because the
+        only consumer is the local browser dashboard.
+        """
         now = time.monotonic()
         cached_payload = cast(dict[str, Any] | None, _stats_snapshot.get("value"))
         if cached_payload is not None and now < float(_stats_snapshot["expires_at"]):
@@ -2309,13 +2336,13 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             if cached_payload is not None and now < float(_stats_snapshot["expires_at"]):
                 return cached_payload
 
-            payload = await _build_stats_payload()
+            payload = await _build_stats_payload(include_recent_requests=True)
             _stats_snapshot["value"] = payload
             _stats_snapshot["expires_at"] = time.monotonic() + DASHBOARD_STATS_CACHE_TTL_SECONDS
             return payload
 
     @app.get("/stats")
-    async def stats(cached: bool = False):
+    async def stats(request: Request, cached: bool = False):
         """Get comprehensive proxy statistics.
 
         This is the main stats endpoint - it aggregates data from all subsystems:
@@ -2329,10 +2356,24 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         Use ``?cached=1`` for the dashboard fast path. That returns a short-TTL
         snapshot to avoid rebuilding the full payload on every UI poll.
+
+        ``recent_requests`` (request_ids / providers / models / errors) is only
+        embedded for loopback callers — same trust boundary as ``/dashboard``
+        and ``/transformations/feed``. Network callers still get the aggregate
+        counters but never see per-request metadata.
         """
+        from headroom.proxy.loopback_guard import is_loopback_host as _is_loopback
+
+        client = getattr(request, "client", None)
+        host = getattr(client, "host", None) if client is not None else None
+        include_recent = _is_loopback(host)
         if cached:
-            return await _get_cached_stats_payload()
-        return await _build_stats_payload()
+            # Cached path is for dashboard polling; only safe for loopback
+            # because the cache embeds recent_requests. Fall through to a
+            # fresh build for non-loopback callers (no recent_requests).
+            if include_recent:
+                return await _get_cached_stats_payload()
+        return await _build_stats_payload(include_recent_requests=include_recent)
 
     @app.post("/stats/reset", dependencies=[Depends(_require_loopback)])
     async def stats_reset():
@@ -2363,9 +2404,16 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         return proxy.metrics.savings_tracker.history_response(history_mode=history_mode)
 
-    @app.get("/transformations/feed")
+    @app.get("/transformations/feed", dependencies=[Depends(_require_loopback)])
     async def transformations_feed(limit: int = 20):
         """Get recent message transformations for the live feed.
+
+        Loopback-only: when ``log_full_messages`` is enabled this endpoint
+        returns full request/response message bodies (prompt content and
+        completions). With the default ``--host 0.0.0.0`` Docker bind this
+        would expose chat history to anyone able to reach the proxy port.
+        The dashboard runs in the user's browser on loopback so this gate
+        does not break legitimate use.
 
         Returns empty list if log_full_messages is disabled (messages are not stored).
         """
@@ -2459,9 +2507,16 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         report = tracker.get_report()
         return report.to_dict()
 
-    @app.post("/cache/clear")
+    @app.post("/cache/clear", dependencies=[Depends(_require_loopback)])
     async def clear_cache():
-        """Clear the response cache."""
+        """Clear the response cache.
+
+        Loopback-only: cache clearing is a state-mutating operation. With the
+        default ``--host 0.0.0.0`` Docker bind, an unauthenticated POST from
+        a network attacker would otherwise let them forcibly wipe the proxy's
+        response cache as a denial-of-service or to evict cached completions
+        the operator is relying on.
+        """
         if proxy.cache:
             await proxy.cache.clear()
             return {"status": "cleared"}

@@ -735,7 +735,17 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         log_requests=False,
     )
 
-    with TestClient(create_app(config)) as client:
+    # `/dashboard` is loopback-gated to prevent leaking operator UI to
+    # network callers when the proxy runs on `--host 0.0.0.0`. TestClient's
+    # client address is the literal ``"testclient"`` which is NOT loopback,
+    # so we override the dependency for this test the same way the
+    # /v1/responses tests do.
+    from headroom.proxy.loopback_guard import require_loopback
+
+    app = create_app(config)
+    app.dependency_overrides[require_loopback] = lambda: None
+
+    with TestClient(app) as client:
         response = client.get("/dashboard")
         assert response.status_code == 200
         html = response.text

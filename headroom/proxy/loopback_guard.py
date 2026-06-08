@@ -47,7 +47,7 @@ LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 def is_loopback_host(host: str | None) -> bool:
     """Return True if ``host`` represents a loopback interface.
 
-    ``None`` is treated as loopback — this covers ``TestClient`` /
+    ``None`` is treated as loopback — this covers ``ASGITransport`` /
     UDS-style requests where FastAPI does not populate
     ``request.client``.
 
@@ -56,6 +56,23 @@ def is_loopback_host(host: str | None) -> bool:
     :func:`ipaddress.ip_address`; this accepts IPv6-mapped IPv4
     (``::ffff:127.0.0.1``) which Linux dual-stack sockets emit by
     default. Malformed input returns ``False``.
+
+    Production note: the guard only inspects ``scope["client"]``, which
+    uvicorn / hypercorn populate from the TCP peer address of the socket.
+    Reverse-proxy ``X-Forwarded-For`` headers are deliberately ignored —
+    enabling that would let a network attacker bypass the guard with a
+    spoofed forwarded address. Operators terminating TLS in front of the
+    proxy must place trusted middleware between the proxy and untrusted
+    networks.
+
+    Note for tests: Starlette's ``TestClient`` sets ``scope["client"]``
+    to the sentinel ``("testclient", 50000)``. That sentinel is **not**
+    treated as loopback here — tests must instead bypass the guard via
+    ``app.dependency_overrides[require_loopback] = lambda: None`` (the
+    same pattern used for ``/v1/responses`` integration tests). Adding
+    ``"testclient"`` to the trusted set would silently expand the
+    attack surface if a deployment ever wired the test transport into
+    a real ASGI server.
     """
     if host is None:
         return True

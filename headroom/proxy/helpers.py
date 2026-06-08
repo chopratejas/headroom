@@ -103,6 +103,34 @@ def _safe_event_name(event: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in event)[:80]
 
 
+def _sanitize_log_token(value: str, *, max_chars: int = 512) -> str:
+    """Strip CR/LF and other ASCII control chars before embedding in a log line.
+
+    Uvicorn URL-decodes paths before populating ASGI scope, so a request like
+    ``GET /foo%0aevent=injected_event ...`` would otherwise produce two
+    log lines that look like distinct events. We replace each control char
+    with ``?`` so the original length is preserved (helps spot the attack)
+    and truncate to ``max_chars`` to bound log size on malicious clients.
+    """
+
+    if not isinstance(value, str):
+        value = str(value)
+    # Replace control chars (0x00-0x1F and 0x7F) with '?'. Tab is included
+    # in the sanitized set: even though it would not break a single-line
+    # log it confuses downstream parsers like Loki that key on whitespace.
+    sanitized_chars = []
+    for ch in value:
+        code = ord(ch)
+        if code < 0x20 or code == 0x7F:
+            sanitized_chars.append("?")
+        else:
+            sanitized_chars.append(ch)
+    sanitized = "".join(sanitized_chars)
+    if len(sanitized) > max_chars:
+        return sanitized[: max_chars - 1] + "…"
+    return sanitized
+
+
 def _wire_debug_preview(value: Any, *, max_chars: int | None = None) -> str:
     """Return the redacted wire payload for proxy.log.
 

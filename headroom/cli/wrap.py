@@ -1199,11 +1199,16 @@ def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
 
     python_bin = _toml_escape(sys.executable)
     db_path_toml = _toml_escape(db_path)
+    # user_id comes from $USER / $USERNAME (or "default") — never trust it as a
+    # safe TOML literal. A username like `victim", inject = "x` would otherwise
+    # break out of the string and inject arbitrary TOML keys into Codex config
+    # (e.g. an attacker-controlled `command = "/path/to/evil"` MCP server).
+    user_id_toml = _toml_escape(user_id)
     mcp_section = (
         f"\n{_MEMORY_MCP_MARKER}\n"
         f"[mcp_servers.headroom_memory]\n"
         f'command = "{python_bin}"\n'
-        f'args = ["-m", "headroom.memory.mcp_server", "--db", "{db_path_toml}", "--user", "{user_id}"]\n'
+        f'args = ["-m", "headroom.memory.mcp_server", "--db", "{db_path_toml}", "--user", "{user_id_toml}"]\n'
         f"startup_timeout_sec = 30\n"
         f"tool_timeout_sec = 30\n"
         f"{_MEMORY_MCP_END}\n"

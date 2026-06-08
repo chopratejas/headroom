@@ -112,13 +112,30 @@ jobs:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
       - name: Install cargo-audit + cargo-deny
+        # `--locked` uses the published lockfile so transitive deps cannot
+        # silently change between CI runs. Drop the previous `|| true` so
+        # install failure aborts the audit job loudly rather than letting
+        # the subsequent `cargo audit` step fail with a confusing
+        # command-not-found error.
         run: |
-          cargo install --locked cargo-audit || true
-          cargo install --locked cargo-deny || true
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
       - name: cargo audit
-        run: cargo audit
+        run: cargo audit --deny warnings
+      - name: cargo deny check advisories
+        # Advisories must be checked separately from licenses; the previous
+        # workflow only ran `check licenses`, so a published RUSTSEC advisory
+        # on a transitive dependency would never block a release.
+        run: cargo deny check advisories
       - name: cargo deny check licenses
         run: cargo deny check licenses
+      - name: cargo deny check bans
+        # `bans` flags duplicate dep versions and explicitly-denied crates.
+        # Treat as warning-only (continue-on-error) for now because the
+        # repo has not yet curated a deny list; flip to hard-fail once the
+        # baseline is clean.
+        continue-on-error: true
+        run: cargo deny check bans
 
   parity-nightly:
     name: parity (nightly, allowed to fail during Phase 0)
