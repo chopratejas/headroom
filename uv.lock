@@ -1200,7 +1200,7 @@ wheels = [
 
 [[package]]
 name = "gitpython"
-version = "3.1.47"
+version = "3.1.46"
 source = { registry = "https://pypi.org/simple/" }
 dependencies = [
     { name = "gitdb" },
