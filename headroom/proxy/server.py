@@ -1706,6 +1706,26 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Warn if a custom CORS regex matches non-loopback origins.
+    # A misconfigured regex (e.g. ".*" or "https://.*\.corp\.example\.com") that
+    # also matches public/external origins would silently expand the trusted
+    # browser-origin set beyond the intended loopback-only scope.
+    _CORS_PROBE_URLS = ["https://example.com", "http://evil.com", "https://192.168.1.1"]
+    if _cors_origin_regex != _default_cors_regex:
+        import re as _re
+
+        for _probe in _CORS_PROBE_URLS:
+            if _re.fullmatch(_cors_origin_regex, _probe):
+                import logging as _logging
+
+                _logging.getLogger("headroom.cors").warning(
+                    "HEADROOM_CORS_ORIGIN_REGEX (%r) matches non-loopback origin %r — "
+                    "verify this is intentional for your deployment",
+                    _cors_origin_regex,
+                    _probe,
+                )
+                break
+
     # X-Headroom-Stack: SDK adapters (TS openai/anthropic/etc.) tag their
     # requests so telemetry can segment by integration surface. Registered
     # before extension middleware so any extension-level auth/guards run

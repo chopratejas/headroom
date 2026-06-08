@@ -21,6 +21,7 @@ middleware) because:
 from __future__ import annotations
 
 import ipaddress
+import os as _os
 
 try:
     from fastapi import HTTPException, Request
@@ -42,6 +43,10 @@ __all__ = [
 # also accept IPv6-mapped IPv4 (``::ffff:127.0.0.1``) and other valid
 # loopback literals on dual-stack sockets.
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
+
+# One-time warning guard: set to True after the first None-client warning
+# is emitted so we don't flood logs on every request in affected deployments.
+_WARNED_NONE_CLIENT: bool = False
 
 
 def is_loopback_host(host: str | None) -> bool:
@@ -74,7 +79,20 @@ def is_loopback_host(host: str | None) -> bool:
     attack surface if a deployment ever wired the test transport into
     a real ASGI server.
     """
+    global _WARNED_NONE_CLIENT
     if host is None:
+        if (
+            not _WARNED_NONE_CLIENT
+            and not _os.environ.get("PYTEST_CURRENT_TEST")
+            and not _os.environ.get("HEADROOM_ALLOW_NONE_CLIENT")
+        ):
+            import logging as _logging
+
+            _logging.getLogger("headroom.loopback_guard").warning(
+                "Trusting request with no client address (None host). "
+                "Set HEADROOM_ALLOW_NONE_CLIENT=1 to suppress this warning."
+            )
+            _WARNED_NONE_CLIENT = True
         return True
     if host == "localhost":
         return True

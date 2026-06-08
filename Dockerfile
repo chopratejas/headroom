@@ -56,6 +56,12 @@ RUN set -eux; \
 
 WORKDIR /build
 
+# Pre-create /app owned by uid/gid 1000 (nonroot) so the runtime-slim stage
+# can COPY it with correct ownership (distroless has no shell for RUN).
+RUN groupadd --gid 1000 nonroot && \
+    useradd --uid 1000 --gid nonroot --no-create-home nonroot && \
+    mkdir -p /app && chown nonroot:nonroot /app
+
 # Copy the full set of files maturin needs to build the wheel: the root
 # pyproject.toml + Cargo workspace + Rust crates + Python source. The
 # uv install builds + installs the wheel in one shot.
@@ -121,6 +127,11 @@ ARG RUNTIME_USER=nonroot
 ARG PYTHON_SITE_PACKAGES
 
 COPY --from=builder ${PYTHON_SITE_PACKAGES} ${PYTHON_SITE_PACKAGES}
+
+# Ensure the app directory is owned by nonroot before switching user.
+# WORKDIR alone creates /app as root; explicit mkdir+chown in the builder
+# stage and COPY here ensures volume mounts to /app are nonroot-owned.
+COPY --from=builder --chown=nonroot:nonroot /app /app
 
 USER ${RUNTIME_USER}
 WORKDIR /app

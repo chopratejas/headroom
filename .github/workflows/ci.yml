@@ -327,17 +327,21 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Install actionlint
-        # Download archive to file then extract — no curl|bash, no @main float (CWE-494).
+        # Download archive to file then verify SHA-256 before extracting — no curl|bash,
+        # no @main float, integrity-checked (CWE-494).
         run: |
           curl -fsSL -o /tmp/actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v1.7.4/actionlint_1.7.4_linux_amd64.tar.gz"
+          echo "fc0a6886bbb9a23a39eeec4b176193cadb54ddbe77cdbb19b637933919545395  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           sudo mv /tmp/actionlint /usr/local/bin/actionlint
       - name: Install act
-        # Download archive to file then extract — no curl|bash, no @master float (CWE-494).
+        # Download archive to file then verify SHA-256 before extracting — no curl|bash,
+        # no @master float, integrity-checked (CWE-494).
         run: |
           curl -fsSL -o /tmp/act.tar.gz \
             "https://github.com/nektos/act/releases/download/v0.2.61/act_Linux_x86_64.tar.gz"
+          echo "0e087414b2837fa4437930a6f07cb661a9d28c4be69e258aded0c8e44682f056  /tmp/act.tar.gz" | sha256sum -c -
           tar -xzf /tmp/act.tar.gz -C /tmp act
           sudo mv /tmp/act /usr/local/bin/act
       - name: Validate workflow files
@@ -430,11 +434,15 @@ jobs:
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Install uv
+        # Direct binary archive download with SHA-256 integrity check — no installer
+        # script pipe, pinned release, integrity-checked (CWE-494).
         run: |
-          curl -fsSL -o /tmp/uv-install.sh \
-            "https://github.com/astral-sh/uv/releases/download/0.7.12/uv-installer.sh"
-          sh /tmp/uv-install.sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl -fsSL -o /tmp/uv.tar.gz \
+            "https://github.com/astral-sh/uv/releases/download/0.7.12/uv-x86_64-unknown-linux-musl.tar.gz"
+          echo "bb493f1e6ae426c06b5a103cb71aa60c678976d2377f0590644538658656c2a7  /tmp/uv.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/uv.tar.gz -C /tmp
+          sudo mv /tmp/uv-x86_64-unknown-linux-musl/uv /usr/local/bin/uv
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
       - name: Check uv.lock is up to date
         run: uv lock --check
 
@@ -445,10 +453,12 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install gitleaks
-        # Pinned version download — no pipe-to-bash, no floating tag (CWE-494).
+        # Pinned version download with SHA-256 integrity check — no pipe-to-bash,
+        # no floating tag, integrity-checked (CWE-494).
         run: |
           curl -fsSL -o /tmp/gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v8.27.2/gitleaks_8.27.2_linux_x64.tar.gz"
+          echo "141c3b2dede46d8b3a53b47116da756bd223decc0374797559a6b50ecba5590c  /tmp/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
       - name: Scan for committed secrets
