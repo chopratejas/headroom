@@ -37,8 +37,12 @@ if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
 import click
 
 from headroom._version import __version__ as _HEADROOM_VERSION
-from headroom.copilot_auth import DEFAULT_API_URL as COPILOT_API_URL
-from headroom.copilot_auth import has_oauth_auth, resolve_client_bearer_token
+from headroom.copilot_auth import (
+    has_oauth_auth,
+    resolve_client_bearer_token,
+    resolve_copilot_api_url,
+    resolve_subscription_bearer_token,
+)
 from headroom.providers.aider import build_launch_env as _build_aider_launch_env
 from headroom.providers.claude import proxy_base_url as _claude_proxy_base_url
 from headroom.providers.codex import build_launch_env as _build_codex_launch_env
@@ -137,6 +141,29 @@ def _check_proxy(port: int) -> bool:
         return False
 
 
+def _port_bind_error(port: int) -> OSError | None:
+    """Return the bind error for a local proxy port, or None when it is usable."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", port))
+    except OSError as exc:
+        return exc
+    return None
+
+
+def _format_unbindable_port_error(port: int, error: OSError, agent_type: str) -> str:
+    """Build an actionable message for ports that fail before uvicorn can bind."""
+    command = "headroom proxy"
+    if agent_type != "unknown":
+        command = f"headroom wrap {agent_type}"
+    suggested_port = port + 1
+    return (
+        f"Port {port} is unavailable on 127.0.0.1 before the proxy can start: {error}. "
+        "On Windows this can happen when the port is in an excluded or reserved range. "
+        f"Rerun with a different port, for example `{command} --port {suggested_port}`."
+    )
+
+
 def _get_log_path() -> Path:
     """Get path for proxy log file."""
     from headroom import paths as _paths
@@ -157,6 +184,8 @@ def _start_proxy(
     anyllm_provider: str | None = None,
     region: str | None = None,
     openai_api_url: str | None = None,
+    anthropic_api_url: str | None = None,
+    copilot_api_token: str | None = None,
 ) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
 
@@ -199,6 +228,9 @@ def _start_proxy(
     if openai_api_url:
         cmd.extend(["--openai-api-url", openai_api_url])
 
+    if anthropic_api_url:
+        cmd.extend(["--anthropic-api-url", anthropic_api_url])
+
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
 
@@ -210,6 +242,16 @@ def _start_proxy(
     if agent_type != "unknown":
         proxy_env["HEADROOM_AGENT_TYPE"] = agent_type
         proxy_env.setdefault("HEADROOM_STACK", f"wrap_{agent_type}")
+    if openai_api_url:
+        proxy_env["OPENAI_TARGET_API_URL"] = openai_api_url
+    if anthropic_api_url:
+        proxy_env["ANTHROPIC_TARGET_API_URL"] = anthropic_api_url
+    # Pin the wrapper-validated Copilot token for this proxy instance only.
+    # Injected into the subprocess env here (not the parent's os.environ) so it
+    # never leaks into shared state. The proxy's CopilotTokenProvider honours
+    # GITHUB_COPILOT_API_TOKEN directly, making upstream auth deterministic.
+    if copilot_api_token:
+        proxy_env["GITHUB_COPILOT_API_TOKEN"] = copilot_api_token
 
     proc = subprocess.Popen(
         cmd,
@@ -1343,6 +1385,16 @@ def _proxy_active_session_count(payload: dict[str, Any] | None) -> int:
     return max(counts, default=0)
 
 
+def _normalize_proxy_api_url(url: object) -> str | None:
+    """Normalize configured upstream URLs for running-proxy comparisons."""
+    if not isinstance(url, str):
+        return None
+    normalized = url.strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3]
+    return normalized or None
+
+
 def _proxy_version(payload: dict[str, Any] | None) -> str | None:
     """Return the running proxy version when it exposes one."""
     if payload is None:
@@ -1554,8 +1606,11 @@ def _should_use_copilot_oauth(
     backend: str | None,
     provider_type: str,
     env: dict[str, str],
+    force_subscription: bool = False,
 ) -> bool:
     """Prefer a reusable Copilot OAuth session when the requested routing supports it."""
+    if force_subscription:
+        return True
     if env.get("COPILOT_PROVIDER_API_KEY") or env.get("COPILOT_PROVIDER_BEARER_TOKEN"):
         return False
     if provider_type == "anthropic":
@@ -1580,6 +1635,8 @@ def _ensure_proxy(
     anyllm_provider: str | None = None,
     region: str | None = None,
     openai_api_url: str | None = None,
+    anthropic_api_url: str | None = None,
+    copilot_api_token: str | None = None,
 ) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
     helpers = _live_wrap_module()
@@ -1669,10 +1726,19 @@ def _ensure_proxy(
                     missing.append("learn")
                 if code_graph and not running_config.get("code_graph"):
                     missing.append("code_graph")
+                if openai_api_url:
+                    running_openai_url = _normalize_proxy_api_url(
+                        running_config.get("openai_api_url")
+                    )
+                    requested_openai_url = _normalize_proxy_api_url(openai_api_url)
+                    if running_openai_url != requested_openai_url:
+                        missing.append("openai-api-url")
 
                 if missing:
                     needs_restart = True
-                    flags_str = ", ".join(f"--{f.replace('_', '-')}" for f in missing)
+                    flags_str = ", ".join(
+                        f if f.startswith("--") else f"--{f.replace('_', '-')}" for f in missing
+                    )
                     click.echo(f"  Proxy on port {port} is missing: {flags_str}")
                     click.echo("  Restarting proxy with upgraded configuration...")
 
@@ -1704,6 +1770,12 @@ def _ensure_proxy(
                 return None
 
         # Start (or restart) the proxy with the requested flags
+        bind_error = helpers._port_bind_error(port)
+        if bind_error is not None:
+            raise click.ClickException(
+                helpers._format_unbindable_port_error(port, bind_error, agent_type)
+            )
+
         click.echo(f"  Starting Headroom proxy on port {port}...")
         try:
             proc = cast(
@@ -1718,6 +1790,8 @@ def _ensure_proxy(
                     anyllm_provider=anyllm_provider,
                     region=region,
                     openai_api_url=openai_api_url,
+                    anthropic_api_url=anthropic_api_url,
+                    copilot_api_token=copilot_api_token,
                 ),
             )
             click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
@@ -1793,6 +1867,7 @@ def _launch_tool(
     anyllm_provider: str | None = None,
     region: str | None = None,
     openai_api_url: str | None = None,
+    copilot_api_token: str | None = None,
 ) -> None:
     """Common logic: start proxy, launch tool, clean up."""
     proxy_holder: list[subprocess.Popen | None] = [None]
@@ -1819,6 +1894,7 @@ def _launch_tool(
             anyllm_provider=anyllm_provider,
             region=region,
             openai_api_url=openai_api_url,
+            copilot_api_token=copilot_api_token,
         )
 
         if code_graph:
@@ -2204,8 +2280,20 @@ def claude(
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
+        # Detect Foundry mode: Claude Code uses ANTHROPIC_FOUNDRY_BASE_URL instead of
+        # ANTHROPIC_BASE_URL when CLAUDE_CODE_USE_FOUNDRY=1 is set.
+        foundry_upstream = None
+        if os.environ.get("CLAUDE_CODE_USE_FOUNDRY"):
+            foundry_upstream = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")
+
         proxy_holder[0] = _ensure_proxy(
-            port, no_proxy, learn=learn, memory=memory, agent_type="claude", code_graph=code_graph
+            port,
+            no_proxy,
+            learn=learn,
+            memory=memory,
+            agent_type="claude",
+            code_graph=code_graph,
+            anthropic_api_url=foundry_upstream,
         )
 
         if not no_rtk:
@@ -2235,16 +2323,25 @@ def claude(
         if code_graph:
             _setup_code_graph(verbose=verbose)
 
+        proxy_url = _claude_proxy_base_url(port)
         click.echo()
         click.echo("  Launching Claude Code (API routed through Headroom)...")
-        click.echo(f"  ANTHROPIC_BASE_URL={_claude_proxy_base_url(port)}")
+        if foundry_upstream:
+            click.echo(
+                f"  Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL={proxy_url} → upstream {foundry_upstream}"
+            )
+        else:
+            click.echo(f"  ANTHROPIC_BASE_URL={proxy_url}")
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
         _print_telemetry_notice()
         click.echo()
 
         env = os.environ.copy()
-        env["ANTHROPIC_BASE_URL"] = _claude_proxy_base_url(port)
+        if foundry_upstream:
+            env["ANTHROPIC_FOUNDRY_BASE_URL"] = proxy_url
+        else:
+            env["ANTHROPIC_BASE_URL"] = proxy_url
 
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
@@ -2360,6 +2457,14 @@ def unwrap_claude(
     default=None,
     help="OpenAI-compatible Copilot wire API. Defaults to 'completions' when provider-type resolves to openai.",
 )
+@click.option(
+    "--subscription",
+    is_flag=True,
+    help=(
+        "Experimental: route GitHub-authenticated Copilot CLI traffic through Headroom "
+        "without requiring a provider API key."
+    ),
+)
 @click.option("--memory", is_flag=True, help="Enable persistent cross-session memory")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.argument("copilot_args", nargs=-1, type=click.UNPROCESSED)
@@ -2372,6 +2477,7 @@ def copilot(
     region: str | None,
     provider_type: str,
     wire_api: str | None,
+    subscription: bool,
     memory: bool,
     verbose: bool,
     copilot_args: tuple[str, ...],
@@ -2389,7 +2495,15 @@ def copilot(
         headroom wrap copilot -- --model claude-sonnet-4-20250514
         headroom wrap copilot --backend anyllm --anyllm-provider groq -- --model gpt-4o
         headroom wrap copilot --provider-type openai --wire-api responses -- --model gpt-5.4
+        headroom wrap copilot --subscription -- --model gpt-4.1
         headroom wrap copilot --no-context-tool -- --prompt "explain this file"
+
+    \b
+    Copilot hosted API (--subscription and the implicit OAuth path) routes to the
+    generic host https://api.githubcopilot.com, which serves the full model set.
+    Enterprise / data-residency accounts provisioned on a dedicated host pin it
+    explicitly with GITHUB_COPILOT_API_URL (the override flows through to upstream).
+    See TESTING-copilot-subscription.md for details.
     """
     copilot_bin = shutil.which("copilot")
     if not copilot_bin:
@@ -2416,6 +2530,17 @@ def copilot(
         wire_api=wire_api,
         backend=effective_backend,
     )
+    if subscription:
+        if effective_backend not in (None, "", "anthropic"):
+            raise click.ClickException(
+                "--subscription routes to GitHub Copilot's hosted API and cannot be combined "
+                "with translated backends such as anyllm or litellm-*."
+            )
+        if provider_type == "anthropic":
+            raise click.ClickException(
+                "--subscription uses Copilot's OpenAI-compatible hosted API path; "
+                "do not combine it with --provider-type anthropic."
+            )
 
     if not no_rtk:
         if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
@@ -2430,15 +2555,21 @@ def copilot(
 
     env = os.environ.copy()
     openai_api_url: str | None = None
+    copilot_proxy_token: str | None = None
     if _should_use_copilot_oauth(
         backend=effective_backend,
         provider_type=provider_type,
         env=env,
+        force_subscription=subscription,
     ):
-        client_bearer = resolve_client_bearer_token()
+        client_bearer = (
+            resolve_subscription_bearer_token() if subscription else resolve_client_bearer_token()
+        )
         if not client_bearer:
             raise click.ClickException(
-                "GitHub Copilot auth was detected but no reusable bearer token could be resolved."
+                "GitHub Copilot subscription mode requires a reusable GitHub/Copilot bearer "
+                "token, but none could be resolved. Run `copilot auth login` first, or set "
+                "GITHUB_COPILOT_TOKEN / GITHUB_COPILOT_GITHUB_TOKEN."
             )
 
         effective_wire_api = wire_api or "completions"
@@ -2446,14 +2577,41 @@ def copilot(
         env["COPILOT_PROVIDER_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
         env["COPILOT_PROVIDER_WIRE_API"] = effective_wire_api
         env["COPILOT_PROVIDER_BEARER_TOKEN"] = client_bearer
+        env["GITHUB_COPILOT_USE_TOKEN_EXCHANGE"] = "false"
         env.pop("COPILOT_PROVIDER_API_KEY", None)
+        # Hand the exact token we resolved (and, for --subscription, validated
+        # against GitHub) to the proxy explicitly via copilot_proxy_token below.
+        # The proxy pins it as GITHUB_COPILOT_API_TOKEN, so upstream auth is
+        # deterministic instead of the proxy re-running unvalidated discovery
+        # (read_cached_oauth_token returns the *first* candidate, which may not
+        # be the one the wrapper approved → environment-dependent 401s). Passing
+        # it as a launch argument — rather than mutating this process's global
+        # os.environ — keeps the token off shared state and out of unrelated
+        # code paths.
+        copilot_proxy_token = client_bearer
         env_vars_display = [
             "COPILOT_PROVIDER_TYPE=openai",
             f"COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:{port}/v1",
             f"COPILOT_PROVIDER_WIRE_API={effective_wire_api}",
-            "COPILOT_AUTH_MODE=github-oauth",
+            (
+                "COPILOT_AUTH_MODE=github-subscription-experimental"
+                if subscription
+                else "COPILOT_AUTH_MODE=github-oauth"
+            ),
         ]
-        openai_api_url = COPILOT_API_URL
+        # Resolve the Copilot API host: an explicit GITHUB_COPILOT_API_URL wins,
+        # otherwise the generic public host (api.githubcopilot.com). This is the
+        # same policy for --subscription and the implicit OAuth path. The
+        # account-specific endpoints.api advertised by /copilot_internal/user is
+        # deliberately NOT used to route — it returns a segmented host (e.g.
+        # api.individual.githubcopilot.com) that does not serve newer models on
+        # the responses API (#610), and it is not the host the official Copilot
+        # client routes with. Accounts that require a dedicated host (enterprise /
+        # data residency) set GITHUB_COPILOT_API_URL explicitly.
+        openai_api_url = resolve_copilot_api_url(client_bearer)
+        env["GITHUB_COPILOT_API_URL"] = openai_api_url
+        env["OPENAI_TARGET_API_URL"] = openai_api_url
+        env_vars_display.append(f"COPILOT_PROVIDER_API_URL={openai_api_url}")
     else:
         env, env_vars_display = _build_copilot_launch_env(
             port=port,
@@ -2475,7 +2633,7 @@ def copilot(
             )
             raise SystemExit(1)
 
-    if not _copilot_model_configured(copilot_args, env):
+    if not subscription and not _copilot_model_configured(copilot_args, env):
         click.echo(
             "  Note: Copilot BYOK requires a model. Pass `--model <name>` "
             "or set `COPILOT_MODEL` / `COPILOT_PROVIDER_MODEL_ID`."
@@ -2496,6 +2654,7 @@ def copilot(
         anyllm_provider=anyllm_provider,
         region=region,
         openai_api_url=openai_api_url,
+        copilot_api_token=copilot_proxy_token,
     )
 
 

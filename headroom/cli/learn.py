@@ -87,7 +87,7 @@ Use 'auto' (default) to scan all detected agents."""
     "--model",
     type=str,
     default=None,
-    help="LLM model for analysis (e.g., claude-sonnet-4-6, gpt-4o, gemini/gemini-2.0-flash). "
+    help="LLM model for analysis (e.g., claude-sonnet-4-6, gpt-4o, gemini/gemini-flash-latest). "
     "Auto-detected from API keys if not specified.",
 )
 @click.option(

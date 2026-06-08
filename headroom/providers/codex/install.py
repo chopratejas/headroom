@@ -80,14 +80,14 @@ def apply_provider_scope(manifest: DeploymentManifest) -> ManagedMutation | None
         + f"{_CODEX_MARKER_END}\n"
     )
     if path.exists():
-        existing = path.read_text()
+        existing = path.read_text(encoding="utf-8")
         if _CODEX_MARKER_START in existing:
             merged = _CODEX_PATTERN.sub(section, existing)
         else:
             merged = existing.rstrip() + "\n\n" + section + "\n"
     else:
         merged = section + "\n"
-    path.write_text(merged)
+    path.write_text(merged, encoding="utf-8")
     return ManagedMutation(target=ToolTarget.CODEX.value, kind="toml-block", path=str(path))
 
 
@@ -99,7 +99,7 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
     path = Path(mutation.path)
     if not path.exists():
         return
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
     # Remove the managed marker block.
     if _CODEX_MARKER_START in content:
         content = _CODEX_PATTERN.sub("", content)
@@ -108,4 +108,4 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
     content = _ORPHAN_MODEL_PROVIDER.sub("", content)
     content = _ORPHAN_OPENAI_BASE_URL.sub("", content)
     content = _ORPHAN_HEADROOM_TABLE.sub("", content)
-    path.write_text(content.strip() + "\n")
+    path.write_text(content.strip() + "\n", encoding="utf-8")
