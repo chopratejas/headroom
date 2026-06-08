@@ -4087,9 +4087,7 @@ class OpenAIHandlerMixin:
                         # here must never break the proxied session.
                         try:
                             _ws_handshake_resp = getattr(upstream, "response", None)
-                            _ws_handshake_headers = getattr(
-                                _ws_handshake_resp, "headers", None
-                            )
+                            _ws_handshake_headers = getattr(_ws_handshake_resp, "headers", None)
                             if _ws_handshake_headers is not None:
                                 from headroom.subscription.codex_rate_limits import (
                                     get_codex_rate_limit_state,
@@ -4105,9 +4103,7 @@ class OpenAIHandlerMixin:
                                 # WS path. ``raw_items()`` yields every (name, value)
                                 # pair without raising; ``.items()`` is the fallback
                                 # for plain-dict shapes (e.g. older clients / tests).
-                                _hs_iter = getattr(
-                                    _ws_handshake_headers, "raw_items", None
-                                )
+                                _hs_iter = getattr(_ws_handshake_headers, "raw_items", None)
                                 _hs_pairs = (
                                     _hs_iter()
                                     if callable(_hs_iter)
