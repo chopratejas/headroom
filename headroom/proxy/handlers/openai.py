@@ -1237,7 +1237,9 @@ class OpenAIHandlerMixin:
 
         result = await self._run_compression_in_executor(
             _compress,
-            timeout=COMPRESSION_TIMEOUT_SECONDS,
+            timeout=getattr(
+                self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS
+            ),
         )
         if len(result) == 8:
             return (*result, timing)
@@ -1258,7 +1260,6 @@ class OpenAIHandlerMixin:
 
         from headroom.ccr import CCRToolInjector
         from headroom.proxy.helpers import (
-            COMPRESSION_TIMEOUT_SECONDS,
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
             _read_request_json,
@@ -1624,7 +1625,9 @@ class OpenAIHandlerMixin:
                             biases=_hook_biases,
                             compression_policy=compression_policy,
                         ),
-                        timeout=COMPRESSION_TIMEOUT_SECONDS,
+                        timeout=getattr(
+                            self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS
+                        ),
                     )
 
                     if result.messages != working_messages:
@@ -1648,7 +1651,9 @@ class OpenAIHandlerMixin:
                             biases=_hook_biases,
                             compression_policy=compression_policy,
                         ),
-                        timeout=COMPRESSION_TIMEOUT_SECONDS,
+                        timeout=getattr(
+                            self.config, "compression_timeout_seconds", COMPRESSION_TIMEOUT_SECONDS
+                        ),
                     )
 
                     if result.messages != messages:

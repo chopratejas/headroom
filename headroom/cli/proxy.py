@@ -203,6 +203,17 @@ def _selected_context_tool() -> str:
     help="Upstream connection timeout in seconds (default: 10)",
 )
 @click.option(
+    "--compression-timeout-seconds",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    envvar="HEADROOM_COMPRESSION_TIMEOUT_SECONDS",
+    help=(
+        "Wall-clock timeout for a single compression call before the request "
+        "uses the compression-failure policy (default: 30.0 seconds, "
+        "env: HEADROOM_COMPRESSION_TIMEOUT_SECONDS)."
+    ),
+)
+@click.option(
     "--anthropic-pre-upstream-concurrency",
     type=int,
     default=None,
@@ -487,6 +498,7 @@ def proxy(
     subscription_poll_interval: int | None,
     retry_max_attempts: int | None,
     connect_timeout_seconds: int | None,
+    compression_timeout_seconds: float | None,
     anthropic_pre_upstream_concurrency: int | None,
     anthropic_pre_upstream_acquire_timeout_seconds: float | None,
     anthropic_pre_upstream_memory_context_timeout_seconds: float | None,
@@ -542,6 +554,7 @@ def proxy(
     """
     # Import here to avoid slow startup
     try:
+        from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
         from headroom.proxy.server import ProxyConfig, run_server
     except ImportError as e:
         click.echo("Error: Proxy dependencies not installed. Run: pip install headroom[proxy]")
@@ -653,6 +666,11 @@ def proxy(
         connect_timeout_seconds=connect_timeout_seconds
         if connect_timeout_seconds is not None
         else 10,
+        compression_timeout_seconds=(
+            compression_timeout_seconds
+            if compression_timeout_seconds is not None
+            else float(COMPRESSION_TIMEOUT_SECONDS)
+        ),
         max_connections=max_connections,
         max_keepalive_connections=max_keepalive_connections,
         log_file=None if is_stateless else log_file,
