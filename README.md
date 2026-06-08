@@ -238,6 +238,22 @@ pipx install --python python3.13 "headroom-ai[all]"
 
 → [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Docker tags, persistent service, PowerShell, devcontainers.
 
+## Uninstall
+
+One command reverses everything Headroom set up — it unwraps each wrapped tool (Codex, Claude, OpenClaw), removes MCP registrations, tears down any persistent supervisor, and stops the local proxy:
+
+```bash
+headroom uninstall                # preview first with: headroom uninstall --dry-run
+headroom uninstall --purge-state  # also delete ~/.headroom (savings history, caches)
+```
+
+Then remove the package with your package manager:
+
+```bash
+pip uninstall headroom-ai
+npm uninstall -g headroom-ai      # if you installed the Node package
+```
+
 ## headroom learn
 
 <p align="center">
