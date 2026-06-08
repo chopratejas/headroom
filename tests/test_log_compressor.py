@@ -301,11 +301,7 @@ RuntimeError: outer
         log_lines = compressor._parse_lines(content.split("\n"))
 
         # Find the *second* occurrence of the Traceback header.
-        tb_headers = [
-            ll
-            for ll in log_lines
-            if "Traceback (most recent call last)" in ll.content
-        ]
+        tb_headers = [ll for ll in log_lines if "Traceback (most recent call last)" in ll.content]
         assert len(tb_headers) >= 2, (
             "Expected two 'Traceback' headers in output; "
             f"found {len(tb_headers)}. State machine may have terminated early."
