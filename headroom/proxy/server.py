@@ -142,6 +142,7 @@ from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
+from headroom.proxy.ssl_context import build_ssl_context
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -871,6 +872,7 @@ class HeadroomProxy(
             operation="proxy.startup",
             metadata={"port": self.config.port, "host": self.config.host},
         )
+        _ssl_ctx = build_ssl_context()
         self.http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=self.config.connect_timeout_seconds,
@@ -883,6 +885,7 @@ class HeadroomProxy(
                 max_keepalive_connections=self.config.max_keepalive_connections,
             ),
             http2=self.config.http2,
+            verify=_ssl_ctx if _ssl_ctx is not None else True,
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
