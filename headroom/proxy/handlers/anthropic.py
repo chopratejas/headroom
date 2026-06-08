@@ -592,9 +592,7 @@ class AnthropicHandlerMixin:
                 )
             raw_model = body.get("model", "unknown")
             model = (
-                sanitize_anthropic_model_id(raw_model)
-                if isinstance(raw_model, str)
-                else raw_model
+                sanitize_anthropic_model_id(raw_model) if isinstance(raw_model, str) else raw_model
             )
             if isinstance(raw_model, str) and model != raw_model:
                 body["model"] = model
