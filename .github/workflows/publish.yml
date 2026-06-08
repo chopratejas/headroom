@@ -17,18 +17,18 @@ jobs:
       contents: write  # For uploading release assets
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582  # 1.95.0
 
       - name: Cache cargo registry + build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
         with:
           workspaces: ". -> target"
 
@@ -49,9 +49,9 @@ jobs:
             --outfile dist/headroom-sbom.cdx.json
 
       - name: Upload SBOM to release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           files: dist/headroom-sbom.cdx.json
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1

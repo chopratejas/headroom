@@ -20,7 +20,7 @@ target "runtime" {
   target   = "runtime"
   args = {
     HEADROOM_EXTRAS = "proxy"
-    RUNTIME_USER    = "root"
+    RUNTIME_USER    = "nonroot"
   }
 }
 
@@ -38,7 +38,7 @@ target "runtime-code" {
   target   = "runtime"
   args = {
     HEADROOM_EXTRAS = "proxy,code"
-    RUNTIME_USER    = "root"
+    RUNTIME_USER    = "nonroot"
   }
 }
 
@@ -56,7 +56,7 @@ target "runtime-slim" {
   target   = "runtime-slim"
   args = {
     HEADROOM_EXTRAS = "proxy"
-    RUNTIME_USER    = "root"
+    RUNTIME_USER    = "nonroot"
   }
 }
 
@@ -74,7 +74,7 @@ target "runtime-code-slim" {
   target   = "runtime-slim"
   args = {
     HEADROOM_EXTRAS = "proxy,code"
-    RUNTIME_USER    = "root"
+    RUNTIME_USER    = "nonroot"
   }
 }
 

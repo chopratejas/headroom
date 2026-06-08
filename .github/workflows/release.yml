@@ -84,7 +84,7 @@ jobs:
       bump: ${{ steps.ver.outputs.bump }}
       previous_tag: ${{ steps.ver.outputs.previous_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
@@ -126,17 +126,17 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
 
@@ -179,7 +179,7 @@ jobs:
         shell: bash
 
       - name: Upload changelog via action
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: changelog
           path: /tmp/changelog-backup.md
@@ -203,7 +203,7 @@ jobs:
           npm pack --pack-destination ../../release-assets
 
       - name: Upload release assets artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: release-assets
           path: release-assets/
@@ -261,12 +261,12 @@ jobs:
             manylinux: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
 
@@ -280,7 +280,7 @@ jobs:
           python scripts/verify-versions.py
 
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8  # v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
@@ -310,7 +310,7 @@ jobs:
       # build from any future `os` rename.
       - name: Build sdist (linux x86_64 only — sdist is platform-independent)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8  # v1
         with:
           command: sdist
           args: --out dist
@@ -393,10 +393,42 @@ jobs:
           done
 
       - name: Upload wheels artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*
+
+  # CycloneDX SBOM generation — runs in parallel with build-wheels.
+  # The SBOM captures the full Python + Rust dependency graph at the
+  # point the release is cut and is uploaded to the GitHub Release for
+  # supply-chain transparency (NTIA minimum-elements compliant).
+  generate-sbom:
+    needs: [detect-version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - name: Install headroom + CycloneDX tooling
+        run: |
+          pip install --upgrade pip
+          pip install "cyclonedx-bom==4.6.1"
+          pip install -e ".[proxy]" --no-deps
+      - name: Generate CycloneDX JSON SBOM
+        run: |
+          python -m cyclonedx_py.cmd pip \
+            --requirements-file <(pip list --format=freeze) \
+            --output-format json \
+            --outfile "sbom-${{ needs.detect-version.outputs.version }}.cyclonedx.json"
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: sbom
+          path: sbom-*.cyclonedx.json
 
   # Aggregator step: merge all wheel artifacts + the npm release assets
   # into the canonical `dist/` directory for downstream publishing jobs.
@@ -407,14 +439,14 @@ jobs:
       contents: read
     steps:
       - name: Download all wheel artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           pattern: wheels-*
           path: wheels-tmp/
           merge-multiple: true
 
       - name: Download release assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: release-assets
           path: release-assets/
@@ -429,13 +461,13 @@ jobs:
           ls -la release-assets/
 
       - name: Upload merged dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist
           path: dist/
 
       - name: Upload merged release-assets artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: release-assets-merged
           path: release-assets/
@@ -502,7 +534,7 @@ jobs:
 
     steps:
       - name: Download wheels artifact for this target
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: ${{ matrix.wheel_artifact }}
           path: dist/
@@ -689,14 +721,14 @@ jobs:
       id-token: write  # Required for OIDC trusted publishing
     steps:
       - name: Download merged dist artifact (sdist + cross-platform wheels)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist
           path: dist/
 
       - name: Publish ${{ env.PYPI_PACKAGE }} to PyPI
         id: pypi-publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           # Idempotent re-runs: when a wheel filename for the computed
           # version is already on PyPI (e.g. a previous push to main
@@ -716,12 +748,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
           registry-url: ${{ env.NPM_REGISTRY_URL }}
@@ -772,7 +804,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
@@ -783,7 +815,7 @@ jobs:
           printf 'scope=%s\n' "$scope" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js for GitHub Package Registry
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
           registry-url: ${{ env.GITHUB_PACKAGES_REGISTRY_URL }}
@@ -887,7 +919,7 @@ jobs:
       enable_ref_tags: false
 
   create-release:
-    needs: [detect-version, build, build-wheels, collect-dist, smoke-import-wheels, publish-pypi, publish-npm, publish-github-packages, publish-docker]
+    needs: [detect-version, build, build-wheels, collect-dist, generate-sbom, smoke-import-wheels, publish-pypi, publish-npm, publish-github-packages, publish-docker]
     if: >-
       ${{
         always() &&
@@ -904,18 +936,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
       - name: Download changelog artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: changelog
           path: /tmp
 
       - name: Download merged release assets (npm tarballs + wheels + sdist)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: release-assets-merged
           path: release-assets
@@ -961,3 +993,16 @@ jobs:
         run: |
           TAG="v${{ needs.detect-version.outputs.version }}"
           gh release upload "$TAG" release-assets/*.tgz --clobber
+
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: sbom
+          path: /tmp/sbom
+
+      - name: Publish SBOM to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.detect-version.outputs.version }}"
+          gh release upload "$TAG" /tmp/sbom/*.cyclonedx.json --clobber

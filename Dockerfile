@@ -29,11 +29,30 @@ RUN python -m pip install --no-cache-dir uv==${UV_VERSION}
 # architecture (post-#355), `pip install -e .` invokes maturin via
 # pyproject.toml's [build-system], which calls cargo. No more separate
 # headroom-core-py package.
+#
+# rustup-init is downloaded as a pinned binary (not via sh.rustup.rs) so
+# the install is reproducible and not vulnerable to a MITM/compromised
+# bootstrap script (CWE-494). SHA256 pinned to rustup 1.27.1 per-arch
+# binaries from static.rust-lang.org/rustup/archive/<ver>/<arch>/rustup-init.sha256.
 ENV CARGO_HOME=/usr/local/cargo \
     RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:${PATH}
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile minimal -c rustfmt -c clippy --default-toolchain 1.95.0
+RUN set -eux; \
+    DPKG_ARCH="$(dpkg --print-architecture)"; \
+    case "$DPKG_ARCH" in \
+      amd64) RUSTUP_ARCH="x86_64-unknown-linux-musl"; \
+             RUSTUP_SHA256="1455d1df3825c5f24ba06d9dd1c7052908272a2cae9aa749ea49d67acbe22b47" ;; \
+      arm64) RUSTUP_ARCH="aarch64-unknown-linux-musl"; \
+             RUSTUP_SHA256="7087ada906cd27a00c8e0323401a46804a03a742bd07811da6dead016617cc64" ;; \
+      *) echo "Unsupported architecture: $DPKG_ARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/rustup-init \
+      "https://static.rust-lang.org/rustup/archive/1.27.1/${RUSTUP_ARCH}/rustup-init"; \
+    echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c -; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+      -c rustfmt -c clippy --default-toolchain 1.95.0; \
+    rm /tmp/rustup-init
 
 WORKDIR /build
 

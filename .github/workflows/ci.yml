@@ -36,14 +36,13 @@ env:
 jobs:
   changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
       e2e: ${{ steps.filter.outputs.e2e }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: dorny/paths-filter@6852f92c20ea7fd3b0c25de3b5112db3a98da050  # v3
         id: filter
         with:
           filters: |
@@ -72,18 +71,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
-      - name: Cache pip
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-lint-${{ hashFiles('pyproject.toml') }}
-          restore-keys: ${{ runner.os }}-pip-lint-
       - run: python -m pip install --upgrade pip ruff mypy
       - name: ruff check
         run: ruff check .
@@ -97,8 +89,8 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Install dependencies + pip-audit
@@ -112,21 +104,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582  # 1.95.0
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
         with:
           workspaces: ". -> target"
       - name: Build wheel once (fast CI cargo profile)
         run: |
           python -m pip install --upgrade pip maturin
           maturin build --profile ci --out dist --interpreter "python${PY_VERSION}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: headroom-wheel
           path: dist/*.whl
@@ -136,14 +127,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Cache HuggingFace model
         id: hfcache
-        uses: actions/cache@v5
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: ~/.cache/huggingface
           key: ${{ runner.os }}-models-allMiniLM-v2
@@ -164,7 +154,6 @@ jobs:
     needs: [changes, build-wheel, prefetch-model]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -173,26 +162,26 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
 
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ env.PY_VERSION }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: ${{ runner.os }}-pip-${{ env.PY_VERSION }}-
 
       - name: Restore HuggingFace model cache (warmed by prefetch-model)
-        uses: actions/cache@v5
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: ~/.cache/huggingface
           key: ${{ runner.os }}-models-allMiniLM-v2
 
       - name: Download prebuilt wheel
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: headroom-wheel
           path: dist
@@ -219,27 +208,26 @@ jobs:
     needs: [changes, build-wheel]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     env:
       FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed-cache
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Cache pip
-        uses: actions/cache@v5
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-extras-${{ hashFiles('pyproject.toml') }}
           restore-keys: ${{ runner.os }}-pip-extras-
       - name: Cache fastembed model
-        uses: actions/cache@v5
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: ${{ github.workspace }}/.fastembed-cache
           key: ${{ runner.os }}-fastembed-bge-small-v1
       - name: Download prebuilt wheel
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: headroom-wheel
           path: dist
@@ -274,14 +262,13 @@ jobs:
     needs: [changes, build-wheel]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: ${{ env.PY_VERSION }}
       - name: Download prebuilt wheel
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: headroom-wheel
           path: dist
@@ -299,12 +286,11 @@ jobs:
   commitlint:
     if: github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Merge pull request ')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
-      - uses: wagoid/commitlint-github-action@v6
+      - uses: wagoid/commitlint-github-action@e399437c83a8cc31c2760f7698154fd084061743  # v5
         with:
           configFile: .commitlintrc.json
 
@@ -312,20 +298,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
-      - name: Cache pip
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-build-${{ hashFiles('pyproject.toml') }}
-          restore-keys: ${{ runner.os }}-pip-build-
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582  # 1.95.0
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae  # v2
         with:
           workspaces: ". -> target"
       # Smoke check that the SHIPPED build (release profile) + sdist are wired
@@ -345,23 +324,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - name: Cache actionlint + act
-        id: tools-cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            /usr/local/bin/actionlint
-            /usr/local/bin/act
-          # Key off the workflow file itself: when someone updates the
-          # download URLs to a newer tool version, the hash changes and
-          # the cache busts automatically.
-          key: ${{ runner.os }}-ci-tools-${{ hashFiles('.github/workflows/ci.yml') }}
-
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Install actionlint
-        if: steps.tools-cache.outputs.cache-hit != 'true'
         # Download archive to file then extract — no curl|bash, no @main float (CWE-494).
         run: |
           curl -fsSL -o /tmp/actionlint.tar.gz \
@@ -369,7 +334,6 @@ jobs:
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           sudo mv /tmp/actionlint /usr/local/bin/actionlint
       - name: Install act
-        if: steps.tools-cache.outputs.cache-hit != 'true'
         # Download archive to file then extract — no curl|bash, no @master float (CWE-494).
         run: |
           curl -fsSL -o /tmp/act.tar.gz \
@@ -383,10 +347,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
       - name: Build local Headroom image
@@ -427,10 +390,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: windows-latest
-    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
       - name: Install test dependencies
@@ -444,10 +406,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: macos-latest
-    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.11"
       - name: Install bash and test dependencies
@@ -460,3 +421,35 @@ jobs:
           BASH_PREFIX="$(brew --prefix bash)"
           export PATH="$BASH_PREFIX/bin:$PATH"
           pytest tests/test_install/test_native_installers.py -q
+
+  uv-lock-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: ${{ env.PY_VERSION }}
+      - name: Install uv
+        run: |
+          curl -fsSL -o /tmp/uv-install.sh \
+            "https://github.com/astral-sh/uv/releases/download/0.7.12/uv-installer.sh"
+          sh /tmp/uv-install.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Check uv.lock is up to date
+        run: uv lock --check
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        # Pinned version download — no pipe-to-bash, no floating tag (CWE-494).
+        run: |
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.27.2/gitleaks_8.27.2_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+      - name: Scan for committed secrets
+        run: gitleaks detect --source . --log-opts "--all" --verbose --redact

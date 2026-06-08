@@ -30,7 +30,7 @@ jobs:
             config: .devcontainer/memory-stack/devcontainer.json
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       # The memory-stack devcontainer brings up Neo4j + Postgres +
       # Redis + Qdrant on top of the Docker base. PR #495 surfaced
@@ -46,7 +46,7 @@ jobs:
       # benefits from the preinstalled toolcache.
       - name: Free runner disk (memory-stack only)
         if: matrix.name == 'memory-stack'
-        uses: jlumbroso/free-disk-space@v1.3.1
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be  # v1.3.1
         with:
           tool-cache: true
           android: true
@@ -57,12 +57,12 @@ jobs:
           swap-storage: false
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       - name: Install Dev Container CLI
         run: npm install -g @devcontainers/cli@0.85.0
@@ -83,18 +83,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Create linked worktree
         run: git worktree add "$RUNNER_TEMP/headroom-worktree" HEAD
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       - name: Install Dev Container CLI
         run: npm install -g @devcontainers/cli@0.85.0
