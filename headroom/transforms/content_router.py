@@ -1622,14 +1622,36 @@ class ContentRouter(Transform):
         """
         status: dict[str, str] = {}
 
-        # 1. ML text compressor: Kompress
+        # 1. ML text compressor: Kompress.
+        #
+        # Eager preload is cache-only (allow_download=False): on a cold cache we
+        # must NOT trigger a network download here, because this runs on the
+        # blocking startup/lifespan path before the proxy binds its port. A slow
+        # download stalls the bind, and a hard crash in the native download/ML
+        # stack (uncatchable SIGABRT) kills the interpreter before it ever
+        # listens — the proxy then "never opens its port" and the supervisor
+        # gives up. When the model isn't cached we defer to first use instead.
         if self.config.enable_kompress:
+            from .kompress_compressor import KompressModelNotCached
+
             compressor = self._get_kompress()
             if compressor:
-                backend = compressor.preload() if hasattr(compressor, "preload") else "unknown"
-                logger.info("Kompress model pre-loaded at startup backend=%s", backend)
-                status["kompress"] = "enabled"
-                status["kompress_backend"] = str(backend)
+                if not hasattr(compressor, "preload"):
+                    status["kompress"] = "enabled"
+                    status["kompress_backend"] = "unknown"
+                else:
+                    try:
+                        backend = compressor.preload(allow_download=False)
+                    except KompressModelNotCached:
+                        logger.info(
+                            "Kompress model not cached; deferring download to "
+                            "first use to keep startup non-blocking"
+                        )
+                        status["kompress"] = "deferred"
+                    else:
+                        logger.info("Kompress model pre-loaded at startup backend=%s", backend)
+                        status["kompress"] = "enabled"
+                        status["kompress_backend"] = str(backend)
             else:
                 status["kompress"] = "unavailable"
 

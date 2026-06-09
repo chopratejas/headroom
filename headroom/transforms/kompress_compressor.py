@@ -46,6 +46,29 @@ KOMPRESS_BATCH_SIZE_ENV = "HEADROOM_KOMPRESS_BATCH_SIZE"
 
 KompressBackend = Literal["auto", "onnx", "onnx_cpu", "onnx_coreml", "pytorch", "pytorch_mps"]
 
+# HuggingFace local-lookup errors that mean "asset not in cache" rather than a
+# genuine failure. Caught when loading cache-only so startup can defer instead.
+try:
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    _NOT_CACHED_ERRORS: tuple[type[BaseException], ...] = (
+        LocalEntryNotFoundError,
+        EntryNotFoundError,
+        OSError,
+    )
+except Exception:  # pragma: no cover - huggingface_hub always present with [ml]
+    _NOT_CACHED_ERRORS = (OSError,)
+
+
+class KompressModelNotCached(RuntimeError):
+    """Raised when a cache-only load is requested but the model is not cached.
+
+    Used by startup eager-preload (``allow_download=False``) so the caller can
+    defer the download to first use instead of blocking the proxy startup path
+    on a network fetch.
+    """
+
+
 # Model cache: model_id -> (model, tokenizer, backend)
 # Supports multiple models loaded simultaneously.
 _kompress_cache: dict[str, tuple[Any, Any, str]] = {}
@@ -324,8 +347,14 @@ def _load_kompress_onnx(
     model_id: str,
     *,
     use_coreml: bool = False,
+    allow_download: bool = True,
 ) -> tuple[Any, Any, str]:
-    """Download ONNX INT8 model from HuggingFace and load with onnxruntime."""
+    """Download ONNX INT8 model from HuggingFace and load with onnxruntime.
+
+    When ``allow_download`` is ``False`` the model and tokenizer are loaded from
+    the local cache only; a cache miss raises :class:`KompressModelNotCached`
+    instead of hitting the network.
+    """
     import onnxruntime as ort
     from transformers import AutoTokenizer
 
@@ -335,7 +364,14 @@ def _load_kompress_onnx(
 
         logger.info("Downloading Kompress ONNX model from %s ...", model_id)
 
-        onnx_path = hf_hub_download_local_first(model_id, "onnx/kompress-int8.onnx")
+        try:
+            onnx_path = hf_hub_download_local_first(
+                model_id, "onnx/kompress-int8.onnx", allow_network=allow_download
+            )
+        except _NOT_CACHED_ERRORS as exc:
+            if not allow_download:
+                raise KompressModelNotCached(model_id) from exc
+            raise
 
         backend = "onnx_coreml" if use_coreml else "onnx"
         providers: list[Any]
@@ -370,15 +406,33 @@ def _load_kompress_onnx(
             providers=providers,
         )
         model = _OnnxModel(session)
-        tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+        tokenizer = _load_modernbert_tokenizer(AutoTokenizer, allow_download=allow_download)
 
         _kompress_cache[model_id] = (model, tokenizer, backend)
         logger.info("Kompress ONNX INT8 loaded: %s backend=%s", model_id, backend)
         return model, tokenizer, backend
 
 
-def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, Any, str]:
-    """Download PyTorch model from HuggingFace and load with torch."""
+def _load_modernbert_tokenizer(auto_tokenizer: Any, *, allow_download: bool) -> Any:
+    """Load the ModernBERT tokenizer, cache-only when ``allow_download`` is False."""
+    try:
+        return auto_tokenizer.from_pretrained(
+            "answerdotai/ModernBERT-base", local_files_only=not allow_download
+        )
+    except _NOT_CACHED_ERRORS as exc:
+        if not allow_download:
+            raise KompressModelNotCached("answerdotai/ModernBERT-base") from exc
+        raise
+
+
+def _load_kompress_pytorch(
+    model_id: str, device: str = "auto", *, allow_download: bool = True
+) -> tuple[Any, Any, str]:
+    """Download PyTorch model from HuggingFace and load with torch.
+
+    When ``allow_download`` is ``False`` weights and tokenizer are loaded from
+    the local cache only; a cache miss raises :class:`KompressModelNotCached`.
+    """
     import torch
     from transformers import AutoTokenizer
 
@@ -388,7 +442,14 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
 
         logger.info("Downloading Kompress PyTorch model from %s ...", model_id)
 
-        weights_path = hf_hub_download_local_first(model_id, "model.safetensors")
+        try:
+            weights_path = hf_hub_download_local_first(
+                model_id, "model.safetensors", allow_network=allow_download
+            )
+        except _NOT_CACHED_ERRORS as exc:
+            if not allow_download:
+                raise KompressModelNotCached(model_id) from exc
+            raise
 
         HeadroomCompressorModel = _get_model_class()
         model = HeadroomCompressorModel()
@@ -409,7 +470,7 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
         model.to(device)
         model.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+        tokenizer = _load_modernbert_tokenizer(AutoTokenizer, allow_download=allow_download)
         _validate_pytorch_device(model, tokenizer, device)
 
         _kompress_cache[model_id] = (model, tokenizer, "pytorch")
@@ -436,7 +497,9 @@ def _validate_pytorch_device(model: Any, tokenizer: Any, device: str) -> None:
         _ = scores[0].detach().cpu()
 
 
-def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[Any, Any, str]:
+def _load_kompress(
+    model_id: str = HF_MODEL_ID, device: str = "auto", *, allow_download: bool = True
+) -> tuple[Any, Any, str]:
     """Load Kompress model, returns (model, tokenizer, backend).
 
     The default keeps the historic behavior: try ONNX CPU first
@@ -449,6 +512,10 @@ def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[A
     - pytorch: force PyTorch with the configured device.
     - pytorch_mps: force PyTorch on Apple's MPS backend.
 
+    When ``allow_download`` is ``False`` the model is loaded from the local
+    cache only and a cache miss raises :class:`KompressModelNotCached` rather
+    than fetching from the network.
+
     Models are cached by model_id — multiple models can coexist.
     """
     if model_id in _kompress_cache:
@@ -456,15 +523,17 @@ def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[A
 
     backend = _selected_backend()
     if backend in ("onnx", "onnx_cpu"):
-        return _load_kompress_onnx(model_id, use_coreml=False)
+        return _load_kompress_onnx(model_id, use_coreml=False, allow_download=allow_download)
 
     if backend == "onnx_coreml":
-        return _load_kompress_onnx(model_id, use_coreml=True)
+        return _load_kompress_onnx(model_id, use_coreml=True, allow_download=allow_download)
 
     if backend in ("pytorch", "pytorch_mps"):
         forced_device = "mps" if backend == "pytorch_mps" else device
         try:
-            return _load_kompress_pytorch(model_id, forced_device)
+            return _load_kompress_pytorch(model_id, forced_device, allow_download=allow_download)
+        except KompressModelNotCached:
+            raise
         except Exception as exc:
             if backend != "pytorch_mps":
                 raise
@@ -474,20 +543,27 @@ def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[A
                 exc,
             )
             if _is_onnx_available():
-                return _load_kompress_onnx(model_id, use_coreml=False)
-            return _load_kompress_pytorch(model_id, "cpu")
+                return _load_kompress_onnx(
+                    model_id, use_coreml=False, allow_download=allow_download
+                )
+            return _load_kompress_pytorch(model_id, "cpu", allow_download=allow_download)
 
     # Auto mode: preserve stable default behavior. This avoids changing
     # compression quality/perf characteristics for existing installs while
     # allowing opt-in MPS/CoreML experiments via HEADROOM_KOMPRESS_BACKEND.
     if _is_onnx_available():
         try:
-            return _load_kompress_onnx(model_id, use_coreml=False)
+            return _load_kompress_onnx(model_id, use_coreml=False, allow_download=allow_download)
+        except KompressModelNotCached:
+            # Cache-only miss: don't trigger a PyTorch network download as a
+            # fallback — propagate so the caller can defer.
+            if not allow_download:
+                raise
         except Exception as e:
             logger.warning("ONNX load failed for %s, trying PyTorch: %s", model_id, e)
 
     if _is_pytorch_available():
-        return _load_kompress_pytorch(model_id, device)
+        return _load_kompress_pytorch(model_id, device, allow_download=allow_download)
 
     raise ImportError(
         "Kompress requires onnxruntime or torch. Install with: pip install headroom-ai[proxy]"
@@ -586,10 +662,19 @@ class KompressCompressor(Transform):
     def __init__(self, config: KompressConfig | None = None):
         self.config = config or KompressConfig()
 
-    def preload(self) -> str:
-        """Load the backing model/tokenizer and return the selected backend."""
+    def preload(self, *, allow_download: bool = True) -> str:
+        """Load the backing model/tokenizer and return the selected backend.
 
-        _model, _tokenizer, backend = _load_kompress(self.config.model_id, self.config.device)
+        When ``allow_download`` is ``False`` the model is loaded from the local
+        cache only; if it is not cached, :class:`KompressModelNotCached` is
+        raised so the caller can defer the download to first use. Startup eager
+        preload uses this so a cold cache cannot block the proxy from binding
+        its port.
+        """
+
+        _model, _tokenizer, backend = _load_kompress(
+            self.config.model_id, self.config.device, allow_download=allow_download
+        )
         return backend
 
     def compress(
