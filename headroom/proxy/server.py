@@ -99,6 +99,7 @@ from headroom.providers.registry import (
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
+    resolve_api_targets,
 )
 
 # =============================================================================
@@ -141,6 +142,7 @@ from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
+from headroom.proxy.ssl_context import find_ca_bundle
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -870,6 +872,7 @@ class HeadroomProxy(
             operation="proxy.startup",
             metadata={"port": self.config.port, "host": self.config.host},
         )
+        _ca_bundle = find_ca_bundle()
         self.http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=self.config.connect_timeout_seconds,
@@ -882,6 +885,7 @@ class HeadroomProxy(
                 max_keepalive_connections=self.config.max_keepalive_connections,
             ),
             http2=self.config.http2,
+            verify=_ca_bundle if _ca_bundle is not None else True,
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
@@ -992,6 +996,13 @@ class HeadroomProxy(
             logger.info("Magika: ENABLED (ML content detection)")
 
         if self.memory_handler:
+            if (
+                self.config.memory_backend == "qdrant-neo4j"
+                and not self.config.memory_neo4j_password
+            ):
+                logger.warning(
+                    "NEO4J password is not set — using default credentials is insecure in production"
+                )
             self.warmup.memory_backend.mark_loading()
             try:
                 await self.memory_handler.ensure_initialized()
@@ -1289,7 +1300,11 @@ class HeadroomProxy(
                 )
                 await asyncio.sleep(delay_with_jitter / 1000)
 
-        raise last_error  # type: ignore[misc]
+        if last_error is None:
+            raise RuntimeError(
+                "retry loop exhausted with no error recorded; retry_max_attempts must be >= 1"
+            )
+        raise last_error
 
 
 async def _log_toin_stats_periodically(interval_seconds: int = 300) -> None:
@@ -1453,7 +1468,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         app.state.started_at = time.time()
         app.state.ready = False
         app.state.startup_error = None
-        initialize_context_tool_session_baseline()
+        await initialize_context_tool_session_baseline()
 
         try:
             try:
@@ -1750,7 +1765,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 proxy.metrics.record_inbound_aborted(reason=type(exc).__name__)
             except Exception:
                 logger.debug("record_inbound_aborted failed", exc_info=True)
-            logger.info(
+            logger.error(
                 "event=proxy_inbound_request_aborted id=%s method=%s path=%s reason=%s "
                 "duration_ms=%.2f",
                 inbound_id,
@@ -1758,6 +1773,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 path,
                 type(exc).__name__,
                 (time.perf_counter() - started) * 1000.0,
+                exc_info=True,
             )
             raise
         try:
@@ -1914,7 +1930,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         # Fetch CLI filtering savings from the selected context tool. These
         # tokens are avoided before they reach model context.
-        cli_filtering_stats = _get_context_tool_stats()
+        cli_filtering_stats = await asyncio.to_thread(_get_context_tool_stats)
         cli_filtering_tool = (
             str(cli_filtering_stats.get("tool", "rtk")) if cli_filtering_stats else "rtk"
         )
@@ -2315,7 +2331,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         await proxy.metrics.reset_runtime()
         if proxy.cost_tracker:
             proxy.cost_tracker.reset_runtime()
-        initialize_context_tool_session_baseline()
+        await initialize_context_tool_session_baseline()
         async with _stats_snapshot_lock:
             _stats_snapshot["value"] = None
             _stats_snapshot["expires_at"] = 0.0
@@ -2411,7 +2427,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
 
     # Debug endpoints
-    @app.get("/debug/memory")
+    @app.get("/debug/memory", dependencies=[Depends(_require_loopback)])
     async def debug_memory():
         """Get detailed memory usage statistics.
 
@@ -3020,6 +3036,9 @@ def run_server(
         bedrock_region=config.bedrock_region,
     )
 
+    # Resolve upstream API targets for display in the banner (#583).
+    api_targets = resolve_api_targets(config.provider_api_overrides)
+
     if print_banner:
         print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -3029,6 +3048,12 @@ def run_server(
 ║  Listening: http://{config.host}:{config.port:<5}                                      ║
 ║  Workers: {workers:<3}  Concurrency Limit: {limit_concurrency:<5}                          ║
 ║  Backend: {backend_status:<59}║
+╠══════════════════════════════════════════════════════════════════════╣
+║  UPSTREAM TARGETS:                                                   ║
+║    Anthropic:  {api_targets.anthropic:<57}║
+║    OpenAI:     {api_targets.openai:<57}║
+║    Gemini:     {api_targets.gemini:<57}║
+║    Cloud Code: {api_targets.cloudcode:<57}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -3077,12 +3102,13 @@ def run_server(
         # sticky-session workaround.
         logger.warning(
             "Headroom is running with workers=%d. The in-memory CCR store, "
-            "compression cache, prefix tracker, and TOIN state are all "
+            "compression cache, prefix tracker, TOIN state, and CostTracker are all "
             "per-process; multi-worker deployments produce silent retrieval "
-            "failures and avoidable cache busts when sessions land on different "
-            "workers. Run --workers 1 (or place a sticky-session load balancer "
-            "in front of multiple --workers 1 processes). See RUST_DEV.md → "
-            "'Multi-worker deployment — CCR fragmentation'.",
+            "failures, avoidable cache busts, and an unstable dashboard 'Proxy $ Saved' "
+            "hero tile (each /stats poll hits a different worker's partial total) when "
+            "sessions land on different workers. Run --workers 1 (or place a "
+            "sticky-session load balancer in front of multiple --workers 1 processes). "
+            "See RUST_DEV.md → 'Multi-worker deployment — CCR fragmentation'.",
             workers,
         )
         os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))

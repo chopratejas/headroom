@@ -6,23 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0](https://github.com/chopratejas/headroom/compare/v0.23.0...v0.24.0) (2026-06-08)
+
+
+### Features
+
+* **perf:** add --format {text,json,csv} to `headroom perf` ([#648](https://github.com/chopratejas/headroom/issues/648)) ([9fe4886](https://github.com/chopratejas/headroom/commit/9fe4886cf6b612452f7271d3204872f804074c1f))
+* **proxy:** show resolved upstream API targets in startup banner ([#586](https://github.com/chopratejas/headroom/issues/586)) ([8dbe7ad](https://github.com/chopratejas/headroom/commit/8dbe7ad41b3a1d33c01874be5c1cbc68a5e68111)), closes [#583](https://github.com/chopratejas/headroom/issues/583)
+* **relevance:** weight BM25 score_batch by corpus IDF ([#646](https://github.com/chopratejas/headroom/issues/646)) ([88177bd](https://github.com/chopratejas/headroom/commit/88177bd7a680490ac85d244c5fff90f21a3be27c))
+* support CLAUDE_CODE_USE_FOUNDRY and custom upstream gateways ([#726](https://github.com/chopratejas/headroom/issues/726)) ([d90cdce](https://github.com/chopratejas/headroom/commit/d90cdce3b69bbf27e0f5feea461766a9d797cf7e))
+
+
+### Bug Fixes
+
+* **ci:** restore green lint gate on main ([fe50f9d](https://github.com/chopratejas/headroom/commit/fe50f9daed35151134f79b767733d4be8093e325))
+* **codex:** auto-enable fail-open on compression timeout in headroom wrap codex ([#531](https://github.com/chopratejas/headroom/issues/531)) ([5f5f261](https://github.com/chopratejas/headroom/commit/5f5f261a035d12d069eb212eb75c472e2c9edeff))
+* **copilot:** restore generic endpoint for non-subscription OAuth ([#610](https://github.com/chopratejas/headroom/issues/610)) ([#612](https://github.com/chopratejas/headroom/issues/612)) ([18925b8](https://github.com/chopratejas/headroom/commit/18925b8c6e343c9d593891cd29ac27fee1cb9836))
+* **deps:** move gunicorn to [proxy-prod] extra, add Windows guard ([#537](https://github.com/chopratejas/headroom/issues/537)) ([fa558c5](https://github.com/chopratejas/headroom/commit/fa558c5647a91562f4a8fba0271d27b02c8ae01f))
+* **proxy:** fail-open on corrupt golden bytes instead of RuntimeError ([#603](https://github.com/chopratejas/headroom/issues/603)) ([2170a1b](https://github.com/chopratejas/headroom/commit/2170a1b4a00e9c46e845993c9b0f6cb2ef0c0684))
+* **proxy:** route Claude Code model metadata to Anthropic ([#627](https://github.com/chopratejas/headroom/issues/627)) ([30c1ac8](https://github.com/chopratejas/headroom/commit/30c1ac8656bcc3d11755daef8d1d27cd8770ebc7))
+* **security:** patch loopback guard, retry None raise, async subprocess, and cache race ([06d7cb9](https://github.com/chopratejas/headroom/commit/06d7cb9e6c011711a478864a970f7c87ee853a97))
+* **security:** patch loopback guard, retry None raise, blocking subprocess, and cache stats race ([78f3a4d](https://github.com/chopratejas/headroom/commit/78f3a4dd3e8e26525822a3c830d576d702dfed8b))
+* **startup:** move HF/httpx log suppression before sentence_transformers init ([#622](https://github.com/chopratejas/headroom/issues/622)) ([176d4c7](https://github.com/chopratejas/headroom/commit/176d4c772a7ca8c9da58ca2403f890ba85e8bad8))
+* **startup:** suppress proxy startup log noise ([#619](https://github.com/chopratejas/headroom/issues/619)) ([4555901](https://github.com/chopratejas/headroom/commit/45559011b16a2e084dda22c675c819a4789f961d))
+* **wrap:** report unbindable proxy ports ([#602](https://github.com/chopratejas/headroom/issues/602)) ([6dfcaa8](https://github.com/chopratejas/headroom/commit/6dfcaa839f1175518e378963c79cc7bd3ceb7946))
+
 ## [Unreleased]
 
 ### Changed
 
 * **deps:** loosen over-pinned constraints and add upper bounds
-  - `litellm==1.82.3` -> `>=1.82.3,<2.0` (exact pin blocked all security patches)
+  - `litellm==1.82.3` -> `>=1.86.2,<2.0` (exact pin blocked security patches; floor stays above the CVE-2026-42271 fix)
   - `transformers>=4.30.0` -> `>=4.30.0,<6.0` (add upper bound; library already crossed a major version silently)
   - `sentence-transformers>=2.2.0` -> `>=2.2.0,<6.0` (same; applied in `memory`, `evals`, and `dev` extras)
   - `neo4j>=5.20.0` -> `>=5.20.0,<7.0` (client had already crossed the 5.x/6.x boundary)
   - `mem0ai>=0.1.100` -> `>=1.0.0,<2.0` (floor was pre-1.0; locked package is already 1.0.11)
-  - `langchain-core>=0.2.0` -> `>=0.2.0,<4.0`
-  - `langchain-openai>=0.1.0` -> `>=0.1.0,<2.0`
+  - `langchain-core>=0.2.0` -> `>=1.3.3,<4.0` (floor stays above current high-severity advisory fixes)
+  - `langchain-openai>=0.1.0` -> `>=1.1.14,<2.0` (floor stays above current advisory fixes)
   - `qdrant-client>=1.9.0` -> `>=1.9.0,<2.0`
   - `uvicorn>=0.23.0` -> `>=0.23.0,<1.0` (applied in `proxy` and `dev` extras)
   - Same `transformers` and `litellm` bounds applied consistently across `ml`, `voice`, and `dev` extras
 * **docker:** bump `neo4j` image in `docker-compose.yml` from `5.15.0` to `5.26` (latest 5.x LTS)
 * **docker:** bump `UV_VERSION` in `Dockerfile` from `0.11.16` to `0.11.18`
+
+### Bug Fixes
+
+
+* **deps:** move `gunicorn` to `[proxy-prod]` extra with `sys_platform != 'win32'` guard; removed from `[proxy]` to avoid forcing a Unix-only package on dev, CI, and Windows users ([#537](https://github.com/chopratejas/headroom/pull/537))
+* **startup:** suppress proxy startup log noise — litellm banner, trafilatura parse errors, HuggingFace Hub unauthenticated warnings, tiktoken fallback warning, and httpx INFO lines from sentence_transformers HEAD checks. Affected files: `headroom/providers/litellm.py`, `headroom/transforms/html_extractor.py`, `headroom/memory/adapters/embedders.py`, `headroom/providers/anthropic.py`, `headroom/providers/registry.py`, `headroom/image/onnx_router.py`, `headroom/transforms/kompress_compressor.py`.
 
 ## [0.23.0](https://github.com/chopratejas/headroom/compare/v0.22.4...v0.23.0) (2026-06-04)
 
@@ -88,6 +119,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **tests:** tomllib fallback to tomli on python 3.10 ([74843d1](https://github.com/chopratejas/headroom/commit/74843d1d626de70158a359661a540c615ef1a6c5))
 
 ## [Unreleased]
+
+### Security
+- **`/debug/memory` loopback guard.** The endpoint was missing the
+  `Depends(_require_loopback)` guard that all other `/debug/*` endpoints carry.
+  External callers can no longer reach it.
+- **`retry_max_attempts` zero guard.** When `retry_enabled=True` and
+  `retry_max_attempts=0` the retry loop exited without setting `last_error`,
+  causing `raise last_error` to raise `TypeError: exceptions must derive from
+  BaseException`. A `RuntimeError` with an actionable message is now raised
+  instead, and `ProxyConfig.__post_init__` rejects `retry_max_attempts < 1`
+  at construction time.
+- **Blocking subprocess on async event loop.** `_read_rtk_lifetime_stats` and
+  `_read_lean_ctx_lifetime_stats` called `subprocess.run` directly on the
+  asyncio thread. The `initialize_context_tool_session_baseline` function is
+  now `async` and offloads the subprocess via `asyncio.to_thread`; the stats
+  endpoint uses `await asyncio.to_thread(_get_context_tool_stats)`.
+- **Hardcoded Neo4j credential in `docker-compose.yml`.** `NEO4J_AUTH` now
+  defaults to `${NEO4J_AUTH:-neo4j/devpassword}` and is documented in
+  `.env.example` (excluded from `.gitignore` via `!.env.example`).
+- **`SemanticCache.get_memory_stats()` concurrent iteration.** The method
+  iterates `self._cache.values()` without holding the async lock. A snapshot
+  is now taken via `list(self._cache.values())` before iterating to avoid
+  `RuntimeError: dictionary changed size during iteration` under async load.
+- **Default Neo4j password in `ProxyConfig`.** `memory_neo4j_password` default
+  changed from `"password"` to `""`. The proxy startup path now emits a
+  `logger.warning` when `memory_backend == "qdrant-neo4j"` and the password
+  is empty, prompting operators to set a real credential.
 
 ### Fixed
 - **PyPI install clarity and release gating.** Documented `pipx --python python3.13`

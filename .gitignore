@@ -102,6 +102,7 @@ pytest_cache/
 .env
 .env.*
 !.env.act.example
+!.env.example
 .venv
 env/
 venv/
@@ -193,6 +194,7 @@ headroom.db
 headroom_*.db
 *.jsonl
 !tests/fixtures/*.jsonl
+docker/differential-network-capture/captures/
 
 # Documentation build
 docs/_build/

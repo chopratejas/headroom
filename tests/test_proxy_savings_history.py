@@ -211,6 +211,42 @@ def test_record_compression_savings_skips_empty_updates_and_normalizes_timestamp
     assert persisted["history"][-1]["timestamp"] == "2026-03-27T12:34:00Z"
 
 
+def test_savings_tracker_save_does_not_flock_target_inode_before_replace(tmp_path, monkeypatch):
+    path = tmp_path / "proxy_savings.json"
+    tracker = SavingsTracker(path=str(path))
+
+    tracker.record_request(
+        model="gpt-4o",
+        input_tokens=120,
+        tokens_saved=10,
+        timestamp="2026-03-27T09:00:00Z",
+    )
+    assert path.exists()
+
+    flock_calls: list[int] = []
+
+    class _FcntlSpy:
+        LOCK_EX = 1
+        LOCK_UN = 2
+
+        def flock(self, _fh, operation: int) -> None:
+            flock_calls.append(operation)
+
+    monkeypatch.setattr(savings_tracker_module, "_HAS_FCNTL", True, raising=False)
+    monkeypatch.setattr(savings_tracker_module, "_fcntl", _FcntlSpy(), raising=False)
+
+    tracker.record_request(
+        model="gpt-4o",
+        input_tokens=80,
+        tokens_saved=5,
+        timestamp="2026-03-27T09:10:00Z",
+    )
+
+    assert flock_calls == []
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["lifetime"]["tokens_saved"] == 15
+
+
 def test_litellm_resolution_and_savings_estimation_fallbacks(monkeypatch):
     def fake_cost_per_token(*, model, prompt_tokens, completion_tokens):
         if model in {"gpt-4o", "anthropic/claude-sonnet-4-6"}:

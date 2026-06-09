@@ -88,6 +88,63 @@ _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
 _VALID_CONTEXT_TOOLS = {_CONTEXT_TOOL_RTK, _CONTEXT_TOOL_LEAN_CTX}
 
+# Issue #746: Claude Code disables on-demand tool loading (deferral) when
+# ANTHROPIC_BASE_URL is a custom host and ENABLE_TOOL_SEARCH is unset, which
+# inflates the local context window by tens of K tokens. Setting the env var
+# when we launch Claude Code keeps deferral on. Default to "true" — defer the
+# MCP/system tools for maximum context savings, matching native first-party
+# behaviour (core built-ins like Read/Edit/Bash are never deferred by Claude
+# Code, so the agent loop is unaffected).
+_TOOL_SEARCH_ENV = "ENABLE_TOOL_SEARCH"
+_TOOL_SEARCH_DEFAULT = "true"
+
+
+def _normalize_tool_search_mode(value: str) -> str:
+    """Validate an ``ENABLE_TOOL_SEARCH`` value and return it normalized.
+
+    Mirrors the values Claude Code accepts: truthy (``true``/``1``/``yes``/
+    ``on``), falsy (``false``/``0``/``no``/``off``), ``auto``, or ``auto:N``
+    where ``N`` is 0-100. Raises :class:`click.ClickException` on anything else
+    so a typo fails loudly instead of silently leaving deferral off.
+    """
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on", "false", "0", "no", "off", "auto"}:
+        return normalized
+    if normalized.startswith("auto:"):
+        suffix = normalized[len("auto:") :]
+        if suffix.isdigit() and 0 <= int(suffix) <= 100:
+            return normalized
+    raise click.ClickException(
+        f"--tool-search must be one of: true, false, auto, auto:N (N 0-100); got {value!r}"
+    )
+
+
+def _configure_tool_search_env(env: dict[str, str], flag_value: str | None) -> str | None:
+    """Set ``ENABLE_TOOL_SEARCH`` in ``env`` so Claude Code keeps deferring tools.
+
+    Precedence:
+
+    1. explicit ``--tool-search`` flag — wins (the user asked for it on the CLI),
+    2. a pre-existing ``ENABLE_TOOL_SEARCH`` in the environment — respected and
+       left untouched (the user's own Claude Code knob),
+    3. the built-in default (``true``).
+
+    Returns the value written, or ``None`` when an existing environment value
+    was deliberately left in place.
+    """
+    if flag_value is not None:
+        value = _normalize_tool_search_mode(flag_value)
+        env[_TOOL_SEARCH_ENV] = value
+        return value
+    # An empty / whitespace value counts as unset: Claude Code treats an empty
+    # ENABLE_TOOL_SEARCH as absent (so deferral would stay off), so we override
+    # it with the default rather than forwarding a no-op value.
+    existing = env.get(_TOOL_SEARCH_ENV)
+    if existing is not None and existing.strip():
+        return None
+    env[_TOOL_SEARCH_ENV] = _TOOL_SEARCH_DEFAULT
+    return _TOOL_SEARCH_DEFAULT
+
 
 def _live_wrap_module() -> Any:
     """Return the current live wrap module instance."""
@@ -141,6 +198,29 @@ def _check_proxy(port: int) -> bool:
         return False
 
 
+def _port_bind_error(port: int) -> OSError | None:
+    """Return the bind error for a local proxy port, or None when it is usable."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", port))
+    except OSError as exc:
+        return exc
+    return None
+
+
+def _format_unbindable_port_error(port: int, error: OSError, agent_type: str) -> str:
+    """Build an actionable message for ports that fail before uvicorn can bind."""
+    command = "headroom proxy"
+    if agent_type != "unknown":
+        command = f"headroom wrap {agent_type}"
+    suggested_port = port + 1
+    return (
+        f"Port {port} is unavailable on 127.0.0.1 before the proxy can start: {error}. "
+        "On Windows this can happen when the port is in an excluded or reserved range. "
+        f"Rerun with a different port, for example `{command} --port {suggested_port}`."
+    )
+
+
 def _get_log_path() -> Path:
     """Get path for proxy log file."""
     from headroom import paths as _paths
@@ -161,6 +241,7 @@ def _start_proxy(
     anyllm_provider: str | None = None,
     region: str | None = None,
     openai_api_url: str | None = None,
+    anthropic_api_url: str | None = None,
     copilot_api_token: str | None = None,
 ) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
@@ -204,6 +285,9 @@ def _start_proxy(
     if openai_api_url:
         cmd.extend(["--openai-api-url", openai_api_url])
 
+    if anthropic_api_url:
+        cmd.extend(["--anthropic-api-url", anthropic_api_url])
+
     log_path = _get_log_path()
     log_file = open(log_path, "a")  # noqa: SIM115
 
@@ -217,6 +301,8 @@ def _start_proxy(
         proxy_env.setdefault("HEADROOM_STACK", f"wrap_{agent_type}")
     if openai_api_url:
         proxy_env["OPENAI_TARGET_API_URL"] = openai_api_url
+    if anthropic_api_url:
+        proxy_env["ANTHROPIC_TARGET_API_URL"] = anthropic_api_url
     # Pin the wrapper-validated Copilot token for this proxy instance only.
     # Injected into the subprocess env here (not the parent's os.environ) so it
     # never leaks into shared state. The proxy's CopilotTokenProvider honours
@@ -1606,6 +1692,7 @@ def _ensure_proxy(
     anyllm_provider: str | None = None,
     region: str | None = None,
     openai_api_url: str | None = None,
+    anthropic_api_url: str | None = None,
     copilot_api_token: str | None = None,
 ) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
@@ -1740,6 +1827,12 @@ def _ensure_proxy(
                 return None
 
         # Start (or restart) the proxy with the requested flags
+        bind_error = helpers._port_bind_error(port)
+        if bind_error is not None:
+            raise click.ClickException(
+                helpers._format_unbindable_port_error(port, bind_error, agent_type)
+            )
+
         click.echo(f"  Starting Headroom proxy on port {port}...")
         try:
             proc = cast(
@@ -1754,6 +1847,7 @@ def _ensure_proxy(
                     anyllm_provider=anyllm_provider,
                     region=region,
                     openai_api_url=openai_api_url,
+                    anthropic_api_url=anthropic_api_url,
                     copilot_api_token=copilot_api_token,
                 ),
             )
@@ -2141,6 +2235,19 @@ def unwrap() -> None:
     "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to MEMORY.md)"
 )
 @click.option("--memory", is_flag=True, help="Enable persistent cross-session memory")
+@click.option(
+    "--tool-search",
+    "tool_search",
+    default=None,
+    metavar="MODE",
+    help=(
+        "Keep Claude Code's on-demand tool loading (deferral) active through the "
+        "proxy. MODE is true (default), auto, auto:N, or false. Without it, a "
+        "custom ANTHROPIC_BASE_URL makes Claude Code load every tool schema "
+        "eagerly, inflating local context (issue #746). A pre-set "
+        "ENABLE_TOOL_SEARCH env var is respected."
+    ),
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--prepare-only", is_flag=True, hidden=True)
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
@@ -2153,6 +2260,7 @@ def claude(
     no_proxy: bool,
     learn: bool,
     memory: bool,
+    tool_search: str | None,
     verbose: bool,
     prepare_only: bool,
     claude_args: tuple,
@@ -2187,6 +2295,10 @@ def claude(
         click.echo("Error: 'claude' not found in PATH.")
         click.echo("Install Claude Code: https://docs.anthropic.com/en/docs/claude-code")
         raise SystemExit(1)
+
+    # Validate --tool-search up front so a typo fails before we start the proxy.
+    if tool_search is not None:
+        tool_search = _normalize_tool_search_mode(tool_search)
 
     # Setup rtk before launching (Claude-specific)
     proxy_holder: list[subprocess.Popen | None] = [None]
@@ -2243,8 +2355,20 @@ def claude(
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
 
+        # Detect Foundry mode: Claude Code uses ANTHROPIC_FOUNDRY_BASE_URL instead of
+        # ANTHROPIC_BASE_URL when CLAUDE_CODE_USE_FOUNDRY=1 is set.
+        foundry_upstream = None
+        if os.environ.get("CLAUDE_CODE_USE_FOUNDRY"):
+            foundry_upstream = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")
+
         proxy_holder[0] = _ensure_proxy(
-            port, no_proxy, learn=learn, memory=memory, agent_type="claude", code_graph=code_graph
+            port,
+            no_proxy,
+            learn=learn,
+            memory=memory,
+            agent_type="claude",
+            code_graph=code_graph,
+            anthropic_api_url=foundry_upstream,
         )
 
         if not no_rtk:
@@ -2274,16 +2398,39 @@ def claude(
         if code_graph:
             _setup_code_graph(verbose=verbose)
 
+        proxy_url = _claude_proxy_base_url(port)
         click.echo()
         click.echo("  Launching Claude Code (API routed through Headroom)...")
-        click.echo(f"  ANTHROPIC_BASE_URL={_claude_proxy_base_url(port)}")
+        if foundry_upstream:
+            click.echo(
+                f"  Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL={proxy_url} → upstream {foundry_upstream}"
+            )
+        else:
+            click.echo(f"  ANTHROPIC_BASE_URL={proxy_url}")
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
         _print_telemetry_notice()
         click.echo()
 
         env = os.environ.copy()
-        env["ANTHROPIC_BASE_URL"] = _claude_proxy_base_url(port)
+        if foundry_upstream:
+            env["ANTHROPIC_FOUNDRY_BASE_URL"] = proxy_url
+        else:
+            env["ANTHROPIC_BASE_URL"] = proxy_url
+
+        # Issue #746: keep Claude Code's on-demand tool loading on through the
+        # proxy so tool schemas are not eagerly materialized into local context.
+        _tool_search_value = _configure_tool_search_env(env, tool_search)
+        if _tool_search_value is not None:
+            click.echo(
+                f"  {_TOOL_SEARCH_ENV}={_tool_search_value} "
+                "(on-demand tool loading kept on; issue #746)"
+            )
+        elif verbose:
+            click.echo(
+                f"  {_TOOL_SEARCH_ENV}={env.get(_TOOL_SEARCH_ENV)} "
+                "(using your existing environment value)"
+            )
 
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
@@ -2439,6 +2586,13 @@ def copilot(
         headroom wrap copilot --provider-type openai --wire-api responses -- --model gpt-5.4
         headroom wrap copilot --subscription -- --model gpt-4.1
         headroom wrap copilot --no-context-tool -- --prompt "explain this file"
+
+    \b
+    Copilot hosted API (--subscription and the implicit OAuth path) routes to the
+    generic host https://api.githubcopilot.com, which serves the full model set.
+    Enterprise / data-residency accounts provisioned on a dedicated host pin it
+    explicitly with GITHUB_COPILOT_API_URL (the override flows through to upstream).
+    See TESTING-copilot-subscription.md for details.
     """
     copilot_bin = shutil.which("copilot")
     if not copilot_bin:
@@ -2534,6 +2688,15 @@ def copilot(
                 else "COPILOT_AUTH_MODE=github-oauth"
             ),
         ]
+        # Resolve the Copilot API host: an explicit GITHUB_COPILOT_API_URL wins,
+        # otherwise the generic public host (api.githubcopilot.com). This is the
+        # same policy for --subscription and the implicit OAuth path. The
+        # account-specific endpoints.api advertised by /copilot_internal/user is
+        # deliberately NOT used to route — it returns a segmented host (e.g.
+        # api.individual.githubcopilot.com) that does not serve newer models on
+        # the responses API (#610), and it is not the host the official Copilot
+        # client routes with. Accounts that require a dedicated host (enterprise /
+        # data residency) set GITHUB_COPILOT_API_URL explicitly.
         openai_api_url = resolve_copilot_api_url(client_bearer)
         env["GITHUB_COPILOT_API_URL"] = openai_api_url
         env["OPENAI_TARGET_API_URL"] = openai_api_url

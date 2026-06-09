@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "headroom-ai"
-version = "0.23.0"
+version = "0.24.0"
 description = "The Context Optimization Layer for LLM Applications - Cut costs by 50-90%"
 readme = "README.md"
 license = "Apache-2.0"
@@ -47,7 +47,7 @@ dependencies = [
     # Core: lightweight compression (SmartCrusher, ContentRouter, CCR, TOIN)
     "tiktoken>=0.5.0",            # Tokenizer for all compressors
     "pydantic>=2.0.0",            # Config and data models
-    "litellm>=1.82.3,<2.0",        # Model registry, pricing, and provider support
+    "litellm>=1.86.2,<2.0",        # Model registry, pricing, and provider support
     "click>=8.1.0",               # CLI framework
     "rich>=13.0.0",               # Rich terminal output
     "opentelemetry-api>=1.24.0",  # Safe no-op OTEL API for instrumentation
@@ -70,6 +70,14 @@ proxy = [
     "transformers>=4.30.0,<6.0",  # Tokenizer only (for Kompress)
     "watchdog>=4.0.0",            # File watcher for live code graph reindexing (--code-graph)
     "sqlite-vec>=0.1.6",          # Vector index for memory (--memory). Lightweight, no torch.
+]
+# Production ASGI/WSGI server — Unix-only (gunicorn does not support Windows).
+# Kept separate from [proxy] so that dev, CI, and Windows users are not forced
+# to install a non-functional package.  Production deployments should use:
+#   pip install headroom-ai[proxy,proxy-prod]
+proxy-prod = [
+    "headroom-ai[proxy]",
+    "gunicorn>=21.0.0; sys_platform != 'win32'",
 ]
 # AST-based code compression (tree-sitter)
 code = [
@@ -151,8 +159,8 @@ anyllm = [
 ]
 # LangChain integration
 langchain = [
-    "langchain-core>=0.2.0,<4.0",
-    "langchain-openai>=0.1.0,<2.0",
+    "langchain-core>=1.3.3,<4.0",
+    "langchain-openai>=1.1.14,<2.0",
 ]
 # Agno agent framework integration
 agno = [
@@ -212,7 +220,7 @@ dev = [
     "pre-commit>=3.0.0",
     "openai>=1.0.0",
     "anthropic>=0.18.0",
-    "litellm>=1.82.3,<2.0",
+    "litellm>=1.86.2,<2.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0,<1.0",
     "httpx[http2]>=0.24.0",
