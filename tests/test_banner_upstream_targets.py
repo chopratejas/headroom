@@ -18,7 +18,10 @@ pytest.importorskip("fastapi")
 from headroom.providers.claude import DEFAULT_API_URL as DEFAULT_ANTHROPIC_API_URL  # noqa: E402
 from headroom.providers.codex import DEFAULT_API_URL as DEFAULT_OPENAI_API_URL  # noqa: E402
 from headroom.providers.gemini import DEFAULT_API_URL as DEFAULT_GEMINI_API_URL  # noqa: E402
-from headroom.providers.registry import DEFAULT_CLOUDCODE_API_URL  # noqa: E402
+from headroom.providers.registry import (  # noqa: E402
+    DEFAULT_CLOUDCODE_API_URL,
+    DEFAULT_VERTEX_API_URL,
+)
 from headroom.proxy.models import ProxyConfig  # noqa: E402
 from headroom.proxy.server import run_server  # noqa: E402
 
@@ -48,6 +51,7 @@ class TestBannerUpstreamTargets:
         assert DEFAULT_OPENAI_API_URL in output
         assert DEFAULT_GEMINI_API_URL in output
         assert DEFAULT_CLOUDCODE_API_URL in output
+        assert DEFAULT_VERTEX_API_URL in output
 
     def test_custom_anthropic_target_in_banner(self):
         """A custom Anthropic API URL should be resolved and shown in the banner."""
@@ -81,6 +85,13 @@ class TestBannerUpstreamTargets:
 
         assert "https://custom-cloudcode.example.com" in output
 
+    def test_custom_vertex_target_in_banner(self):
+        """A custom Vertex AI API URL should be resolved and shown in the banner."""
+        config = ProxyConfig(vertex_api_url="https://europe-west4-aiplatform.googleapis.com")
+        output = self._capture_banner(config)
+
+        assert "https://europe-west4-aiplatform.googleapis.com" in output
+
     def test_multiple_custom_targets_in_banner(self):
         """Multiple custom targets should all appear correctly in the banner."""
         config = ProxyConfig(
@@ -88,6 +99,7 @@ class TestBannerUpstreamTargets:
             openai_api_url="https://openai.internal",
             gemini_api_url="https://gemini.internal",
             cloudcode_api_url="https://cloudcode.internal",
+            vertex_api_url="https://vertex.internal",
         )
         output = self._capture_banner(config)
 
@@ -95,6 +107,7 @@ class TestBannerUpstreamTargets:
         assert "https://openai.internal" in output
         assert "https://gemini.internal" in output
         assert "https://cloudcode.internal" in output
+        assert "https://vertex.internal" in output
 
     def test_banner_suppressed_when_disabled(self):
         """When print_banner=False, upstream targets should NOT be printed."""

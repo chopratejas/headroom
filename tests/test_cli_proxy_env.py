@@ -1,7 +1,7 @@
 """Tests for CLI proxy env variable handling and backend validation.
 
 Verifies that:
-1. OPENAI_TARGET_API_URL and GEMINI_TARGET_API_URL env vars are read by `headroom proxy`
+1. Provider target URL env vars are read by `headroom proxy`
 2. litellm-* backends are accepted by both CLI and argparse paths
 """
 
@@ -187,6 +187,27 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].gemini_api_url == "http://my-gemini:5000"
 
+    def test_vertex_target_api_url_from_env(self, runner):
+        """VERTEX_TARGET_API_URL env var should be passed to ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"VERTEX_TARGET_API_URL": "https://europe-west4-aiplatform.googleapis.com"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].vertex_api_url
+            == "https://europe-west4-aiplatform.googleapis.com"
+        )
+
     def test_openai_api_url_cli_flag(self, runner):
         """--openai-api-url CLI flag should take precedence."""
         captured_config = {}
@@ -203,6 +224,25 @@ class TestCLIProxyEnvVars:
 
         assert result.exit_code == 0, result.output
         assert captured_config["config"].openai_api_url == "http://from-cli:4000"
+
+    def test_vertex_api_url_cli_flag(self, runner):
+        """--vertex-api-url CLI flag should take precedence."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy", "--vertex-api-url", "https://us-east5-aiplatform.googleapis.com"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].vertex_api_url == "https://us-east5-aiplatform.googleapis.com"
+        )
 
     def test_cli_flag_overrides_env_var(self, runner):
         """CLI flag should take precedence over env var."""
