@@ -65,6 +65,7 @@ def test_savings_tracker_helpers_normalize_inputs_and_paths(tmp_path, monkeypatc
         ["2026-03-27T09:00:00Z", "12", "0.5"]
     ) == {
         "timestamp": "2026-03-27T09:00:00Z",
+        "provider": "unknown",
         "total_tokens_saved": 12,
         "compression_savings_usd": 0.5,
         "total_input_tokens": 0,
@@ -122,6 +123,7 @@ def test_savings_tracker_sanitizes_legacy_state_and_applies_retention(tmp_path):
     assert snapshot["history"] == [
         {
             "timestamp": "2026-03-27T09:00:00Z",
+            "provider": "unknown",
             "total_tokens_saved": 30,
             "compression_savings_usd": 0.03,
             "total_input_tokens": 0,
@@ -190,6 +192,7 @@ def test_record_compression_savings_skips_empty_updates_and_normalizes_timestamp
     assert snapshot["history"] == [
         {
             "timestamp": "2026-03-27T08:00:00Z",
+            "provider": "unknown",
             "total_tokens_saved": 10,
             "compression_savings_usd": 0.01,
             "total_input_tokens": 120,
@@ -197,6 +200,7 @@ def test_record_compression_savings_skips_empty_updates_and_normalizes_timestamp
         },
         {
             "timestamp": "2026-03-27T12:34:00Z",
+            "provider": "unknown",
             "total_tokens_saved": 15,
             "compression_savings_usd": 0.015,
             "total_input_tokens": 180,
@@ -520,6 +524,83 @@ def test_savings_tracker_rollups_preserve_spend_and_input_history(tmp_path, monk
         "weekly",
         "monthly",
     ]
+
+
+def test_savings_tracker_rollup_attributes_savings_per_provider(tmp_path, monkeypatch):
+    path = tmp_path / "proxy_savings.json"
+    tracker = SavingsTracker(
+        path=str(path),
+        max_history_points=100,
+        max_history_age_days=30,
+    )
+    monkeypatch.setattr(
+        "headroom.proxy.savings_tracker._estimate_compression_savings_usd",
+        lambda model, tokens_saved: tokens_saved / 1000.0,
+    )
+
+    # Two providers active in the same hour bucket.
+    tracker.record_compression_savings(
+        model="claude-3-5-sonnet",
+        tokens_saved=100,
+        provider="anthropic",
+        total_input_tokens=120,
+        total_input_cost_usd=0.24,
+        timestamp="2026-03-27T09:10:00Z",
+    )
+    tracker.record_compression_savings(
+        model="gpt-4o",
+        tokens_saved=40,
+        provider="openai",
+        total_input_tokens=200,
+        total_input_cost_usd=0.40,
+        timestamp="2026-03-27T09:40:00Z",
+    )
+    # Only anthropic active in the next hour bucket.
+    tracker.record_compression_savings(
+        model="claude-3-5-sonnet",
+        tokens_saved=25,
+        provider="anthropic",
+        total_input_tokens=260,
+        total_input_cost_usd=0.52,
+        timestamp="2026-03-27T10:05:00Z",
+    )
+    # A legacy-style record with no provider collapses into "unknown".
+    tracker.record_compression_savings(
+        model="gpt-4o",
+        tokens_saved=15,
+        total_input_tokens=320,
+        total_input_cost_usd=0.64,
+        timestamp="2026-03-27T11:00:00Z",
+    )
+
+    hourly = tracker.history_response()["series"]["hourly"]
+
+    first = hourly[0]
+    assert first["tokens_saved"] == 140
+    assert set(first["by_provider"]) == {"anthropic", "openai"}
+    assert first["by_provider"]["anthropic"]["tokens_saved"] == 100
+    assert first["by_provider"]["anthropic"]["total_input_tokens_delta"] == 120
+    assert first["by_provider"]["anthropic"]["compression_savings_usd_delta"] == pytest.approx(0.1)
+    assert first["by_provider"]["anthropic"]["total_input_cost_usd_delta"] == pytest.approx(0.24)
+    assert first["by_provider"]["openai"]["tokens_saved"] == 40
+    assert first["by_provider"]["openai"]["total_input_tokens_delta"] == 80
+    assert first["by_provider"]["openai"]["compression_savings_usd_delta"] == pytest.approx(0.04)
+    assert first["by_provider"]["openai"]["total_input_cost_usd_delta"] == pytest.approx(0.16)
+    # Per-provider deltas sum back to the bucket total.
+    assert (
+        first["by_provider"]["anthropic"]["tokens_saved"]
+        + first["by_provider"]["openai"]["tokens_saved"]
+        == first["tokens_saved"]
+    )
+
+    second = hourly[1]
+    assert set(second["by_provider"]) == {"anthropic"}
+    assert second["by_provider"]["anthropic"]["tokens_saved"] == 25
+    assert second["by_provider"]["anthropic"]["total_input_tokens_delta"] == 60
+
+    third = hourly[2]
+    assert set(third["by_provider"]) == {"unknown"}
+    assert third["by_provider"]["unknown"]["tokens_saved"] == 15
 
 
 def test_stats_history_defaults_to_compact_history_but_can_return_full_history(
