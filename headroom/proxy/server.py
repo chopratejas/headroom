@@ -3098,24 +3098,36 @@ def run_server(
     app_target: Any
     uvicorn_kwargs: dict[str, Any] = {}
     if workers > 1:
-        # CCR / compression-cache / prefix-tracker / TOIN state are all
-        # per-process. Round-robin across workers fragments these caches
-        # and produces silent retrieval failures for `Retrieve original:
-        # hash=X` markers and avoidable cache busts on the upstream
-        # provider. See the "Multi-worker deployment — CCR fragmentation"
-        # section in RUST_DEV.md for the full failure modes and the
-        # sticky-session workaround.
-        logger.warning(
-            "Headroom is running with workers=%d. The in-memory CCR store, "
-            "compression cache, prefix tracker, TOIN state, and CostTracker are all "
-            "per-process; multi-worker deployments produce silent retrieval "
-            "failures, avoidable cache busts, and an unstable dashboard 'Proxy $ Saved' "
-            "hero tile (each /stats poll hits a different worker's partial total) when "
-            "sessions land on different workers. Run --workers 1 (or place a "
-            "sticky-session load balancer in front of multiple --workers 1 processes). "
-            "See RUST_DEV.md → 'Multi-worker deployment — CCR fragmentation'.",
-            workers,
-        )
+        # CompressionCache and PrefixTracker are always per-worker instance vars.
+        # Python CompressionStore defaults to InMemoryBackend (per-process), so
+        # CCR markers written on worker A are invisible to worker B unless a
+        # cross-worker backend is configured via HEADROOM_CCR_BACKEND.
+        # See RUST_DEV.md -> "Multi-worker deployment -- CCR fragmentation".
+        if os.environ.get("HEADROOM_CCR_BACKEND", "").strip():
+            logger.warning(
+                "Headroom is running with workers=%d. Compression cache, "
+                "prefix tracker, TOIN state, and CostTracker are all per-process; "
+                "multi-worker deployments produce avoidable cache busts and an "
+                "unstable dashboard 'Proxy $ Saved' hero tile (each /stats poll "
+                "hits a different worker's partial total) when sessions land on "
+                "different workers. Run --workers 1 or place a sticky-session load "
+                "balancer in front of multiple --workers 1 processes. "
+                "See RUST_DEV.md -> 'Multi-worker deployment -- CCR fragmentation'.",
+                workers,
+            )
+        else:
+            logger.warning(
+                "Headroom is running with workers=%d. The in-memory CCR store, "
+                "compression cache, prefix tracker, TOIN state, and CostTracker are all "
+                "per-process; multi-worker deployments produce silent CCR retrieval "
+                "failures, avoidable cache busts, and an unstable dashboard 'Proxy $ Saved' "
+                "hero tile (each /stats poll hits a different worker's partial total) when "
+                "sessions land on different workers. Set HEADROOM_CCR_BACKEND=sqlite for a "
+                "persistent cross-worker CCR store, run --workers 1, or place a "
+                "sticky-session load balancer in front of multiple --workers 1 processes. "
+                "See RUST_DEV.md -> 'Multi-worker deployment -- CCR fragmentation'.",
+                workers,
+            )
         os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))
         app_target = "headroom.proxy.server:create_app_from_env"
         uvicorn_kwargs["factory"] = True
