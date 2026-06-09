@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import pytest
 
+from headroom.ccr.tool_injection import CCR_TOOL_NAME
 from headroom.proxy.helpers import (
     _reset_session_ccr_tracker_for_test,
     apply_session_sticky_ccr_tool,
 )
-from headroom.ccr.tool_injection import CCR_TOOL_NAME
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +44,8 @@ class TestHandlerGuardCondition:
 
     def test_no_tools_no_injection_does_not_inject(self):
         """Client sent no tools and nothing was injected → body must stay tools-free."""
-        original_tools = None          # client did not send tools
-        tools_after_helpers = []       # helpers return [] when existing_tools=None and no inject
+        original_tools = None  # client did not send tools
+        tools_after_helpers = []  # helpers return [] when existing_tools=None and no inject
 
         assert not _should_set_body_tools(tools_after_helpers, original_tools), (
             "Empty tools from helpers + no original tools must NOT write body['tools']"
@@ -53,8 +53,8 @@ class TestHandlerGuardCondition:
 
     def test_client_sent_empty_tools_is_preserved(self):
         """Client explicitly sent ``tools: []`` → preserve that field (their choice)."""
-        original_tools = []            # client explicitly sent an empty array
-        tools_after_helpers = []       # nothing injected
+        original_tools = []  # client explicitly sent an empty array
+        tools_after_helpers = []  # nothing injected
 
         assert _should_set_body_tools(tools_after_helpers, original_tools), (
             "Client's explicit tools:[] should be preserved in body"
@@ -64,6 +64,7 @@ class TestHandlerGuardCondition:
         """When CCR injects a tool into an originally tool-free request → set body."""
         original_tools = None
         from headroom.ccr.tool_injection import create_ccr_tool_definition
+
         tools_after_helpers = [create_ccr_tool_definition("openai")]
 
         assert _should_set_body_tools(tools_after_helpers, original_tools), (
@@ -109,9 +110,7 @@ class TestCCRHelperNoToolsNoCompression:
             has_compressed_content_this_turn=True,
         )
         assert was_injected is True
-        tool_names = [
-            t.get("function", {}).get("name") or t.get("name") for t in tools_out
-        ]
+        tool_names = [t.get("function", {}).get("name") or t.get("name") for t in tools_out]
         assert CCR_TOOL_NAME in tool_names
 
     def test_no_double_injection_when_client_pre_registered_ccr_tool(self):
@@ -128,7 +127,8 @@ class TestCCRHelperNoToolsNoCompression:
         )
         assert was_injected is False
         ccr_count = sum(
-            1 for t in tools_out
+            1
+            for t in tools_out
             if (t.get("function", {}).get("name") or t.get("name")) == CCR_TOOL_NAME
         )
         assert ccr_count == 1, "CCR tool should appear exactly once"
