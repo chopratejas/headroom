@@ -194,6 +194,7 @@ headroom.db
 headroom_*.db
 *.jsonl
 !tests/fixtures/*.jsonl
+!**/tests/fixtures/*.jsonl
 
 # Documentation build
 docs/_build/

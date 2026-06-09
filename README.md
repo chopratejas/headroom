@@ -271,6 +271,20 @@ Headroom runs **locally**, covers **every** content type, works with every major
 
 > **Attribution.** Headroom ships with the excellent [RTK](https://github.com/rtk-ai/rtk) binary for shell-output rewriting — `git show --short`, scoped `ls`, summarized installers. Huge thanks to the RTK team; their tool is a first-class part of our stack, and Headroom compresses everything downstream of it. Headroom can also use [lean-ctx](https://github.com/yvgude/lean-ctx) as the selected CLI context tool; set `HEADROOM_CONTEXT_TOOL=lean-ctx` before running `headroom wrap ...`.
 
+## Diagnose context bloat — `headroom xray`
+
+```bash
+headroom xray            # 30-day multi-agent usage report
+headroom xray today      # today only
+headroom xray optimize   # find waste patterns + paste-ready fixes
+```
+
+Wraps [CodeBurn](https://github.com/getagentseal/codeburn) (MIT, 25+ agents) and
+adds a Headroom footer with the top tool-type token consumers for your current
+project's latest Claude Code session. Phase 1 reports raw counts; `headroom xray
+replay` (Phase 2) measures actual compression savings. Requires Node 20+. See
+[docs/diagnosing-context-bloat.md](docs/diagnosing-context-bloat.md).
+
 ## Contributing
 
 ```bash

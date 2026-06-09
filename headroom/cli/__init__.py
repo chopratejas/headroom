@@ -22,6 +22,7 @@ from . import (  # noqa: F401
     proxy,
     tools,
     wrap,
+    xray,
 )
 from .main import main
 

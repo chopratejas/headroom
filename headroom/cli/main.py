@@ -45,6 +45,7 @@ def _register_commands() -> None:
         proxy,  # noqa: F401
         tools,  # noqa: F401
         wrap,  # noqa: F401
+        xray,  # noqa: F401
     )
 
     # Memory CLI requires numpy/hnswlib — optional

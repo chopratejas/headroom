@@ -22,6 +22,7 @@ The canonical, always-current documentation index lives at the docs site below. 
 - Docker: `docker run -p 8787:8787 ghcr.io/chopratejas/headroom:latest`
 - Run the proxy: `headroom proxy --port 8787` then point any client at `http://127.0.0.1:8787`
 - Wrap an agent in one command: `headroom wrap claude` (also: `codex`, `cursor`, `aider`, `copilot`, `gemini`)
+- Diagnose context bloat: `headroom xray` — multi-CLI usage diagnostics across 25+ coding agents (wraps CodeBurn + Headroom compression-opportunity footer). Requires Node 20+. See `docs/diagnosing-context-bloat.md`.
 
 ## Entry points
 
