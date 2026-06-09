@@ -99,6 +99,7 @@ from headroom.providers.registry import (
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
+    resolve_api_targets,
 )
 
 # =============================================================================
@@ -141,6 +142,7 @@ from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
+from headroom.proxy.ssl_context import find_ca_bundle
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -870,6 +872,7 @@ class HeadroomProxy(
             operation="proxy.startup",
             metadata={"port": self.config.port, "host": self.config.host},
         )
+        _ca_bundle = find_ca_bundle()
         self.http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=self.config.connect_timeout_seconds,
@@ -882,6 +885,7 @@ class HeadroomProxy(
                 max_keepalive_connections=self.config.max_keepalive_connections,
             ),
             http2=self.config.http2,
+            verify=_ca_bundle if _ca_bundle is not None else True,
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
@@ -3032,6 +3036,9 @@ def run_server(
         bedrock_region=config.bedrock_region,
     )
 
+    # Resolve upstream API targets for display in the banner (#583).
+    api_targets = resolve_api_targets(config.provider_api_overrides)
+
     if print_banner:
         print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -3041,6 +3048,12 @@ def run_server(
 ║  Listening: http://{config.host}:{config.port:<5}                                      ║
 ║  Workers: {workers:<3}  Concurrency Limit: {limit_concurrency:<5}                          ║
 ║  Backend: {backend_status:<59}║
+╠══════════════════════════════════════════════════════════════════════╣
+║  UPSTREAM TARGETS:                                                   ║
+║    Anthropic:  {api_targets.anthropic:<57}║
+║    OpenAI:     {api_targets.openai:<57}║
+║    Gemini:     {api_targets.gemini:<57}║
+║    Cloud Code: {api_targets.cloudcode:<57}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -3089,12 +3102,13 @@ def run_server(
         # sticky-session workaround.
         logger.warning(
             "Headroom is running with workers=%d. The in-memory CCR store, "
-            "compression cache, prefix tracker, and TOIN state are all "
+            "compression cache, prefix tracker, TOIN state, and CostTracker are all "
             "per-process; multi-worker deployments produce silent retrieval "
-            "failures and avoidable cache busts when sessions land on different "
-            "workers. Run --workers 1 (or place a sticky-session load balancer "
-            "in front of multiple --workers 1 processes). See RUST_DEV.md → "
-            "'Multi-worker deployment — CCR fragmentation'.",
+            "failures, avoidable cache busts, and an unstable dashboard 'Proxy $ Saved' "
+            "hero tile (each /stats poll hits a different worker's partial total) when "
+            "sessions land on different workers. Run --workers 1 (or place a "
+            "sticky-session load balancer in front of multiple --workers 1 processes). "
+            "See RUST_DEV.md → 'Multi-worker deployment — CCR fragmentation'.",
             workers,
         )
         os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))

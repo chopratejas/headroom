@@ -26,6 +26,7 @@ import httpx
 from headroom.pipeline import PipelineStage, summarize_routing_markers
 from headroom.proxy.auth_mode import classify_auth_mode, classify_client
 from headroom.proxy.compression_decision import CompressionDecision
+from headroom.proxy.forwarded_headers import resolve_client_ip
 from headroom.proxy.helpers import extract_tags
 from headroom.proxy.memory_decision import MemoryDecision
 from headroom.proxy.memory_query import MemoryQuery
@@ -691,7 +692,12 @@ class AnthropicHandlerMixin:
                     auth = headers.get("authorization", "")
                     if auth.startswith("Bearer "):
                         api_key = auth[7:]
-                client_ip = request.client.host if request.client else "unknown"
+                # Phase F PR-F4: trust ``X-Forwarded-For`` for the rate-limit
+                # key only when the connecting peer is in
+                # ``HEADROOM_PROXY_TRUSTED_GATEWAY_CIDRS``; otherwise we use
+                # the direct peer IP and a malicious client cannot rotate
+                # rate-limit buckets by forging headers.
+                client_ip = resolve_client_ip(request) or "unknown"
                 rate_key = f"{api_key[:16]}:{client_ip}" if api_key else client_ip
                 allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
                 if not allowed:
@@ -1239,6 +1245,37 @@ class AnthropicHandlerMixin:
             # `frozen_message_count > 0` guard below).
             tools = body.get("tools")
             _original_tools = tools  # Preserve for diagnostic / future retry
+
+            # Issue #746: when Claude Code talks to a custom ANTHROPIC_BASE_URL
+            # with ENABLE_TOOL_SEARCH unset, it stops deferring tool schemas and
+            # loads them all into local context. That is a client-side decision
+            # we cannot reverse from here, so emit a single actionable hint for
+            # users who launch `claude` manually (the wrap path sets the env var).
+            # Gate on the cheap one-time flag first so the detection scan stops
+            # running once the hint has fired; never let it break a request.
+            from headroom.proxy.helpers import tool_search_hint_pending
+
+            if tool_search_hint_pending():
+                try:
+                    from headroom.proxy.helpers import (
+                        claude_code_tool_search_inactive,
+                        format_tool_search_disabled_hint,
+                        take_tool_search_hint_slot,
+                    )
+
+                    if (
+                        claude_code_tool_search_inactive(
+                            client=client,
+                            tools=tools,
+                            anthropic_beta=request.headers.get("anthropic-beta"),
+                        )
+                        and take_tool_search_hint_slot()
+                    ):
+                        logger.warning(
+                            "[%s] %s", request_id, format_tool_search_disabled_hint(tools)
+                        )
+                except Exception:  # advisory hint only — must never fail a request
+                    pass
             if (
                 self.config.ccr_inject_tool or self.config.ccr_inject_system_instructions
             ) and not _bypass:
@@ -1609,7 +1646,7 @@ class AnthropicHandlerMixin:
 
             # Update body
             body["messages"] = optimized_messages
-            if tools is not None:
+            if tools or _original_tools is not None:
                 tools = self._sort_tools_deterministically(tools)
                 body["tools"] = tools
 

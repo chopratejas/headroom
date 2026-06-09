@@ -88,6 +88,63 @@ _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
 _VALID_CONTEXT_TOOLS = {_CONTEXT_TOOL_RTK, _CONTEXT_TOOL_LEAN_CTX}
 
+# Issue #746: Claude Code disables on-demand tool loading (deferral) when
+# ANTHROPIC_BASE_URL is a custom host and ENABLE_TOOL_SEARCH is unset, which
+# inflates the local context window by tens of K tokens. Setting the env var
+# when we launch Claude Code keeps deferral on. Default to "true" — defer the
+# MCP/system tools for maximum context savings, matching native first-party
+# behaviour (core built-ins like Read/Edit/Bash are never deferred by Claude
+# Code, so the agent loop is unaffected).
+_TOOL_SEARCH_ENV = "ENABLE_TOOL_SEARCH"
+_TOOL_SEARCH_DEFAULT = "true"
+
+
+def _normalize_tool_search_mode(value: str) -> str:
+    """Validate an ``ENABLE_TOOL_SEARCH`` value and return it normalized.
+
+    Mirrors the values Claude Code accepts: truthy (``true``/``1``/``yes``/
+    ``on``), falsy (``false``/``0``/``no``/``off``), ``auto``, or ``auto:N``
+    where ``N`` is 0-100. Raises :class:`click.ClickException` on anything else
+    so a typo fails loudly instead of silently leaving deferral off.
+    """
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on", "false", "0", "no", "off", "auto"}:
+        return normalized
+    if normalized.startswith("auto:"):
+        suffix = normalized[len("auto:") :]
+        if suffix.isdigit() and 0 <= int(suffix) <= 100:
+            return normalized
+    raise click.ClickException(
+        f"--tool-search must be one of: true, false, auto, auto:N (N 0-100); got {value!r}"
+    )
+
+
+def _configure_tool_search_env(env: dict[str, str], flag_value: str | None) -> str | None:
+    """Set ``ENABLE_TOOL_SEARCH`` in ``env`` so Claude Code keeps deferring tools.
+
+    Precedence:
+
+    1. explicit ``--tool-search`` flag — wins (the user asked for it on the CLI),
+    2. a pre-existing ``ENABLE_TOOL_SEARCH`` in the environment — respected and
+       left untouched (the user's own Claude Code knob),
+    3. the built-in default (``true``).
+
+    Returns the value written, or ``None`` when an existing environment value
+    was deliberately left in place.
+    """
+    if flag_value is not None:
+        value = _normalize_tool_search_mode(flag_value)
+        env[_TOOL_SEARCH_ENV] = value
+        return value
+    # An empty / whitespace value counts as unset: Claude Code treats an empty
+    # ENABLE_TOOL_SEARCH as absent (so deferral would stay off), so we override
+    # it with the default rather than forwarding a no-op value.
+    existing = env.get(_TOOL_SEARCH_ENV)
+    if existing is not None and existing.strip():
+        return None
+    env[_TOOL_SEARCH_ENV] = _TOOL_SEARCH_DEFAULT
+    return _TOOL_SEARCH_DEFAULT
+
 
 def _live_wrap_module() -> Any:
     """Return the current live wrap module instance."""
@@ -2186,6 +2243,19 @@ def unwrap() -> None:
     "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to MEMORY.md)"
 )
 @click.option("--memory", is_flag=True, help="Enable persistent cross-session memory")
+@click.option(
+    "--tool-search",
+    "tool_search",
+    default=None,
+    metavar="MODE",
+    help=(
+        "Keep Claude Code's on-demand tool loading (deferral) active through the "
+        "proxy. MODE is true (default), auto, auto:N, or false. Without it, a "
+        "custom ANTHROPIC_BASE_URL makes Claude Code load every tool schema "
+        "eagerly, inflating local context (issue #746). A pre-set "
+        "ENABLE_TOOL_SEARCH env var is respected."
+    ),
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--prepare-only", is_flag=True, hidden=True)
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
@@ -2198,6 +2268,7 @@ def claude(
     no_proxy: bool,
     learn: bool,
     memory: bool,
+    tool_search: str | None,
     verbose: bool,
     prepare_only: bool,
     claude_args: tuple,
@@ -2232,6 +2303,10 @@ def claude(
         click.echo("Error: 'claude' not found in PATH.")
         click.echo("Install Claude Code: https://docs.anthropic.com/en/docs/claude-code")
         raise SystemExit(1)
+
+    # Validate --tool-search up front so a typo fails before we start the proxy.
+    if tool_search is not None:
+        tool_search = _normalize_tool_search_mode(tool_search)
 
     # Setup rtk before launching (Claude-specific)
     proxy_holder: list[subprocess.Popen | None] = [None]
@@ -2350,6 +2425,20 @@ def claude(
             env["ANTHROPIC_FOUNDRY_BASE_URL"] = proxy_url
         else:
             env["ANTHROPIC_BASE_URL"] = proxy_url
+
+        # Issue #746: keep Claude Code's on-demand tool loading on through the
+        # proxy so tool schemas are not eagerly materialized into local context.
+        _tool_search_value = _configure_tool_search_env(env, tool_search)
+        if _tool_search_value is not None:
+            click.echo(
+                f"  {_TOOL_SEARCH_ENV}={_tool_search_value} "
+                "(on-demand tool loading kept on; issue #746)"
+            )
+        elif verbose:
+            click.echo(
+                f"  {_TOOL_SEARCH_ENV}={env.get(_TOOL_SEARCH_ENV)} "
+                "(using your existing environment value)"
+            )
 
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
