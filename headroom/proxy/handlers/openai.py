@@ -4229,6 +4229,28 @@ class OpenAIHandlerMixin:
                             )
                             _upstream_connect_recorded = True
                             _upstream_first_event_started = time.perf_counter()
+
+                        # Capture Codex rate-limit window data from the WS
+                        # handshake response headers. Newer Codex (gpt-5.4+)
+                        # uses WebSocket transport, so without this the
+                        # `/stats` view and dashboard never update for WS
+                        # sessions. The handshake response is exposed by the
+                        # websockets client as ``upstream.response``; its
+                        # headers carry the same ``x-codex-*`` fields as the
+                        # HTTP path. update_from_headers() is a no-op when no
+                        # Codex headers are present.
+                        with contextlib.suppress(Exception):
+                            _handshake_response = getattr(upstream, "response", None)
+                            _handshake_headers = getattr(_handshake_response, "headers", None)
+                            if _handshake_headers is not None:
+                                from headroom.subscription.codex_rate_limits import (
+                                    get_codex_rate_limit_state,
+                                )
+
+                                get_codex_rate_limit_state().update_from_headers(
+                                    dict(_handshake_headers)
+                                )
+
                         await upstream.send(first_msg_raw)
 
                         # Unit 3: flag the upstream side flips on seeing
