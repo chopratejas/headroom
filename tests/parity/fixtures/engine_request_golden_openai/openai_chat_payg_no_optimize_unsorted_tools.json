@@ -1,0 +1,50 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "Use a tool",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o",
+    "tools": [
+      {
+        "function": {
+          "description": "z",
+          "name": "zeta_tool",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "a",
+          "name": "alpha_tool",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJVc2UgYSB0b29sIn1dLCJ0b29scyI6W3sidHlwZSI6ImZ1bmN0aW9uIiwiZnVuY3Rpb24iOnsibmFtZSI6InpldGFfdG9vbCIsImRlc2NyaXB0aW9uIjoieiIsInBhcmFtZXRlcnMiOnsidHlwZSI6Im9iamVjdCJ9fX0seyJ0eXBlIjoiZnVuY3Rpb24iLCJmdW5jdGlvbiI6eyJuYW1lIjoiYWxwaGFfdG9vbCIsImRlc2NyaXB0aW9uIjoiYSIsInBhcmFtZXRlcnMiOnsidHlwZSI6Im9iamVjdCJ9fX1dfQ==",
+  "name": "openai_chat_payg_no_optimize_unsorted_tools",
+  "nondeterministic_flag": false,
+  "notes": "no-compress path (optimize=False) with unsorted tools; characterizes tool-sort behavior on the passthrough path",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJVc2UgYSB0b29sIn1dLCJ0b29scyI6W3sidHlwZSI6ImZ1bmN0aW9uIiwiZnVuY3Rpb24iOnsibmFtZSI6InpldGFfdG9vbCIsImRlc2NyaXB0aW9uIjoieiIsInBhcmFtZXRlcnMiOnsidHlwZSI6Im9iamVjdCJ9fX0seyJ0eXBlIjoiZnVuY3Rpb24iLCJmdW5jdGlvbiI6eyJuYW1lIjoiYWxwaGFfdG9vbCIsImRlc2NyaXB0aW9uIjoiYSIsInBhcmFtZXRlcnMiOnsidHlwZSI6Im9iamVjdCJ9fX1dfQ==",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.221193+00:00",
+  "streaming": false
+}

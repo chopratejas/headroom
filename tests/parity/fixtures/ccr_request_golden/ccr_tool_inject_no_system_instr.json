@@ -1,0 +1,43 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 128,
+    "messages": [
+      {
+        "content": [
+          {
+            "content": "Compressed output. [100 items compressed to 10. Retrieve more: hash=abcdef123456789012345678]",
+            "tool_use_id": "toolu_search_03",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "tools": []
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJ0b29scyI6W10sIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfc2VhcmNoXzAzIiwiY29udGVudCI6IkNvbXByZXNzZWQgb3V0cHV0LiBbMTAwIGl0ZW1zIGNvbXByZXNzZWQgdG8gMTAuIFJldHJpZXZlIG1vcmU6IGhhc2g9YWJjZGVmMTIzNDU2Nzg5MDEyMzQ1Njc4XSJ9XX1dfQ==",
+  "name": "ccr_tool_inject_no_system_instr",
+  "nondeterministic_flag": false,
+  "notes": "CCR-ON; ccr_inject_system_instructions=False; tool injection fires but no system-instruction block is prepended; byte-exact",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJ0b29scyI6W3sibmFtZSI6ImhlYWRyb29tX3JldHJpZXZlIiwiZGVzY3JpcHRpb24iOiJSZXRyaWV2ZSBvcmlnaW5hbCB1bmNvbXByZXNzZWQgY29udGVudCB0aGF0IHdhcyBjb21wcmVzc2VkIHRvIHNhdmUgdG9rZW5zLiBVc2UgdGhpcyB3aGVuIHlvdSBuZWVkIG1vcmUgZGF0YSB0aGFuIHdoYXQncyBzaG93biBpbiBjb21wcmVzc2VkIHRvb2wgcmVzdWx0cy4gVGhlIGhhc2ggaXMgcHJvdmlkZWQgaW4gY29tcHJlc3Npb24gbWFya2VycyBsaWtlIFtOIGl0ZW1zIGNvbXByZXNzZWQuLi4gaGFzaD1hYmMxMjNdLiIsImlucHV0X3NjaGVtYSI6eyJ0eXBlIjoib2JqZWN0IiwicHJvcGVydGllcyI6eyJoYXNoIjp7InR5cGUiOiJzdHJpbmciLCJkZXNjcmlwdGlvbiI6Ikhhc2gga2V5IGZyb20gdGhlIGNvbXByZXNzaW9uIG1hcmtlciAoZS5nLiwgJ2FiYzEyMycgZnJvbSBoYXNoPWFiYzEyMykifSwicXVlcnkiOnsidHlwZSI6InN0cmluZyIsImRlc2NyaXB0aW9uIjoiT3B0aW9uYWwgc2VhcmNoIHF1ZXJ5IHRvIGZpbHRlciByZXN1bHRzLiBJZiBwcm92aWRlZCwgb25seSByZXR1cm5zIGl0ZW1zIG1hdGNoaW5nIHRoZSBxdWVyeS4gSWYgb21pdHRlZCwgcmV0dXJucyBhbGwgb3JpZ2luYWwgaXRlbXMuIn19LCJyZXF1aXJlZCI6WyJoYXNoIl19fV0sIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfc2VhcmNoXzAzIiwiY29udGVudCI6IkNvbXByZXNzZWQgb3V0cHV0LiBbMTAwIGl0ZW1zIGNvbXByZXNzZWQgdG8gMTAuIFJldHJpZXZlIG1vcmU6IGhhc2g9YWJjZGVmMTIzNDU2Nzg5MDEyMzQ1Njc4XSJ9XX1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "ccr_context_tracking": false,
+    "ccr_handle_responses": false,
+    "ccr_inject_system_instructions": false,
+    "ccr_inject_tool": true,
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T15:28:19.092004+00:00",
+  "streaming": false
+}

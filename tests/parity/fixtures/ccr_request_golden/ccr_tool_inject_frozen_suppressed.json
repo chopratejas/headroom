@@ -1,0 +1,50 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 128,
+    "messages": [
+      {
+        "content": "Frozen turn 1 (cache hot zone)",
+        "role": "user"
+      },
+      {
+        "content": "Reply to frozen turn 1",
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "content": "Results compressed. [100 items compressed to 10. Retrieve more: hash=abcdef123456789012345678]",
+            "tool_use_id": "toolu_search_02",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 2,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiRnJvemVuIHR1cm4gMSAoY2FjaGUgaG90IHpvbmUpIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IlJlcGx5IHRvIGZyb3plbiB0dXJuIDEifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9zZWFyY2hfMDIiLCJjb250ZW50IjoiUmVzdWx0cyBjb21wcmVzc2VkLiBbMTAwIGl0ZW1zIGNvbXByZXNzZWQgdG8gMTAuIFJldHJpZXZlIG1vcmU6IGhhc2g9YWJjZGVmMTIzNDU2Nzg5MDEyMzQ1Njc4XSJ9XX1dfQ==",
+  "name": "ccr_tool_inject_frozen_suppressed",
+  "nondeterministic_flag": false,
+  "notes": "CCR-ON; cache mode; frozen_count=2; _strict_previous_turn_frozen_count pushes frozen_message_count to max(2,2)=2 (final turn is user \u2192 idx=2); inject_tool and inject_system_instructions are both suppressed by the frozen gate; body has CCR marker but neither tool nor system-instruction is injected; byte-exact \u2014 deterministic",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiRnJvemVuIHR1cm4gMSAoY2FjaGUgaG90IHpvbmUpIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IlJlcGx5IHRvIGZyb3plbiB0dXJuIDEifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9zZWFyY2hfMDIiLCJjb250ZW50IjoiUmVzdWx0cyBjb21wcmVzc2VkLiBbMTAwIGl0ZW1zIGNvbXByZXNzZWQgdG8gMTAuIFJldHJpZXZlIG1vcmU6IGhhc2g9YWJjZGVmMTIzNDU2Nzg5MDEyMzQ1Njc4XSJ9XX1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "ccr_context_tracking": false,
+    "ccr_handle_responses": false,
+    "ccr_inject_system_instructions": true,
+    "ccr_inject_tool": true,
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T15:28:19.057901+00:00",
+  "streaming": false
+}

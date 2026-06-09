@@ -1,0 +1,48 @@
+Engine-contract parity fixtures
+================================
+
+Each <name>.json file in this directory captures one HeadroomEngine.on_request
+input→output pair in a language-neutral, byte-exact format for cross-engine
+parity checking.
+
+Fixture schema
+--------------
+
+{
+  "name":              "<descriptive slug>",
+  "provider":          "<Provider enum value, e.g. 'anthropic'>",
+  "flavor":            "<Flavor enum value, e.g. 'messages'>",
+  "auth_mode":         "<payg | oauth | subscription — for documentation only>",
+  "headers":           { "<header-name>": "<header-value>", ... },
+  "session_key":       "<hex string>",
+  "config_optimize":   true | false,
+  "raw_body_b64":      "<base64-encoded raw request bytes>",
+  "expected_body_b64": "<base64-encoded golden output bytes>",
+  "passthrough":       true | false,
+  "passthrough_reason": "<bypass_header | compression_disabled | no_messages | null>",
+  "recorded_at":       "<ISO-8601 UTC timestamp>"
+}
+
+raw_body_b64 / expected_body_b64 are standard base64 (RFC 4648 §4) with no
+line wrapping. The Rust D2 replayer decodes them with standard::base64::decode
+and compares byte-for-byte.
+
+Passthrough fixtures (Chunks 3)
+--------------------------------
+These fixtures exercise the passthrough path (should_compress=False). The
+expected_body_b64 is byte-identical to raw_body_b64 because HeadroomEngine
+returns ctx.raw_body unchanged. Headers are chosen to cover all three AuthMode
+classifications (payg, oauth, subscription) and all bypass mechanisms
+(bypass_header, compression_disabled, no_messages) so invariant I10 is
+exercised on the classification path even when compression does not run.
+
+Compression fixtures (Chunk 4+)
+---------------------------------
+Golden fixtures that capture a real TransformPipeline output are deferred to
+Chunk 4, when the real pipeline is wired into HeadroomEngine. At that point,
+run:
+
+    .venv/bin/python scripts/record_engine_fixtures.py --mode compress
+
+to produce them. Do NOT fake compression output as golden — only real pipeline
+output is valid here.

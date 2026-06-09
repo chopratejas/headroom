@@ -1,0 +1,33 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "hi",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsInRlbXBlcmF0dXJlIjoxLjAsInRvcF9wIjowLjk1LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGkifV19",
+  "name": "anthropic_payg_numeric_precision",
+  "nondeterministic_flag": false,
+  "notes": "No optimize; numeric fields (temperature=1.0, top_p=0.95) in body; confirms canonical serializer preserves float precision",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsInRlbXBlcmF0dXJlIjoxLjAsInRvcF9wIjowLjk1LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGkifV19",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-30T06:43:52.821811+00:00",
+  "streaming": false
+}

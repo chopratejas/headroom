@@ -1,0 +1,32 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "Hello, how are you?",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJIZWxsbywgaG93IGFyZSB5b3U/In1dfQ==",
+  "name": "anthropic_cache_mode_no_tools_single_turn",
+  "nondeterministic_flag": false,
+  "notes": "cache mode; no tools field; single turn",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJIZWxsbywgaG93IGFyZSB5b3U/In1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.239028+00:00",
+  "streaming": false
+}

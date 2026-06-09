@@ -1,0 +1,17 @@
+{
+  "auth_mode": "payg",
+  "config_optimize": true,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFtdLCAibW9kZWwiOiAiY2xhdWRlLTMtNS1zb25uZXQtMjAyNDEwMjIifQ==",
+  "flavor": "messages",
+  "headers": {
+    "content-type": "application/json",
+    "x-api-key": "sk-ant-api-test-key"
+  },
+  "name": "anthropic_messages_payg_no_messages",
+  "passthrough": true,
+  "passthrough_reason": "no_messages",
+  "provider": "anthropic",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFtdLCAibW9kZWwiOiAiY2xhdWRlLTMtNS1zb25uZXQtMjAyNDEwMjIifQ==",
+  "recorded_at": "2026-05-30T05:58:48.428749+00:00",
+  "session_key": "3f8e5bde89bb66eb4fc376d7ff42364f3d70690927cfd30074aba77cc97f9dd5"
+}

@@ -1,0 +1,18 @@
+{
+  "auth_mode": "oauth",
+  "config_optimize": true,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiY2xhdWRlLTMtNS1zb25uZXQtMjAyNDEwMjIifQ==",
+  "flavor": "messages",
+  "headers": {
+    "authorization": "Bearer sk-ant-oat-01-abcdef1234567890",
+    "content-type": "application/json",
+    "x-headroom-mode": "passthrough"
+  },
+  "name": "anthropic_messages_oauth_bypass_mode_passthrough",
+  "passthrough": true,
+  "passthrough_reason": "bypass_header",
+  "provider": "anthropic",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiY2xhdWRlLTMtNS1zb25uZXQtMjAyNDEwMjIifQ==",
+  "recorded_at": "2026-05-30T05:58:48.427523+00:00",
+  "session_key": "6d7bc76204449e9fd7268304dc65abd8b1d80b0b414a474ae89576982adf3b93"
+}

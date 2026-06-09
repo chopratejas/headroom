@@ -1,0 +1,44 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"job_id\":\"batch-9821\"}",
+              "name": "run_batch_job"
+            },
+            "id": "call_batch_job",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "INFO [2026-05-29T10:00:00Z] Starting batch job batch-9821\nINFO [2026-05-29T10:00:01Z] Loading model weights from /data/models/v7\nINFO [2026-05-29T10:00:05Z] Model loaded (3.2 GB) in 4.1s\nWARN [2026-05-29T10:00:05Z] GPU memory fragmented; defragmenting\nINFO [2026-05-29T10:00:07Z] Processing shard 1/8 (125k records)\nINFO [2026-05-29T10:00:15Z] Shard 1 done: 124,982 processed, 18 skipped\nINFO [2026-05-29T10:00:15Z] Processing shard 2/8 (125k records)\nINFO [2026-05-29T10:00:23Z] Shard 2 done: 124,999 processed, 1 skipped\nERROR [2026-05-29T10:00:24Z] Shard 3: connection reset by peer during write\nWARN [2026-05-29T10:00:24Z] Retrying shard 3 (attempt 1/3)\nINFO [2026-05-29T10:00:28Z] Shard 3 retry succeeded\nINFO [2026-05-29T10:00:28Z] Processing shard 4/8 (125k records)\nINFO [2026-05-29T10:00:37Z] Shard 4 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:00:37Z] Processing shard 5/8 (125k records)\nINFO [2026-05-29T10:00:46Z] Shard 5 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:00:46Z] Processing shard 6/8 (125k records)\nINFO [2026-05-29T10:00:55Z] Shard 6 done: 124,950 processed, 50 skipped\nINFO [2026-05-29T10:00:55Z] Processing shard 7/8 (125k records)\nINFO [2026-05-29T10:01:05Z] Shard 7 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:01:05Z] Processing shard 8/8 (125k records)\nINFO [2026-05-29T10:01:14Z] Shard 8 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:01:14Z] All shards complete. Total: 999,931 processed\nINFO [2026-05-29T10:01:14Z] Writing results to s3://data-prod/batch-9821/\nINFO [2026-05-29T10:01:18Z] Upload complete (42 MB in 4s)\nINFO [2026-05-29T10:01:18Z] Job batch-9821 finished OK\n",
+        "role": "tool",
+        "tool_call_id": "call_batch_job"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6bnVsbCwidG9vbF9jYWxscyI6W3siaWQiOiJjYWxsX2JhdGNoX2pvYiIsInR5cGUiOiJmdW5jdGlvbiIsImZ1bmN0aW9uIjp7Im5hbWUiOiJydW5fYmF0Y2hfam9iIiwiYXJndW1lbnRzIjoie1wiam9iX2lkXCI6XCJiYXRjaC05ODIxXCJ9In19XX0seyJyb2xlIjoidG9vbCIsImNvbnRlbnQiOiJJTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjAwWl0gU3RhcnRpbmcgYmF0Y2ggam9iIGJhdGNoLTk4MjFcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MDFaXSBMb2FkaW5nIG1vZGVsIHdlaWdodHMgZnJvbSAvZGF0YS9tb2RlbHMvdjdcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MDVaXSBNb2RlbCBsb2FkZWQgKDMuMiBHQikgaW4gNC4xc1xuV0FSTiBbMjAyNi0wNS0yOVQxMDowMDowNVpdIEdQVSBtZW1vcnkgZnJhZ21lbnRlZDsgZGVmcmFnbWVudGluZ1xuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDowN1pdIFByb2Nlc3Npbmcgc2hhcmQgMS84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjE1Wl0gU2hhcmQgMSBkb25lOiAxMjQsOTgyIHByb2Nlc3NlZCwgMTggc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDoxNVpdIFByb2Nlc3Npbmcgc2hhcmQgMi84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjIzWl0gU2hhcmQgMiBkb25lOiAxMjQsOTk5IHByb2Nlc3NlZCwgMSBza2lwcGVkXG5FUlJPUiBbMjAyNi0wNS0yOVQxMDowMDoyNFpdIFNoYXJkIDM6IGNvbm5lY3Rpb24gcmVzZXQgYnkgcGVlciBkdXJpbmcgd3JpdGVcbldBUk4gWzIwMjYtMDUtMjlUMTA6MDA6MjRaXSBSZXRyeWluZyBzaGFyZCAzIChhdHRlbXB0IDEvMylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MjhaXSBTaGFyZCAzIHJldHJ5IHN1Y2NlZWRlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDoyOFpdIFByb2Nlc3Npbmcgc2hhcmQgNC84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjM3Wl0gU2hhcmQgNCBkb25lOiAxMjUsMDAwIHByb2Nlc3NlZCwgMCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjM3Wl0gUHJvY2Vzc2luZyBzaGFyZCA1LzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6NDZaXSBTaGFyZCA1IGRvbmU6IDEyNSwwMDAgcHJvY2Vzc2VkLCAwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6NDZaXSBQcm9jZXNzaW5nIHNoYXJkIDYvOCAoMTI1ayByZWNvcmRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo1NVpdIFNoYXJkIDYgZG9uZTogMTI0LDk1MCBwcm9jZXNzZWQsIDUwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6NTVaXSBQcm9jZXNzaW5nIHNoYXJkIDcvOCAoMTI1ayByZWNvcmRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMTowNVpdIFNoYXJkIDcgZG9uZTogMTI1LDAwMCBwcm9jZXNzZWQsIDAgc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMTowNVpdIFByb2Nlc3Npbmcgc2hhcmQgOC84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE0Wl0gU2hhcmQgOCBkb25lOiAxMjUsMDAwIHByb2Nlc3NlZCwgMCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE0Wl0gQWxsIHNoYXJkcyBjb21wbGV0ZS4gVG90YWw6IDk5OSw5MzEgcHJvY2Vzc2VkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE0Wl0gV3JpdGluZyByZXN1bHRzIHRvIHMzOi8vZGF0YS1wcm9kL2JhdGNoLTk4MjEvXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE4Wl0gVXBsb2FkIGNvbXBsZXRlICg0MiBNQiBpbiA0cylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MThaXSBKb2IgYmF0Y2gtOTgyMSBmaW5pc2hlZCBPS1xuIiwidG9vbF9jYWxsX2lkIjoiY2FsbF9iYXRjaF9qb2IifV19",
+  "name": "openai_chat_token_mode_role_tool_large",
+  "nondeterministic_flag": false,
+  "notes": "token mode; large role:tool message with log output; exercises ContentRouter \u2192 LogCompressor on OpenAI body shape; deterministic: empty query \u2192 BM25 short-circuits",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6bnVsbCwidG9vbF9jYWxscyI6W3siaWQiOiJjYWxsX2JhdGNoX2pvYiIsInR5cGUiOiJmdW5jdGlvbiIsImZ1bmN0aW9uIjp7Im5hbWUiOiJydW5fYmF0Y2hfam9iIiwiYXJndW1lbnRzIjoie1wiam9iX2lkXCI6XCJiYXRjaC05ODIxXCJ9In19XX0seyJyb2xlIjoidG9vbCIsImNvbnRlbnQiOiJJTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjAwWl0gU3RhcnRpbmcgYmF0Y2ggam9iIGJhdGNoLTk4MjFcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MDFaXSBMb2FkaW5nIG1vZGVsIHdlaWdodHMgZnJvbSAvZGF0YS9tb2RlbHMvdjdcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MDVaXSBNb2RlbCBsb2FkZWQgKDMuMiBHQikgaW4gNC4xc1xuV0FSTiBbMjAyNi0wNS0yOVQxMDowMDowNVpdIEdQVSBtZW1vcnkgZnJhZ21lbnRlZDsgZGVmcmFnbWVudGluZ1xuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDowN1pdIFByb2Nlc3Npbmcgc2hhcmQgMS84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjE1Wl0gU2hhcmQgMSBkb25lOiAxMjQsOTgyIHByb2Nlc3NlZCwgMTggc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDoxNVpdIFByb2Nlc3Npbmcgc2hhcmQgMi84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjIzWl0gU2hhcmQgMiBkb25lOiAxMjQsOTk5IHByb2Nlc3NlZCwgMSBza2lwcGVkXG5FUlJPUiBbMjAyNi0wNS0yOVQxMDowMDoyNFpdIFNoYXJkIDM6IGNvbm5lY3Rpb24gcmVzZXQgYnkgcGVlciBkdXJpbmcgd3JpdGVcbldBUk4gWzIwMjYtMDUtMjlUMTA6MDA6MjRaXSBSZXRyeWluZyBzaGFyZCAzIChhdHRlbXB0IDEvMylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MjhaXSBTaGFyZCAzIHJldHJ5IHN1Y2NlZWRlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDoyOFpdIFByb2Nlc3Npbmcgc2hhcmQgNC84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjM3Wl0gU2hhcmQgNCBkb25lOiAxMjUsMDAwIHByb2Nlc3NlZCwgMCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjM3Wl0gUHJvY2Vzc2luZyBzaGFyZCA1LzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6NDZaXSBTaGFyZCA1IGRvbmU6IDEyNSwwMDAgcHJvY2Vzc2VkLCAwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6NDZaXSBQcm9jZXNzaW5nIHNoYXJkIDYvOCAoMTI1ayByZWNvcmRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo1NVpdIFNoYXJkIDYgZG9uZTogMTI0LDk1MCBwcm9jZXNzZWQsIDUwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6NTVaXSBQcm9jZXNzaW5nIHNoYXJkIDcvOCAoMTI1ayByZWNvcmRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMTowNVpdIFNoYXJkIDcgZG9uZTogMTI1LDAwMCBwcm9jZXNzZWQsIDAgc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMTowNVpdIFByb2Nlc3Npbmcgc2hhcmQgOC84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE0Wl0gU2hhcmQgOCBkb25lOiAxMjUsMDAwIHByb2Nlc3NlZCwgMCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE0Wl0gQWxsIHNoYXJkcyBjb21wbGV0ZS4gVG90YWw6IDk5OSw5MzEgcHJvY2Vzc2VkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE0Wl0gV3JpdGluZyByZXN1bHRzIHRvIHMzOi8vZGF0YS1wcm9kL2JhdGNoLTk4MjEvXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjE4Wl0gVXBsb2FkIGNvbXBsZXRlICg0MiBNQiBpbiA0cylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MThaXSBKb2IgYmF0Y2gtOTgyMSBmaW5pc2hlZCBPS1xuIiwidG9vbF9jYWxsX2lkIjoiY2FsbF9iYXRjaF9qb2IifV19",
+  "proxy_config": {
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.363366+00:00",
+  "streaming": false
+}

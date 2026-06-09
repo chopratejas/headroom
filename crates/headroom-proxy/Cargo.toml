@@ -95,6 +95,8 @@ async-trait = "0.1"
 md-5 = "0.10"
 
 [dev-dependencies]
+# engine_parity_responses.rs decodes base64 request/response fixtures.
+base64 = "0.22"
 tower = { workspace = true, features = ["util"] }
 wiremock = "0.6"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2", "json"] }

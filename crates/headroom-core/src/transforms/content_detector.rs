@@ -254,6 +254,28 @@ pub fn detect_content_type(content: &str) -> DetectionResult {
     DetectionResult::plain_text(0.5)
 }
 
+/// Domain-only detection for the two content SHAPES Magika cannot classify.
+///
+/// Magika is a file-type classifier: it has no label for build/test/lint logs
+/// or grep/search (`file:line:`) output, and tends to tag logs as source code.
+/// The `content_router` Magika-primary tier calls this as a fallback when Magika
+/// returns SourceCode / PlainText. Returns `None` when neither shape matches —
+/// the caller then keeps Magika's verdict. Same regex tiers + thresholds as
+/// `detect_content_type` (search ≥ 0.6, log ≥ 0.5).
+pub(crate) fn detect_domain_content_type(content: &str) -> Option<ContentType> {
+    if let Some(r) = try_detect_search(content) {
+        if r.confidence >= 0.6 {
+            return Some(ContentType::SearchResults);
+        }
+    }
+    if let Some(r) = try_detect_log(content) {
+        if r.confidence >= 0.5 {
+            return Some(ContentType::BuildOutput);
+        }
+    }
+    None
+}
+
 /// Quick check: is `content` a JSON array of dictionaries (the format
 /// `SmartCrusher` natively handles)? Convenience wrapper around
 /// `detect_content_type`.

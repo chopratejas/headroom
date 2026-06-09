@@ -1,0 +1,37 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "Turn 1 question",
+        "role": "user"
+      },
+      {
+        "content": "Turn 1 answer",
+        "role": "assistant"
+      },
+      {
+        "content": "Turn 2 question",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJUdXJuIDEgcXVlc3Rpb24ifSx7InJvbGUiOiJhc3Npc3RhbnQiLCJjb250ZW50IjoiVHVybiAxIGFuc3dlciJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiVHVybiAyIHF1ZXN0aW9uIn1dfQ==",
+  "name": "openai_chat_token_mode_simple",
+  "nondeterministic_flag": false,
+  "notes": "token mode; frozen=0; small body \u2192 passthrough (under compression threshold)",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJUdXJuIDEgcXVlc3Rpb24ifSx7InJvbGUiOiJhc3Npc3RhbnQiLCJjb250ZW50IjoiVHVybiAxIGFuc3dlciJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiVHVybiAyIHF1ZXN0aW9uIn1dfQ==",
+  "proxy_config": {
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.153036+00:00",
+  "streaming": false
+}

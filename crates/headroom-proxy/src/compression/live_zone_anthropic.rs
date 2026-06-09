@@ -53,7 +53,7 @@ use crate::cache_stabilization::tool_def_normalize::{
     any_tool_has_cache_control, sort_schema_keys_recursive, sort_tools_deterministically,
 };
 use crate::compression::resolve_frozen_count;
-use crate::config::{CacheControlAutoFrozen, CompressionMode};
+use crate::config::{CacheControlAutoFrozen, CacheControlAutoPlace, CompressionMode};
 
 /// Per-strategy aggregate token counts for the
 /// `proxy_compression_ratio_by_strategy` metric. One entry per
@@ -150,6 +150,7 @@ pub fn compress_anthropic_request(
     body: &Bytes,
     mode: CompressionMode,
     cache_control_policy: CacheControlAutoFrozen,
+    cache_control_auto_place: CacheControlAutoPlace,
     auth_mode: RequestAuthMode,
     request_id: &str,
 ) -> Outcome {
@@ -231,7 +232,7 @@ pub fn compress_anthropic_request(
     let mut e3_locations: Vec<String> = Vec::new();
     let mut e3_applied: bool = false;
     let e3_skipped: bool;
-    if matches!(auth_mode, RequestAuthMode::Payg) {
+    if matches!(auth_mode, RequestAuthMode::Payg) && cache_control_auto_place.is_enabled() {
         match auto_place_anthropic_cache_control(&mut parsed) {
             AutoPlaceOutcome::Applied {
                 placed_count,
@@ -286,13 +287,22 @@ pub fn compress_anthropic_request(
         }
     } else {
         e3_skipped = true;
+        // Two ways to land here: non-PAYG auth (the original gate) or the
+        // operator turning E3 off via `cache_control_auto_place=disabled`.
+        // Emit distinct reasons so dashboards can tell them apart.
+        let reason = if cache_control_auto_place.is_enabled() {
+            SkipReason::AuthMode.as_str()
+        } else {
+            "config_disabled"
+        };
         tracing::info!(
             event = "e3_skipped",
             request_id = %request_id,
             path = "/v1/messages",
-            reason = SkipReason::AuthMode.as_str(),
+            reason = reason,
             auth_mode = auth_mode.as_str(),
-            "non-PAYG auth mode; cache_control auto-placement skipped"
+            cache_control_auto_place = cache_control_auto_place.as_str(),
+            "cache_control auto-placement skipped"
         );
     }
     // Suppress dead-code warnings on the local; we keep the variable
@@ -729,6 +739,7 @@ mod tests {
             &body,
             CompressionMode::Off,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-1",
         );
@@ -747,6 +758,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Enabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-2",
         );
@@ -765,6 +777,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Enabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-3",
         );
@@ -791,6 +804,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-4",
         );
@@ -807,6 +821,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Enabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-5",
         );
@@ -844,6 +859,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-6",
         );
@@ -875,6 +891,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e3-1",
         );
@@ -903,6 +920,60 @@ mod tests {
     }
 
     #[test]
+    fn pr_e3_disabled_by_config_skips_auto_placement() {
+        // Same PAYG / one-tool / no-marker body as the happy path, but E3 is
+        // turned OFF via `CacheControlAutoPlace::Disabled`. The dispatcher must
+        // NOT inject a marker — this is the parity-with-Python-proxy switch.
+        // E1/E2 are no-ops on a single tool, so the tools block is untouched.
+        let original = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "tools": [
+                {"name": "search", "description": "search the web"}
+            ],
+            "messages": [
+                {"role": "user", "content": "hi"}
+            ],
+        });
+        let body = body_of(original);
+        let out = compress_anthropic_request(
+            &body,
+            CompressionMode::LiveZone,
+            CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Disabled,
+            RequestAuthMode::Payg,
+            "req-e3-disabled",
+        );
+        // Whatever the outcome, no E3 strategy fired and no marker landed.
+        let effective = match &out {
+            Outcome::Compressed {
+                body: new_body,
+                strategies_applied,
+                markers_inserted,
+                ..
+            } => {
+                assert!(
+                    !strategies_applied.contains(&"e3_anthropic_cache_control"),
+                    "E3 disabled but strategy fired: {strategies_applied:?}",
+                );
+                assert!(
+                    markers_inserted.is_empty(),
+                    "E3 disabled but markers inserted: {markers_inserted:?}",
+                );
+                new_body.clone()
+            }
+            // NoCompression / Passthrough → original bytes, never mutated.
+            _ => body.clone(),
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&effective).expect("re-parse effective body");
+        assert_eq!(
+            parsed.pointer("/tools/0/cache_control"),
+            None,
+            "E3 disabled → tool must carry no auto-placed cache_control marker",
+        );
+    }
+
+    #[test]
     fn pr_e3_oauth_skips_auto_placement() {
         // OAuth → mutating bytes is unsafe → never auto-place. With
         // no other reason for the dispatcher to mutate, we get
@@ -916,6 +987,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::OAuth,
             "req-e3-2",
         );
@@ -936,6 +1008,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Subscription,
             "req-e3-3",
         );
@@ -963,6 +1036,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e3-4",
         );
@@ -984,6 +1058,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e3-5",
         );
@@ -1020,6 +1095,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e1-1",
         );
@@ -1064,6 +1140,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::OAuth,
             "req-e1-2",
         );
@@ -1093,6 +1170,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Subscription,
             "req-e1-3",
         );
@@ -1122,6 +1200,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e1-4",
         );
@@ -1147,6 +1226,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e1-5",
         );
@@ -1185,6 +1265,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e2-1",
         );
@@ -1244,6 +1325,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e2-2",
         );
@@ -1285,6 +1367,7 @@ mod tests {
             &body,
             CompressionMode::LiveZone,
             CacheControlAutoFrozen::Disabled,
+            CacheControlAutoPlace::Enabled,
             RequestAuthMode::Payg,
             "req-e1-6",
         );

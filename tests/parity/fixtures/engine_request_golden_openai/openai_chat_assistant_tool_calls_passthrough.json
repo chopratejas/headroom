@@ -1,0 +1,47 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "Call a tool",
+        "role": "user"
+      },
+      {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"query\":\"cats\"}",
+              "name": "search"
+            },
+            "id": "call_abc",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "Found: cats are great.",
+        "role": "tool",
+        "tool_call_id": "call_abc"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJDYWxsIGEgdG9vbCJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOm51bGwsInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbF9hYmMiLCJ0eXBlIjoiZnVuY3Rpb24iLCJmdW5jdGlvbiI6eyJuYW1lIjoic2VhcmNoIiwiYXJndW1lbnRzIjoie1wicXVlcnlcIjpcImNhdHNcIn0ifX1dfSx7InJvbGUiOiJ0b29sIiwiY29udGVudCI6IkZvdW5kOiBjYXRzIGFyZSBncmVhdC4iLCJ0b29sX2NhbGxfaWQiOiJjYWxsX2FiYyJ9XX0=",
+  "name": "openai_chat_assistant_tool_calls_passthrough",
+  "nondeterministic_flag": false,
+  "notes": "assistant with tool_calls + role:tool follow-up; optimize=False; byte-faithful passthrough of OpenAI chat shape with null content",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJDYWxsIGEgdG9vbCJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOm51bGwsInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbF9hYmMiLCJ0eXBlIjoiZnVuY3Rpb24iLCJmdW5jdGlvbiI6eyJuYW1lIjoic2VhcmNoIiwiYXJndW1lbnRzIjoie1wicXVlcnlcIjpcImNhdHNcIn0ifX1dfSx7InJvbGUiOiJ0b29sIiwiY29udGVudCI6IkZvdW5kOiBjYXRzIGFyZSBncmVhdC4iLCJ0b29sX2NhbGxfaWQiOiJjYWxsX2FiYyJ9XX0=",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.714459+00:00",
+  "streaming": false
+}

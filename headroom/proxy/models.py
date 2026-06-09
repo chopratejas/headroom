@@ -311,6 +311,15 @@ class ProxyConfig:
     # ``HeadroomProxy._run_compression_in_executor``.
     compression_max_workers: int | None = None
 
+    # Chunk 4.3-ii: HeadroomEngine shadow hook mode.
+    # "off" (default) → engine is never called on the request path; zero overhead.
+    # "shadow" → engine runs in parallel, output DISCARDED; divergence is
+    #            observed via metrics/logs only. The response a client receives
+    #            is byte-identical to today in both modes.
+    # "on" → engine drives the request path (Chunk 4.4, deferred).
+    # Env: HEADROOM_ENGINE_REQUEST_PATH.
+    engine_request_path: str = "off"
+
     def __post_init__(self, smart_routing: bool | None = None) -> None:
         if self.retry_enabled and self.retry_max_attempts < 1:
             raise ValueError("retry_max_attempts must be >= 1 when retry_enabled=True")

@@ -1261,7 +1261,7 @@ class OpenAIHandlerMixin:
             COMPRESSION_TIMEOUT_SECONDS,
             MAX_MESSAGE_ARRAY_LENGTH,
             MAX_REQUEST_BODY_SIZE,
-            _read_request_json,
+            read_request_json_with_bytes,
         )
         from headroom.proxy.modes import is_cache_mode, is_token_mode
         from headroom.tokenizers import get_tokenizer
@@ -1292,9 +1292,12 @@ class OpenAIHandlerMixin:
                 },
             )
 
-        # Parse request
+        # Parse request — capture original bytes for byte-faithful shadow
+        # comparison (mirrors the Anthropic handler's read_request_json_with_bytes
+        # call). The engine shadow uses original_body_bytes as raw_body so the
+        # engine sees the same pre-transform input the handler received.
         try:
-            body = await _read_request_json(request)
+            body, _chat_original_body_bytes = await read_request_json_with_bytes(request)
         except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
@@ -1580,6 +1583,28 @@ class OpenAIHandlerMixin:
                 openai_frozen_count,
             )
 
+        # Chunk 5-shadow/on: snapshot prefix-tracker state BEFORE the legacy
+        # path mutates it. Captured for both "shadow" and "on" modes.
+        # Mirrors handle_anthropic_messages (Chunk 4.3-ii / 4.4a).
+        from headroom.proxy.helpers import get_engine_request_path as _get_erp_chat
+
+        _chat_engine_request_path = _get_erp_chat(self.config.engine_request_path)
+        _chat_shadow_snapshot: tuple[int, list, list] | None = None
+        if _chat_engine_request_path in ("shadow", "on"):
+            _chat_shadow_snapshot = (
+                openai_frozen_count,
+                openai_prefix_tracker.get_last_original_messages(),
+                openai_prefix_tracker.get_last_forwarded_messages(),
+            )
+
+        # Populated by the "on" block below when engine succeeds.
+        # None → forward legacy bytes (flag!=on or engine error).
+        _oai_chat_engine_on_bytes: bytes | None = None
+
+        # Capture the memory context fetched by the legacy path for shadow
+        # reuse (no extra await). None until the memory block below runs.
+        _chat_shadow_fetched_memory_context: str | None = None
+
         _compression_failed = False
         original_messages = messages  # Preserve for 400-retry fallback
         _decision = CompressionDecision.decide(
@@ -1810,6 +1835,8 @@ class OpenAIHandlerMixin:
                         ),
                         timeout=(self.config.anthropic_pre_upstream_memory_context_timeout_seconds),
                     )
+                    # Chunk 5-shadow: capture for engine shadow reuse (no extra await).
+                    _chat_shadow_fetched_memory_context = memory_context
                     if memory_context:
                         from headroom.proxy.helpers import (
                             append_text_to_latest_user_chat_message,
@@ -1922,6 +1949,234 @@ class OpenAIHandlerMixin:
             headers = presend_event.headers
         optimized_tokens = tokenizer.count_messages(body["messages"])
         tokens_saved = original_tokens - optimized_tokens
+
+        # ── Chunk 5-shadow: engine shadow block (OpenAI chat) ─────────────────
+        # Runs ONLY when engine_request_path == "shadow". Engine output is
+        # ALWAYS discarded; the legacy path's bytes are forwarded.
+        # Observe-only — never raises into the live path.
+        if _chat_engine_request_path == "shadow" and _chat_shadow_snapshot is not None:
+            try:
+                from headroom.engine.contract import Flavor, Provider
+                from headroom.engine.contract import RequestContext as _ChatEngineCtx
+                from headroom.engine.session import derive_session_key as _derive_sk_chat
+                from headroom.proxy.helpers import (
+                    serialize_body_canonical as _sbc_chat,
+                )
+
+                # 1. Legacy bytes — what the handler is about to forward.
+                #    Body is always mutated (messages + tools written back above),
+                #    so canonical serialization is correct.
+                _chat_legacy_bytes = _sbc_chat(body)
+
+                # 2. Derive engine session key.
+                _chat_cred = request.headers.get("x-api-key") or request.headers.get(
+                    "authorization", ""
+                )
+                _chat_conv_scope = request.headers.get("x-headroom-session", None)
+                _chat_engine_session_key = _derive_sk_chat(
+                    credential=_chat_cred,
+                    conversation_scope=_chat_conv_scope,
+                    salt=b"headroom-proxy-engine",
+                )
+
+                # 3. Build snapshot-seeded store (apples-to-apples comparison).
+                _chat_snap_frozen, _chat_snap_orig, _chat_snap_fwd = _chat_shadow_snapshot
+
+                class _ChatShadowSeededStore:
+                    """One-call SessionTrackerStore seeded from the snapshot."""
+
+                    class _Tracker:
+                        def __init__(self, fc: int, lo: list, lf: list) -> None:
+                            self._fc = fc
+                            self._lo = lo
+                            self._lf = lf
+
+                        def get_frozen_message_count(self) -> int:
+                            return self._fc
+
+                        def get_last_original_messages(self) -> list:
+                            return list(self._lo)
+
+                        def get_last_forwarded_messages(self) -> list:
+                            return list(self._lf)
+
+                        def update_from_response(self, **_kw: Any) -> None:
+                            pass  # shadow writes discarded
+
+                    def __init__(self, fc: int, lo: list, lf: list) -> None:
+                        self._tracker = self._Tracker(fc, lo, lf)
+
+                    def compute_session_id(self, req: Any, mdl: str, msgs: Any) -> str:
+                        return "chat-shadow-seeded"
+
+                    def get_or_create(self, sid: str, provider: str) -> Any:
+                        return self._tracker
+
+                _chat_shadow_seeded = _ChatShadowSeededStore(
+                    fc=_chat_snap_frozen,
+                    lo=list(_chat_snap_orig),
+                    lf=list(_chat_snap_fwd),
+                )
+
+                # 4. Build RequestContext. raw_body = original inbound bytes.
+                _chat_engine_ctx = _ChatEngineCtx(
+                    provider=Provider.OPENAI,
+                    flavor=Flavor.CHAT,
+                    headers_view=dict(request.headers),
+                    raw_body=_chat_original_body_bytes,
+                    session_key=_chat_engine_session_key,
+                    request_id=request_id,
+                    prefetched_memory_context=_chat_shadow_fetched_memory_context,
+                )
+
+                # 5. Run engine — output DISCARDED.
+                _chat_engine_decision = self.engine.on_request(
+                    _chat_engine_ctx,
+                    _session_tracker_store_override=_chat_shadow_seeded,
+                )
+                _chat_engine_bytes = _chat_engine_decision.body
+
+                # 6. Diff and emit metrics / logs.
+                self.metrics.engine_shadow_total += 1
+                if _chat_legacy_bytes == _chat_engine_bytes:
+                    logger.debug(
+                        "event=engine_shadow_match provider=openai_chat request_id=%s "
+                        "legacy_bytes=%d engine_bytes=%d",
+                        request_id,
+                        len(_chat_legacy_bytes),
+                        len(_chat_engine_bytes),
+                    )
+                else:
+                    self.metrics.engine_shadow_divergence_total += 1
+                    _chat_div_category = "bytes_differ"
+                    try:
+                        _lj = json.loads(_chat_legacy_bytes)
+                        _ej = json.loads(_chat_engine_bytes)
+                        _lk = set(_lj.keys()) if isinstance(_lj, dict) else set()
+                        _ek = set(_ej.keys()) if isinstance(_ej, dict) else set()
+                        if _lk != _ek:
+                            _chat_div_category = "top_level_keys_differ"
+                        elif _lj.get("messages") != _ej.get("messages"):
+                            _chat_div_category = "messages_differ"
+                        elif _lj.get("tools") != _ej.get("tools"):
+                            _chat_div_category = "tools_differ"
+                    except (json.JSONDecodeError, ValueError, AttributeError):
+                        _chat_div_category = "non_json_diff"
+                    logger.warning(
+                        "event=engine_shadow_divergence provider=openai_chat request_id=%s "
+                        "legacy_bytes=%d engine_bytes=%d category=%s "
+                        "legacy_prefix=%s engine_prefix=%s",
+                        request_id,
+                        len(_chat_legacy_bytes),
+                        len(_chat_engine_bytes),
+                        _chat_div_category,
+                        _chat_legacy_bytes[:200],
+                        _chat_engine_bytes[:200],
+                    )
+            except Exception as _chat_shadow_exc:
+                self.metrics.engine_shadow_error_total += 1
+                logger.warning(
+                    "event=engine_shadow_error provider=openai_chat request_id=%s error=%r; "
+                    "shadow exception — legacy path continues normally",
+                    request_id,
+                    _chat_shadow_exc,
+                )
+        # ── end of OpenAI chat shadow block ───────────────────────────────────
+
+        # ── Chunk 5-on: engine "on" block (OpenAI chat) ───────────────────────
+        # When flag=="on", compute engine_bytes and populate
+        # _oai_chat_engine_on_bytes so the forward path sends engine bytes.
+        # SAFETY: any exception → loud log + engine_on_fallback_total++
+        # + _oai_chat_engine_on_bytes stays None → legacy forwarded.
+        if _chat_engine_request_path == "on" and _chat_shadow_snapshot is not None:
+            try:
+                from headroom.engine.contract import Flavor, Provider
+                from headroom.engine.contract import RequestContext as _ChatEngineCtxOn
+                from headroom.engine.session import derive_session_key as _derive_sk_chat_on
+                from headroom.proxy.helpers import serialize_body_canonical as _sbc_chat_on
+
+                _chat_cred_on = request.headers.get("x-api-key") or request.headers.get(
+                    "authorization", ""
+                )
+                _chat_conv_scope_on = request.headers.get("x-headroom-session", None)
+                _chat_engine_session_key_on = _derive_sk_chat_on(
+                    credential=_chat_cred_on,
+                    conversation_scope=_chat_conv_scope_on,
+                    salt=b"headroom-proxy-engine",
+                )
+
+                _chat_snap_frozen_on, _chat_snap_orig_on, _chat_snap_fwd_on = _chat_shadow_snapshot
+
+                class _ChatOnSeededStore:
+                    """One-call SessionTrackerStore for the engine-on hook (chat)."""
+
+                    class _Tracker:
+                        def __init__(self, fc: int, lo: list, lf: list) -> None:
+                            self._fc = fc
+                            self._lo = lo
+                            self._lf = lf
+
+                        def get_frozen_message_count(self) -> int:
+                            return self._fc
+
+                        def get_last_original_messages(self) -> list:
+                            return list(self._lo)
+
+                        def get_last_forwarded_messages(self) -> list:
+                            return list(self._lf)
+
+                        def update_from_response(self, **_kw: Any) -> None:
+                            pass  # "on" writes discarded (live store owns state)
+
+                    def __init__(self, fc: int, lo: list, lf: list) -> None:
+                        self._tracker = self._Tracker(fc, lo, lf)
+
+                    def compute_session_id(self, req: Any, mdl: str, msgs: Any) -> str:
+                        return "chat-on-seeded"
+
+                    def get_or_create(self, sid: str, provider: str) -> Any:
+                        return self._tracker
+
+                _chat_on_seeded = _ChatOnSeededStore(
+                    fc=_chat_snap_frozen_on,
+                    lo=list(_chat_snap_orig_on),
+                    lf=list(_chat_snap_fwd_on),
+                )
+
+                _chat_engine_ctx_on = _ChatEngineCtxOn(
+                    provider=Provider.OPENAI,
+                    flavor=Flavor.CHAT,
+                    headers_view=dict(request.headers),
+                    raw_body=_chat_original_body_bytes,
+                    session_key=_chat_engine_session_key_on,
+                    request_id=request_id,
+                    prefetched_memory_context=_chat_shadow_fetched_memory_context,
+                )
+
+                _chat_engine_decision_on = self.engine.on_request(
+                    _chat_engine_ctx_on,
+                    _session_tracker_store_override=_chat_on_seeded,
+                )
+                _oai_chat_engine_on_bytes = _chat_engine_decision_on.body
+                _chat_legacy_on = _sbc_chat_on(body)
+                logger.debug(
+                    "event=engine_on_active provider=openai_chat request_id=%s "
+                    "engine_bytes=%d legacy_bytes=%d",
+                    request_id,
+                    len(_oai_chat_engine_on_bytes),
+                    len(_chat_legacy_on),
+                )
+            except Exception as _chat_on_exc:
+                self.metrics.engine_on_fallback_total += 1
+                logger.error(
+                    "event=engine_on_fallback provider=openai_chat request_id=%s error=%r; "
+                    "engine raised in 'on' mode — FALLING BACK to legacy bytes. "
+                    "Operator action required: check engine_on_fallback_total metric.",
+                    request_id,
+                    _chat_on_exc,
+                )
+                # _oai_chat_engine_on_bytes stays None → legacy forwarded.
+        # ── end of OpenAI chat "on" block ─────────────────────────────────────
 
         # Route through LiteLLM/any-llm backend if configured
         if self.anthropic_backend is not None:
@@ -2199,10 +2454,17 @@ class OpenAIHandlerMixin:
                     optimization_latency,
                     pipeline_timing=pipeline_timing,
                     prefix_tracker=openai_prefix_tracker,
+                    override_outbound_bytes=_oai_chat_engine_on_bytes,
                 )
             else:
                 headers = await apply_copilot_api_auth(headers, url=url)
-                response = await self._retry_request("POST", url, headers, body)
+                response = await self._retry_request(
+                    "POST",
+                    url,
+                    headers,
+                    body,
+                    override_outbound_bytes=_oai_chat_engine_on_bytes,
+                )
                 self.pipeline_extensions.emit(
                     PipelineStage.POST_SEND,
                     operation="proxy.request",
@@ -2518,7 +2780,7 @@ class OpenAIHandlerMixin:
 
         from headroom.proxy.helpers import (
             MAX_REQUEST_BODY_SIZE,
-            _read_request_json,
+            read_request_json_with_bytes,
         )
         from headroom.tokenizers import get_tokenizer
         from headroom.utils import extract_user_query
@@ -2548,9 +2810,9 @@ class OpenAIHandlerMixin:
                 },
             )
 
-        # Parse request
+        # Parse request — capture original bytes for engine shadow comparison.
         try:
-            body = await _read_request_json(request)
+            body, _resp_original_body_bytes = await read_request_json_with_bytes(request)
         except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
@@ -2717,6 +2979,27 @@ class OpenAIHandlerMixin:
         transforms_applied: list[str] = []
         optimization_latency = (time.time() - start_time) * 1000
 
+        # Chunk 5-shadow/on: snapshot flag + session state.
+        # /v1/responses does NOT use a PrefixTracker (no frozen_count
+        # concept), so the snapshot uses empty sentinel values. The engine's
+        # responses path (_on_request_openai_responses) does not do CCR or
+        # memory either (deferred), so shadow divergence when memory/CCR are
+        # enabled is EXPECTED — this is diagnostic signal, not a bug.
+        from headroom.proxy.helpers import get_engine_request_path as _get_erp_resp
+
+        _resp_engine_request_path = _get_erp_resp(self.config.engine_request_path)
+        # /v1/responses has no PrefixTracker; use empty snapshot so engine
+        # shadow + on use the same zero-seeded store as the live path sees.
+        _resp_shadow_snapshot: tuple[int, list, list] = (0, [], [])
+        _resp_shadow_enabled = _resp_engine_request_path in ("shadow", "on")
+
+        # Populated by the "on" block below; None → forward legacy bytes.
+        _oai_resp_engine_on_bytes: bytes | None = None
+
+        # Capture the memory context fetched by the legacy path for shadow
+        # reuse. None until the responses memory block below runs.
+        _resp_shadow_fetched_memory_context: str | None = None
+
         # Memory: inject context and tools for Responses API requests.
         # Gated on MemoryDecision — uniformly respects bypass across all
         # five injection sites. The Responses path is the only one that
@@ -2759,6 +3042,8 @@ class OpenAIHandlerMixin:
                             f"[{request_id}] Memory context lookup exceeded "
                             f"{RESPONSES_CONTEXT_SEARCH_TIMEOUT_SECONDS:.1f}s; continuing without it"
                         )
+                    # Chunk 5-shadow: capture for engine shadow reuse (no extra await).
+                    _resp_shadow_fetched_memory_context = memory_context
                     if memory_context:
                         from headroom.proxy.helpers import (
                             append_text_to_latest_user_input_item,
@@ -2989,6 +3274,220 @@ class OpenAIHandlerMixin:
                         },
                     ) from _e
 
+        # ── Chunk 5-shadow: engine shadow block (OpenAI responses) ──────────────
+        # Observe-only — output ALWAYS discarded; legacy bytes forwarded.
+        #
+        # NOTE: The engine's _on_request_openai_responses does NOT do CCR or
+        # memory (deferred). Shadow divergence on requests where memory or CCR
+        # is enabled is therefore EXPECTED — it is diagnostic signal (analogous
+        # to the Anthropic tool-sort gap the shadow caught on the Anthropic
+        # handler), not a bug to fix in this task.
+        if _resp_engine_request_path == "shadow" and _resp_shadow_enabled:
+            try:
+                from headroom.engine.contract import Flavor, Provider
+                from headroom.engine.contract import RequestContext as _RespEngineCtx
+                from headroom.engine.session import derive_session_key as _derive_sk_resp
+                from headroom.proxy.helpers import serialize_body_canonical as _sbc_resp
+
+                _resp_legacy_bytes = _sbc_resp(body)
+
+                _resp_cred = request.headers.get("x-api-key") or request.headers.get(
+                    "authorization", ""
+                )
+                _resp_conv_scope = request.headers.get("x-headroom-session", None)
+                _resp_engine_session_key = _derive_sk_resp(
+                    credential=_resp_cred,
+                    conversation_scope=_resp_conv_scope,
+                    salt=b"headroom-proxy-engine",
+                )
+
+                _resp_snap_frozen, _resp_snap_orig, _resp_snap_fwd = _resp_shadow_snapshot
+
+                class _RespShadowSeededStore:
+                    """One-call SessionTrackerStore for the responses shadow hook."""
+
+                    class _Tracker:
+                        def __init__(self, fc: int, lo: list, lf: list) -> None:
+                            self._fc = fc
+                            self._lo = lo
+                            self._lf = lf
+
+                        def get_frozen_message_count(self) -> int:
+                            return self._fc
+
+                        def get_last_original_messages(self) -> list:
+                            return list(self._lo)
+
+                        def get_last_forwarded_messages(self) -> list:
+                            return list(self._lf)
+
+                        def update_from_response(self, **_kw: Any) -> None:
+                            pass
+
+                    def __init__(self, fc: int, lo: list, lf: list) -> None:
+                        self._tracker = self._Tracker(fc, lo, lf)
+
+                    def compute_session_id(self, req: Any, mdl: str, msgs: Any) -> str:
+                        return "resp-shadow-seeded"
+
+                    def get_or_create(self, sid: str, provider: str) -> Any:
+                        return self._tracker
+
+                _resp_shadow_seeded = _RespShadowSeededStore(
+                    fc=_resp_snap_frozen,
+                    lo=list(_resp_snap_orig),
+                    lf=list(_resp_snap_fwd),
+                )
+
+                _resp_engine_ctx = _RespEngineCtx(
+                    provider=Provider.OPENAI,
+                    flavor=Flavor.RESPONSES,
+                    headers_view=dict(request.headers),
+                    raw_body=_resp_original_body_bytes,
+                    session_key=_resp_engine_session_key,
+                    request_id=request_id,
+                    prefetched_memory_context=_resp_shadow_fetched_memory_context,
+                )
+
+                _resp_engine_decision = self.engine.on_request(
+                    _resp_engine_ctx,
+                    _session_tracker_store_override=_resp_shadow_seeded,
+                )
+                _resp_engine_bytes = _resp_engine_decision.body
+
+                self.metrics.engine_shadow_total += 1
+                if _resp_legacy_bytes == _resp_engine_bytes:
+                    logger.debug(
+                        "event=engine_shadow_match provider=openai_responses request_id=%s "
+                        "legacy_bytes=%d engine_bytes=%d",
+                        request_id,
+                        len(_resp_legacy_bytes),
+                        len(_resp_engine_bytes),
+                    )
+                else:
+                    self.metrics.engine_shadow_divergence_total += 1
+                    _resp_div_category = "bytes_differ"
+                    try:
+                        _rlj = json.loads(_resp_legacy_bytes)
+                        _rej = json.loads(_resp_engine_bytes)
+                        _rlk = set(_rlj.keys()) if isinstance(_rlj, dict) else set()
+                        _rek = set(_rej.keys()) if isinstance(_rej, dict) else set()
+                        if _rlk != _rek:
+                            _resp_div_category = "top_level_keys_differ"
+                        elif _rlj.get("input") != _rej.get("input"):
+                            _resp_div_category = "input_differs"
+                        elif _rlj.get("tools") != _rej.get("tools"):
+                            _resp_div_category = "tools_differ"
+                    except (json.JSONDecodeError, ValueError, AttributeError):
+                        _resp_div_category = "non_json_diff"
+                    logger.warning(
+                        "event=engine_shadow_divergence provider=openai_responses request_id=%s "
+                        "legacy_bytes=%d engine_bytes=%d category=%s "
+                        "legacy_prefix=%s engine_prefix=%s",
+                        request_id,
+                        len(_resp_legacy_bytes),
+                        len(_resp_engine_bytes),
+                        _resp_div_category,
+                        _resp_legacy_bytes[:200],
+                        _resp_engine_bytes[:200],
+                    )
+            except Exception as _resp_shadow_exc:
+                self.metrics.engine_shadow_error_total += 1
+                logger.warning(
+                    "event=engine_shadow_error provider=openai_responses request_id=%s error=%r; "
+                    "shadow exception — legacy path continues normally",
+                    request_id,
+                    _resp_shadow_exc,
+                )
+        # ── end of OpenAI responses shadow block ──────────────────────────────
+
+        # ── Chunk 5-on: engine "on" block (OpenAI responses) ─────────────────
+        if _resp_engine_request_path == "on" and _resp_shadow_enabled:
+            try:
+                from headroom.engine.contract import Flavor, Provider
+                from headroom.engine.contract import RequestContext as _RespEngineCtxOn
+                from headroom.engine.session import derive_session_key as _derive_sk_resp_on
+                from headroom.proxy.helpers import serialize_body_canonical as _sbc_resp_on
+
+                _resp_cred_on = request.headers.get("x-api-key") or request.headers.get(
+                    "authorization", ""
+                )
+                _resp_conv_scope_on = request.headers.get("x-headroom-session", None)
+                _resp_engine_session_key_on = _derive_sk_resp_on(
+                    credential=_resp_cred_on,
+                    conversation_scope=_resp_conv_scope_on,
+                    salt=b"headroom-proxy-engine",
+                )
+
+                _rsf, _rso, _rsf2 = _resp_shadow_snapshot
+
+                class _RespOnSeededStore:
+                    """One-call SessionTrackerStore for the engine-on hook (responses)."""
+
+                    class _Tracker:
+                        def __init__(self, fc: int, lo: list, lf: list) -> None:
+                            self._fc = fc
+                            self._lo = lo
+                            self._lf = lf
+
+                        def get_frozen_message_count(self) -> int:
+                            return self._fc
+
+                        def get_last_original_messages(self) -> list:
+                            return list(self._lo)
+
+                        def get_last_forwarded_messages(self) -> list:
+                            return list(self._lf)
+
+                        def update_from_response(self, **_kw: Any) -> None:
+                            pass
+
+                    def __init__(self, fc: int, lo: list, lf: list) -> None:
+                        self._tracker = self._Tracker(fc, lo, lf)
+
+                    def compute_session_id(self, req: Any, mdl: str, msgs: Any) -> str:
+                        return "resp-on-seeded"
+
+                    def get_or_create(self, sid: str, provider: str) -> Any:
+                        return self._tracker
+
+                _resp_on_seeded = _RespOnSeededStore(fc=_rsf, lo=list(_rso), lf=list(_rsf2))
+
+                _resp_engine_ctx_on = _RespEngineCtxOn(
+                    provider=Provider.OPENAI,
+                    flavor=Flavor.RESPONSES,
+                    headers_view=dict(request.headers),
+                    raw_body=_resp_original_body_bytes,
+                    session_key=_resp_engine_session_key_on,
+                    request_id=request_id,
+                    prefetched_memory_context=_resp_shadow_fetched_memory_context,
+                )
+
+                _resp_engine_decision_on = self.engine.on_request(
+                    _resp_engine_ctx_on,
+                    _session_tracker_store_override=_resp_on_seeded,
+                )
+                _oai_resp_engine_on_bytes = _resp_engine_decision_on.body
+                _resp_legacy_on = _sbc_resp_on(body)
+                logger.debug(
+                    "event=engine_on_active provider=openai_responses request_id=%s "
+                    "engine_bytes=%d legacy_bytes=%d",
+                    request_id,
+                    len(_oai_resp_engine_on_bytes),
+                    len(_resp_legacy_on),
+                )
+            except Exception as _resp_on_exc:
+                self.metrics.engine_on_fallback_total += 1
+                logger.error(
+                    "event=engine_on_fallback provider=openai_responses request_id=%s error=%r; "
+                    "engine raised in 'on' mode — FALLING BACK to legacy bytes. "
+                    "Operator action required: check engine_on_fallback_total metric.",
+                    request_id,
+                    _resp_on_exc,
+                )
+                # _oai_resp_engine_on_bytes stays None → legacy forwarded.
+        # ── end of OpenAI responses "on" block ───────────────────────────────
+
         capture_codex_wire_debug(
             "http_upstream_request",
             request_id=request_id,
@@ -3026,10 +3525,17 @@ class OpenAIHandlerMixin:
                     optimization_latency,
                     memory_user_id=memory_user_id,
                     memory_request_ctx=memory_request_ctx,
+                    override_outbound_bytes=_oai_resp_engine_on_bytes,
                 )
             else:
                 headers = await apply_copilot_api_auth(headers, url=url)
-                response = await self._retry_request("POST", url, headers, body)
+                response = await self._retry_request(
+                    "POST",
+                    url,
+                    headers,
+                    body,
+                    override_outbound_bytes=_oai_resp_engine_on_bytes,
+                )
                 _response_body_for_debug: Any = None
                 _response_raw_for_debug: str | None = None
                 try:

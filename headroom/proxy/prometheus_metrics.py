@@ -223,6 +223,21 @@ class PrometheusMetrics:
         self.cache_bust_tokens_lost: int = 0
         self.cache_bust_count: int = 0
 
+        # Chunk 4.3-ii / 4.4a: HeadroomEngine observability counters.
+        # Incremented by the shadow/on blocks in handle_anthropic_messages; all
+        # counters are no-ops when engine_request_path == "off".
+        #
+        # engine_shadow_total          — every shadow comparison attempted
+        # engine_shadow_divergence_total — comparisons where legacy != engine
+        # engine_shadow_error_total    — exceptions thrown inside the shadow
+        #                               block (engine bug / seed failure)
+        # engine_on_fallback_total     — "on" mode fell back to legacy because
+        #                               the engine raised (loud alarm metric)
+        self.engine_shadow_total: int = 0
+        self.engine_shadow_divergence_total: int = 0
+        self.engine_shadow_error_total: int = 0
+        self.engine_on_fallback_total: int = 0
+
         # Cumulative savings history (timestamp → cumulative tokens saved)
         self.savings_history: list[tuple[str, int]] = []
         self.savings_tracker = savings_tracker or SavingsTracker()
@@ -327,6 +342,10 @@ class PrometheusMetrics:
             self.prefix_freeze_compression_foregone = 0
             self.cache_bust_tokens_lost = 0
             self.cache_bust_count = 0
+            self.engine_shadow_total = 0
+            self.engine_shadow_divergence_total = 0
+            self.engine_shadow_error_total = 0
+            self.engine_on_fallback_total = 0
             self.savings_history = []
 
         with self._stage_timing_lock:
@@ -955,6 +974,34 @@ class PrometheusMetrics:
                 metric_type="counter",
                 help_text="Tokens that lost provider cache discount because of compression",
                 value=self.cache_bust_tokens_lost,
+            )
+            _append_metric(
+                lines,
+                name="headroom_engine_shadow_total",
+                metric_type="counter",
+                help_text="Shadow comparisons between legacy path and HeadroomEngine (Chunk 4.3-ii)",
+                value=self.engine_shadow_total,
+            )
+            _append_metric(
+                lines,
+                name="headroom_engine_shadow_divergence_total",
+                metric_type="counter",
+                help_text="Shadow comparisons where legacy bytes != engine bytes",
+                value=self.engine_shadow_divergence_total,
+            )
+            _append_metric(
+                lines,
+                name="headroom_engine_shadow_error_total",
+                metric_type="counter",
+                help_text="Exceptions thrown inside the engine shadow block",
+                value=self.engine_shadow_error_total,
+            )
+            _append_metric(
+                lines,
+                name="headroom_engine_on_fallback_total",
+                metric_type="counter",
+                help_text="Requests where engine_request_path=on fell back to legacy due to engine error",
+                value=self.engine_on_fallback_total,
             )
 
             lines.extend(

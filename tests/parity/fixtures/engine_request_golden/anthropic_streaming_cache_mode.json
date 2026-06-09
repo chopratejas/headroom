@@ -1,0 +1,41 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "Previous",
+        "role": "user"
+      },
+      {
+        "content": "Ack",
+        "role": "assistant"
+      },
+      {
+        "content": "Now",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "stream": true
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsInN0cmVhbSI6dHJ1ZSwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IlByZXZpb3VzIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkFjayJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiTm93In1dfQ==",
+  "name": "anthropic_streaming_cache_mode",
+  "nondeterministic_flag": false,
+  "notes": "streaming + cache mode; CacheAligner may inject cache_control on live turns",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsInN0cmVhbSI6dHJ1ZSwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IlByZXZpb3VzIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkFjayJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiTm93In1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.751510+00:00",
+  "streaming": true
+}

@@ -1,0 +1,23 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "input": "Hello from the Responses API",
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/responses",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsImlucHV0IjoiSGVsbG8gZnJvbSB0aGUgUmVzcG9uc2VzIEFQSSJ9",
+  "name": "openai_responses_payg_passthrough",
+  "nondeterministic_flag": false,
+  "notes": "Responses API; PAYG; optimize=False \u2192 passthrough; string input",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsImlucHV0IjoiSGVsbG8gZnJvbSB0aGUgUmVzcG9uc2VzIEFQSSJ9",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.747741+00:00",
+  "streaming": false
+}

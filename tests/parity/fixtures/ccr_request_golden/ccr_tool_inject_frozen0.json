@@ -1,0 +1,55 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 128,
+    "messages": [
+      {
+        "content": [
+          {
+            "id": "toolu_search_01",
+            "input": {
+              "pattern": "*.py"
+            },
+            "name": "search_files",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "content": "Found 100 Python files. [100 items compressed to 10. Retrieve more: hash=abcdef123456789012345678]",
+            "tool_use_id": "toolu_search_01",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3VzZSIsImlkIjoidG9vbHVfc2VhcmNoXzAxIiwibmFtZSI6InNlYXJjaF9maWxlcyIsImlucHV0Ijp7InBhdHRlcm4iOiIqLnB5In19XX0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfc2VhcmNoXzAxIiwiY29udGVudCI6IkZvdW5kIDEwMCBQeXRob24gZmlsZXMuIFsxMDAgaXRlbXMgY29tcHJlc3NlZCB0byAxMC4gUmV0cmlldmUgbW9yZTogaGFzaD1hYmNkZWYxMjM0NTY3ODkwMTIzNDU2NzhdIn1dfV19",
+  "name": "ccr_tool_inject_frozen0",
+  "nondeterministic_flag": false,
+  "notes": "CCR-ON; frozen=0; body contains a CCR marker in tool_result; handler injects headroom_retrieve tool + system instructions; byte-exact because tool injection is deterministic",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InN5c3RlbSIsImNvbnRlbnQiOiIjIyBDb21wcmVzc2VkIENvbnRleHQgQXZhaWxhYmxlXG5cblNvbWUgdG9vbCBvdXRwdXRzIGhhdmUgYmVlbiBjb21wcmVzc2VkIHRvIHJlZHVjZSBjb250ZXh0IHNpemUuIElmIHlvdSBuZWVkXG50aGUgZnVsbCB1bmNvbXByZXNzZWQgZGF0YSwgeW91IGNhbiByZXRyaWV2ZSBpdCB1c2luZyB0aGUgYGhlYWRyb29tX3JldHJpZXZlYCB0b29sLlxuXG4qKkhvdyB0byByZXRyaWV2ZToqKlxuLSBDYWxsIGBoZWFkcm9vbV9yZXRyaWV2ZShoYXNoPVwiPGhhc2g+XCIpYCB0byBnZXQgYWxsIG9yaWdpbmFsIGl0ZW1zXG4tIENhbGwgYGhlYWRyb29tX3JldHJpZXZlKGhhc2g9XCI8aGFzaD5cIiwgcXVlcnk9XCJzZWFyY2ggdGVybXNcIilgIHRvIHNlYXJjaCB3aXRoaW5cblxuKipBdmFpbGFibGUgaGFzaGVzOioqIGFiY2RlZjEyMzQ1Njc4OTAxMjM0NTY3OFxuXG5Mb29rIGZvciBtYXJrZXJzIGxpa2UgYFtOIGl0ZW1zIGNvbXByZXNzZWQgdG8gTS4gUmV0cmlldmUgbW9yZTogaGFzaD1hYmMxMjNdYFxuaW4gdG9vbCByZXN1bHRzIHRvIGZpbmQgdGhlIGhhc2ggZm9yIGVhY2ggY29tcHJlc3NlZCBvdXRwdXQuIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfdXNlIiwiaWQiOiJ0b29sdV9zZWFyY2hfMDEiLCJuYW1lIjoic2VhcmNoX2ZpbGVzIiwiaW5wdXQiOnsicGF0dGVybiI6IioucHkifX1dfSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6InRvb2xfcmVzdWx0IiwidG9vbF91c2VfaWQiOiJ0b29sdV9zZWFyY2hfMDEiLCJjb250ZW50IjoiRm91bmQgMTAwIFB5dGhvbiBmaWxlcy4gWzEwMCBpdGVtcyBjb21wcmVzc2VkIHRvIDEwLiBSZXRyaWV2ZSBtb3JlOiBoYXNoPWFiY2RlZjEyMzQ1Njc4OTAxMjM0NTY3OF0ifV19XSwidG9vbHMiOlt7Im5hbWUiOiJoZWFkcm9vbV9yZXRyaWV2ZSIsImRlc2NyaXB0aW9uIjoiUmV0cmlldmUgb3JpZ2luYWwgdW5jb21wcmVzc2VkIGNvbnRlbnQgdGhhdCB3YXMgY29tcHJlc3NlZCB0byBzYXZlIHRva2Vucy4gVXNlIHRoaXMgd2hlbiB5b3UgbmVlZCBtb3JlIGRhdGEgdGhhbiB3aGF0J3Mgc2hvd24gaW4gY29tcHJlc3NlZCB0b29sIHJlc3VsdHMuIFRoZSBoYXNoIGlzIHByb3ZpZGVkIGluIGNvbXByZXNzaW9uIG1hcmtlcnMgbGlrZSBbTiBpdGVtcyBjb21wcmVzc2VkLi4uIGhhc2g9YWJjMTIzXS4iLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCIsInByb3BlcnRpZXMiOnsiaGFzaCI6eyJ0eXBlIjoic3RyaW5nIiwiZGVzY3JpcHRpb24iOiJIYXNoIGtleSBmcm9tIHRoZSBjb21wcmVzc2lvbiBtYXJrZXIgKGUuZy4sICdhYmMxMjMnIGZyb20gaGFzaD1hYmMxMjMpIn0sInF1ZXJ5Ijp7InR5cGUiOiJzdHJpbmciLCJkZXNjcmlwdGlvbiI6Ik9wdGlvbmFsIHNlYXJjaCBxdWVyeSB0byBmaWx0ZXIgcmVzdWx0cy4gSWYgcHJvdmlkZWQsIG9ubHkgcmV0dXJucyBpdGVtcyBtYXRjaGluZyB0aGUgcXVlcnkuIElmIG9taXR0ZWQsIHJldHVybnMgYWxsIG9yaWdpbmFsIGl0ZW1zLiJ9fSwicmVxdWlyZWQiOlsiaGFzaCJdfX1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "ccr_context_tracking": false,
+    "ccr_handle_responses": false,
+    "ccr_inject_system_instructions": true,
+    "ccr_inject_tool": true,
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T15:28:19.022832+00:00",
+  "streaming": false
+}

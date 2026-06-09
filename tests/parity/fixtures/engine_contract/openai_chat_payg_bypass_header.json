@@ -1,0 +1,18 @@
+{
+  "auth_mode": "payg",
+  "config_optimize": true,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiZ3B0LTRvIn0=",
+  "flavor": "chat",
+  "headers": {
+    "authorization": "Bearer sk-openai-test-key",
+    "content-type": "application/json",
+    "x-headroom-bypass": "true"
+  },
+  "name": "openai_chat_payg_bypass_header",
+  "passthrough": true,
+  "passthrough_reason": "bypass_header",
+  "provider": "openai",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiZ3B0LTRvIn0=",
+  "recorded_at": "2026-05-30T05:58:48.428067+00:00",
+  "session_key": "dfb4b62fd18a252bdfe448e6eb470c86626d0f30af6d6ca45a818ac245f9a1c9"
+}

@@ -1,0 +1,32 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "input": [
+      {
+        "content": "What is 2+2?",
+        "role": "user",
+        "type": "message"
+      }
+    ],
+    "model": "o3",
+    "reasoning": {
+      "effort": "low"
+    }
+  },
+  "endpoint": "/v1/responses",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6Im8zIiwiaW5wdXQiOlt7InR5cGUiOiJtZXNzYWdlIiwicm9sZSI6InVzZXIiLCJjb250ZW50IjoiV2hhdCBpcyAyKzI/In1dLCJyZWFzb25pbmciOnsiZWZmb3J0IjoibG93In19",
+  "name": "openai_responses_reasoning_items_passthrough",
+  "nondeterministic_flag": false,
+  "notes": "Responses API; reasoning field present; optimize=False \u2192 passthrough; byte-faithful preservation of reasoning items",
+  "outbound_b64": "eyJtb2RlbCI6Im8zIiwiaW5wdXQiOlt7InR5cGUiOiJtZXNzYWdlIiwicm9sZSI6InVzZXIiLCJjb250ZW50IjoiV2hhdCBpcyAyKzI/In1dLCJyZWFzb25pbmciOnsiZWZmb3J0IjoibG93In19",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.952006+00:00",
+  "streaming": false
+}

@@ -1,0 +1,40 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "Turn 1 question",
+        "role": "user"
+      },
+      {
+        "content": "Turn 1 answer",
+        "role": "assistant"
+      },
+      {
+        "content": "Turn 2 question",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJUdXJuIDEgcXVlc3Rpb24ifSx7InJvbGUiOiJhc3Npc3RhbnQiLCJjb250ZW50IjoiVHVybiAxIGFuc3dlciJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiVHVybiAyIHF1ZXN0aW9uIn1dfQ==",
+  "name": "anthropic_cache_mode_no_tools",
+  "nondeterministic_flag": false,
+  "notes": "cache mode; frozen=0; all messages live; CacheAligner may add cache_control",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJUdXJuIDEgcXVlc3Rpb24ifSx7InJvbGUiOiJhc3Npc3RhbnQiLCJjb250ZW50IjoiVHVybiAxIGFuc3dlciJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiVHVybiAyIHF1ZXN0aW9uIn1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.167415+00:00",
+  "streaming": false
+}

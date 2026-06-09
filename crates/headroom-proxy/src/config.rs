@@ -119,6 +119,47 @@ impl CacheControlAutoFrozen {
     }
 }
 
+/// PR-E3 policy: auto-place an Anthropic `cache_control: {"type":
+/// "ephemeral"}` marker on the last (post-sort) tool for PAYG requests that
+/// carry no marker of their own.
+///
+/// ON by default — gives naive PAYG clients free tool-prefix caching.
+/// Sophisticated callers are untouched by construction: E3 skips when any
+/// marker is already present (`any_anthropic_cache_control`) and never fires
+/// for OAuth/Subscription. So e.g. Claude Code is unaffected either way
+/// (subscription → auth gate; API key → its own markers trip the skip gate).
+/// `Disabled` matches the Python proxy's behaviour exactly: it never injects.
+///
+/// Source priority: CLI flag → `HEADROOM_PROXY_CACHE_CONTROL_AUTO_PLACE`
+/// env var → default (`enabled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum CacheControlAutoPlace {
+    /// Auto-place one `cache_control` marker on the last tool for
+    /// marker-less PAYG requests. Default.
+    Enabled,
+    /// Never auto-place a marker; PAYG requests keep their tools untouched
+    /// by E3 (E1/E2 sorting still applies). Matches the Python proxy, which
+    /// never injects `cache_control`.
+    Disabled,
+}
+
+impl CacheControlAutoPlace {
+    /// Stable snake_case name for log fields. Mirrors
+    /// `CacheControlAutoFrozen::as_str`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CacheControlAutoPlace::Enabled => "enabled",
+            CacheControlAutoPlace::Disabled => "disabled",
+        }
+    }
+
+    /// Convenience: is E3 auto-placement switched on?
+    pub fn is_enabled(self) -> bool {
+        matches!(self, CacheControlAutoPlace::Enabled)
+    }
+}
+
 /// Phase F PR-F2.1 c3/6: feature flag for the per-auth-mode
 /// `CompressionPolicy` enforcement.
 ///
@@ -287,6 +328,22 @@ pub struct CliArgs {
         default_value_t = CacheControlAutoFrozen::Enabled,
     )]
     pub cache_control_auto_frozen: CacheControlAutoFrozen,
+
+    /// PR-E3: auto-place an Anthropic `cache_control` marker on the last
+    /// tool for marker-less PAYG requests (free tool-prefix caching).
+    /// `disabled` matches the Python proxy (no injection). Default `enabled`.
+    /// Never fires for OAuth/Subscription or when the client already placed a
+    /// marker, so Claude Code is unaffected regardless of this flag.
+    ///
+    /// Source priority: CLI flag → `HEADROOM_PROXY_CACHE_CONTROL_AUTO_PLACE`
+    /// env var → default (`enabled`).
+    #[arg(
+        long = "cache-control-auto-place",
+        env = "HEADROOM_PROXY_CACHE_CONTROL_AUTO_PLACE",
+        value_enum,
+        default_value_t = CacheControlAutoPlace::Enabled,
+    )]
+    pub cache_control_auto_place: CacheControlAutoPlace,
 
     /// Phase F PR-F2.1 c5/5: per-auth-mode `CompressionPolicy`
     /// enforcement is now ON by default. Subscription users skip
@@ -510,6 +567,10 @@ pub struct Config {
     /// adds the derivation function (`compute_frozen_count`); Phase
     /// B's dispatcher consumes the resolved value here.
     pub cache_control_auto_frozen: CacheControlAutoFrozen,
+    /// Whether the anthropic live-zone dispatcher auto-places a
+    /// `cache_control` marker on the last tool for marker-less PAYG
+    /// requests (PR-E3). `Disabled` matches the Python proxy (no injection).
+    pub cache_control_auto_place: CacheControlAutoPlace,
     /// Phase F PR-F2.1 c3/6: gate per-auth-mode `CompressionPolicy`
     /// enforcement. `Disabled` until c6/6 flips the default.
     pub auth_mode_policy_enforcement: AuthModePolicyEnforcement,
@@ -576,6 +637,7 @@ impl Config {
             compression_max_body_bytes,
             compression_mode: args.compression_mode,
             cache_control_auto_frozen: args.cache_control_auto_frozen,
+            cache_control_auto_place: args.cache_control_auto_place,
             auth_mode_policy_enforcement: args.auth_mode_policy_enforcement,
             strip_internal_headers: args.strip_internal_headers,
             enable_responses_streaming: args.enable_responses_streaming,
@@ -608,6 +670,9 @@ impl Config {
             // Match production default so the cache-control walker is
             // exercised under test without per-test opt-in.
             cache_control_auto_frozen: CacheControlAutoFrozen::Enabled,
+            // Match production default — E3 auto-placement on (gated by
+            // auth-mode + marker-present inside the dispatcher).
+            cache_control_auto_place: CacheControlAutoPlace::Enabled,
             // F2.1 c5/5: enforcement is ON by default in production
             // (Config::from_cli inherits the CliArgs default which is
             // `Enabled`). For tests, we keep `Disabled` so the

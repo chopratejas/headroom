@@ -18,6 +18,7 @@
 pub mod adaptive_sizer;
 pub mod anchor_selector;
 pub mod content_detector;
+pub mod content_router;
 pub mod detection;
 pub mod diff_compressor;
 pub mod live_zone;
@@ -34,6 +35,7 @@ pub mod unidiff_detector;
 pub use content_detector::{
     detect_content_type, is_json_array_of_dicts, ContentType, DetectionResult,
 };
+pub use content_router::route_content_type;
 pub use detection::detect;
 pub use diff_compressor::{
     DiffCompressionResult, DiffCompressor, DiffCompressorConfig, DiffCompressorStats,

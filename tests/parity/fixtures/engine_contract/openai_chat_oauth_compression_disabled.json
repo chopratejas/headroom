@@ -1,0 +1,17 @@
+{
+  "auth_mode": "oauth",
+  "config_optimize": false,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiZ3B0LTRvIn0=",
+  "flavor": "chat",
+  "headers": {
+    "authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMSJ9.sig",
+    "content-type": "application/json"
+  },
+  "name": "openai_chat_oauth_compression_disabled",
+  "passthrough": true,
+  "passthrough_reason": "compression_disabled",
+  "provider": "openai",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiZ3B0LTRvIn0=",
+  "recorded_at": "2026-05-30T05:58:48.428599+00:00",
+  "session_key": "4e69bd3c58be061013c69ba655c2a19b50e65fb44ac5bdb6a2b6cef139152d28"
+}

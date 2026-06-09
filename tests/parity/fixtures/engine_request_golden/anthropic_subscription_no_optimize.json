@@ -1,0 +1,32 @@
+{
+  "auth_mode": "oauth",
+  "body": {
+    "max_tokens": 256,
+    "messages": [
+      {
+        "content": "Write a poem.",
+        "role": "user"
+      }
+    ],
+    "model": "claude-opus-4-5"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer sk-ant-oat-sub-xyz789",
+    "content-type": "application/json",
+    "x-headroom-client": "claude-code"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1vcHVzLTQtNSIsIm1heF90b2tlbnMiOjI1NiwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IldyaXRlIGEgcG9lbS4ifV19",
+  "name": "anthropic_subscription_no_optimize",
+  "nondeterministic_flag": false,
+  "notes": "Subscription client token; optimize=False \u2192 passthrough",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1vcHVzLTQtNSIsIm1heF90b2tlbnMiOjI1NiwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IldyaXRlIGEgcG9lbS4ifV19",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-30T06:43:52.130730+00:00",
+  "streaming": false
+}

@@ -1,0 +1,61 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "Run the search tool.",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o",
+    "tools": [
+      {
+        "function": {
+          "description": "z",
+          "name": "zeta_tool",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "a",
+          "name": "alpha_tool",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "type": "function"
+      },
+      {
+        "function": {
+          "description": "m",
+          "name": "mu_tool",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJSdW4gdGhlIHNlYXJjaCB0b29sLiJ9XSwidG9vbHMiOlt7InR5cGUiOiJmdW5jdGlvbiIsImZ1bmN0aW9uIjp7Im5hbWUiOiJ6ZXRhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6InoiLCJwYXJhbWV0ZXJzIjp7InR5cGUiOiJvYmplY3QifX19LHsidHlwZSI6ImZ1bmN0aW9uIiwiZnVuY3Rpb24iOnsibmFtZSI6ImFscGhhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6ImEiLCJwYXJhbWV0ZXJzIjp7InR5cGUiOiJvYmplY3QifX19LHsidHlwZSI6ImZ1bmN0aW9uIiwiZnVuY3Rpb24iOnsibmFtZSI6Im11X3Rvb2wiLCJkZXNjcmlwdGlvbiI6Im0iLCJwYXJhbWV0ZXJzIjp7InR5cGUiOiJvYmplY3QifX19XX0=",
+  "name": "openai_chat_cache_mode_tools_sorted",
+  "nondeterministic_flag": false,
+  "notes": "cache mode; tools arrive unsorted (z, a, m); characterizes whether/how handler sorts tools at the pre-send site",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJSdW4gdGhlIHNlYXJjaCB0b29sLiJ9XSwidG9vbHMiOlt7InR5cGUiOiJmdW5jdGlvbiIsImZ1bmN0aW9uIjp7Im5hbWUiOiJ6ZXRhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6InoiLCJwYXJhbWV0ZXJzIjp7InR5cGUiOiJvYmplY3QifX19LHsidHlwZSI6ImZ1bmN0aW9uIiwiZnVuY3Rpb24iOnsibmFtZSI6ImFscGhhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6ImEiLCJwYXJhbWV0ZXJzIjp7InR5cGUiOiJvYmplY3QifX19LHsidHlwZSI6ImZ1bmN0aW9uIiwiZnVuY3Rpb24iOnsibmFtZSI6Im11X3Rvb2wiLCJkZXNjcmlwdGlvbiI6Im0iLCJwYXJhbWV0ZXJzIjp7InR5cGUiOiJvYmplY3QifX19XX0=",
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.188472+00:00",
+  "streaming": false
+}

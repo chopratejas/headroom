@@ -1,0 +1,24 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "input": "Bypass me",
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/responses",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json",
+    "x-headroom-bypass": "true"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsImlucHV0IjoiQnlwYXNzIG1lIn0=",
+  "name": "openai_responses_bypass",
+  "nondeterministic_flag": false,
+  "notes": "Responses API; bypass header \u2192 compression skipped; bytes forwarded verbatim",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsImlucHV0IjoiQnlwYXNzIG1lIn0=",
+  "proxy_config": {
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.863637+00:00",
+  "streaming": false
+}

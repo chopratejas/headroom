@@ -1,0 +1,51 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 128,
+    "messages": [
+      {
+        "content": [
+          {
+            "id": "toolu_batch_job",
+            "input": {
+              "job_id": "batch-9821"
+            },
+            "name": "run_batch_job",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "content": "INFO [2026-05-29T10:00:00Z] Starting batch job batch-9821\nINFO [2026-05-29T10:00:01Z] Loading model weights from /data/models/v7\nINFO [2026-05-29T10:00:05Z] Model loaded (3.2 GB) in 4.1s\nWARN [2026-05-29T10:00:05Z] GPU memory fragmented; defragmenting\nINFO [2026-05-29T10:00:07Z] Processing shard 1/8 (125k records)\nINFO [2026-05-29T10:00:15Z] Shard 1 done: 124,982 processed, 18 skipped\nINFO [2026-05-29T10:00:15Z] Processing shard 2/8 (125k records)\nINFO [2026-05-29T10:00:23Z] Shard 2 done: 124,999 processed, 1 skipped\nERROR [2026-05-29T10:00:24Z] Shard 3: connection reset by peer during write\nWARN [2026-05-29T10:00:24Z] Retrying shard 3 (attempt 1/3)\nINFO [2026-05-29T10:00:28Z] Shard 3 retry succeeded\nINFO [2026-05-29T10:00:28Z] Processing shard 4/8 (125k records)\nINFO [2026-05-29T10:00:37Z] Shard 4 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:00:37Z] Processing shard 5/8 (125k records)\nINFO [2026-05-29T10:00:46Z] Shard 5 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:00:46Z] Processing shard 6/8 (125k records)\nINFO [2026-05-29T10:00:55Z] Shard 6 done: 124,950 processed, 50 skipped\nINFO [2026-05-29T10:00:55Z] Processing shard 7/8 (125k records)\nINFO [2026-05-29T10:01:05Z] Shard 7 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:01:05Z] Processing shard 8/8 (125k records)\nINFO [2026-05-29T10:01:14Z] Shard 8 done: 125,000 processed, 0 skipped\nINFO [2026-05-29T10:01:14Z] All shards complete. Total: 999,931 processed\nINFO [2026-05-29T10:01:14Z] Writing results to s3://data-prod/batch-9821/\nINFO [2026-05-29T10:01:18Z] Upload complete (42 MB in 4s)\nINFO [2026-05-29T10:01:18Z] Job batch-9821 finished OK\n",
+            "tool_use_id": "toolu_batch_job",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3VzZSIsImlkIjoidG9vbHVfYmF0Y2hfam9iIiwibmFtZSI6InJ1bl9iYXRjaF9qb2IiLCJpbnB1dCI6eyJqb2JfaWQiOiJiYXRjaC05ODIxIn19XX0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfYmF0Y2hfam9iIiwiY29udGVudCI6IklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MDBaXSBTdGFydGluZyBiYXRjaCBqb2IgYmF0Y2gtOTgyMVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDowMVpdIExvYWRpbmcgbW9kZWwgd2VpZ2h0cyBmcm9tIC9kYXRhL21vZGVscy92N1xuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDowNVpdIE1vZGVsIGxvYWRlZCAoMy4yIEdCKSBpbiA0LjFzXG5XQVJOIFsyMDI2LTA1LTI5VDEwOjAwOjA1Wl0gR1BVIG1lbW9yeSBmcmFnbWVudGVkOyBkZWZyYWdtZW50aW5nXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjA3Wl0gUHJvY2Vzc2luZyBzaGFyZCAxLzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MTVaXSBTaGFyZCAxIGRvbmU6IDEyNCw5ODIgcHJvY2Vzc2VkLCAxOCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjE1Wl0gUHJvY2Vzc2luZyBzaGFyZCAyLzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MjNaXSBTaGFyZCAyIGRvbmU6IDEyNCw5OTkgcHJvY2Vzc2VkLCAxIHNraXBwZWRcbkVSUk9SIFsyMDI2LTA1LTI5VDEwOjAwOjI0Wl0gU2hhcmQgMzogY29ubmVjdGlvbiByZXNldCBieSBwZWVyIGR1cmluZyB3cml0ZVxuV0FSTiBbMjAyNi0wNS0yOVQxMDowMDoyNFpdIFJldHJ5aW5nIHNoYXJkIDMgKGF0dGVtcHQgMS8zKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDoyOFpdIFNoYXJkIDMgcmV0cnkgc3VjY2VlZGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjI4Wl0gUHJvY2Vzc2luZyBzaGFyZCA0LzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MzdaXSBTaGFyZCA0IGRvbmU6IDEyNSwwMDAgcHJvY2Vzc2VkLCAwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MzdaXSBQcm9jZXNzaW5nIHNoYXJkIDUvOCAoMTI1ayByZWNvcmRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo0NlpdIFNoYXJkIDUgZG9uZTogMTI1LDAwMCBwcm9jZXNzZWQsIDAgc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo0NlpdIFByb2Nlc3Npbmcgc2hhcmQgNi84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjU1Wl0gU2hhcmQgNiBkb25lOiAxMjQsOTUwIHByb2Nlc3NlZCwgNTAgc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo1NVpdIFByb2Nlc3Npbmcgc2hhcmQgNy84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjA1Wl0gU2hhcmQgNyBkb25lOiAxMjUsMDAwIHByb2Nlc3NlZCwgMCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjA1Wl0gUHJvY2Vzc2luZyBzaGFyZCA4LzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MTRaXSBTaGFyZCA4IGRvbmU6IDEyNSwwMDAgcHJvY2Vzc2VkLCAwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MTRaXSBBbGwgc2hhcmRzIGNvbXBsZXRlLiBUb3RhbDogOTk5LDkzMSBwcm9jZXNzZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MTRaXSBXcml0aW5nIHJlc3VsdHMgdG8gczM6Ly9kYXRhLXByb2QvYmF0Y2gtOTgyMS9cbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MThaXSBVcGxvYWQgY29tcGxldGUgKDQyIE1CIGluIDRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMToxOFpdIEpvYiBiYXRjaC05ODIxIGZpbmlzaGVkIE9LXG4ifV19XX0=",
+  "name": "anthropic_token_mode_large_tool_result",
+  "nondeterministic_flag": false,
+  "notes": "token mode; large tool_result log text exercises ContentRouter\u2192LogCompressor; real compression path \u2014 deterministic because empty query \u2192 BM25 short-circuits",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3VzZSIsImlkIjoidG9vbHVfYmF0Y2hfam9iIiwibmFtZSI6InJ1bl9iYXRjaF9qb2IiLCJpbnB1dCI6eyJqb2JfaWQiOiJiYXRjaC05ODIxIn19XX0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOlt7InR5cGUiOiJ0b29sX3Jlc3VsdCIsInRvb2xfdXNlX2lkIjoidG9vbHVfYmF0Y2hfam9iIiwiY29udGVudCI6IklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MDBaXSBTdGFydGluZyBiYXRjaCBqb2IgYmF0Y2gtOTgyMVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDowMVpdIExvYWRpbmcgbW9kZWwgd2VpZ2h0cyBmcm9tIC9kYXRhL21vZGVscy92N1xuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDowNVpdIE1vZGVsIGxvYWRlZCAoMy4yIEdCKSBpbiA0LjFzXG5XQVJOIFsyMDI2LTA1LTI5VDEwOjAwOjA1Wl0gR1BVIG1lbW9yeSBmcmFnbWVudGVkOyBkZWZyYWdtZW50aW5nXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjA3Wl0gUHJvY2Vzc2luZyBzaGFyZCAxLzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MTVaXSBTaGFyZCAxIGRvbmU6IDEyNCw5ODIgcHJvY2Vzc2VkLCAxOCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjE1Wl0gUHJvY2Vzc2luZyBzaGFyZCAyLzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MjNaXSBTaGFyZCAyIGRvbmU6IDEyNCw5OTkgcHJvY2Vzc2VkLCAxIHNraXBwZWRcbkVSUk9SIFsyMDI2LTA1LTI5VDEwOjAwOjI0Wl0gU2hhcmQgMzogY29ubmVjdGlvbiByZXNldCBieSBwZWVyIGR1cmluZyB3cml0ZVxuV0FSTiBbMjAyNi0wNS0yOVQxMDowMDoyNFpdIFJldHJ5aW5nIHNoYXJkIDMgKGF0dGVtcHQgMS8zKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDoyOFpdIFNoYXJkIDMgcmV0cnkgc3VjY2VlZGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjI4Wl0gUHJvY2Vzc2luZyBzaGFyZCA0LzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MzdaXSBTaGFyZCA0IGRvbmU6IDEyNSwwMDAgcHJvY2Vzc2VkLCAwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDA6MzdaXSBQcm9jZXNzaW5nIHNoYXJkIDUvOCAoMTI1ayByZWNvcmRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo0NlpdIFNoYXJkIDUgZG9uZTogMTI1LDAwMCBwcm9jZXNzZWQsIDAgc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo0NlpdIFByb2Nlc3Npbmcgc2hhcmQgNi84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAwOjU1Wl0gU2hhcmQgNiBkb25lOiAxMjQsOTUwIHByb2Nlc3NlZCwgNTAgc2tpcHBlZFxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMDo1NVpdIFByb2Nlc3Npbmcgc2hhcmQgNy84ICgxMjVrIHJlY29yZHMpXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjA1Wl0gU2hhcmQgNyBkb25lOiAxMjUsMDAwIHByb2Nlc3NlZCwgMCBza2lwcGVkXG5JTkZPIFsyMDI2LTA1LTI5VDEwOjAxOjA1Wl0gUHJvY2Vzc2luZyBzaGFyZCA4LzggKDEyNWsgcmVjb3JkcylcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MTRaXSBTaGFyZCA4IGRvbmU6IDEyNSwwMDAgcHJvY2Vzc2VkLCAwIHNraXBwZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MTRaXSBBbGwgc2hhcmRzIGNvbXBsZXRlLiBUb3RhbDogOTk5LDkzMSBwcm9jZXNzZWRcbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MTRaXSBXcml0aW5nIHJlc3VsdHMgdG8gczM6Ly9kYXRhLXByb2QvYmF0Y2gtOTgyMS9cbklORk8gWzIwMjYtMDUtMjlUMTA6MDE6MThaXSBVcGxvYWQgY29tcGxldGUgKDQyIE1CIGluIDRzKVxuSU5GTyBbMjAyNi0wNS0yOVQxMDowMToxOFpdIEpvYiBiYXRjaC05ODIxIGZpbmlzaGVkIE9LXG4ifV19XX0=",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.682086+00:00",
+  "streaming": false
+}

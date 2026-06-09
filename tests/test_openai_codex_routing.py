@@ -134,6 +134,9 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
             retry_base_delay_ms=10,
             retry_max_delay_ms=50,
             connect_timeout_seconds=10,
+            # Shadow/flip hook gating: "off" disables the engine path so
+            # these minimal routing tests are not affected by engine wiring.
+            engine_request_path="off",
         )
         self.usage_reporter = None
         self.openai_provider = SimpleNamespace(get_context_limit=lambda model: 128_000)
@@ -157,7 +160,7 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
     def _extract_tags(self, headers: dict[str, str]) -> dict[str, str]:
         return {}
 
-    async def _retry_request(self, method: str, url: str, headers: dict, body: dict):
+    async def _retry_request(self, method: str, url: str, headers: dict, body: dict, **kwargs):
         self.captured_request = (method, url, headers, body)
         return _ResponseStub()
 

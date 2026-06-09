@@ -1,0 +1,48 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "Frozen turn 1",
+        "role": "user"
+      },
+      {
+        "content": "Frozen answer 1",
+        "role": "assistant"
+      },
+      {
+        "content": "Frozen turn 2",
+        "role": "user"
+      },
+      {
+        "content": "Frozen answer 2",
+        "role": "assistant"
+      },
+      {
+        "content": "Current live turn",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 4,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJGcm96ZW4gdHVybiAxIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkZyb3plbiBhbnN3ZXIgMSJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiRnJvemVuIHR1cm4gMiJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJGcm96ZW4gYW5zd2VyIDIifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IkN1cnJlbnQgbGl2ZSB0dXJuIn1dfQ==",
+  "name": "anthropic_cache_mode_frozen_prefix",
+  "nondeterministic_flag": false,
+  "notes": "cache mode; frozen_count=4 forces prefix_tracker to report 4 frozen; only the last message is live",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJGcm96ZW4gdHVybiAxIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkZyb3plbiBhbnN3ZXIgMSJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiRnJvemVuIHR1cm4gMiJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJGcm96ZW4gYW5zd2VyIDIifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IkN1cnJlbnQgbGl2ZSB0dXJuIn1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.717170+00:00",
+  "streaming": false
+}

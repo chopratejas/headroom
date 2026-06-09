@@ -809,6 +809,7 @@ class StreamingMixin:
         body_mutated: bool = True,
         mutation_reasons: list[str] | None = None,
         memory_request_ctx: Any | None = None,
+        override_outbound_bytes: bytes | None = None,
     ) -> Response | StreamingResponse:
         """Stream response with metrics tracking and memory tool handling.
 
@@ -820,6 +821,12 @@ class StreamingMixin:
         2. Executes memory tools if found
         3. Makes continuation requests until no memory tools remain
         4. Streams the final response to the client
+
+        Chunk 4.4a — ``override_outbound_bytes``:
+          When provided (non-None), these bytes are forwarded verbatim to
+          upstream instead of the bytes derived from ``body`` /
+          ``original_body_bytes``.  Used by the engine ``"on"`` path.
+          When ``None`` behaviour is exactly as today.
         """
         from fastapi.responses import Response, StreamingResponse
 
@@ -843,11 +850,15 @@ class StreamingMixin:
             prepare_outbound_body_bytes,
         )
 
-        outbound_bytes, outbound_source = prepare_outbound_body_bytes(
-            body=body,
-            original_body_bytes=original_body_bytes,
-            body_mutated=body_mutated,
-        )
+        if override_outbound_bytes is not None:
+            outbound_bytes = override_outbound_bytes
+            outbound_source = "engine_on"
+        else:
+            outbound_bytes, outbound_source = prepare_outbound_body_bytes(
+                body=body,
+                original_body_bytes=original_body_bytes,
+                body_mutated=body_mutated,
+            )
         outbound_headers = {**headers, "content-type": "application/json"}
         log_outbound_request(
             forwarder="streaming",

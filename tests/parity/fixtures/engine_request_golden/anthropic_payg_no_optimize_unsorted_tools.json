@@ -1,0 +1,47 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "Use a tool",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "tools": [
+      {
+        "description": "z",
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "zeta_tool"
+      },
+      {
+        "description": "a",
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "alpha_tool"
+      }
+    ]
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJVc2UgYSB0b29sIn1dLCJ0b29scyI6W3sibmFtZSI6InpldGFfdG9vbCIsImRlc2NyaXB0aW9uIjoieiIsImlucHV0X3NjaGVtYSI6eyJ0eXBlIjoib2JqZWN0In19LHsibmFtZSI6ImFscGhhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6ImEiLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCJ9fV19",
+  "name": "anthropic_payg_no_optimize_unsorted_tools",
+  "nondeterministic_flag": false,
+  "notes": "D1 fix: no-compress path (optimize=False) with unsorted tools; legacy handler sorts tools unconditionally at pre-send site; engine must match \u2014 byte-exact after tool-sort",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJVc2UgYSB0b29sIn1dLCJ0b29scyI6W3sibmFtZSI6ImFscGhhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6ImEiLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCJ9fSx7Im5hbWUiOiJ6ZXRhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6InoiLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCJ9fV19",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-30T20:39:07.058964+00:00",
+  "streaming": false
+}

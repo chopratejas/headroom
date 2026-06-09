@@ -1,0 +1,24 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "input": "What is the weather?",
+    "instructions": "You are a helpful assistant.",
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/responses",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsImluc3RydWN0aW9ucyI6IllvdSBhcmUgYSBoZWxwZnVsIGFzc2lzdGFudC4iLCJpbnB1dCI6IldoYXQgaXMgdGhlIHdlYXRoZXI/In0=",
+  "name": "openai_responses_instructions_passthrough",
+  "nondeterministic_flag": false,
+  "notes": "Responses API; instructions field present (cache hot zone); optimize=False \u2192 passthrough; confirms instructions forwarded verbatim",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsImluc3RydWN0aW9ucyI6IllvdSBhcmUgYSBoZWxwZnVsIGFzc2lzdGFudC4iLCJpbnB1dCI6IldoYXQgaXMgdGhlIHdlYXRoZXI/In0=",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.780848+00:00",
+  "streaming": false
+}

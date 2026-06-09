@@ -1,0 +1,40 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "First message (frozen)",
+        "role": "user"
+      },
+      {
+        "content": "First reply (frozen)",
+        "role": "assistant"
+      },
+      {
+        "content": "Current question",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 2,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJGaXJzdCBtZXNzYWdlIChmcm96ZW4pIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkZpcnN0IHJlcGx5IChmcm96ZW4pIn0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJDdXJyZW50IHF1ZXN0aW9uIn1dfQ==",
+  "name": "anthropic_token_mode_frozen_prefix",
+  "nondeterministic_flag": false,
+  "notes": "token mode; prefix_tracker reports 2 frozen; pipeline sees only suffix",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJGaXJzdCBtZXNzYWdlIChmcm96ZW4pIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkZpcnN0IHJlcGx5IChmcm96ZW4pIn0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJDdXJyZW50IHF1ZXN0aW9uIn1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.370507+00:00",
+  "streaming": false
+}

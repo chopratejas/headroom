@@ -1,0 +1,19 @@
+{
+  "auth_mode": "subscription",
+  "config_optimize": true,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiY2xhdWRlLTMtNS1zb25uZXQtMjAyNDEwMjIifQ==",
+  "flavor": "messages",
+  "headers": {
+    "authorization": "Bearer sk-ant-api-sub-key",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/1.2.3",
+    "x-headroom-bypass": "true"
+  },
+  "name": "anthropic_messages_subscription_bypass_header",
+  "passthrough": true,
+  "passthrough_reason": "bypass_header",
+  "provider": "anthropic",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiY2xhdWRlLTMtNS1zb25uZXQtMjAyNDEwMjIifQ==",
+  "recorded_at": "2026-05-30T05:58:48.427755+00:00",
+  "session_key": "fe839183c64540282a207c3095bc7b80a32b5da34d83337b867870db4f707eb7"
+}

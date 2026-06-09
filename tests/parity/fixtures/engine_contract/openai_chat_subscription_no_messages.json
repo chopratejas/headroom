@@ -1,0 +1,18 @@
+{
+  "auth_mode": "subscription",
+  "config_optimize": true,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFtdLCAibW9kZWwiOiAiZ3B0LTRvIn0=",
+  "flavor": "chat",
+  "headers": {
+    "authorization": "Bearer sk-openai-test-key",
+    "content-type": "application/json",
+    "user-agent": "codex-cli/0.5.0"
+  },
+  "name": "openai_chat_subscription_no_messages",
+  "passthrough": true,
+  "passthrough_reason": "no_messages",
+  "provider": "openai",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFtdLCAibW9kZWwiOiAiZ3B0LTRvIn0=",
+  "recorded_at": "2026-05-30T05:58:48.428882+00:00",
+  "session_key": "faf0da4e89f982487fe0b937ce5bc3f69f30a214671a40d291555d6cc138f7c7"
+}

@@ -687,6 +687,7 @@ pub(crate) async fn forward_http(
                     &buffered,
                     state.config.compression_mode,
                     state.config.cache_control_auto_frozen,
+                    state.config.cache_control_auto_place,
                     auth_mode,
                     &request_id,
                 )

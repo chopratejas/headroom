@@ -19,6 +19,7 @@ scripts/*
 !scripts/fixtures/
 !scripts/fixtures/*.json
 !scripts/record_fixtures.py
+!scripts/record_engine_fixtures.py
 !scripts/build_rust_extension.sh
 !scripts/install-git-hooks.sh
 !scripts/smoke_issue_327.py

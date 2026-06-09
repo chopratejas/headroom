@@ -1,0 +1,28 @@
+{
+  "auth_mode": "oauth",
+  "body": {
+    "messages": [
+      {
+        "content": "Summarize this document.",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-ant-oat-abc123def456",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJTdW1tYXJpemUgdGhpcyBkb2N1bWVudC4ifV19",
+  "name": "openai_chat_oauth_no_optimize",
+  "nondeterministic_flag": false,
+  "notes": "OAuth auth mode (sk-ant-oat-*); optimize=False \u2192 passthrough",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJTdW1tYXJpemUgdGhpcyBkb2N1bWVudC4ifV19",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.082472+00:00",
+  "streaming": false
+}

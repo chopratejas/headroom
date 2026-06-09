@@ -1,0 +1,33 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "passthrough via mode header",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key",
+    "x-headroom-mode": "passthrough"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJwYXNzdGhyb3VnaCB2aWEgbW9kZSBoZWFkZXIifV19",
+  "name": "anthropic_passthrough_mode_header",
+  "nondeterministic_flag": false,
+  "notes": "x-headroom-mode=passthrough triggers bypass just like x-headroom-bypass=true",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJwYXNzdGhyb3VnaCB2aWEgbW9kZSBoZWFkZXIifV19",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.855270+00:00",
+  "streaming": false
+}

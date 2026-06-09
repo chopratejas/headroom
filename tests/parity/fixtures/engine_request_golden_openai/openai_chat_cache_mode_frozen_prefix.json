@@ -1,0 +1,45 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "Frozen turn 1",
+        "role": "user"
+      },
+      {
+        "content": "Frozen answer 1",
+        "role": "assistant"
+      },
+      {
+        "content": "Frozen turn 2",
+        "role": "user"
+      },
+      {
+        "content": "Frozen answer 2",
+        "role": "assistant"
+      },
+      {
+        "content": "Current live turn",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 4,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJGcm96ZW4gdHVybiAxIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkZyb3plbiBhbnN3ZXIgMSJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiRnJvemVuIHR1cm4gMiJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJGcm96ZW4gYW5zd2VyIDIifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IkN1cnJlbnQgbGl2ZSB0dXJuIn1dfQ==",
+  "name": "openai_chat_cache_mode_frozen_prefix",
+  "nondeterministic_flag": false,
+  "notes": "cache mode; frozen_count=4; only the last message is live",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJGcm96ZW4gdHVybiAxIn0seyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6IkZyb3plbiBhbnN3ZXIgMSJ9LHsicm9sZSI6InVzZXIiLCJjb250ZW50IjoiRnJvemVuIHR1cm4gMiJ9LHsicm9sZSI6ImFzc2lzdGFudCIsImNvbnRlbnQiOiJGcm96ZW4gYW5zd2VyIDIifSx7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IkN1cnJlbnQgbGl2ZSB0dXJuIn1dfQ==",
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.400266+00:00",
+  "streaming": false
+}

@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 if TYPE_CHECKING:
     from ..backends.base import Backend
     from ..cache.compression_cache import CompressionCache
+    from ..engine.facade import HeadroomEngine
     from ..memory.tracker import MemoryTracker
     from .outcome import RequestOutcome
 
@@ -427,6 +428,16 @@ class HeadroomProxy(
         self._compression_caches: dict[str, CompressionCache] = {}
         self._compression_caches_lock = threading.RLock()
 
+        # Engine-private compression-cache store (#31). Wired into the engine's
+        # AnthropicComponents/OpenAIComponents instead of the legacy store above,
+        # so engine activity in shadow/on mode never reads or mutates the
+        # production cache (shadow stays truly observe-only, and a parity bug in
+        # the engine can't corrupt the bytes the legacy path serves). Keyed by
+        # the SAME real session_id the legacy path computes, so engine cache
+        # behavior matches legacy turn-to-turn (no shadow-divergence inflation).
+        self._engine_compression_caches: dict[str, CompressionCache] = {}
+        self._engine_compression_caches_lock = threading.RLock()
+
         self.logger = (
             RequestLogger(
                 log_file=config.log_file,
@@ -698,6 +709,18 @@ class HeadroomProxy(
             else:
                 self.code_graph_watcher = None
 
+        # ── HeadroomEngine (4.3-i: built but NOT yet called on the request path) ──
+        # The engine is wired with the proxy's real components so it is ready
+        # for the 4.3-ii shadow hook. It is ADDITIVE: the live
+        # handle_anthropic_messages path is not changed by this construction.
+        #
+        # AnthropicComponents: all per-proxy fields already constructed above.
+        # CCRComponents: session_turn_counters starts empty; filled as the
+        #   engine processes requests in the shadow path.
+        # MemoryComponents: memory_handler (None when memory disabled) + env
+        #   fallback user_id baked in at construction time.
+        self.engine = self._build_headroom_engine()
+
         self.pipeline_extensions.emit(
             PipelineStage.SETUP,
             operation="proxy.setup",
@@ -707,6 +730,88 @@ class HeadroomProxy(
                 "backend": self.config.backend,
                 "memory_enabled": self.config.memory_enabled,
             },
+        )
+
+    def _build_headroom_engine(self) -> HeadroomEngine:
+        """Construct and return a fully-wired ``HeadroomEngine`` for this proxy.
+
+        Called once from ``__init__`` after all component fields are set.
+        The engine is stored as ``self.engine`` and is ADDITIVE — it is not
+        yet called from the request path (4.3-ii adds the shadow hook).
+
+        Component wiring:
+          AnthropicComponents — reuses the proxy's own fields verbatim.
+          CCRComponents — lazy global ``get_compression_store``; per-session
+            turn counters start empty and accumulate in the engine.
+          MemoryComponents — the proxy's memory_handler (or None) + the same
+            USER-env fallback the handler uses.
+        """
+        from headroom.cache.compression_store import get_compression_store as _gcs
+
+        # Engine gets its own SessionTrackerStore so its session state is
+        # independent from the live handler's store (shadow, not shared).
+        from headroom.cache.prefix_tracker import PrefixFreezeConfig, SessionTrackerStore
+        from headroom.engine.contract import Flavor, Provider
+        from headroom.engine.facade import (
+            AnthropicComponents,
+            CCRComponents,
+            HeadroomEngine,
+            MemoryComponents,
+            OpenAIComponents,
+        )
+
+        engine_session_store = SessionTrackerStore(
+            default_config=PrefixFreezeConfig(
+                enabled=self.config.prefix_freeze_enabled,
+                session_ttl_seconds=self.config.prefix_freeze_session_ttl,
+            )
+        )
+
+        ac = AnthropicComponents(
+            pipeline=self.anthropic_pipeline,
+            provider=self.anthropic_provider,
+            session_tracker_store=engine_session_store,
+            # Engine-private cache store (#31) — NOT self._get_compression_cache.
+            # Isolates engine shadow/on activity from the production cache.
+            get_compression_cache=self._get_engine_compression_cache,
+            config=self.config,
+            usage_reporter=self.usage_reporter,
+        )
+
+        oc = OpenAIComponents(
+            pipeline=self.openai_pipeline,
+            provider=self.openai_provider,
+            session_tracker_store=engine_session_store,
+            # Engine-private cache store (#31) — see AnthropicComponents above.
+            get_compression_cache=self._get_engine_compression_cache,
+            config=self.config,
+            usage_reporter=self.usage_reporter,
+        )
+
+        ccr = CCRComponents(
+            ccr_context_tracker=self.ccr_context_tracker,
+            get_compression_store=lambda: _gcs(),
+            session_turn_counters={},
+        )
+
+        mc = MemoryComponents(
+            memory_handler=self.memory_handler,
+            # Mirror the handler's user-id fallback:
+            # x-headroom-user-id header (per-request) → USER / USERNAME env → "default".
+            # default_user_id=None tells MemoryComponents to read the env now
+            # (at proxy construction time) as the baked-in fallback.
+            default_user_id=None,
+        )
+
+        return HeadroomEngine(
+            pipelines={(Provider.ANTHROPIC, Flavor.MESSAGES): self.anthropic_pipeline},
+            config=self.config,
+            usage_reporter=self.usage_reporter,
+            salt=b"headroom-proxy-engine",
+            anthropic_components=ac,
+            openai_components=oc,
+            ccr_components=ccr,
+            memory_components=mc,
         )
 
     async def _run_compression_in_executor(
@@ -803,7 +908,7 @@ class HeadroomProxy(
             raise
 
     def _get_compression_cache(self, session_id: str) -> CompressionCache:
-        """Get or create a CompressionCache for a session.
+        """Get or create a CompressionCache for a session (legacy proxy store).
 
         Thread-safe under `_compression_caches_lock`: a concurrent pair of
         `_get_compression_cache(session_id)` calls (e.g. two async requests
@@ -831,6 +936,33 @@ class HeadroomProxy(
 
                 self._compression_caches[session_id] = CompressionCache()
             return self._compression_caches[session_id]
+
+    def _get_engine_compression_cache(self, session_id: str) -> CompressionCache:
+        """Get or create a CompressionCache in the engine-private store (#31).
+
+        Same semantics as `_get_compression_cache`, but backed by a store
+        isolated from the legacy proxy cache so engine activity in shadow/on
+        mode can never read or mutate the production cache. Wired into the
+        engine's AnthropicComponents/OpenAIComponents in `_build_headroom_engine`.
+        """
+        with self._engine_compression_caches_lock:
+            if session_id not in self._engine_compression_caches:
+                from headroom.cache.compression_cache import CompressionCache
+
+                if len(self._engine_compression_caches) >= MAX_COMPRESSION_CACHE_SESSIONS:
+                    oldest_keys = list(self._engine_compression_caches.keys())[
+                        : MAX_COMPRESSION_CACHE_SESSIONS // 4
+                    ]
+                    for key in oldest_keys:
+                        del self._engine_compression_caches[key]
+                    logger.info(
+                        "Evicted %d engine compression caches (exceeded %d max sessions)",
+                        len(oldest_keys),
+                        MAX_COMPRESSION_CACHE_SESSIONS,
+                    )
+
+                self._engine_compression_caches[session_id] = CompressionCache()
+            return self._engine_compression_caches[session_id]
 
     def _setup_code_aware(self, config: ProxyConfig, transforms: list) -> str:
         """Set up code-aware compression if enabled.
@@ -1213,6 +1345,7 @@ class HeadroomProxy(
         request_id: str | None = None,
         forwarder_name: str = "server",
         path_for_log: str | None = None,
+        override_outbound_bytes: bytes | None = None,
     ) -> httpx.Response:
         """Make request with retry and exponential backoff.
 
@@ -1230,6 +1363,13 @@ class HeadroomProxy(
         for callers that still pass only ``body`` (e.g. CCR continuations
         construct their body from scratch, so canonical serialization is
         correct and original bytes do not exist).
+
+        Chunk 4.4a — ``override_outbound_bytes``:
+          When provided (non-None), these bytes are forwarded verbatim to
+          upstream instead of the bytes derived from ``body`` /
+          ``original_body_bytes``.  Used by the engine ``"on"`` path to
+          forward engine-produced bytes.  When ``None`` behaviour is exactly
+          as today (no change for callers that do not pass this kwarg).
         """
         from headroom.proxy.helpers import (
             log_outbound_request,
@@ -1238,11 +1378,15 @@ class HeadroomProxy(
 
         last_error = None
         reasons = list(mutation_reasons or [])
-        outbound_bytes, source = prepare_outbound_body_bytes(
-            body=body,
-            original_body_bytes=original_body_bytes,
-            body_mutated=body_mutated,
-        )
+        if override_outbound_bytes is not None:
+            outbound_bytes = override_outbound_bytes
+            source = "engine_on"
+        else:
+            outbound_bytes, source = prepare_outbound_body_bytes(
+                body=body,
+                original_body_bytes=original_body_bytes,
+                body_mutated=body_mutated,
+            )
         outbound_headers = {**headers, "content-type": "application/json"}
 
         log_outbound_request(

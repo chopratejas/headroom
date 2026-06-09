@@ -1,0 +1,31 @@
+{
+  "auth_mode": "oauth",
+  "body": {
+    "max_tokens": 128,
+    "messages": [
+      {
+        "content": "Summarize this document.",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6"
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer sk-ant-oat-abc123def456",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiU3VtbWFyaXplIHRoaXMgZG9jdW1lbnQuIn1dfQ==",
+  "name": "anthropic_oauth_no_optimize",
+  "nondeterministic_flag": false,
+  "notes": "OAuth auth mode (sk-ant-oat-*); optimize=False \u2192 passthrough",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiU3VtbWFyaXplIHRoaXMgZG9jdW1lbnQuIn1dfQ==",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-30T06:43:52.095374+00:00",
+  "streaming": false
+}

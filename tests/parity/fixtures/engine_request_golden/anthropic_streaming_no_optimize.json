@@ -1,0 +1,32 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 64,
+    "messages": [
+      {
+        "content": "Stream me a response.",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "stream": true
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsInN0cmVhbSI6dHJ1ZSwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IlN0cmVhbSBtZSBhIHJlc3BvbnNlLiJ9XX0=",
+  "name": "anthropic_streaming_no_optimize",
+  "nondeterministic_flag": false,
+  "notes": "Streaming path; optimize=False; confirms streaming transport interception works",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6NjQsInN0cmVhbSI6dHJ1ZSwibWVzc2FnZXMiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6IlN0cmVhbSBtZSBhIHJlc3BvbnNlLiJ9XX0=",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-30T06:43:52.476334+00:00",
+  "streaming": true
+}

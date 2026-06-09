@@ -1,0 +1,24 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbXX0=",
+  "name": "openai_chat_empty_messages",
+  "nondeterministic_flag": false,
+  "notes": "empty messages array \u2192 handler passthrough without compression",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbXX0=",
+  "proxy_config": {
+    "mode": "token",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.680777+00:00",
+  "streaming": false
+}

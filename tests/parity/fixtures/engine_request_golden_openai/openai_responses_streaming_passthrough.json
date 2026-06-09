@@ -1,0 +1,24 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "input": "Stream this response",
+    "model": "gpt-4o",
+    "stream": true
+  },
+  "endpoint": "/v1/responses",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsInN0cmVhbSI6dHJ1ZSwiaW5wdXQiOiJTdHJlYW0gdGhpcyByZXNwb25zZSJ9",
+  "name": "openai_responses_streaming_passthrough",
+  "nondeterministic_flag": false,
+  "notes": "Responses API; streaming path; optimize=False; confirms streaming transport interception works on /v1/responses",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsInN0cmVhbSI6dHJ1ZSwiaW5wdXQiOiJTdHJlYW0gdGhpcyByZXNwb25zZSJ9",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.914784+00:00",
+  "streaming": true
+}

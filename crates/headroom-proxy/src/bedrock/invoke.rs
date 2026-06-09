@@ -392,6 +392,7 @@ fn run_anthropic_compression(
         body,
         state.config.compression_mode,
         state.config.cache_control_auto_frozen,
+        state.config.cache_control_auto_place,
         headroom_core::auth_mode::AuthMode::OAuth,
         request_id,
     );

@@ -1,0 +1,29 @@
+{
+  "auth_mode": "subscription",
+  "body": {
+    "messages": [
+      {
+        "content": "Write a poem.",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer eyJ.abc.def",
+    "content-type": "application/json",
+    "user-agent": "claude-code/1.0"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJXcml0ZSBhIHBvZW0uIn1dfQ==",
+  "name": "openai_chat_subscription_no_optimize",
+  "nondeterministic_flag": false,
+  "notes": "Subscription auth (JWT shape Bearer + claude-code UA); optimize=False \u2192 passthrough",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJXcml0ZSBhIHBvZW0uIn1dfQ==",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.116104+00:00",
+  "streaming": false
+}

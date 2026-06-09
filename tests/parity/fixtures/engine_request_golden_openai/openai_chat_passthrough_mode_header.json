@@ -1,0 +1,30 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "passthrough via mode header",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o"
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json",
+    "x-headroom-mode": "passthrough"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJwYXNzdGhyb3VnaCB2aWEgbW9kZSBoZWFkZXIifV19",
+  "name": "openai_chat_passthrough_mode_header",
+  "nondeterministic_flag": false,
+  "notes": "x-headroom-mode=passthrough triggers bypass; body forwarded verbatim",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsIm1lc3NhZ2VzIjpbeyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJwYXNzdGhyb3VnaCB2aWEgbW9kZSBoZWFkZXIifV19",
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-31T01:39:00.501215+00:00",
+  "streaming": false
+}

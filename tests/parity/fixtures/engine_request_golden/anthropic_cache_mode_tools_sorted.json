@@ -1,0 +1,55 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "max_tokens": 128,
+    "messages": [
+      {
+        "content": "Run the search tool.",
+        "role": "user"
+      }
+    ],
+    "model": "claude-sonnet-4-6",
+    "tools": [
+      {
+        "description": "z",
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "zeta_tool"
+      },
+      {
+        "description": "a",
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "alpha_tool"
+      },
+      {
+        "description": "m",
+        "input_schema": {
+          "type": "object"
+        },
+        "name": "mu_tool"
+      }
+    ]
+  },
+  "frozen_count": 0,
+  "headers": {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiUnVuIHRoZSBzZWFyY2ggdG9vbC4ifV0sInRvb2xzIjpbeyJuYW1lIjoiemV0YV90b29sIiwiZGVzY3JpcHRpb24iOiJ6IiwiaW5wdXRfc2NoZW1hIjp7InR5cGUiOiJvYmplY3QifX0seyJuYW1lIjoiYWxwaGFfdG9vbCIsImRlc2NyaXB0aW9uIjoiYSIsImlucHV0X3NjaGVtYSI6eyJ0eXBlIjoib2JqZWN0In19LHsibmFtZSI6Im11X3Rvb2wiLCJkZXNjcmlwdGlvbiI6Im0iLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCJ9fV19",
+  "name": "anthropic_cache_mode_tools_sorted",
+  "nondeterministic_flag": false,
+  "notes": "cache mode; tools must be sorted alpha before forwarding",
+  "outbound_b64": "eyJtb2RlbCI6ImNsYXVkZS1zb25uZXQtNC02IiwibWF4X3Rva2VucyI6MTI4LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiUnVuIHRoZSBzZWFyY2ggdG9vbC4ifV0sInRvb2xzIjpbeyJuYW1lIjoiYWxwaGFfdG9vbCIsImRlc2NyaXB0aW9uIjoiYSIsImlucHV0X3NjaGVtYSI6eyJ0eXBlIjoib2JqZWN0In19LHsibmFtZSI6Im11X3Rvb2wiLCJkZXNjcmlwdGlvbiI6Im0iLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCJ9fSx7Im5hbWUiOiJ6ZXRhX3Rvb2wiLCJkZXNjcmlwdGlvbiI6InoiLCJpbnB1dF9zY2hlbWEiOnsidHlwZSI6Im9iamVjdCJ9fV19",
+  "prev_forwarded_messages": [],
+  "prev_original_messages": [],
+  "proxy_config": {
+    "mode": "cache",
+    "optimize": true
+  },
+  "recorded_at": "2026-05-30T06:43:52.201315+00:00",
+  "streaming": false
+}

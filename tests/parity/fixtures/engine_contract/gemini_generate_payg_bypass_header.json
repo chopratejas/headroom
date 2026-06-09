@@ -1,0 +1,18 @@
+{
+  "auth_mode": "payg",
+  "config_optimize": true,
+  "expected_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiZ2VtaW5pLTIuMC1mbGFzaCJ9",
+  "flavor": "generate",
+  "headers": {
+    "content-type": "application/json",
+    "x-goog-api-key": "AIza-test-gemini-key",
+    "x-headroom-bypass": "true"
+  },
+  "name": "gemini_generate_payg_bypass_header",
+  "passthrough": true,
+  "passthrough_reason": "bypass_header",
+  "provider": "gemini",
+  "raw_body_b64": "eyJtZXNzYWdlcyI6IFt7InJvbGUiOiAidXNlciIsICJjb250ZW50IjogIkhlbGxvIn1dLCAibW9kZWwiOiAiZ2VtaW5pLTIuMC1mbGFzaCJ9",
+  "recorded_at": "2026-05-30T05:58:48.428236+00:00",
+  "session_key": "30413ca0a8a01ef44cf325f99b6954b7d74a63c9347898df522fd1a4fce911b1"
+}

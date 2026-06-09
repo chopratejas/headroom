@@ -101,7 +101,8 @@ use serde_json::value::RawValue;
 use serde_json::Value;
 use thiserror::Error;
 
-use super::content_detector::{detect_content_type, ContentType};
+use super::content_detector::ContentType;
+use super::content_router::route_content_type;
 use super::diff_compressor::{DiffCompressor, DiffCompressorConfig};
 use super::log_compressor::{LogCompressor, LogCompressorConfig};
 use super::search_compressor::{SearchCompressor, SearchCompressorConfig};
@@ -726,10 +727,10 @@ pub fn compress_anthropic_live_zone_with_ccr(
                 content_text,
                 content_byte_range,
             } => {
-                let detected = detect_content_type(&content_text);
+                let detected_type = route_content_type(&content_text);
                 let outcome: BlockOutcome = compress_one_block(
                     &content_text,
-                    detected.content_type,
+                    detected_type,
                     content_byte_range,
                     target_idx,
                     Some(slot.block_index),
@@ -744,10 +745,10 @@ pub fn compress_anthropic_live_zone_with_ccr(
                 content_text,
                 content_byte_range,
             } => {
-                let detected = detect_content_type(&content_text);
+                let detected_type = route_content_type(&content_text);
                 compress_one_block(
                     &content_text,
-                    detected.content_type,
+                    detected_type,
                     content_byte_range,
                     target_idx,
                     None,
@@ -1860,10 +1861,10 @@ pub fn compress_openai_chat_live_zone(
     let mut replacements: Vec<Replacement> = Vec::new();
 
     for (msg_idx, slot) in all_slots {
-        let detected = detect_content_type(&slot.content_text);
+        let detected_type = route_content_type(&slot.content_text);
         let outcome = compress_one_block(
             &slot.content_text,
-            detected.content_type,
+            detected_type,
             slot.content_byte_range,
             msg_idx,
             slot.block_index,
@@ -2370,10 +2371,10 @@ pub fn compress_openai_responses_live_zone(
             });
             continue;
         }
-        let detected = detect_content_type(&slot.content_text);
+        let detected_type = route_content_type(&slot.content_text);
         let outcome = compress_one_block(
             &slot.content_text,
-            detected.content_type,
+            detected_type,
             slot.content_byte_range,
             msg_idx,
             slot.block_index,

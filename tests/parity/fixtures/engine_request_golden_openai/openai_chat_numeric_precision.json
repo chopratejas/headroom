@@ -1,0 +1,30 @@
+{
+  "auth_mode": "payg",
+  "body": {
+    "messages": [
+      {
+        "content": "hi",
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o",
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "endpoint": "/v1/chat/completions",
+  "frozen_count": 0,
+  "headers": {
+    "authorization": "Bearer sk-test-openai-key",
+    "content-type": "application/json"
+  },
+  "inbound_b64": "eyJtb2RlbCI6ImdwdC00byIsInRlbXBlcmF0dXJlIjoxLjAsInRvcF9wIjowLjk1LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGkifV19",
+  "name": "openai_chat_numeric_precision",
+  "nondeterministic_flag": false,
+  "notes": "numeric fields (temperature=1.0, top_p=0.95); confirms canonical serializer preserves float precision",
+  "outbound_b64": "eyJtb2RlbCI6ImdwdC00byIsInRlbXBlcmF0dXJlIjoxLjAsInRvcF9wIjowLjk1LCJtZXNzYWdlcyI6W3sicm9sZSI6InVzZXIiLCJjb250ZW50IjoiaGkifV19",
+  "proxy_config": {
+    "optimize": false
+  },
+  "recorded_at": "2026-05-31T01:39:00.646524+00:00",
+  "streaming": false
+}
