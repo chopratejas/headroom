@@ -355,9 +355,6 @@ def _load_kompress_onnx(
     the local cache only; a cache miss raises :class:`KompressModelNotCached`
     instead of hitting the network.
     """
-    import onnxruntime as ort
-    from transformers import AutoTokenizer
-
     with _kompress_lock:
         if model_id in _kompress_cache:
             return _kompress_cache[model_id]
@@ -372,6 +369,11 @@ def _load_kompress_onnx(
             if not allow_download:
                 raise KompressModelNotCached(model_id) from exc
             raise
+
+        # Imported only after the cache check passes so a cache-only miss
+        # raises KompressModelNotCached without requiring onnxruntime.
+        import onnxruntime as ort
+        from transformers import AutoTokenizer
 
         backend = "onnx_coreml" if use_coreml else "onnx"
         providers: list[Any]
