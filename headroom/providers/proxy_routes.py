@@ -756,6 +756,30 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         custom_base = request.headers.get("x-headroom-base-url")
         if custom_base:
             return await proxy.handle_passthrough(request, custom_base.rstrip("/"))
+
+        # Intercept Code Assist authentication and onboarding routes
+        clean_path = path.lstrip("/")
+        if clean_path.startswith(("v1internal:", "v1/v1internal:")):
+            # Normalize path (remove v1/ prefix if present to avoid 404 on cloudcode-pa upstream)
+            normalized_path = clean_path
+            if normalized_path.startswith("v1/"):
+                normalized_path = normalized_path[3:]
+            normalized_path = f"/{normalized_path}"
+
+            # Mutate request scope so handle_passthrough uses the normalized path
+            request.scope["path"] = normalized_path
+            if "raw_path" in request.scope:
+                from urllib.parse import quote
+
+                request.scope["raw_path"] = quote(normalized_path).encode("ascii")
+            if hasattr(request, "_url"):
+                delattr(request, "_url")
+
+            return await proxy.handle_passthrough(
+                request,
+                _api_target(proxy, "cloudcode"),
+            )
+
         return await proxy.handle_passthrough(
             request,
             _select_passthrough_base_url(proxy, dict(request.headers)),

@@ -179,6 +179,24 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
             "base_url"
         ] == ("https://api.gemini.test")
 
+        # Prove Code Assist routes go to the cloudcode target and normalize paths
+        res1 = client.post("/v1internal:loadCodeAssist").json()
+        assert res1["base_url"] == "https://cloudcode.test"
+        assert res1["path"] == "/v1internal:loadCodeAssist"
+
+        res2 = client.post("/v1/v1internal:fetchAvailableModels").json()
+        assert res2["base_url"] == "https://cloudcode.test"
+        assert res2["path"] == "/v1internal:fetchAvailableModels"
+
+        # Prove a non-Code-Assist passthrough path containing a similar substring does not get rerouted
+        assert (
+            client.get(
+                "/unrelated/path/containing/v1internal:someAction",
+                headers={"x-goog-api-key": "test"},
+            ).json()["base_url"]
+            == "https://api.gemini.test"
+        )
+
     assert len(calls) >= 16
     assert len(gemini_calls) >= 1
     assert len(gemini_count_calls) >= 1
