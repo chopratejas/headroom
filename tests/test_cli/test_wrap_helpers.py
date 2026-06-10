@@ -477,9 +477,7 @@ class TestApplyProjectHeaderEnv:
 
         assert "ANTHROPIC_CUSTOM_HEADERS" not in env
 
-    def test_whitespace_only_cwd_name_sets_nothing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_whitespace_only_cwd_name_sets_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(wrap_mod.Path, "cwd", classmethod(lambda cls: Path("/tmp/   ")))
 
         env: dict[str, str] = {}
