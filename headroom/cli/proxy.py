@@ -835,10 +835,32 @@ Memory (Multi-Provider):
     code_aware_line = f"  Code-Aware:   {_get_code_aware_banner_status(config)}"
     context_tool_line = f"  Context Tool: {_selected_context_tool()}"
 
+    # Performance tuning section — only shown when at least one tuning var is active.
+    _stable_turn = int(os.environ.get("HEADROOM_COMPRESSION_STABLE_AFTER_TURN", "0"))
+    _stale_turns = int(os.environ.get("HEADROOM_STALE_READ_COMPRESS_AFTER_TURNS", "0"))
+    _tuning_lines: list[str] = []
+    if _stable_turn:
+        _tuning_lines.append(
+            f"  Prefix stability:        conservative for first {_stable_turn} turns"
+            f"  (HEADROOM_COMPRESSION_STABLE_AFTER_TURN={_stable_turn})"
+        )
+    if _stale_turns:
+        _tuning_lines.append(
+            f"  Stale read compression:  reads older than {_stale_turns} turns eligible"
+            f"  (HEADROOM_STALE_READ_COMPRESS_AFTER_TURNS={_stale_turns})"
+        )
+    if _tuning_lines:
+        tuning_section = "\nPerformance Tuning:\n" + "\n".join(_tuning_lines)
+    else:
+        tuning_section = (
+            "\nPerformance Tuning:  (all defaults — set HEADROOM_COMPRESSION_STABLE_AFTER_TURN"
+            " / HEADROOM_STALE_READ_COMPRESS_AFTER_TURNS to tune)"
+        )
+
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
-║                         HEADROOM PROXY                                 ║
-║           The Context Optimization Layer for LLM Applications          ║
+║                         HEADROOM PROXY                                ║
+║           The Context Optimization Layer for LLM Applications         ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 
 Starting proxy server...
@@ -854,7 +876,13 @@ Starting proxy server...
 {context_tool_line}
 {extensions_line}
 {stateless_line}{telemetry_line}
-{backend_section}
+{backend_section}{tuning_section}
+
+{memory_section}
+Usage:
+  Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
+  Codex / OpenAI: OPENAI_BASE_URL=http://{config.host}:{config.port}/v1 your-app
+
 Routing:
   /v1/messages                    → {anthropic_url}
   /v1/chat/completions            → {openai_url}
@@ -862,10 +890,6 @@ Routing:
   /v1internal:streamGenerateContent → {cloudcode_url}
   /v1/projects/.../publishers/... → {vertex_url}
 
-Usage:
-  Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
-  Codex / OpenAI: OPENAI_BASE_URL=http://{config.host}:{config.port}/v1 your-app
-{memory_section}
 Endpoints:
   GET  /livez      Process liveness
   GET  /readyz     Traffic readiness
