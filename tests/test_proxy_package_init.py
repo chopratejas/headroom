@@ -19,6 +19,10 @@ def test_proxy_getattr_resolves_create_app_and_caches_it(monkeypatch) -> None:
     module = importlib.reload(proxy)
     module.__dict__.pop("create_app", None)
     module.__dict__.pop("run_server", None)
+    # Register teardown: monkeypatch notes these keys are absent now and will
+    # remove them after the test, preventing sentinel leakage to later tests.
+    monkeypatch.delitem(module.__dict__, "create_app", raising=False)
+    monkeypatch.delitem(module.__dict__, "run_server", raising=False)
 
     result = module.__getattr__("create_app")
     assert result is sentinel
@@ -35,6 +39,8 @@ def test_proxy_getattr_resolves_run_server(monkeypatch) -> None:
     module = importlib.reload(proxy)
     module.__dict__.pop("create_app", None)
     module.__dict__.pop("run_server", None)
+    monkeypatch.delitem(module.__dict__, "create_app", raising=False)
+    monkeypatch.delitem(module.__dict__, "run_server", raising=False)
 
     result = module.__getattr__("run_server")
     assert result is sentinel
