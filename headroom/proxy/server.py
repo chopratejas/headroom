@@ -130,6 +130,7 @@ from headroom.proxy.helpers import (
     jitter_delay_ms,
 )
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
+from headroom.proxy.project_context import classify_project, set_current_project
 
 # Data models (extracted to headroom/proxy/models.py for maintainability)
 from headroom.proxy.models import CacheEntry, ProxyConfig, RateLimitState, RequestLog  # noqa: F401
@@ -1713,6 +1714,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         method = request.method
         query = request.url.query
         headers = dict(request.headers.items())
+        # Bind X-Headroom-Project (sent by `headroom wrap`) to the request
+        # context so the outcome funnel can attribute savings per project.
+        set_current_project(classify_project(headers))
         client = getattr(request, "client", None)
         client_addr = ""
         if client is not None:
@@ -2024,6 +2028,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "summary": summary,
             "savings": {
                 "total_tokens": total_tokens_all_layers,
+                "per_project": persistent_savings.get("projects", {}),
                 "by_layer": {
                     "cli_filtering": {
                         "tool": cli_filtering_tool,
