@@ -349,7 +349,13 @@ def _onnx_filename_candidates() -> tuple[str, ...]:
     return _DEFAULT_ONNX_FILENAMES
 
 
-def _create_onnx_session(model_id: str, ort: Any, providers: list[Any]) -> Any:
+def _create_onnx_session(
+    model_id: str,
+    ort: Any,
+    providers: list[Any],
+    *,
+    allow_download: bool = True,
+) -> Any:
     """Resolve and load the model's ONNX artifact, trying candidates in order.
 
     A candidate is skipped on download miss (file not in the repo) or on
@@ -360,7 +366,11 @@ def _create_onnx_session(model_id: str, ort: Any, providers: list[Any]) -> Any:
     last_err: Exception | None = None
     for filename in _onnx_filename_candidates():
         try:
-            onnx_path = hf_hub_download_local_first(model_id, filename)
+            onnx_path = hf_hub_download_local_first(
+                model_id,
+                filename,
+                allow_download=allow_download,
+            )
         except Exception as exc:
             last_err = exc
             logger.debug("ONNX artifact %r not in %s: %s", filename, model_id, exc)
@@ -388,6 +398,7 @@ def _load_kompress_onnx(
     model_id: str,
     *,
     use_coreml: bool = False,
+    allow_download: bool = True,
 ) -> tuple[Any, Any, str]:
     """Download the ONNX model from HuggingFace and load with onnxruntime."""
     import onnxruntime as ort
@@ -426,16 +437,29 @@ def _load_kompress_onnx(
         else:
             providers = ["CPUExecutionProvider"]
 
-        session = _create_onnx_session(model_id, ort, providers)
+        session = _create_onnx_session(
+            model_id,
+            ort,
+            providers,
+            allow_download=allow_download,
+        )
         model = _OnnxModel(session)
-        tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+        tokenizer = AutoTokenizer.from_pretrained(
+            "answerdotai/ModernBERT-base",
+            local_files_only=not allow_download,
+        )
 
         _kompress_cache[model_id] = (model, tokenizer, backend)
         logger.info("Kompress ONNX loaded: %s backend=%s", model_id, backend)
         return model, tokenizer, backend
 
 
-def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, Any, str]:
+def _load_kompress_pytorch(
+    model_id: str,
+    device: str = "auto",
+    *,
+    allow_download: bool = True,
+) -> tuple[Any, Any, str]:
     """Download PyTorch model from HuggingFace and load with torch."""
     import torch
     from transformers import AutoTokenizer
@@ -446,7 +470,11 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
 
         logger.info("Downloading Kompress PyTorch model from %s ...", model_id)
 
-        weights_path = hf_hub_download_local_first(model_id, "model.safetensors")
+        weights_path = hf_hub_download_local_first(
+            model_id,
+            "model.safetensors",
+            allow_download=allow_download,
+        )
 
         HeadroomCompressorModel = _get_model_class()
         model = HeadroomCompressorModel()
@@ -467,7 +495,10 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
         model.to(device)
         model.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+        tokenizer = AutoTokenizer.from_pretrained(
+            "answerdotai/ModernBERT-base",
+            local_files_only=not allow_download,
+        )
         _validate_pytorch_device(model, tokenizer, device)
 
         _kompress_cache[model_id] = (model, tokenizer, "pytorch")
@@ -494,7 +525,12 @@ def _validate_pytorch_device(model: Any, tokenizer: Any, device: str) -> None:
         _ = scores[0].detach().cpu()
 
 
-def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[Any, Any, str]:
+def _load_kompress(
+    model_id: str = HF_MODEL_ID,
+    device: str = "auto",
+    *,
+    allow_download: bool = True,
+) -> tuple[Any, Any, str]:
     """Load Kompress model, returns (model, tokenizer, backend).
 
     The default keeps the historic behavior: try ONNX CPU first
@@ -514,15 +550,19 @@ def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[A
 
     backend = _selected_backend()
     if backend in ("onnx", "onnx_cpu"):
-        return _load_kompress_onnx(model_id, use_coreml=False)
+        return _load_kompress_onnx(model_id, use_coreml=False, allow_download=allow_download)
 
     if backend == "onnx_coreml":
-        return _load_kompress_onnx(model_id, use_coreml=True)
+        return _load_kompress_onnx(model_id, use_coreml=True, allow_download=allow_download)
 
     if backend in ("pytorch", "pytorch_mps"):
         forced_device = "mps" if backend == "pytorch_mps" else device
         try:
-            return _load_kompress_pytorch(model_id, forced_device)
+            return _load_kompress_pytorch(
+                model_id,
+                forced_device,
+                allow_download=allow_download,
+            )
         except Exception as exc:
             if backend != "pytorch_mps":
                 raise
@@ -532,20 +572,24 @@ def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[A
                 exc,
             )
             if _is_onnx_available():
-                return _load_kompress_onnx(model_id, use_coreml=False)
-            return _load_kompress_pytorch(model_id, "cpu")
+                return _load_kompress_onnx(
+                    model_id,
+                    use_coreml=False,
+                    allow_download=allow_download,
+                )
+            return _load_kompress_pytorch(model_id, "cpu", allow_download=allow_download)
 
     # Auto mode: preserve stable default behavior. This avoids changing
     # compression quality/perf characteristics for existing installs while
     # allowing opt-in MPS/CoreML experiments via HEADROOM_KOMPRESS_BACKEND.
     if _is_onnx_available():
         try:
-            return _load_kompress_onnx(model_id, use_coreml=False)
+            return _load_kompress_onnx(model_id, use_coreml=False, allow_download=allow_download)
         except Exception as e:
             logger.warning("ONNX load failed for %s, trying PyTorch: %s", model_id, e)
 
     if _is_pytorch_available():
-        return _load_kompress_pytorch(model_id, device)
+        return _load_kompress_pytorch(model_id, device, allow_download=allow_download)
 
     raise ImportError(
         "Kompress requires onnxruntime or torch. Install with: pip install headroom-ai[proxy]"
@@ -644,10 +688,14 @@ class KompressCompressor(Transform):
     def __init__(self, config: KompressConfig | None = None):
         self.config = config or KompressConfig()
 
-    def preload(self) -> str:
+    def preload(self, *, allow_download: bool = True) -> str:
         """Load the backing model/tokenizer and return the selected backend."""
 
-        _model, _tokenizer, backend = _load_kompress(self.config.model_id, self.config.device)
+        _model, _tokenizer, backend = _load_kompress(
+            self.config.model_id,
+            self.config.device,
+            allow_download=allow_download,
+        )
         return backend
 
     def compress(

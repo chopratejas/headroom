@@ -973,12 +973,16 @@ class HeadroomProxy(
         # Update internal status from eager loading results
         if eager_status.get("kompress") == "enabled":
             self._kompress_status = "enabled"
+        elif eager_status.get("kompress") == "lazy":
+            self._kompress_status = "lazy"
         if eager_status.get("code_aware") == "enabled":
             self._code_aware_status = "enabled"
 
         # Log component status
         if self._kompress_status == "enabled":
             logger.info("Kompress: ENABLED (ModernBERT token compressor)")
+        elif self._kompress_status == "lazy":
+            logger.info("Kompress: LAZY (model not cached; will load on first use)")
         elif self.config.optimize:
             logger.info("Kompress: not installed (pip install headroom-ai[ml] for ML compression)")
 

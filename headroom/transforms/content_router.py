@@ -1626,10 +1626,24 @@ class ContentRouter(Transform):
         if self.config.enable_kompress:
             compressor = self._get_kompress()
             if compressor:
-                backend = compressor.preload() if hasattr(compressor, "preload") else "unknown"
-                logger.info("Kompress model pre-loaded at startup backend=%s", backend)
-                status["kompress"] = "enabled"
-                status["kompress_backend"] = str(backend)
+                try:
+                    if hasattr(compressor, "preload"):
+                        # Startup must never block on first-run model downloads.
+                        # If the model/tokenizer is already cached, warm it now;
+                        # otherwise leave Kompress lazy so the proxy can bind.
+                        backend = compressor.preload(allow_download=False)
+                    else:
+                        backend = "unknown"
+                except Exception as exc:
+                    logger.info(
+                        "Kompress startup preload skipped; model will load lazily: %s",
+                        exc,
+                    )
+                    status["kompress"] = "lazy"
+                else:
+                    logger.info("Kompress model pre-loaded at startup backend=%s", backend)
+                    status["kompress"] = "enabled"
+                    status["kompress_backend"] = str(backend)
             else:
                 status["kompress"] = "unavailable"
 
