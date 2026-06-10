@@ -239,7 +239,7 @@ class CompressionCache:
             entry = self._results.get(key)
             if entry is not None:
                 compressed, ratio, strategy, created_at = entry
-                if (time.time() - created_at) < self._ttl_seconds:
+                if (time.monotonic() - created_at) < self._ttl_seconds:
                     self._hits += 1
                     self._total_lookup_ns += time.perf_counter_ns() - t0
                     self._lookup_count += 1
@@ -257,7 +257,7 @@ class CompressionCache:
         with self._lock:
             ts = self._skip.get(key)
             if ts is not None:
-                if (time.time() - ts) < self._ttl_seconds:
+                if (time.monotonic() - ts) < self._ttl_seconds:
                     self._skip_hits += 1
                     return True
                 else:
@@ -268,19 +268,19 @@ class CompressionCache:
     def put(self, key: int, compressed: str, ratio: float, strategy: str) -> None:
         """Store a compressed result (Tier 2).  Thread-safe."""
         with self._lock:
-            self._results[key] = (compressed, ratio, strategy, time.time())
+            self._results[key] = (compressed, ratio, strategy, time.monotonic())
 
     def mark_skip(self, key: int) -> None:
         """Mark content as non-compressible (Tier 1).  Thread-safe."""
         with self._lock:
-            self._skip[key] = time.time()
+            self._skip[key] = time.monotonic()
 
     def move_to_skip(self, key: int) -> None:
         """Move a result to skip set (threshold tightened, no longer qualifies).
         Thread-safe."""
         with self._lock:
             self._results.pop(key, None)
-            self._skip[key] = time.time()
+            self._skip[key] = time.monotonic()
 
     @property
     def size(self) -> int:

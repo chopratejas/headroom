@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from .cache import (
     BaseCacheOptimizer,
@@ -747,7 +750,7 @@ class HeadroomClient:
                     "content": response.content,
                 }
         except Exception:
-            pass
+            logger.debug("Failed to extract response content for semantic cache", exc_info=True)
         return None
 
     def _simulate(
