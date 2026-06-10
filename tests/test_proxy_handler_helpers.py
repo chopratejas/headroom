@@ -8,9 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from fastapi.responses import StreamingResponse
 
 from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
-from headroom.proxy.handlers.openai import OpenAIHandlerMixin, _decode_openai_bearer_payload
+from headroom.proxy.handlers.openai import (
+    OpenAIHandlerMixin,
+    _decode_openai_bearer_payload,
+    _passthrough_usage_from_json,
+)
 from headroom.proxy.helpers import _headroom_bypass_enabled
 from headroom.proxy.server import HeadroomProxy
 
@@ -53,6 +58,81 @@ class _PassthroughRequest:
 
     async def body(self) -> bytes:
         return b""
+
+
+class _VertexPassthroughRequest:
+    method = "POST"
+    headers = {}
+    url = SimpleNamespace(
+        path="/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent",
+        query="",
+    )
+
+    async def body(self) -> bytes:
+        return b'{"contents":[]}'
+
+
+class _VertexStreamPassthroughRequest:
+    method = "POST"
+    headers = {}
+    url = SimpleNamespace(
+        path="/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:streamGenerateContent",
+        query="alt=sse",
+    )
+
+    async def body(self) -> bytes:
+        return b'{"contents":[]}'
+
+
+class _VertexUsageClient:
+    async def request(self, **kwargs):  # noqa: ANN001, ANN201
+        request = httpx.Request(kwargs["method"], kwargs["url"], content=kwargs["content"])
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            json={
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 11,
+                    "candidatesTokenCount": 7,
+                    "cachedContentTokenCount": 3,
+                },
+            },
+        )
+
+
+class _AsyncChunks(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):  # noqa: ANN204
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _VertexStreamClient:
+    def __init__(self) -> None:
+        self.sent_url = ""
+
+    def build_request(self, method, url, headers, content):  # noqa: ANN001, ANN201
+        self.sent_url = str(url)
+        return httpx.Request(method, url, headers=headers, content=content)
+
+    async def send(self, request, stream=False):  # noqa: ANN001, ANN201
+        assert stream is True
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            stream=_AsyncChunks(
+                [
+                    b'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}\n\n',
+                    b'data: {"usageMetadata":{"promptTokenCount":13,'
+                    b'"candidatesTokenCount":5,"cachedContentTokenCount":2}}\n\n',
+                ]
+            ),
+        )
 
 
 class _RetryThenSuccessClient:
@@ -138,6 +218,99 @@ def test_openai_passthrough_connect_timeout_returns_502() -> None:
     payload = json.loads(response.body)
     assert payload["error"]["type"] == "connection_error"
     assert "Failed to connect to upstream API" in payload["error"]["message"]
+
+
+def test_passthrough_usage_normalizes_vertex_usage_metadata() -> None:
+    usage = _passthrough_usage_from_json(
+        {
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 7,
+                "cachedContentTokenCount": 3,
+            }
+        }
+    )
+
+    assert usage == {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "cache_read_input_tokens": 3,
+    }
+
+
+def test_vertex_passthrough_records_usage_metadata_for_dashboard() -> None:
+    handler = object.__new__(HeadroomProxy)
+    handler.http_client = _VertexUsageClient()
+    outcomes = []
+
+    async def next_request_id():  # noqa: ANN202
+        return "req_vertex"
+
+    async def record(outcome):  # noqa: ANN001, ANN202
+        outcomes.append(outcome)
+
+    handler._next_request_id = next_request_id
+    handler._record_request_outcome = record
+
+    response = asyncio.run(
+        handler.handle_passthrough(
+            _VertexPassthroughRequest(),
+            "https://vertex.test",
+            "generateContent",
+            "vertex:google",
+        )
+    )
+
+    assert response.status_code == 200
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provider == "vertex:google"
+    assert outcome.model == "gemini-2.0-flash"
+    assert outcome.optimized_tokens == 11
+    assert outcome.output_tokens == 7
+    assert outcome.cache_read_tokens == 3
+
+
+def test_vertex_stream_passthrough_preserves_chunks_and_records_usage() -> None:
+    handler = object.__new__(HeadroomProxy)
+    handler.http_client = _VertexStreamClient()
+    outcomes = []
+
+    async def next_request_id():  # noqa: ANN202
+        return "req_vertex_stream"
+
+    async def record(outcome):  # noqa: ANN001, ANN202
+        outcomes.append(outcome)
+
+    handler._next_request_id = next_request_id
+    handler._record_request_outcome = record
+
+    response = asyncio.run(
+        handler.handle_passthrough(
+            _VertexStreamPassthroughRequest(),
+            "https://vertex.test",
+            "streamGenerateContent",
+            "vertex:google",
+        )
+    )
+
+    assert isinstance(response, StreamingResponse)
+
+    async def collect():  # noqa: ANN202
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(collect())
+
+    assert len(chunks) == 2
+    assert chunks[0].startswith(b'data: {"candidates"')
+    assert b'"usageMetadata"' in chunks[1]
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provider == "vertex:google"
+    assert outcome.model == "gemini-2.0-flash"
+    assert outcome.optimized_tokens == 13
+    assert outcome.output_tokens == 5
+    assert outcome.cache_read_tokens == 2
 
 
 def test_retry_request_retries_connect_timeout() -> None:
