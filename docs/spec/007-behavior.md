@@ -4,7 +4,7 @@
 
 ## Proxy Modes
 
-### Passthrough Mode
+### Passthrough
 
 Headroom forwards requests without modification.
 
@@ -14,7 +14,7 @@ Headroom forwards requests without modification.
 - No compression applied
 - Useful for testing or debugging
 
-**Configuration:** `HEADROOM_MODE=audit`
+**Configuration:** `headroom proxy --no-optimize`
 
 **Request Flow:**
 ```
@@ -23,7 +23,7 @@ Client → Proxy → Provider API → Response
 
 ---
 
-### Optimize Mode
+### Token Mode
 
 Headroom applies deterministic transforms to requests.
 
@@ -34,7 +34,7 @@ Headroom applies deterministic transforms to requests.
 - CCR caching enabled
 - Token budget enforced
 
-**Configuration:** `HEADROOM_MODE=optimize`
+**Configuration:** `HEADROOM_MODE=token` or `headroom proxy --mode token`
 
 **Request Flow:**
 ```
@@ -45,17 +45,16 @@ Client → Proxy → [SmartCrusher] → [CacheAligner]
 
 ---
 
-### Simulate Mode
+### Cache Mode
 
-Headroom returns transform plan without API call.
+Headroom preserves prior turns where possible to maximize provider prefix-cache hit rate.
 
 **Behavior:**
-- Analyzes content for compression opportunity
-- Returns TransformResult with planned transforms
-- No actual compression or provider call
-- Useful for debugging/optimization
+- Freezes provider-confirmed cached prefixes
+- Compresses the mutable tail of the request
+- Trades some token savings for better cache stability
 
-**Configuration:** `HEADROOM_MODE=simulate`
+**Configuration:** `HEADROOM_MODE=cache` or `headroom proxy --mode cache`
 
 ---
 
@@ -65,9 +64,9 @@ Session modes control how Headroom handles context windows.
 
 | Mode | Description | Use Case |
 |------|-------------|----------|
-| `audit` | Observe only, no modifications | Monitoring |
-| `optimize` | Apply deterministic transforms | Production |
-| `simulate` | Return plan without API call | Debugging |
+| `token` | Prioritize token removal | Default proxy mode |
+| `cache` | Preserve prior turns for provider prefix-cache stability | Long Claude/Codex sessions |
+| passthrough | Disable optimization with `--no-optimize` | Debugging |
 
 ---
 

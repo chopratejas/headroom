@@ -44,8 +44,7 @@ class ClaudeLearnPlugin(LearnPlugin, ConversationScanner):
 
 **Configuration:**
 ```bash
-HEADROOM_LEARN_CLAUDE_ENABLED=true
-HEADROOM_LEARN_CLAUDE_SESSION_MODES=auto,learn,disabled
+HEADROOM_LEARN_CLI=claude
 ```
 
 ---
@@ -85,7 +84,7 @@ class CodexLearnPlugin(LearnPlugin, ConversationScanner):
 
 **Configuration:**
 ```bash
-HEADROOM_LEARN_CODEX_ENABLED=true
+HEADROOM_LEARN_CLI=codex
 ```
 
 ---
@@ -125,7 +124,7 @@ class GeminiLearnPlugin(LearnPlugin, ConversationScanner):
 
 **Configuration:**
 ```bash
-HEADROOM_LEARN_GEMINI_ENABLED=true
+HEADROOM_LEARN_CLI=gemini
 ```
 
 ---

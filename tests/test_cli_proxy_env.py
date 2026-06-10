@@ -1,7 +1,7 @@
 """Tests for CLI proxy env variable handling and backend validation.
 
 Verifies that:
-1. OPENAI_TARGET_API_URL and GEMINI_TARGET_API_URL env vars are read by `headroom proxy`
+1. Provider target URL env vars are read by `headroom proxy`
 2. litellm-* backends are accepted by both CLI and argparse paths
 """
 
@@ -30,7 +30,7 @@ class TestCLIProxyEnvVars:
         """HEADROOM_HOST env var should be passed to ProxyConfig."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -48,7 +48,7 @@ class TestCLIProxyEnvVars:
         """HEADROOM_PORT env var should be passed to ProxyConfig."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -66,7 +66,7 @@ class TestCLIProxyEnvVars:
         """HEADROOM_BUDGET env var should be passed to ProxyConfig."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -80,11 +80,82 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].budget_limit_usd == 100.5
 
+    def test_code_aware_enabled_from_env(self, runner):
+        """HEADROOM_CODE_AWARE_ENABLED env var should be passed to ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"HEADROOM_CODE_AWARE_ENABLED": "true"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].code_aware_enabled is True
+
+    def test_code_aware_enabled_defaults_false(self, runner):
+        """Without HEADROOM_CODE_AWARE_ENABLED, code-aware stays disabled in the wrapper."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        env = {k: v for k, v in os.environ.items() if k != "HEADROOM_CODE_AWARE_ENABLED"}
+
+        with (
+            patch("headroom.proxy.server.run_server", mock_run_server),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].code_aware_enabled is False
+
+    def test_code_aware_enabled_from_cli_flag(self, runner):
+        """--code-aware should enable code-aware compression in the wrapper."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(main, ["proxy", "--code-aware"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].code_aware_enabled is True
+
+    def test_code_aware_flag_overrides_env_var(self, runner):
+        """--code-aware should win over HEADROOM_CODE_AWARE_ENABLED=false."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy", "--code-aware"],
+                env={"HEADROOM_CODE_AWARE_ENABLED": "false"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].code_aware_enabled is True
+
     def test_openai_target_api_url_from_env(self, runner):
         """OPENAI_TARGET_API_URL env var should be passed to ProxyConfig."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -102,7 +173,7 @@ class TestCLIProxyEnvVars:
         """GEMINI_TARGET_API_URL env var should be passed to ProxyConfig."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -116,11 +187,32 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].gemini_api_url == "http://my-gemini:5000"
 
+    def test_vertex_target_api_url_from_env(self, runner):
+        """VERTEX_TARGET_API_URL env var should be passed to ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"VERTEX_TARGET_API_URL": "https://europe-west4-aiplatform.googleapis.com"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].vertex_api_url
+            == "https://europe-west4-aiplatform.googleapis.com"
+        )
+
     def test_openai_api_url_cli_flag(self, runner):
         """--openai-api-url CLI flag should take precedence."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -133,11 +225,30 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].openai_api_url == "http://from-cli:4000"
 
+    def test_vertex_api_url_cli_flag(self, runner):
+        """--vertex-api-url CLI flag should take precedence."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy", "--vertex-api-url", "https://us-east5-aiplatform.googleapis.com"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].vertex_api_url == "https://us-east5-aiplatform.googleapis.com"
+        )
+
     def test_cli_flag_overrides_env_var(self, runner):
         """CLI flag should take precedence over env var."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -155,7 +266,7 @@ class TestCLIProxyEnvVars:
         """Without env var or flag, openai_api_url should be None."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         # Ensure the env var is not set
@@ -178,7 +289,7 @@ class TestCLIProxyEnvVars:
         """Both OPENAI and GEMINI target URLs can be set via env."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -200,7 +311,7 @@ class TestCLIProxyEnvVars:
         """Fast-fail CLI flags should map into ProxyConfig."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -243,7 +354,12 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured["config"].max_connections == 200
         assert captured["config"].max_keepalive_connections == 50
-        assert captured["kwargs"] == {"workers": 4, "limit_concurrency": 250}
+        # Click CLI also passes `print_banner=False` to suppress the legacy
+        # run_server banner (cli/proxy.py prints its own). Assert the
+        # production-scaling keys we care about, not the full kwargs dict.
+        assert captured["kwargs"]["workers"] == 4
+        assert captured["kwargs"]["limit_concurrency"] == 250
+        assert captured["kwargs"].get("print_banner") is False
 
     def test_production_scaling_cli_flags_override_env_vars(self, runner):
         captured = {}
@@ -278,7 +394,11 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured["config"].max_connections == 150
         assert captured["config"].max_keepalive_connections == 25
-        assert captured["kwargs"] == {"workers": 3, "limit_concurrency": 125}
+        # Click CLI also passes `print_banner=False`. Assert production
+        # scaling keys explicitly rather than the full kwargs dict.
+        assert captured["kwargs"]["workers"] == 3
+        assert captured["kwargs"]["limit_concurrency"] == 125
+        assert captured["kwargs"].get("print_banner") is False
 
 
 class TestCLIProxyBackend:
@@ -288,7 +408,7 @@ class TestCLIProxyBackend:
         """--backend litellm-hosted_vllm should be accepted (not rejected)."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -305,7 +425,7 @@ class TestCLIProxyBackend:
         """--backend litellm-vertex should be accepted."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -322,7 +442,7 @@ class TestCLIProxyBackend:
         """Full vLLM setup: litellm backend + OPENAI_TARGET_API_URL."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -350,7 +470,7 @@ class TestCLIAnyllmProviderEnv:
         """HEADROOM_ANYLLM_PROVIDER env var should override the default."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):
@@ -368,7 +488,7 @@ class TestCLIAnyllmProviderEnv:
         """--anyllm-provider flag should still work."""
         captured_config = {}
 
-        def mock_run_server(config):
+        def mock_run_server(config, **kwargs):
             captured_config["config"] = config
 
         with patch("headroom.proxy.server.run_server", mock_run_server):

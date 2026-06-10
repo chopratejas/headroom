@@ -118,6 +118,35 @@ class TestCCRRetrieveEndpoint:
         assert "results" in data
         assert data["count"] >= 1
 
+    def test_retrieve_with_search_plain_text_original(self, client):
+        """Query retrieval searches plain-text originals stored by Kompress."""
+        store = get_compression_store()
+        original = (
+            "Codex WS compression stores plain text originals. "
+            "The target symbol is _compress_openai_responses_payload."
+        )
+        hash_key = store.store(original=original, compressed="compressed")
+
+        response = client.post(
+            "/v1/retrieve",
+            json={"hash": hash_key, "query": "_compress_openai_responses_payload"},
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["hash"] == hash_key
+        assert data["count"] == 1
+        assert data["results"][0]["type"] == "text"
+        assert "_compress_openai_responses_payload" in data["results"][0]["text"]
+
+    def test_retrieve_with_search_nonexistent_hash_returns_404(self, client):
+        """Query mode should not mask a missing hash as an empty search."""
+        response = client.post(
+            "/v1/retrieve",
+            json={"hash": "nonexistent123", "query": "anything"},
+        )
+        assert response.status_code == 404
+
     def test_retrieve_increments_count(self, client):
         """Each retrieval increments the retrieval count."""
         store = get_compression_store()
@@ -184,6 +213,21 @@ class TestCCRRetrieveGetEndpoint:
         assert "count" in data
         # Results should be a list (may be empty if BM25 threshold not met)
         assert isinstance(data["results"], list)
+
+    def test_get_retrieve_with_query_plain_text_original(self, client):
+        """GET query retrieval searches plain-text originals."""
+        store = get_compression_store()
+        hash_key = store.store(
+            original="plain text contains _compress_openai_responses_payload",
+            compressed="plain text",
+        )
+
+        response = client.get(f"/v1/retrieve/{hash_key}?query=_compress_openai_responses_payload")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["count"] == 1
+        assert data["results"][0]["type"] == "text"
 
     def test_get_retrieve_nonexistent(self, client):
         """GET with nonexistent hash returns 404."""
@@ -376,7 +420,6 @@ class TestEndToEndTOINIntegration:
         reset_compression_store()
         config = ProxyConfig(
             optimize=True,  # Enable optimization
-            smart_routing=False,  # Use legacy mode for simpler testing
             cache_enabled=False,
             rate_limit_enabled=False,
             cost_tracking_enabled=False,

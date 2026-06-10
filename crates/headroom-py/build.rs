@@ -1,17 +1,24 @@
-// Compile a tiny C shim that provides local definitions of the C23
-// strtol family (`__isoc23_strtol`, `__isoc23_strtoll`, etc.).
+// Compile a tiny C shim that provides local definitions of glibc
+// symbols introduced after the manylinux_2_28 floor that our static
+// deps reference:
 //
-// glibc < 2.38 doesn't ship these symbols. Static dependencies in
-// `_core.so` (notably the prebuilt ONNX Runtime artifacts compiled
-// with gcc 14.x) reference them, so without this shim the wheel
-// fails to import on Ubuntu 22.04, Conda envs with libc 2.35, etc.
+//   - C23 strtol family (`__isoc23_strtol`, `__isoc23_strtoll`, ...)
+//     introduced in glibc 2.38 — see `glibc_compat.c` Section A.
+//   - `__libc_single_threaded` introduced in glibc 2.32 — see
+//     `glibc_compat.c` Section B (caught by X1 smoke gate on PR
+//     #396 X2 dry-run; latent since the ORT artifact bump).
 //
-// See `glibc_compat.c` for the full background, including the two
-// implementation traps (no `alias` attribute, no `<stdlib.h>`).
-// The shim is Linux/glibc-only — macOS, Windows, and musl don't
-// ship glibc and don't reference `__isoc23_*`.
+// Static dependencies in `_core.so` (notably the prebuilt ONNX
+// Runtime artifacts compiled with gcc 14.x) reference all of these,
+// so without this shim the wheel fails to import on user machines
+// whose system glibc is below the build host's. The shim is
+// Linux/glibc-only — macOS, Windows, and musl don't ship glibc and
+// don't reference any of these symbols.
 //
-// Issue: #355 (https://github.com/chopratejas/headroom/issues/355)
+// Issues:
+//   - #355 (https://github.com/chopratejas/headroom/issues/355)
+//     for the `__isoc23_*` family
+//   - PR #396 dry-run for the `__libc_single_threaded` symbol
 
 fn main() {
     println!("cargo:rerun-if-changed=glibc_compat.c");
@@ -19,7 +26,7 @@ fn main() {
 
     // The shim is glibc-specific. Skip on every other target: macOS
     // uses Darwin libc, Windows has MSVCRT, musl handles strtoll
-    // identically and never emits __isoc23_*.
+    // identically and never emits __isoc23_* / __libc_single_threaded.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target_os != "linux" || target_env != "gnu" {
@@ -57,6 +64,13 @@ fn main() {
         "__isoc23_strtoll",
         "__isoc23_strtoul",
         "__isoc23_strtoull",
+        // glibc 2.32+ — see glibc_compat.c Section B. Force-undefined
+        // here for the same reason as the __isoc23_* family: archives
+        // that DEFINE the symbol must be scanned before archives that
+        // REFERENCE it, otherwise our shim's archive is dropped and
+        // the .so ships with a UND `__libc_single_threaded` that
+        // breaks import on glibc < 2.32.
+        "__libc_single_threaded",
     ] {
         println!("cargo:rustc-link-arg=-Wl,-u,{sym}");
     }

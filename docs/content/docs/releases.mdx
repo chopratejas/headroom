@@ -144,6 +144,20 @@ To skip a publish target, set the corresponding GitHub Actions variable:
 
 Set these in: **GitHub repo → Settings → Variables → Actions Variables → New repository variable**.
 
+PyPI publishing is a hard gate for GitHub Releases unless `PYPI_SKIP=true`.
+If the PyPI upload fails, the workflow stops before creating or updating the
+GitHub Release, so release notes cannot advertise a version that was not
+published to PyPI.
+
+Before release artifacts are built, the workflow runs:
+
+```bash
+python scripts/verify-versions.py
+```
+
+That gate fails on cross-package version drift. The sdist build is also checked
+for a top-level `LICENSE` file before any publish job can consume it.
+
 ## Workflow Triggers
 
 The workflow runs on push to `main`, but ignores pushes that only touch docs, CI config, or scripts:

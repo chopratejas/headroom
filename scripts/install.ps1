@@ -839,6 +839,38 @@ function Invoke-ClaudeRtkInit {
     }
 }
 
+function Get-ContextTool {
+    $value = $env:HEADROOM_CONTEXT_TOOL
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return 'rtk'
+    }
+
+    $value = $value.Trim().ToLowerInvariant().Replace('_', '-')
+    if ($value -eq 'leanctx') {
+        return 'lean-ctx'
+    }
+    if ($value -ne 'rtk' -and $value -ne 'lean-ctx') {
+        Fail 'HEADROOM_CONTEXT_TOOL must be one of: lean-ctx, rtk'
+    }
+    return $value
+}
+
+function Invoke-LeanCtxInit {
+    param([string]$Agent)
+
+    $cmd = Get-Command lean-ctx -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        Write-Warning "lean-ctx is not installed on PATH; $Agent lean-ctx setup was skipped"
+        return
+    }
+
+    try {
+        & $cmd.Source init --agent $Agent | Out-Null
+    } catch {
+        Write-Warning "Failed to initialize lean-ctx for $Agent; continuing without lean-ctx setup"
+    }
+}
+
 function Invoke-WithTemporaryEnv {
     param(
         [hashtable]$Environment,
@@ -1614,6 +1646,7 @@ switch ($args[0]) {
         }
 
         $parsed = Parse-WrapArgs -Arguments $wrapArgs
+        $contextTool = Get-ContextTool
         $proxyArgs = New-Object System.Collections.Generic.List[string]
         if ($parsed.Learn) { $proxyArgs.Add('--learn') }
         if ($parsed.Backend) { $proxyArgs.AddRange([string[]]@('--backend', $parsed.Backend)) }
@@ -1633,11 +1666,20 @@ switch ($args[0]) {
             if (-not $parsed.NoProxy) {
                 $prepareArgs.Add('--no-proxy')
             }
+            if ((-not $parsed.NoRtk) -and $contextTool -eq 'lean-ctx') {
+                $prepareArgs.Add('--no-rtk')
+            }
             Invoke-PrepareOnly -Tool $tool -KnownArgs $prepareArgs.ToArray()
+
+            if ((-not $parsed.NoRtk) -and $contextTool -eq 'lean-ctx') {
+                Invoke-LeanCtxInit -Agent $tool
+            }
 
             switch ($tool) {
                 'claude' {
-                    if (-not $parsed.NoRtk) { Invoke-ClaudeRtkInit }
+                    if ((-not $parsed.NoRtk) -and $contextTool -eq 'rtk') {
+                        Invoke-ClaudeRtkInit
+                    }
                     $exitCode = Invoke-WithTemporaryEnv -Environment @{ ANTHROPIC_BASE_URL = "http://127.0.0.1:$($parsed.Port)" } -Command 'claude' -Arguments $parsed.HostArgs
                     exit $exitCode
                 }

@@ -239,8 +239,22 @@ class CacheAligner(Transform):
 
         Detection is cheap; we run it whenever ``enabled`` is set so the
         warning log line is emitted on every relevant turn.
+
+        Phase F PR-F2.1 c4/5: when the request's
+        :class:`~headroom.transforms.compression_policy.CompressionPolicy`
+        is passed via ``kwargs["compression_policy"]`` and has
+        ``cache_aligner_enabled=False`` (Subscription auth mode under
+        the enforcement flag), this method returns ``False`` so the
+        detector is skipped for that request. The hidden state
+        ``self._previous_prefix_hash`` is NOT cleared on skip — the
+        field is per-pipeline-instance, not per-request, so clearing
+        it would race with concurrent PAYG requests on the same
+        pipeline (which is the production shape).
         """
         if not self.config.enabled:
+            return False
+        policy = kwargs.get("compression_policy")
+        if policy is not None and not policy.cache_aligner_enabled:
             return False
         for msg in messages:
             if msg.get("role") == "system":

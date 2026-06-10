@@ -80,10 +80,34 @@ class TestStripCodexHeadroomBlocks:
     def test_removes_stray_top_level_model_provider_line(self) -> None:
         # Old wrap versions left `model_provider = "headroom"` outside markers.
         content = 'foo = 1\nmodel_provider = "headroom"\nbar = 2\n'
-        cleaned = wrap_mod._strip_codex_headroom_blocks(content)
+        cleaned = wrap_mod._strip_codex_headroom_blocks(content, remove_mcp=True)
         assert 'model_provider = "headroom"' not in cleaned
         assert "foo = 1" in cleaned
         assert "bar = 2" in cleaned
+
+    def test_removes_codex_mcp_blocks(self) -> None:
+        content = (
+            '[profiles.default]\nmodel = "gpt-4o"\n\n'
+            f"{wrap_mod._CODEX_MCP_MARKER}\n"
+            "[mcp_servers.headroom]\n"
+            'command = "headroom"\n'
+            f"{wrap_mod._CODEX_MCP_END}\n\n"
+            "# --- Headroom MCP server: serena ---\n"
+            "[mcp_servers.serena]\n"
+            'command = "uvx"\n'
+            "# --- end Headroom MCP server: serena ---\n\n"
+            f"{wrap_mod._MEMORY_MCP_MARKER}\n"
+            "[mcp_servers.headroom_memory]\n"
+            'command = "python"\n'
+            f"{wrap_mod._MEMORY_MCP_END}\n"
+        )
+
+        cleaned = wrap_mod._strip_codex_headroom_blocks(content, remove_mcp=True)
+
+        assert "[mcp_servers.headroom]" not in cleaned
+        assert "[mcp_servers.serena]" not in cleaned
+        assert "[mcp_servers.headroom_memory]" not in cleaned
+        assert 'model = "gpt-4o"' in cleaned
 
 
 class TestSnapshotCodexConfig:
@@ -195,9 +219,11 @@ class TestInjectAndRestoreRoundTrip:
         # provider-table block.  Re-wrapping must not duplicate them.
         assert content.count(wrap_mod._CODEX_TOP_LEVEL_MARKER) == 2
         assert content.count(wrap_mod._CODEX_END_MARKER) == 2
-        # Latest port is honoured.
+        # Latest port is honoured in both keys.
         assert 'base_url = "http://127.0.0.1:9999/v1"' in content
+        assert 'openai_base_url = "http://127.0.0.1:9999/v1"' in content
         assert 'base_url = "http://127.0.0.1:8787/v1"' not in content
+        assert 'openai_base_url = "http://127.0.0.1:8787/v1"' not in content
         # User's original content is preserved.
         assert 'model = "gpt-4o"' in content
 
@@ -238,6 +264,35 @@ class TestInjectAndRestoreRoundTrip:
         assert 'model_provider = "headroom"' not in cleaned
         assert 'model = "gpt-4o"' in cleaned
 
+    def test_unwrap_without_backup_removes_provider_and_mcp_blocks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        config_file.write_text(
+            '[profiles.default]\nmodel = "gpt-4o"\n\n'
+            f"{wrap_mod._CODEX_TOP_LEVEL_MARKER}\n"
+            'model_provider = "headroom"\n'
+            f"{wrap_mod._CODEX_END_MARKER}\n\n"
+            f"{wrap_mod._CODEX_MCP_MARKER}\n"
+            "[mcp_servers.headroom]\n"
+            'command = "headroom"\n'
+            f"{wrap_mod._CODEX_MCP_END}\n\n"
+            f"{wrap_mod._MEMORY_MCP_MARKER}\n"
+            "[mcp_servers.headroom_memory]\n"
+            'command = "python"\n'
+            f"{wrap_mod._MEMORY_MCP_END}\n"
+        )
+
+        status, _ = wrap_mod._restore_codex_provider_config()
+
+        assert status == "cleaned"
+        cleaned = config_file.read_text()
+        assert 'model = "gpt-4o"' in cleaned
+        assert "headroom" not in cleaned
+
     def test_unwrap_handles_malformed_prior_config(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -254,6 +309,82 @@ class TestInjectAndRestoreRoundTrip:
 
         assert status == "restored"
         assert config_file.read_text() == malformed
+
+
+# ---------------------------------------------------------------------------
+# Subscription routing: openai_base_url intercepts ChatGPT plan traffic
+# ---------------------------------------------------------------------------
+
+
+class TestSubscriptionRouting:
+    """Codex subscription (ChatGPT plan) bypasses OPENAI_BASE_URL and the
+    custom model_provider; it uses the built-in ``openai`` provider whose
+    base_url defaults to ``https://chatgpt.com/backend-api/codex``.
+    Setting ``openai_base_url`` overrides that default for all auth modes."""
+
+    def test_inject_writes_openai_base_url(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+
+        wrap_mod._inject_codex_provider_config(8787)
+
+        content = (tmp_path / ".codex" / "config.toml").read_text()
+        assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in content
+
+    def test_openai_base_url_port_updates_on_rewrap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+
+        wrap_mod._inject_codex_provider_config(8787)
+        wrap_mod._inject_codex_provider_config(9999)
+
+        content = (tmp_path / ".codex" / "config.toml").read_text()
+        assert 'openai_base_url = "http://127.0.0.1:9999/v1"' in content
+        assert 'openai_base_url = "http://127.0.0.1:8787/v1"' not in content
+
+    def test_openai_base_url_removed_on_unwrap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        original = '[profiles.default]\nmodel = "gpt-4o"\n'
+        config_file.write_text(original)
+
+        wrap_mod._inject_codex_provider_config(8787)
+        assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in config_file.read_text()
+
+        wrap_mod._restore_codex_provider_config()
+        assert config_file.read_text() == original
+
+    def test_strip_cleans_orphaned_openai_base_url(self) -> None:
+        """Safety net: orphaned openai_base_url lines are cleaned up."""
+        content = (
+            '[profiles.default]\nmodel = "gpt-4o"\nopenai_base_url = "http://127.0.0.1:8787/v1"\n'
+        )
+        cleaned = wrap_mod._strip_codex_headroom_blocks(content)
+        assert "openai_base_url" not in cleaned
+        assert 'model = "gpt-4o"' in cleaned
+
+    def test_no_env_key_in_injected_provider(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """env_key must be absent so Codex doesn't require OPENAI_API_KEY.
+
+        Codex treats env_key as a hard requirement — if the env var is missing
+        it throws "Missing environment variable" at startup.  Subscription
+        (ChatGPT Plus) users don't have OPENAI_API_KEY set, so injecting
+        env_key breaks them (issue #393).
+        """
+        _set_test_home(monkeypatch, tmp_path)
+
+        wrap_mod._inject_codex_provider_config(8787)
+
+        content = (tmp_path / ".codex" / "config.toml").read_text()
+        assert "env_key" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +411,127 @@ def test_wrap_codex_prepare_only_creates_backup_and_config(
     assert backup.read_text() == original
 
 
+def test_start_proxy_uses_separate_session_for_signal_isolation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Proxy child should not receive Ctrl-C intended for the wrapped CLI."""
+    popen_kwargs: dict[str, object] = {}
+
+    class FakeProc:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeProc:
+        popen_kwargs.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+    monkeypatch.setattr(wrap_mod, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_mod.subprocess, "Popen", fake_popen)
+
+    proc = wrap_mod._start_proxy(8787, agent_type="codex")
+
+    assert isinstance(proc, FakeProc)
+    assert popen_kwargs["start_new_session"] == (wrap_mod.os.name == "posix")
+
+
+def test_launch_tool_ignores_sigint_in_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C should be handled by the child CLI, not kill the proxy from wrapper."""
+    signal_handlers: dict[object, object] = {}
+
+    class FakeCompleted:
+        returncode = 0
+
+    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        wrap_mod.signal, "signal", lambda sig, fn: signal_handlers.setdefault(sig, fn)
+    )
+    monkeypatch.setattr(wrap_mod.subprocess, "run", lambda *args, **kwargs: FakeCompleted())
+
+    with pytest.raises(SystemExit) as exc:
+        wrap_mod._launch_tool(
+            binary="codex",
+            args=(),
+            env={},
+            port=8787,
+            no_proxy=True,
+            tool_label="CODEX",
+            env_vars_display=[],
+        )
+
+    assert exc.value.code == 0
+    assert signal_handlers[wrap_mod.signal.SIGINT] is wrap_mod._ignore_child_sigint
+
+
+def test_wrap_codex_prepare_only_updates_stale_mcp_proxy_url(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".codex" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(
+        "# --- Headroom MCP server ---\n"
+        "[mcp_servers.headroom]\n"
+        'command = "headroom"\n'
+        'args = ["mcp", "serve"]\n'
+        "\n"
+        "[mcp_servers.headroom.env]\n"
+        'HEADROOM_PROXY_URL = "http://127.0.0.1:9000"\n'
+        "# --- end Headroom MCP server ---\n"
+    )
+
+    with patch("headroom.cli.wrap._ensure_rtk_binary", return_value=None):
+        result = runner.invoke(main, ["wrap", "codex", "--prepare-only", "--port", "8787"])
+
+    assert result.exit_code == 0, result.output
+    content = config_file.read_text()
+    assert "[mcp_servers.headroom]" in content
+    assert 'command = "headroom"' in content
+    assert 'args = ["mcp", "serve"]' in content
+    assert "http://127.0.0.1:9000" not in content
+
+
+def test_wrap_codex_prepare_only_registers_serena_when_uvx_exists(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".codex" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+
+    def fake_which(cmd: str) -> str | None:
+        if cmd == "uvx":
+            return "/usr/local/bin/uvx"
+        return None
+
+    with patch("headroom.cli.wrap._ensure_rtk_binary", return_value=None):
+        with patch("headroom.cli.wrap.shutil.which", side_effect=fake_which):
+            result = runner.invoke(main, ["wrap", "codex", "--prepare-only"])
+
+    assert result.exit_code == 0, result.output
+    content = config_file.read_text()
+    assert "[mcp_servers.serena]" in content
+    assert 'command = "uvx"' in content
+    assert '"--context", "codex"' in content
+
+
+def test_wrap_codex_prepare_only_no_serena_skips_serena(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    config_file = tmp_path / ".codex" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+
+    with patch("headroom.cli.wrap._ensure_rtk_binary", return_value=None):
+        result = runner.invoke(main, ["wrap", "codex", "--prepare-only", "--no-serena"])
+
+    assert result.exit_code == 0, result.output
+    assert "[mcp_servers.serena]" not in config_file.read_text()
+
+
 def test_unwrap_codex_restores_prior_config_end_to_end(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -301,7 +553,13 @@ def test_unwrap_codex_restores_prior_config_end_to_end(
     assert wrap_result.exit_code == 0, wrap_result.output
     assert 'model_provider = "headroom"' in config_file.read_text()
 
-    unwrap_result = runner.invoke(main, ["unwrap", "codex"])
+    stopped: list[int] = []
+
+    with patch(
+        "headroom.cli.wrap._stop_local_proxy_for_unwrap",
+        side_effect=lambda port: stopped.append(port) or "stopped",
+    ):
+        unwrap_result = runner.invoke(main, ["unwrap", "codex", "--port", "9999"])
     assert unwrap_result.exit_code == 0, unwrap_result.output
 
     # Config must be byte-for-byte what the user had before wrap, and the
@@ -310,6 +568,49 @@ def test_unwrap_codex_restores_prior_config_end_to_end(
     assert config_file.read_text() == original
     assert 'model_provider = "headroom"' not in config_file.read_text()
     assert not (tmp_path / ".codex" / "config.toml.headroom-backup").exists()
+    assert stopped == [9999]
+    assert "Stopped local Headroom proxy on port 9999" in unwrap_result.output
+
+
+def test_unwrap_codex_no_stop_proxy_leaves_proxy_alone(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+
+    with patch("headroom.cli.wrap._stop_local_proxy_for_unwrap") as stop_proxy:
+        result = runner.invoke(main, ["unwrap", "codex", "--no-stop-proxy"])
+
+    assert result.exit_code == 0, result.output
+    stop_proxy.assert_not_called()
+
+
+def test_stop_local_proxy_for_unwrap_kills_identified_headroom_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(wrap_mod, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_mod, "_query_proxy_config", lambda port: {"pid": "12345"})
+    monkeypatch.setattr(
+        wrap_mod,
+        "_kill_proxy_by_pid",
+        lambda pid, port: killed.append((pid, port)) or True,
+    )
+
+    assert wrap_mod._stop_local_proxy_for_unwrap(8787) == "stopped"
+    assert killed == [(12345, 8787)]
+
+
+def test_stop_local_proxy_for_unwrap_refuses_unidentified_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wrap_mod, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_mod, "_query_proxy_config", lambda port: None)
+
+    with patch("headroom.cli.wrap._kill_proxy_by_pid") as kill_proxy:
+        assert wrap_mod._stop_local_proxy_for_unwrap(8787) == "unidentified"
+
+    kill_proxy.assert_not_called()
 
 
 def test_unwrap_codex_is_safe_noop_with_no_prior_wrap(

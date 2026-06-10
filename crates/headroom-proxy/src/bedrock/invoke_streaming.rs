@@ -154,7 +154,7 @@ pub async fn handle_invoke_streaming(
     // 1. Live-zone compression for Anthropic-shape bodies (same as D1).
     let is_anthropic = model_id.starts_with(ANTHROPIC_VENDOR_PREFIX);
     let outbound_body: Bytes = if is_anthropic {
-        run_anthropic_compression(&body, &state, &request_id)
+        run_anthropic_compression(&body, &state, auth_mode, &request_id)
     } else {
         tracing::info!(
             event = "bedrock_compression_skipped",
@@ -828,7 +828,12 @@ fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
 /// flow (no body buffering required at the caller, the handler always
 /// owns the bytes). When PR-D3 merges, both arms can converge into a
 /// single helper.
-fn run_anthropic_compression(body: &Bytes, state: &AppState, request_id: &str) -> Bytes {
+fn run_anthropic_compression(
+    body: &Bytes,
+    state: &AppState,
+    _auth_mode: AuthMode,
+    request_id: &str,
+) -> Bytes {
     use crate::bedrock::envelope::BedrockEnvelope;
 
     if let Err(e) = BedrockEnvelope::parse(body) {

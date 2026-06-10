@@ -6,13 +6,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from headroom.cache.compression_store import get_compression_store, reset_compression_store
 from headroom.telemetry import (
     TOINConfig,
     ToolIntelligenceNetwork,
     ToolPattern,
     ToolSignature,
+    get_toin,
     reset_toin,
 )
+from headroom.transforms.kompress_compressor import KompressCompressor
 
 
 @pytest.fixture(autouse=True)
@@ -21,7 +24,9 @@ def reset_globals(monkeypatch, tmp_path):
     temp_toin_path = str(tmp_path / "toin_test.json")
     monkeypatch.setenv("HEADROOM_TOIN_PATH", temp_toin_path)
     reset_toin()
+    reset_compression_store()
     yield
+    reset_compression_store()
     reset_toin()
 
 
@@ -43,6 +48,38 @@ def _make_signature(structure_hash: str = "test_hash_123") -> ToolSignature:
         has_arrays=True,
         max_depth=1,
     )
+
+
+def test_kompress_ccr_retrieval_updates_toin():
+    """Kompress CCR entries should be first-class TOIN patterns."""
+    original = "\n".join(
+        [
+            "HEADROOM_MODE=debug PATH=/tmp/headroom",
+            "ordinary line without the target token",
+            "another ordinary line",
+        ]
+    )
+    compressed = "HEADROOM_MODE=debug"
+
+    compressor = KompressCompressor()
+    hash_key = compressor._store_in_ccr(
+        original,
+        compressed,
+        original_tokens=len(original.split()),
+    )
+
+    assert hash_key is not None
+    store = get_compression_store()
+    entry = store.retrieve(hash_key)
+    assert entry is not None
+    assert entry.tool_signature_hash is not None
+
+    results = store.search(hash_key, "HEADROOM", score_threshold=0.0)
+    assert results
+
+    stats = get_toin().get_stats()
+    assert stats["total_compressions"] == 1
+    assert stats["total_retrievals"] == 2
 
 
 @pytest.mark.skip(reason="PR-B5: observations counter and request-time hint API retired")

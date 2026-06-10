@@ -89,7 +89,7 @@ config = CodeCompressorConfig(
     max_body_lines=5,                   # Lines to keep per function body
     min_tokens_for_compression=100,     # Skip small content
     language_hint=None,                 # Auto-detect if None
-    fallback_to_llmlingua=True,         # Use LLMLingua for unknown langs
+    fallback_to_kompress=True,          # Use Kompress for unknown langs
 )
 
 compressor = CodeAwareCompressor(config)
@@ -110,7 +110,7 @@ result = compressor.compress(code)
 | `max_body_lines` | `5` | Max lines to keep per function body |
 | `min_tokens_for_compression` | `100` | Skip files smaller than this |
 | `language_hint` | `None` | Override language detection |
-| `fallback_to_llmlingua` | `True` | Use LLMLingua for unsupported languages |
+| `fallback_to_kompress` | `True` | Use Kompress for unsupported languages |
 
 ## Before and After
 

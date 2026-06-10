@@ -25,18 +25,33 @@ env:
   GH_PACKAGES_SKIP: "false"
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/publish.yml"
-      - "scripts/**"
-      - ".commitlintrc.json"
-      - ".actrc"
-      - ".actrc.local.example"
-      - ".env.act.example"
-      - ".github/act/**"
+  # Triggered when release-please's release PR is merged: the bot
+  # tags the merge commit `vX.Y.Z` and creates a GitHub Release on
+  # that tag, which fires the `release: published` event. Ordinary
+  # pushes to main no longer trigger publishes — that was the old
+  # behavior that burned PyPI's per-project storage quota by
+  # uploading a fresh wheel matrix (~200 MB) per merged fix/feat PR.
+  # See .github/workflows/release-please.yml for the PR-aggregator.
+  release:
+    types: [published]
+  # X2: PR-time release dry-run. Trigger on PRs that touch release-
+  # critical paths so the wheel matrix + smoke-import gate run BEFORE
+  # merge — not after the tag is pushed and main is broken. Path
+  # filter is deliberately narrow: source-only PRs to headroom-core
+  # / headroom-proxy don't change wheel layout, so they don't need
+  # the dry-run. Issues this would have caught: #379 (docker bake
+  # name=), #382 (sdist os-mismatch), #384/#385/#386 (glibc shim
+  # iterations), #387's own shellcheck regression.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/docker.yml"
+      - "crates/headroom-py/**"
+      - "pyproject.toml"
+      - "scripts/verify-versions.py"
+      - "scripts/version-sync.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
   workflow_dispatch:
     inputs:
       version:
@@ -48,8 +63,13 @@ on:
         default: false
 
 concurrency:
-  group: release-${{ github.ref_name }}
-  cancel-in-progress: false
+  # Main release runs are namespaced by ref_name and never cancel
+  # (cancel-in-progress: false) — losing a tag-push release mid-flight
+  # would mean PyPI/Docker get partial state. PR dry-runs are
+  # namespaced by PR number and DO cancel: rapid PR pushes shouldn't
+  # spawn N parallel wheel builds, only the latest matters.
+  group: release-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   detect-version:
@@ -64,16 +84,39 @@ jobs:
       bump: ${{ steps.ver.outputs.bump }}
       previous_tag: ${{ steps.ver.outputs.previous_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      # When fired by release-please's release event, the tag the
+      # bot just published IS the canonical version for this run —
+      # release_version.py's git-log derivation would re-bump it.
+      # workflow_dispatch still honors `inputs.version`; PR dry-runs
+      # leave MANUAL_VER empty and the script computes normally.
+      - name: Resolve MANUAL_VER from trigger
+        id: manualver
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          MANUAL_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # github.event.release.tag_name is "vX.Y.Z" — strip the
+            # leading "v" so release_version.py's SemVer parser
+            # accepts it.
+            echo "value=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          elif [ -n "$MANUAL_INPUT" ]; then
+            echo "value=$MANUAL_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Compute semantic version from canonical + release history
         id: ver
         run: |
           python headroom/release_version.py
         env:
-          MANUAL_VER: ${{ github.event.inputs.version }}
+          MANUAL_VER: ${{ steps.manualver.outputs.value }}
 
   # Single source of truth for changelog + npm packaging. Wheels are
   # built per-platform in `build-wheels` below. publish-pypi merges them.
@@ -83,23 +126,27 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
       - name: Sync version to package files
         run: |
           python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
+
+      - name: Verify package versions are synchronized
+        run: |
+          python scripts/verify-versions.py
 
       - name: Run changelog generation
         run: |
@@ -132,7 +179,7 @@ jobs:
         shell: bash
 
       - name: Upload changelog via action
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: changelog
           path: /tmp/changelog-backup.md
@@ -156,7 +203,7 @@ jobs:
           npm pack --pack-destination ../../release-assets
 
       - name: Upload release assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: release-assets/
@@ -214,12 +261,12 @@ jobs:
             manylinux: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -227,6 +274,10 @@ jobs:
         shell: bash
         run: |
           python scripts/version-sync.py --version ${{ needs.detect-version.outputs.npm_version }}
+
+      - name: Verify package versions are synchronized
+        run: |
+          python scripts/verify-versions.py
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -264,6 +315,64 @@ jobs:
           command: sdist
           args: --out dist
 
+      - name: Verify sdist license-file metadata matches tarball contents
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          python - <<'PY'
+          # PyPI rejects sdists whose `License-File:` metadata entries
+          # (PEP 639) reference files that aren't physically present
+          # in the tarball: `400 License-File X does not exist in
+          # distribution file ... at <root>/X`. This check catches
+          # that divergence before upload by parsing PKG-INFO's
+          # License-File lines and asserting each one resolves to a
+          # real tarball member. Issue trail: sdist publish broke at
+          # v0.20.16 when the hatch -> maturin migration in 2a91cbb
+          # dropped NOTICE from the sdist `include` list while PEP 639
+          # still emitted it as a License-File. Was masked for ~22
+          # releases by an earlier twine "File already exists" failure
+          # on duplicate wheels; surfaced once PR #412 added
+          # skip-existing.
+          from pathlib import Path
+          import tarfile
+
+          sdists = sorted(Path("dist").glob("*.tar.gz"))
+          if len(sdists) != 1:
+              raise SystemExit(f"expected exactly one sdist in dist/, found {len(sdists)}")
+
+          with tarfile.open(sdists[0], "r:gz") as archive:
+              names = set(archive.getnames())
+              roots = {name.split("/", 1)[0] for name in names if "/" in name}
+              if len(roots) != 1:
+                  raise SystemExit(f"expected one sdist root directory, found {sorted(roots)}")
+              root = roots.pop()
+
+              pkg_info_path = f"{root}/PKG-INFO"
+              member = archive.getmember(pkg_info_path)
+              fh = archive.extractfile(member)
+              if fh is None:
+                  raise SystemExit(f"could not read {pkg_info_path} from {sdists[0].name}")
+              pkg_info = fh.read().decode("utf-8")
+
+          declared = []
+          for line in pkg_info.splitlines():
+              if not line.strip():
+                  break  # headers ended (blank line separator); rest is README body
+              if line.startswith("License-File:"):
+                  declared.append(line.split(":", 1)[1].strip())
+
+          if not declared:
+              raise SystemExit(f"{sdists[0].name} PKG-INFO declares no License-File entries - expected at least LICENSE")
+
+          missing = [name for name in declared if f"{root}/{name}" not in names]
+          if missing:
+              raise SystemExit(
+                  f"{sdists[0].name} declares License-File entries that are missing from the tarball: {missing}. "
+                  f"Add them to `[tool.maturin].include` with `format = \"sdist\"`."
+              )
+
+          print(f"sdist License-File metadata OK ({len(declared)} files, all present): {declared}")
+          PY
+
       # Audit each Linux wheel's dynamic symbol references against its
       # declared manylinux glibc floor. Catches the bug class from
       # issue #355 (#386): a manylinux_2_28 wheel that ends up
@@ -284,7 +393,7 @@ jobs:
           done
 
       - name: Upload wheels artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*
@@ -298,14 +407,14 @@ jobs:
       contents: read
     steps:
       - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: wheels-tmp/
           merge-multiple: true
 
       - name: Download release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-assets
           path: release-assets/
@@ -320,13 +429,13 @@ jobs:
           ls -la release-assets/
 
       - name: Upload merged dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
 
       - name: Upload merged release-assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets-merged
           path: release-assets/
@@ -365,11 +474,22 @@ jobs:
           # `quay.io/pypa/manylinux_2_28_x86_64` is the floor we
           # promise; if the wheel fails here, our manylinux tag is
           # a lie. `ubuntu:22.04` (glibc 2.35) is the environment
-          # from issue #355's reporter. `ubuntu:20.04` (glibc 2.31)
-          # covers older still-supported LTS.
+          # from issue #355's reporter.
+          #
+          # NOTE: `ubuntu:20.04 + python 3.10` was a third entry,
+          # dropped on PR #396 because the deadsnakes PPA install
+          # path stopped reliably provisioning python3.10-venv on
+          # focal once Ubuntu 20.04 hit End of Standard Support
+          # (May 2025). The failure mode was an apt-get error, NOT
+          # a wheel-import error — i.e. the test environment, not
+          # the wheel. Promising the wheel works on glibc 2.31 in
+          # CI now requires either ESM-tier images or pinning a
+          # specific deadsnakes snapshot, neither of which we want
+          # owning. Manylinux 2.28 (glibc 2.28) is still the floor
+          # we promise; ubuntu:22.04 covers the most-reported
+          # customer environment.
           - { runner: ubuntu-24.04, image: "quay.io/pypa/manylinux_2_28_x86_64", python: "3.11", wheel_target: x86_64-unknown-linux-gnu, wheel_artifact: wheels-ubuntu-24.04-x86_64-unknown-linux-gnu, glibc_label: "2.28-floor" }
           - { runner: ubuntu-24.04, image: "ubuntu:22.04", python: "3.12", wheel_target: x86_64-unknown-linux-gnu, wheel_artifact: wheels-ubuntu-24.04-x86_64-unknown-linux-gnu, glibc_label: "2.35" }
-          - { runner: ubuntu-24.04, image: "ubuntu:20.04", python: "3.10", wheel_target: x86_64-unknown-linux-gnu, wheel_artifact: wheels-ubuntu-24.04-x86_64-unknown-linux-gnu, glibc_label: "2.31" }
           # Linux aarch64 — floor + one customer env. Native arm64
           # runners (PR #376) host the container.
           - { runner: ubuntu-24.04-arm, image: "quay.io/pypa/manylinux_2_28_aarch64", python: "3.11", wheel_target: aarch64-unknown-linux-gnu, wheel_artifact: wheels-ubuntu-24.04-arm-aarch64-unknown-linux-gnu, glibc_label: "2.28-floor" }
@@ -382,10 +502,36 @@ jobs:
 
     steps:
       - name: Download wheels artifact for this target
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.wheel_artifact }}
           path: dist/
+
+      - name: Stage smoke-import script
+        # The smoke script lives in a host file rather than an inline
+        # heredoc/`-c` invocation. Rationale:
+        #
+        # 1. The Linux job wraps the smoke check in `bash -ec '<long>'`
+        #    where the outer single quote preserves whitespace AND
+        #    forbids any internal single quote (closing it terminates
+        #    the script). A `<<PY ... PY` heredoc inside the inner bash
+        #    inherits the YAML indentation, so the closing `PY` is at
+        #    column 14, never matched (caught post-#387 merge: bash
+        #    "here-document at line 65 delimited by end-of-file").
+        # 2. Switching to `python -c "<f-string>"` solves the heredoc
+        #    indent problem but reintroduces the single-quote nesting
+        #    issue (Python f-strings need quote chars).
+        # 3. A host-side file dodges both: bash heredoc body lives at
+        #    YAML `run: |` level (uniform strip), the docker container
+        #    sees it as a read-only mount, and macOS host runs the
+        #    same script — no quoting drift between paths.
+        run: |
+          cat > "${RUNNER_TEMP}/smoke_import.py" <<'PY'
+          import sys
+          import headroom
+          from headroom._core import hello as _rust_hello
+          print(f"smoke-import OK: python={sys.version_info[:3]} hello={_rust_hello()}")
+          PY
 
       - name: Smoke-import wheel inside container (Linux)
         if: matrix.image != ''
@@ -402,6 +548,7 @@ jobs:
           # easier to debug.
           docker run --rm \
             -v "$(pwd)/dist:/wheels:ro" \
+            -v "${RUNNER_TEMP}/smoke_import.py:/smoke_import.py:ro" \
             -e PYTHON_VERSION="$PYTHON_VERSION" \
             -e WHEEL_TARGET="$WHEEL_TARGET" \
             -e GLIBC_LABEL="$GLIBC_LABEL" \
@@ -457,6 +604,22 @@ jobs:
               esac
               whl=$(find /wheels -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-${arch_tag}.whl" -print -quit)
               if [ -z "$whl" ]; then
+                # No version-specific wheel — fall back to a stable-ABI
+                # (abi3) wheel. A cp3<floor>-abi3 wheel installs on any
+                # CPython >= floor, which is what makes a single wheel
+                # forward-compatible to 3.14+ (Cargo.toml pyo3 abi3-py310).
+                # Pick the abi3 wheel whose floor is <= the interpreter.
+                py_minor=${PYTHON_VERSION#*.}
+                abi3=$(find /wheels -maxdepth 1 -type f -name "headroom_ai-*-abi3-${arch_tag}.whl" -print -quit)
+                if [ -n "$abi3" ]; then
+                  abi3_base=${abi3##*/}
+                  abi3_floor=${abi3_base#*-cp3}
+                  abi3_floor=${abi3_floor%%-*}
+                  case "$abi3_floor" in *[!0-9]*) abi3_floor= ;; esac
+                  if [ -n "$abi3_floor" ] && [ "$abi3_floor" -le "$py_minor" ]; then whl="$abi3"; fi
+                fi
+              fi
+              if [ -z "$whl" ]; then
                 echo "ERROR: no wheel matching python=$PYTHON_VERSION arch=$arch_tag in /wheels/" >&2
                 find /wheels -maxdepth 1 -type f -printf "%f\n" >&2
                 exit 1
@@ -469,14 +632,11 @@ jobs:
 
               # The actual smoke check — mirrors the proxy
               # `_check_rust_core` path that fails with exit-78 on
-              # broken wheels. If this `import` fails the whole
-              # release is held.
-              /tmp/venv/bin/python - <<PY
-              import sys
-              import headroom
-              from headroom._core import hello as _rust_hello
-              print(f"smoke-import OK: python={sys.version_info[:3]} hello={_rust_hello()}")
-              PY
+              # broken wheels. The script is mounted from the host via
+              # `-v ${RUNNER_TEMP}/smoke_import.py:/smoke_import.py:ro`;
+              # see the "Stage smoke-import script" step above for why
+              # an inline heredoc here would not work.
+              /tmp/venv/bin/python /smoke_import.py
             '
 
       - name: Smoke-import wheel on macOS host
@@ -489,6 +649,19 @@ jobs:
           # macOS wheels are tagged macosx_*_arm64 (Apple Silicon only).
           whl=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_arm64.whl" -print -quit)
           if [ -z "$whl" ]; then
+            # Stable-ABI (abi3) fallback — see the Linux path above. A
+            # cp3<floor>-abi3 wheel installs on any CPython >= floor.
+            py_minor=${PYTHON_VERSION#*.}
+            abi3=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-abi3-macosx_*_arm64.whl" -print -quit)
+            if [ -n "$abi3" ]; then
+              abi3_base=${abi3##*/}
+              abi3_floor=${abi3_base#*-cp3}
+              abi3_floor=${abi3_floor%%-*}
+              case "$abi3_floor" in *[!0-9]*) abi3_floor= ;; esac
+              if [ -n "$abi3_floor" ] && [ "$abi3_floor" -le "$py_minor" ]; then whl="$abi3"; fi
+            fi
+          fi
+          if [ -z "$whl" ]; then
             echo "ERROR: no macOS wheel matching python=$PYTHON_VERSION"
             find dist -maxdepth 1 -type f -exec basename {} \;
             exit 1
@@ -500,23 +673,23 @@ jobs:
           "python$PYTHON_VERSION" -m venv /tmp/venv
           /tmp/venv/bin/pip install --quiet --upgrade pip
           /tmp/venv/bin/pip install --quiet "$whl"
-          /tmp/venv/bin/python - <<'PY'
-          import sys
-          import headroom
-          from headroom._core import hello as _rust_hello
-          print(f"smoke-import OK: python={sys.version_info[:3]} hello={_rust_hello()}")
-          PY
+          # Same staged smoke script as the Linux container path uses,
+          # invoked directly on the macOS host (no docker mount needed).
+          /tmp/venv/bin/python "${RUNNER_TEMP}/smoke_import.py"
 
   publish-pypi:
     needs: [collect-dist, smoke-import-wheels]
-    if: github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
+    # X2: skip on pull_request — dry-run only verifies build+smoke,
+    # never publishes. The other two predicates remain (workflow_dispatch
+    # dry_run, vars-level skip).
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true' && vars.PYPI_SKIP != 'true'
     environment: pypi  # NOTE: environment name must be a literal; update here if the GitHub environment name changes
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # Required for OIDC trusted publishing
     steps:
       - name: Download merged dist artifact (sdist + cross-platform wheels)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -524,28 +697,31 @@ jobs:
       - name: Publish ${{ env.PYPI_PACKAGE }} to PyPI
         id: pypi-publish
         uses: pypa/gh-action-pypi-publish@release/v1
-        continue-on-error: true
-
-      - name: PyPI publish notice
-        if: steps.pypi-publish.outcome == 'failure'
-        run: |
-          echo "::notice::PyPI publish skipped — OIDC trusted publisher not configured for this repo. See: https://pypi.org/trusted-publishers/ — Set PYPI_SKIP=true in repo Variables to suppress this notice."
+        with:
+          # Idempotent re-runs: when a wheel filename for the computed
+          # version is already on PyPI (e.g. a previous push to main
+          # already published this version, or this run's computed
+          # semver hasn't bumped past the last release), treat the
+          # existing file as a no-op instead of a hard failure. PyPA's
+          # recommended pattern for release workflows that may run
+          # multiple times against the same version.
+          skip-existing: true
 
   publish-npm:
     needs: [detect-version, build]
-    if: github.event.inputs.dry_run != 'true' && vars.NPM_SKIP != 'true'
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true' && vars.NPM_SKIP != 'true'
     runs-on: ubuntu-latest
     # Publishes to npmjs.org via NPM_TOKEN secret; no GITHUB_TOKEN
     # write permissions needed.
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           registry-url: ${{ env.NPM_REGISTRY_URL }}
@@ -590,13 +766,13 @@ jobs:
 
   publish-github-packages:
     needs: [detect-version, build]
-    if: github.event.inputs.dry_run != 'true' && vars.GH_PACKAGES_SKIP != 'true'
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true' && vars.GH_PACKAGES_SKIP != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -607,7 +783,7 @@ jobs:
           printf 'scope=%s\n' "$scope" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js for GitHub Package Registry
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           registry-url: ${{ env.GITHUB_PACKAGES_REGISTRY_URL }}
@@ -700,7 +876,7 @@ jobs:
     # image's `pip install` step. Failing here ~3 minutes earlier
     # than docker-build saves the matrix's wall-clock budget.
     needs: [detect-version, smoke-import-wheels]
-    if: github.event.inputs.dry_run != 'true'
+    if: github.event_name != 'pull_request' && github.event.inputs.dry_run != 'true'
     permissions:
       contents: read
       packages: write
@@ -715,29 +891,31 @@ jobs:
     if: >-
       ${{
         always() &&
+        github.event_name != 'pull_request' &&
         github.event.inputs.dry_run != 'true' &&
         needs.detect-version.result == 'success' &&
         needs.build.result == 'success' &&
         needs.build-wheels.result == 'success' &&
         needs.collect-dist.result == 'success' &&
-        needs.smoke-import-wheels.result == 'success'
+        needs.smoke-import-wheels.result == 'success' &&
+        (vars.PYPI_SKIP == 'true' || needs.publish-pypi.result == 'success')
       }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download changelog artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: changelog
           path: /tmp
 
       - name: Download merged release assets (npm tarballs + wheels + sdist)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-assets-merged
           path: release-assets
@@ -759,7 +937,13 @@ jobs:
           TAG="v${{ needs.detect-version.outputs.version }}"
           TITLE="Release v${{ needs.detect-version.outputs.version }}"
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE" --notes-file .changelog.md
+            # Release already exists — typically created by
+            # release-please on release-PR merge with an auto-
+            # generated changelog body. Don't overwrite its notes
+            # (--notes-file would clobber them); only sync the
+            # title in case detect-version's canonical form differs
+            # from what the bot set.
+            gh release edit "$TAG" --title "$TITLE"
           else
             gh release create "$TAG" --title "$TITLE" --notes-file .changelog.md
           fi

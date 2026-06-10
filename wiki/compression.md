@@ -8,7 +8,7 @@ Universal Compression combines several techniques:
 
 1. **ML-based Detection** - Automatically detects content type (JSON, code, logs, text) using Magika
 2. **Structure Preservation** - Keeps keys, signatures, and templates intact via structure masks
-3. **Intelligent Compression** - Compresses content while preserving meaning with LLMLingua
+3. **Intelligent Compression** - Compresses content while preserving meaning with the optional ML compressor (Kompress)
 4. **Reversible via CCR** - Stores originals for retrieval when LLM needs full context
 
 ## Quick Start
@@ -51,9 +51,9 @@ result = compressor.compress(content)
                          │                   │                   │
                          ▼                   ▼                   ▼
                    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-                   │   Magika    │    │   Handler   │    │  LLMLingua  │
-                   │   (ML)      │    │   (JSON,    │    │  (optional) │
-                   │             │    │   Code...)  │    │             │
+                   │   Magika    │    │   Handler   │    │  Kompress   │
+                   │   (ML)      │    │   (JSON,    │    │  (ML, opt-  │
+                   │             │    │   Code...)  │    │  in [ml])   │
                    └─────────────┘    └─────────────┘    └─────────────┘
 ```
 
@@ -82,7 +82,9 @@ config = UniversalCompressorConfig(
     use_magika=True,               # Use ML-based detection (requires magika)
 
     # Compression
-    use_llmlingua=True,            # Use LLMLingua for compression
+    # (Note: the legacy `use_llmlingua` flag was retired with the
+    # LLMLingua-2 integration. The optional ML compressor is now Kompress,
+    # installed via `headroom-ai[ml]` and configured separately.)
     compression_ratio_target=0.3,  # Keep 30% of content (70% reduction)
     min_content_length=100,        # Skip content shorter than this
 

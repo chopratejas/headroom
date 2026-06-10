@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -20,12 +21,16 @@ def _app() -> Any:
             openai_api_url="https://api.openai.test",
             gemini_api_url="https://api.gemini.test",
             cloudcode_api_url="https://cloudcode.test",
+            vertex_api_url="https://vertex.test",
         )
     )
 
 
 def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> None:
     calls: list[tuple[str, str, str, str]] = []
+    gemini_calls: list[tuple[str, str, str, str]] = []
+    gemini_count_calls: list[tuple[str, str, str, str]] = []
+    anthropic_calls: list[tuple[str, str, str, str, bool]] = []
 
     async def fake_passthrough(self, request, base_url, sub_path="", provider_name=""):  # type: ignore[no-untyped-def]
         calls.append((request.method, request.url.path, base_url, provider_name))
@@ -39,7 +44,68 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
             }
         )
 
+    async def fake_gemini_generate(
+        self,
+        request,
+        model,
+        upstream_base_url=None,
+        provider_name="gemini",
+    ):  # type: ignore[no-untyped-def]
+        gemini_calls.append((request.url.path, model, upstream_base_url, provider_name))
+        return JSONResponse(
+            {
+                "handler": "handle_gemini_generate_content",
+                "path": request.url.path,
+                "model": model,
+                "upstream_base_url": upstream_base_url,
+                "provider": provider_name,
+            }
+        )
+
+    async def fake_anthropic_messages(
+        self,
+        request,
+        upstream_base_url=None,
+        provider_name="anthropic",
+        model_override=None,
+        force_stream=False,
+    ):  # type: ignore[no-untyped-def]
+        anthropic_calls.append(
+            (request.url.path, upstream_base_url, provider_name, model_override, force_stream)
+        )
+        return JSONResponse(
+            {
+                "handler": "handle_anthropic_messages",
+                "path": request.url.path,
+                "upstream_base_url": upstream_base_url,
+                "provider": provider_name,
+                "model": model_override,
+                "force_stream": force_stream,
+            }
+        )
+
+    async def fake_gemini_count(
+        self,
+        request,
+        model,
+        upstream_base_url=None,
+        provider_name="gemini",
+    ):  # type: ignore[no-untyped-def]
+        gemini_count_calls.append((request.url.path, model, upstream_base_url, provider_name))
+        return JSONResponse(
+            {
+                "handler": "handle_gemini_count_tokens",
+                "path": request.url.path,
+                "model": model,
+                "upstream_base_url": upstream_base_url,
+                "provider": provider_name,
+            }
+        )
+
     monkeypatch.setattr(HeadroomProxy, "handle_passthrough", fake_passthrough)
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_generate_content", fake_gemini_generate)
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_count_tokens", fake_gemini_count)
+    monkeypatch.setattr(HeadroomProxy, "handle_anthropic_messages", fake_anthropic_messages)
 
     with TestClient(_app()) as client:
         assert client.post("/v1/messages/count_tokens").json()["base_url"] == (
@@ -67,6 +133,34 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
         assert client.get("/v1beta/models").json()["provider"] == "gemini"
         assert client.get("/v1beta/models/demo").json()["sub_path"] == "models"
         assert client.post("/v1beta/models/demo:embedContent").json()["sub_path"] == "embedContent"
+        assert client.post(
+            "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent"
+        ).json() == {
+            "handler": "handle_gemini_generate_content",
+            "path": "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent",
+            "model": "gemini-2.0-flash",
+            "upstream_base_url": "https://vertex.test",
+            "provider": "vertex:google",
+        }
+        assert client.post(
+            "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:countTokens"
+        ).json() == {
+            "handler": "handle_gemini_count_tokens",
+            "path": "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:countTokens",
+            "model": "gemini-2.0-flash",
+            "upstream_base_url": "https://vertex.test",
+            "provider": "vertex:google",
+        }
+        assert client.post(
+            "/v1beta1/projects/p/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20240620:rawPredict"
+        ).json() == {
+            "handler": "handle_anthropic_messages",
+            "path": "/v1beta1/projects/p/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20240620:rawPredict",
+            "upstream_base_url": "https://vertex.test",
+            "provider": "vertex:anthropic",
+            "model": "claude-3-5-sonnet@20240620",
+            "force_stream": False,
+        }
         assert client.post("/v1beta/cachedContents").json()["sub_path"] == "cachedContents"
         assert client.get("/v1beta/cachedContents").json()["sub_path"] == "cachedContents"
         assert client.get("/v1beta/cachedContents/cache-1").json()["sub_path"] == "cachedContents"
@@ -85,6 +179,9 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
         ] == ("https://api.gemini.test")
 
     assert len(calls) >= 16
+    assert len(gemini_calls) >= 1
+    assert len(gemini_count_calls) >= 1
+    assert len(anthropic_calls) >= 1
 
 
 def test_proxy_route_helpers_prefer_legacy_targets_and_gemini_passthrough() -> None:
@@ -96,6 +193,7 @@ def test_proxy_route_helpers_prefer_legacy_targets_and_gemini_passthrough() -> N
             "ANTHROPIC_API_URL": "https://legacy.anthropic.test",
             "OPENAI_API_URL": "https://legacy.openai.test",
             "GEMINI_API_URL": "https://legacy.gemini.test",
+            "VERTEX_API_URL": "https://legacy.vertex.test",
             "provider_runtime": type(
                 "Runtime",
                 (),
@@ -108,6 +206,7 @@ def test_proxy_route_helpers_prefer_legacy_targets_and_gemini_passthrough() -> N
     )()
 
     assert proxy_routes._api_target(proxy, "anthropic") == "https://legacy.anthropic.test"
+    assert proxy_routes._api_target(proxy, "vertex") == "https://legacy.vertex.test"
     assert proxy_routes._select_passthrough_base_url(proxy, {"x-goog-api-key": "test"}) == (
         "https://legacy.gemini.test"
     )
@@ -148,10 +247,10 @@ def test_provider_specific_routes_delegate_to_expected_proxy_handlers(monkeypatc
         "handle_gemini_stream_generate_content",
         "handle_gemini_count_tokens",
         "handle_google_cloudcode_stream",
-        "handle_databricks_invocations",
         "handle_google_batch_create",
         "handle_google_batch_results",
         "handle_google_batch_passthrough",
+        "handle_passthrough",
     ):
         install(handler_name)
 
@@ -190,14 +289,41 @@ def test_provider_specific_routes_delegate_to_expected_proxy_handlers(monkeypatc
         assert client.post("/v1beta/models/demo:countTokens").json()["handler"] == (
             "handle_gemini_count_tokens"
         )
+        assert client.post(
+            "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:streamGenerateContent"
+        ).json() == {
+            "handler": "handle_gemini_generate_content",
+            "path": "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:streamGenerateContent",
+            "args": [
+                "gemini-2.0-flash",
+                "https://vertex.test",
+                "vertex:google",
+            ],
+        }
+        assert client.post(
+            "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:countTokens"
+        ).json() == {
+            "handler": "handle_gemini_count_tokens",
+            "path": "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:countTokens",
+            "args": [
+                "gemini-2.0-flash",
+                "https://vertex.test",
+                "vertex:google",
+            ],
+        }
+        assert client.post(
+            "/v1beta1/projects/p/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20240620:streamRawPredict"
+        ).json()["args"] == [
+            "https://vertex.test",
+            "vertex:anthropic",
+            "claude-3-5-sonnet@20240620",
+            True,
+        ]
         assert client.post("/v1internal:streamGenerateContent").json()["handler"] == (
             "handle_google_cloudcode_stream"
         )
         assert client.post("/v1/v1internal:streamGenerateContent").json()["handler"] == (
             "handle_google_cloudcode_stream"
-        )
-        assert client.post("/serving-endpoints/demo/invocations").json()["handler"] == (
-            "handle_databricks_invocations"
         )
         assert client.post("/v1beta/models/demo:batchGenerateContent").json()["handler"] == (
             "handle_google_batch_create"
@@ -252,10 +378,12 @@ def test_openai_response_subpath_passthrough_returns_502_on_http_failure() -> No
 
     with TestClient(_app()) as client:
         client.app.state.proxy.http_client = FailingAsyncClient()
-        response = client.post("/v1/responses/compact?trace=1", json={"model": "gpt-4o"})
+        with patch("headroom.providers.proxy_routes.logger") as logger:
+            response = client.post("/v1/responses/compact?trace=1", json={"model": "gpt-4o"})
 
     assert response.status_code == 502
     assert "boom: POST https://api.openai.test/v1/responses/compact?trace=1" in response.text
+    logger.error.assert_called_once()
 
 
 def test_openai_response_subpath_passthrough_uses_openai_target() -> None:
@@ -337,4 +465,232 @@ def test_gemini_batch_embed_contents_passthrough_uses_gemini_target(monkeypatch)
     }
     assert calls == [
         ("/v1beta/models/demo:batchEmbedContents", "https://api.gemini.test", "batchEmbedContents")
+    ]
+
+
+def test_v1_models_fetches_codex_registry_under_chatgpt_auth(monkeypatch) -> None:
+    proxy_routes = importlib.import_module("headroom.providers.proxy_routes")
+    debug_messages: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        proxy_routes.logger,
+        "debug",
+        lambda message, *args: debug_messages.append((message, args)),
+    )
+
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append(("GET", url, dict(kwargs.get("headers", {}))))
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"slug": "gpt-5.5"},
+                        {"slug": "gpt-5.3-codex-spark"},
+                    ]
+                },
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    with TestClient(_app()) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
+        response = client.get(
+            "/v1/models?client_version=0.135.0",
+            headers={
+                "authorization": "Bearer eyJ-chatgpt-oauth-token",
+                "chatgpt-account-id": "test-account",
+                "originator": "Codex Desktop",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "object": "list",
+        "data": [
+            {
+                "id": "gpt-5.5",
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            },
+            {
+                "id": "gpt-5.3-codex-spark",
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            },
+        ],
+    }
+    assert len(fake_http_client.calls) == 1
+    method, url, headers = fake_http_client.calls[0]
+    assert method == "GET"
+    assert url == "https://chatgpt.com/backend-api/codex/models?client_version=0.135.0"
+    assert headers["authorization"] == "Bearer eyJ-chatgpt-oauth-token"
+    assert headers["chatgpt-account-id"] == "test-account"
+    assert headers["originator"] == "Codex Desktop"
+    assert headers["accept"] == "application/json"
+    assert "Accept" not in headers
+    assert debug_messages == [
+        (
+            "Fetched Codex model IDs from upstream model registry: %s",
+            (["gpt-5.5", "gpt-5.3-codex-spark"],),
+        ),
+    ]
+
+
+def test_v1_models_falls_back_to_synthetic_list_under_chatgpt_auth(monkeypatch) -> None:
+    """Issue #478: under Codex ChatGPT-subscription OAuth, the proxy
+    must NOT forward `/v1/models` to chatgpt.com/backend-api/models
+    (which returns 403). If the Codex-specific registry also fails,
+    synthesize an OpenAI-compatible response with the known-supported
+    Codex/ChatGPT model set instead, so Codex's model-picker refresh succeeds.
+    """
+
+    class FakeAsyncClient:
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            return httpx.Response(403, json={"error": "forbidden"})
+
+        async def aclose(self) -> None:
+            return None
+
+    with TestClient(_app()) as client:
+        client.app.state.proxy.http_client = FakeAsyncClient()
+        # ChatGPT auth detected via Bearer + ChatGPT account header
+        # (mirrors what Codex Desktop sends).
+        response = client.get(
+            "/v1/models",
+            headers={
+                "authorization": "Bearer eyJ-chatgpt-oauth-token",
+                "chatgpt-account-id": "test-account",
+                "originator": "Codex Desktop",
+            },
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "list"
+    assert isinstance(payload["data"], list)
+    assert len(payload["data"]) > 0
+    model_ids = {entry["id"] for entry in payload["data"]}
+    # Spot-check: the model from issue #478's repro log must be present.
+    assert "gpt-5.5" in model_ids
+    for entry in payload["data"]:
+        assert entry["object"] == "model"
+        assert entry["owned_by"] == "openai"
+
+
+def test_v1_models_get_single_dynamic_under_chatgpt_auth() -> None:
+    """The single-model variant (`/v1/models/{id}`) is also called by
+    Codex for some flows. It should use the Codex registry first so
+    dynamically exposed model slugs validate consistently."""
+
+    class FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return httpx.Response(
+                200,
+                json={"models": [{"slug": "gpt-5.5"}, {"slug": "gpt-5.3-codex-spark"}]},
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    with TestClient(_app()) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
+        ok = client.get(
+            "/v1/models/gpt-5.3-codex-spark",
+            headers={
+                "authorization": "Bearer eyJ-chatgpt-oauth-token",
+                "chatgpt-account-id": "test-account",
+            },
+        )
+        unknown = client.get(
+            "/v1/models/gpt-99-future",
+            headers={
+                "authorization": "Bearer eyJ-chatgpt-oauth-token",
+                "chatgpt-account-id": "test-account",
+            },
+        )
+    assert ok.status_code == 200
+    assert ok.json() == {
+        "id": "gpt-5.3-codex-spark",
+        "object": "model",
+        "created": 0,
+        "owned_by": "openai",
+    }
+    assert unknown.status_code == 404
+    assert fake_http_client.calls == 2
+
+
+def test_v1_models_still_forwards_under_non_chatgpt_auth() -> None:
+    """Non-ChatGPT auth (regular API key, Gemini, etc.) must still
+    forward to the upstream provider — only the ChatGPT-OAuth path
+    short-circuits to the synthetic response."""
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_passthrough(self, request, base_url, sub_path="", provider_name=""):  # type: ignore[no-untyped-def]
+        calls.append((request.url.path, base_url, provider_name))
+        return JSONResponse({"base_url": base_url, "provider": provider_name})
+
+    with patch.object(HeadroomProxy, "handle_passthrough", fake_passthrough):
+        with TestClient(_app()) as client:
+            response = client.get(
+                "/v1/models",
+                headers={"authorization": "Bearer sk-real-api-key"},
+            )
+    assert response.status_code == 200
+    # Forwarded — not synthesized — because no chatgpt-account-id header.
+    assert calls, "Non-ChatGPT-auth /v1/models must forward, not synthesize"
+
+
+def test_v1_models_routes_claude_code_gateway_discovery_to_anthropic() -> None:
+    """Claude Code gateway/OAuth model discovery can use a Bearer token that
+    does not look like an Anthropic API key. Route those `/v1/models` requests
+    to Anthropic so Claude's gateway model cache is not populated from OpenAI.
+    """
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_passthrough(self, request, base_url, sub_path="", provider_name=""):  # type: ignore[no-untyped-def]
+        calls.append((request.url.path, base_url, provider_name))
+        return JSONResponse({"base_url": base_url, "provider": provider_name})
+
+    with patch.object(HeadroomProxy, "handle_passthrough", fake_passthrough):
+        with TestClient(_app()) as client:
+            list_response = client.get(
+                "/v1/models",
+                headers={
+                    "authorization": "Bearer claude-gateway-oauth-token",
+                    "user-agent": "claude-code/1.5.0 (darwin; arm64)",
+                },
+            )
+            get_response = client.get(
+                "/v1/models/claude-opus-4-8",
+                headers={
+                    "authorization": "Bearer claude-gateway-oauth-token",
+                    "user-agent": "claude-code/1.5.0 (darwin; arm64)",
+                },
+            )
+
+    assert list_response.status_code == 200
+    assert get_response.status_code == 200
+    assert list_response.json() == {
+        "base_url": "https://api.anthropic.test",
+        "provider": "anthropic",
+    }
+    assert get_response.json() == {
+        "base_url": "https://api.anthropic.test",
+        "provider": "anthropic",
+    }
+    assert calls == [
+        ("/v1/models", "https://api.anthropic.test", "anthropic"),
+        ("/v1/models/claude-opus-4-8", "https://api.anthropic.test", "anthropic"),
     ]

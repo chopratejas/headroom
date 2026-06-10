@@ -113,15 +113,20 @@ class TestCompressionCacheFrozenCount:
     def test_empty_cache_returns_zero(self, cache: CompressionCache) -> None:
         assert cache.compute_frozen_count([]) == 0
 
-    def test_user_assistant_always_stable(self, cache: CompressionCache) -> None:
+    def test_user_assistant_stable_with_live_zone_cap(self, cache: CompressionCache) -> None:
+        """Plain user/assistant turns are individually stable, but the
+        trailing message is reserved as the live zone — the new turn
+        cannot be in any provider prefix cache. See docstring on
+        ``CompressionCache.compute_frozen_count``."""
         messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi there"},
             {"role": "user", "content": "how are you"},
         ]
-        assert cache.compute_frozen_count(messages) == 3
+        # 3 messages structurally stable; cap clamps to len-1 = 2.
+        assert cache.compute_frozen_count(messages) == 2
 
-    def test_tool_result_with_cache_hit_is_stable(self, cache: CompressionCache) -> None:
+    def test_tool_result_with_cache_hit_capped_at_live_zone(self, cache: CompressionCache) -> None:
         tool_content = "tool output data"
         h = CompressionCache.content_hash(tool_content)
         cache.store_compressed(h, "compressed tool output", tokens_saved=5)
@@ -137,7 +142,9 @@ class TestCompressionCacheFrozenCount:
                 "content": [{"type": "tool_result", "tool_use_id": "t1", "content": tool_content}],
             },
         ]
-        assert cache.compute_frozen_count(messages) == 3
+        # All 3 stable; cap clamps to len-1 = 2 (trailing tool_result is
+        # the live zone).
+        assert cache.compute_frozen_count(messages) == 2
 
     def test_tool_result_cache_miss_stops_frozen(self, cache: CompressionCache) -> None:
         messages = [
@@ -188,9 +195,10 @@ class TestCompressionCacheFrozenCount:
             },
             {"role": "user", "content": "follow up"},
         ]
-        # Without mark_stable, this would stop at msg[1] → frozen=1.
-        # With stable hash, the walk continues past msg[1] → frozen=3.
-        assert cache.compute_frozen_count(messages) == 3
+        # Without mark_stable, the walk would stop at msg[1] → frozen=1.
+        # With stable hash, the walk continues past msg[1]; structural
+        # count = 3, then capped at len-1 = 2 (live-zone reservation).
+        assert cache.compute_frozen_count(messages) == 2
 
     def test_update_from_result_identical_content_marks_stable(
         self, cache: CompressionCache
@@ -217,7 +225,8 @@ class TestCompressionCacheFrozenCount:
         h = CompressionCache.content_hash(tool_content)
         assert h in cache._stable_hashes
 
-        # Frozen count should now walk past this tool_result
+        # Frozen count walks past this tool_result (its hash is stable),
+        # but the trailing message is still reserved as live zone.
         messages = [
             {"role": "user", "content": "hello"},
             {
@@ -226,7 +235,7 @@ class TestCompressionCacheFrozenCount:
             },
             {"role": "user", "content": "more stuff"},
         ]
-        assert cache.compute_frozen_count(messages) == 3
+        assert cache.compute_frozen_count(messages) == 2
 
     def test_mark_stable_from_messages(self, cache: CompressionCache) -> None:
         """mark_stable_from_messages records hashes for tool_results."""

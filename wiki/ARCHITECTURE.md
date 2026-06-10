@@ -239,32 +239,18 @@ analysis = {
 
 ---
 
-#### Transform 4: LLMLingua Compressor (Optional)
+#### Transform 4: ML Compressor (Optional, Kompress)
 
 **When to use:** Maximum compression needed and latency is acceptable.
 
-```python
-# Opt-in ML-based compression using Microsoft's LLMLingua-2
-# BERT-based token classifier trained via GPT-4 distillation
+The proxy ships an opt-in ML compression path backed by **Kompress**
+(ModernBERT-based token classifier). Install with `pip install
+'headroom-ai[ml]'`; see `wiki/transforms.md` for current configuration.
 
-# Before: Long tool output text
-"The function processUserData takes a user object and validates all fields..."
-
-# After: Compressed while preserving semantic meaning
-"function processUserData validates user fields..."
-```
-
-**Key characteristics:**
-- Uses `microsoft/llmlingua-2-xlm-roberta-large-meetingbank` model
-- Auto-detects content type (code, JSON, text) for optimal compression rates
-- Stores original in CCR for retrieval if needed
-- Adds 50-200ms latency per request
-- Requires ~1GB RAM when loaded
-
-**Proxy integration (opt-in):**
-```bash
-headroom proxy --llmlingua --llmlingua-device cuda
-```
+**Note:** The earlier LLMLingua-2 integration (`--llmlingua` flag, the
+`headroom-ai[llmlingua]` extra, and the `LLMLinguaCompressor` class) was
+retired and replaced by Kompress. `pip install 'headroom-ai[llmlingua]'`
+no longer resolves; use `[ml]` instead.
 
 ---
 
@@ -418,8 +404,8 @@ def apply(self, messages, ...):
     # - Compresses to 17 points (preserving spike)
     # - Factors out constant "host" field
 
-    # Transform 3: LLMLingua (if enabled via --llmlingua)
-    # - ML-based compression on remaining long text
+    # Transform 3: Kompress ML compressor (opt-in via headroom-ai[ml])
+    # - ModernBERT-based compression on remaining long text
     # - Auto-detects content type for optimal rate
     # - Stores original in CCR for retrieval
 
@@ -1082,7 +1068,7 @@ headroom/
 │   ├── rolling_window.py    # Token limit enforcement (position-based)
 │   ├── intelligent_context.py  # Semantic context management (score-based)
 │   ├── scoring.py           # Message importance scoring
-│   └── llmlingua_compressor.py  # ML-based compression (opt-in)
+│   └── (legacy llmlingua_compressor.py removed — see [ml] extra for Kompress)
 │
 ├── cache/               # CCR Architecture - Caching & Storage
 │   ├── compression_store.py    # Phase 1: Store original content

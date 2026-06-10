@@ -160,7 +160,7 @@ class AgentWriter(ABC):
 
         if not dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(full_content)
+            target.write_text(full_content, encoding="utf-8")
 
         return result
 
@@ -185,8 +185,8 @@ class AgentWriter(ABC):
 def _merge_section(file_path: Path, section: str) -> str:
     """Merge a marker-delimited section into an existing file."""
     if file_path.exists():
-        existing = file_path.read_text()
+        existing = file_path.read_text(encoding="utf-8")
         if MARKER_START in existing:
-            return MARKER_PATTERN.sub(section, existing)
+            return MARKER_PATTERN.sub(lambda _match: section, existing)
         return existing.rstrip() + "\n\n" + section + "\n"
     return section + "\n"

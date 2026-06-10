@@ -87,7 +87,7 @@ Use 'auto' (default) to scan all detected agents."""
     "--model",
     type=str,
     default=None,
-    help="LLM model for analysis (e.g., claude-sonnet-4-6, gpt-4o, gemini/gemini-2.0-flash). "
+    help="LLM model for analysis (e.g., claude-sonnet-4-6, gpt-4o, gemini/gemini-flash-latest). "
     "Auto-detected from API keys if not specified.",
 )
 @click.option(
@@ -226,7 +226,13 @@ def learn(
             total_recommendations += len(recommendations)
             click.echo(f"  Recommendations: {len(recommendations)}")
 
-            result = writer.write(recommendations, proj, dry_run=not apply)
+            try:
+                result = writer.write(recommendations, proj, dry_run=not apply)
+            except OSError as e:
+                click.echo(
+                    f"  Warning: failed to write recommendations for {proj.project_path}: {e}"
+                )
+                continue
 
             for file_path, content in result.content_by_file.items():
                 click.echo(f"\n  {'[WOULD WRITE]' if result.dry_run else '[WROTE]'} {file_path}")

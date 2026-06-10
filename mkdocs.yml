@@ -1,4 +1,5 @@
 site_name: Headroom
+docs_dir: wiki
 site_description: "The Context Optimization Layer for LLM Applications — compress everything your AI agent reads."
 site_url: https://chopratejas.github.io/headroom
 repo_url: https://github.com/chopratejas/headroom
@@ -99,6 +100,7 @@ nav:
     - Failure Learning: learn.md
   - Integrations:
     - Overview: integration-guide.md
+    - Vertex AI: vertex.md
     - LangChain: langchain.md
     - Agno: agno.md
     - Strands: strands.md
@@ -116,6 +118,7 @@ nav:
     - CLI: cli.md
     - API: api.md
     - SDK: sdk.md
+    - Differential Network Capture: network-diff-capture.md
     - Metrics & Observability: metrics.md
     - Error Codes: errors.md
     - Troubleshooting: troubleshooting.md

@@ -85,7 +85,7 @@ class CodexAdapter(AgentMemoryAdapter):
         if self._path.exists():
             content = self._path.read_text(encoding="utf-8")
             if _MARKER_START in content:
-                content = _MARKER_PATTERN.sub(section, content)
+                content = _MARKER_PATTERN.sub(lambda _match: section, content)
             else:
                 content = content.rstrip() + "\n\n" + section + "\n"
         else:

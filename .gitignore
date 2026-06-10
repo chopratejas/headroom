@@ -3,6 +3,10 @@
 .fastembed_cache/
 **/.fastembed_cache/
 
+# Local Kompress ONNX export artifacts (scripts/export_kompress_v2_onnx.py).
+# Hundreds of MB each — published to HuggingFace, never committed.
+/onnx/
+
 # Private scripts (contain credentials). Allowlist checked-in helpers below.
 scripts/
 !scripts/
@@ -24,6 +28,8 @@ scripts/*
 !scripts/smoke_issue_327.py
 !scripts/refresh_model_limits.sh
 !scripts/audit_wheel_glibc_symbols.py
+!scripts/replay_codex_ws_load.py
+!scripts/export_kompress_v2_onnx.py
 
 # Rust / Cargo build artifacts
 /target/
@@ -101,6 +107,7 @@ pytest_cache/
 .env
 .env.*
 !.env.act.example
+!.env.example
 .venv
 env/
 venv/
@@ -187,10 +194,12 @@ benchmark_results/
 .deepeval/
 
 # Headroom specific
+.headroom/
 headroom.db
 headroom_*.db
 *.jsonl
 !tests/fixtures/*.jsonl
+docker/differential-network-capture/captures/
 
 # Documentation build
 docs/_build/

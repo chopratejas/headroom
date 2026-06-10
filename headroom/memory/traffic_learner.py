@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from headroom.learn.models import ProjectInfo
@@ -951,35 +951,227 @@ class TrafficLearner:
 
         return patterns
 
+    # ---------------------------------------------------------------
+    # Preference detection (GH #464)
+    # ---------------------------------------------------------------
+    # The detector is regex-free on purpose. The previous regex-based
+    # implementation matched scaffolding ("don't mention this
+    # reminder…" injected by Claude Code's system-reminder blocks) and
+    # produced mid-sentence truncations because ``.{10,100}`` captured
+    # an arbitrary 100-char window with no boundary awareness. A
+    # tokenized scanner is easier to reason about, doesn't suffer
+    # catastrophic-backtracking edge cases, and lets us layer
+    # boundary rules (sentence terminator / end-of-input / max-length)
+    # without nesting more pattern syntax.
+
+    # Each entry is a sequence of lowercase tokens that must appear
+    # in order with whitespace / single-comma separation. ``max_chars``
+    # caps how much content we'll capture after the last trigger
+    # token. The "instead" trigger gets a tighter cap because in
+    # practice its tail tends to be shorter and we want to be less
+    # forgiving of long rambles after it.
+    _PREFERENCE_TRIGGERS: ClassVar[tuple[tuple[tuple[str, ...], int], ...]] = (
+        (("don't",), 98),
+        (("dont",), 98),
+        (("do", "not"), 98),
+        (("stop",), 98),
+        (("never",), 98),
+        (("avoid",), 98),
+        (("no", "use"), 98),
+        (("no", "try"), 98),
+        (("no", "do"), 98),
+        (("instead",), 78),
+    )
+
+    # Characters that mark the end of the captured preference.
+    _SENTENCE_TERMINATORS: ClassVar[frozenset[str]] = frozenset(".!?\n")
+
+    # Characters allowed between the trigger and the start of the
+    # capture (e.g. the comma in "No, use httpx").
+    _PRE_CAPTURE_PUNCT: ClassVar[frozenset[str]] = frozenset(",;:")
+
+    # Characters stripped from individual tokens before trigger
+    # matching ("don't," → "don't"; "stop." → "stop"). Whitespace is
+    # handled separately by the tokenizer.
+    _TOKEN_STRIP_CHARS: ClassVar[str] = ",.;:!?\"'()[]{}"
+
     def _extract_preferences(self, user_text: str) -> list[ExtractedPattern]:
         """Extract preference signals from user messages.
 
-        Looks for correction patterns: "no", "don't", "instead", "use X not Y".
-        """
-        patterns: list[ExtractedPattern] = []
+        Defends against GH #464 noise sources:
 
-        # Negative corrections: "don't X", "stop X", "no, X"
-        correction_res = [
-            re.compile(r"(?:don'?t|do not|stop|never|avoid)\s+(.{10,100})", re.I),
-            re.compile(r"(?:no,?\s+)(?:use|try|do)\s+(.{10,100})", re.I),
-            re.compile(r"instead(?:,?\s+)(.{10,80})", re.I),
+        * Claude Code (and other agent harnesses) inject
+          ``<system-reminder>…</system-reminder>`` blocks into user-role
+          message bodies. Their content is *not* user-stated
+          preferences ("don't mention this reminder", "use colgrep
+          instead of Grep") but the old correction regexes matched
+          them. We strip those blocks first so reminders never feed
+          the learner.
+        * The capture used to be a fixed-length window which produced
+          mid-sentence truncations. The token-based scanner below
+          ends each capture at a sentence terminator OR at
+          end-of-input, and rejects anything that would require
+          truncation past ``max_chars``.
+        """
+
+        cleaned = self._strip_system_reminders(user_text)[:500]
+        correction = self._find_correction(cleaned)
+        if correction is None:
+            return []
+
+        return [
+            ExtractedPattern(
+                category=PatternCategory.PREFERENCE,
+                content=f"User preference: {correction}",
+                importance=0.75,
+                metadata={"type": "correction", "source_text": cleaned[:200]},
+            )
         ]
 
-        for regex in correction_res:
-            match = regex.search(user_text[:500])
-            if match:
-                correction = match.group(1).strip().rstrip(".")
-                patterns.append(
-                    ExtractedPattern(
-                        category=PatternCategory.PREFERENCE,
-                        content=f"User preference: {correction}",
-                        importance=0.75,
-                        metadata={"type": "correction", "source_text": user_text[:200]},
-                    )
-                )
-                break  # One preference per message
+    @classmethod
+    def _find_correction(cls, text: str) -> str | None:
+        """Return the captured preference content or ``None``.
 
-        return patterns
+        Walks the input once, tokenising on whitespace. At every
+        token position we try each trigger sequence in priority
+        order; the first satisfied trigger wins.
+        """
+
+        tokens = cls._tokenize(text)
+        if not tokens:
+            return None
+
+        for trigger_idx in range(len(tokens)):
+            for sequence, max_chars in cls._PREFERENCE_TRIGGERS:
+                if not cls._matches_sequence(tokens, trigger_idx, sequence):
+                    continue
+                last_token_end = tokens[trigger_idx + len(sequence) - 1][2]
+                captured = cls._capture_after(text, last_token_end, max_chars)
+                if captured is None:
+                    continue
+                return captured
+        return None
+
+    @classmethod
+    def _matches_sequence(
+        cls,
+        tokens: list[tuple[str, int, int]],
+        start: int,
+        sequence: tuple[str, ...],
+    ) -> bool:
+        if start + len(sequence) > len(tokens):
+            return False
+        for offset, expected in enumerate(sequence):
+            actual_token = tokens[start + offset][0]
+            normalised = actual_token.strip(cls._TOKEN_STRIP_CHARS)
+            if normalised != expected:
+                return False
+        return True
+
+    @classmethod
+    def _capture_after(
+        cls,
+        text: str,
+        capture_after_pos: int,
+        max_chars: int,
+    ) -> str | None:
+        """Capture up to ``max_chars`` of content starting at the first
+        non-whitespace, non-pre-punct character after ``capture_after_pos``.
+
+        Returns ``None`` when the capture would have to truncate past
+        ``max_chars`` without hitting a sentence terminator or
+        end-of-input. Returns ``None`` for captures shorter than 10
+        chars (those are noise — likely a stray trigger word with no
+        real correction following it).
+        """
+
+        n = len(text)
+        cap_start = capture_after_pos
+        while cap_start < n and (
+            text[cap_start].isspace() or text[cap_start] in cls._PRE_CAPTURE_PUNCT
+        ):
+            cap_start += 1
+
+        cap_end = cap_start
+        while (
+            cap_end < n
+            and (cap_end - cap_start) < max_chars
+            and text[cap_end] not in cls._SENTENCE_TERMINATORS
+        ):
+            cap_end += 1
+
+        length = cap_end - cap_start
+        if length < 10:
+            return None
+
+        # If we hit ``max_chars`` without finding a terminator and the
+        # text continues past us, this is a rambling fragment — reject.
+        if length >= max_chars and cap_end < n and text[cap_end] not in cls._SENTENCE_TERMINATORS:
+            return None
+
+        captured = text[cap_start:cap_end].strip()
+        captured = captured.rstrip("".join(cls._SENTENCE_TERMINATORS)).strip()
+        return captured or None
+
+    @staticmethod
+    def _tokenize(text: str) -> list[tuple[str, int, int]]:
+        """Whitespace-split tokenizer.
+
+        Returns ``[(lower_token, start, end), …]``. Positions are byte
+        offsets into the original string so callers can resume
+        scanning from the end of a token. Tokens are lowercased once,
+        up front, so trigger comparisons don't have to call
+        ``.lower()`` per match.
+        """
+
+        out: list[tuple[str, int, int]] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            while i < n and text[i].isspace():
+                i += 1
+            start = i
+            while i < n and not text[i].isspace():
+                i += 1
+            if i > start:
+                out.append((text[start:i].lower(), start, i))
+        return out
+
+    @staticmethod
+    def _strip_system_reminders(text: str) -> str:
+        """Remove ``<system-reminder>…</system-reminder>`` blocks from text.
+
+        Uses a literal scan (``str.find``) rather than a regex so the
+        matcher cannot accidentally pick up unrelated ``<*>``-shaped
+        content. Unclosed reminders (missing ``</system-reminder>``)
+        are dropped to end-of-string — the agent harness writes
+        balanced tags, and an unbalanced one is corrupt input we
+        shouldn't index. Matching is case-insensitive on the tag name.
+        """
+        if not text or "<" not in text:
+            return text
+
+        open_tag = "<system-reminder"
+        close_tag = "</system-reminder>"
+
+        lower = text.lower()
+        out: list[str] = []
+        cursor = 0
+        n = len(text)
+        while cursor < n:
+            start = lower.find(open_tag, cursor)
+            if start < 0:
+                out.append(text[cursor:])
+                break
+            out.append(text[cursor:start])
+            tag_end = text.find(">", start)
+            if tag_end < 0:
+                break
+            close_start = lower.find(close_tag, tag_end + 1)
+            if close_start < 0:
+                break
+            cursor = close_start + len(close_tag)
+        return "".join(out)
 
     # =========================================================================
     # Pattern Accumulation & Persistence
@@ -1256,7 +1448,7 @@ def _project_for_pattern(pattern: ExtractedPattern, roots: list[ProjectInfo]) ->
 
     for cand in candidates:
         for root in roots_sorted:
-            root_str = str(root.project_path).rstrip("/")
+            root_str = str(root.project_path).rstrip("/\\")
             if not root_str:
                 continue
             if (

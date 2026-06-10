@@ -797,6 +797,38 @@ run_claude_rtk_init() {
   fi
 }
 
+selected_context_tool() {
+  local value="${HEADROOM_CONTEXT_TOOL:-rtk}"
+  value="${value,,}"
+  value="${value//_/-}"
+  if [[ -z "${value}" ]]; then
+    value="rtk"
+  elif [[ "${value}" == "leanctx" ]]; then
+    value="lean-ctx"
+  fi
+
+  case "${value}" in
+    rtk|lean-ctx)
+      printf '%s\n' "${value}"
+      ;;
+    *)
+      die "HEADROOM_CONTEXT_TOOL must be one of: lean-ctx, rtk"
+      ;;
+  esac
+}
+
+run_lean_ctx_init() {
+  local agent="$1"
+  if ! command -v lean-ctx >/dev/null 2>&1; then
+    warn "lean-ctx is not installed on PATH; ${agent} lean-ctx setup was skipped"
+    return
+  fi
+
+  if ! lean-ctx init --agent "${agent}" >/dev/null 2>&1; then
+    warn "Failed to initialize lean-ctx for ${agent}; continuing without lean-ctx setup"
+  fi
+}
+
 parse_wrap_args() {
   local -n out_known=$1
   local -n out_host=$2
@@ -1470,8 +1502,9 @@ main() {
         return
       fi
 
-      local known_args host_args port no_rtk no_proxy learn backend anyllm region
+      local known_args host_args port no_rtk no_proxy learn backend anyllm region context_tool
       parse_wrap_args known_args host_args port no_rtk no_proxy learn backend anyllm region "$@"
+      context_tool="$(selected_context_tool)"
 
       local proxy_args=()
       if [[ "${learn}" -eq 1 ]]; then
@@ -1497,11 +1530,18 @@ main() {
       if [[ "${no_proxy}" -eq 0 ]]; then
         prep_args+=(--no-proxy)
       fi
+      if [[ "${no_rtk}" -eq 0 && "${context_tool}" == "lean-ctx" ]]; then
+        prep_args+=(--no-rtk)
+      fi
       run_prepare_only "${tool}" "${prep_args[@]}"
+
+      if [[ "${no_rtk}" -eq 0 && "${context_tool}" == "lean-ctx" ]]; then
+        run_lean_ctx_init "${tool}"
+      fi
 
       case "${tool}" in
         claude)
-          if [[ "${no_rtk}" -eq 0 ]]; then
+          if [[ "${no_rtk}" -eq 0 && "${context_tool}" == "rtk" ]]; then
             run_claude_rtk_init
           fi
           ANTHROPIC_BASE_URL="http://127.0.0.1:${port}" run_host_tool claude "${host_args[@]}"

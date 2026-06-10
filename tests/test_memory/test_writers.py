@@ -99,6 +99,17 @@ class TestMergeSection:
         assert "# Header" in result
         assert "# Footer" in result
 
+    def test_replace_existing_markers_handles_literal_backslashes(self, tmp_path: Path):
+        existing = tmp_path / "marked.md"
+        existing.write_text(f"# Header\n\n{MARKER_START}\nold content\n{MARKER_END}\n")
+        section = f"{MARKER_START}\n- Keep C:\\Users\\john.doe\\repo and literal \\u\n{MARKER_END}"
+
+        result = _merge_section(existing, section)
+
+        assert r"C:\Users\john.doe\repo" in result
+        assert r"literal \u" in result
+        assert "old content" not in result
+
 
 # =============================================================================
 # Claude Code Writer Tests
@@ -182,6 +193,14 @@ class TestClaudeCodeWriter:
         for filename, content in topics.items():
             assert filename.startswith("headroom_")
             assert "---" in content  # YAML frontmatter
+
+    def test_default_path_encodes_windows_user_with_dot(self):
+        writer = ClaudeCodeMemoryWriter(project_path=Path(r"C:\Users\john.doe\work"))
+
+        rendered = str(writer.default_path())
+        assert "-C-Users-john.doe-work" in rendered
+        assert "john-doe" not in rendered
+        assert rendered.endswith("MEMORY.md")
 
 
 # =============================================================================

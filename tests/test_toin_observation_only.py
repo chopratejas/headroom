@@ -75,8 +75,7 @@ def test_compression_hint_is_not_publicly_exported():
     import headroom.telemetry as telemetry_pkg
 
     assert not hasattr(telemetry_pkg, "CompressionHint"), (
-        "PR-B5: CompressionHint became private (_CompressionHint) and "
-        "must not be importable from headroom.telemetry."
+        "PR-B5: CompressionHint was retired and must not be importable from headroom.telemetry."
     )
 
 

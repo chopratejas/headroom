@@ -29,12 +29,17 @@
 //! block reverts, not the whole request.
 
 use bytes::Bytes;
+use headroom_core::auth_mode::AuthMode as RequestAuthMode;
 use headroom_core::transforms::live_zone::DEFAULT_MODEL;
 use headroom_core::transforms::{
-    compress_openai_chat_live_zone, AuthMode, BlockAction, LiveZoneError, LiveZoneOutcome,
+    compress_openai_chat_live_zone, BlockAction, LiveZoneError, LiveZoneOutcome,
 };
+use serde_json::Value;
 
-use crate::compression::{Outcome, PassthroughReason};
+use crate::cache_stabilization::tool_def_normalize::{
+    any_tool_has_cache_control, sort_schema_keys_recursive, sort_tools_deterministically,
+};
+use crate::compression::{Outcome, PassthroughReason, PerStrategyTokens};
 use crate::config::CompressionMode;
 
 /// OpenAI Chat Completions live-zone compression entry point.
@@ -54,6 +59,7 @@ use crate::config::CompressionMode;
 pub fn compress_openai_chat_request(
     body: &Bytes,
     mode: CompressionMode,
+    auth_mode: RequestAuthMode,
     request_id: &str,
 ) -> Outcome {
     if matches!(mode, CompressionMode::Off) {
@@ -119,7 +125,17 @@ pub fn compress_openai_chat_request(
         .and_then(serde_json::Value::as_str)
         .unwrap_or(DEFAULT_MODEL);
 
-    match compress_openai_chat_live_zone(body, AuthMode::Payg, model) {
+    // ── Phase E PR-E1: tool-array deterministic sort ────────────
+    // Same gate logic as the Anthropic walker (see that module's
+    // `normalize_tool_definitions` for rationale). PAYG-only,
+    // skipped when any tool already carries `cache_control`.
+    let (dispatch_body, normalization_applied) =
+        normalize_tool_definitions_openai_chat(body, &parsed, auth_mode, request_id);
+
+    // F2.1 c2/6: forward F1's classified auth_mode into the dispatcher
+    // instead of the hard-coded `Payg`. See live_zone_anthropic.rs for
+    // the rationale — same wiring on the OpenAI chat path.
+    match compress_openai_chat_live_zone(&dispatch_body, auth_mode.into(), model) {
         Ok(LiveZoneOutcome::NoChange { manifest }) => {
             tracing::info!(
                 event = "compression_decision",
@@ -136,17 +152,33 @@ pub fn compress_openai_chat_request(
                 model = model,
                 "openai chat live-zone dispatch"
             );
+            if normalization_applied.any() {
+                return Outcome::Compressed {
+                    body: dispatch_body,
+                    tokens_before: 0,
+                    tokens_after: 0,
+                    strategies_applied: normalization_applied.strategies(),
+                    markers_inserted: Vec::new(),
+                    per_strategy_tokens: Vec::new(),
+                };
+            }
             Outcome::NoCompression
         }
         Ok(LiveZoneOutcome::Modified { new_body, manifest }) => {
             // Aggregate manifest stats. Mirrors the Anthropic
             // module — same metric shape so dashboards don't need
             // to special-case the provider.
+            //
+            // H1 + C5 remediation: per-strategy token accumulation
+            // for the proxy's per-strategy compression-ratio metric +
+            // every rejected-not-smaller block bumps the dedicated
+            // counter.
             let mut original_bytes_total: usize = 0;
             let mut compressed_bytes_total: usize = 0;
             let mut original_tokens_total: usize = 0;
             let mut compressed_tokens_total: usize = 0;
             let mut strategies: Vec<&'static str> = Vec::new();
+            let mut per_strategy_tokens: Vec<PerStrategyTokens> = Vec::new();
             let mut had_compressor_error = false;
             for entry in &manifest.block_outcomes {
                 match entry.action {
@@ -164,6 +196,22 @@ pub fn compress_openai_chat_request(
                         if !strategies.contains(&strategy) {
                             strategies.push(strategy);
                         }
+                        if let Some(slot) = per_strategy_tokens
+                            .iter_mut()
+                            .find(|s| s.strategy == strategy)
+                        {
+                            slot.original_tokens += original_tokens;
+                            slot.compressed_tokens += compressed_tokens;
+                        } else {
+                            per_strategy_tokens.push(PerStrategyTokens {
+                                strategy,
+                                original_tokens,
+                                compressed_tokens,
+                            });
+                        }
+                    }
+                    BlockAction::RejectedNotSmaller { strategy, .. } => {
+                        crate::observability::record_compression_rejected_by_token_check(strategy);
                     }
                     BlockAction::CompressorError {
                         strategy,
@@ -180,6 +228,13 @@ pub fn compress_openai_chat_request(
                         );
                     }
                     _ => {}
+                }
+            }
+            // Stitch in PR-E1 strategy tags so dashboards see the
+            // tool-array sort separately from live-zone compressors.
+            for strategy in normalization_applied.strategies() {
+                if !strategies.contains(&strategy) {
+                    strategies.push(strategy);
                 }
             }
             let body_bytes_in = body.len();
@@ -214,6 +269,7 @@ pub fn compress_openai_chat_request(
                 tokens_after: compressed_tokens_total,
                 strategies_applied: strategies,
                 markers_inserted: Vec::new(),
+                per_strategy_tokens,
             }
         }
         Err(LiveZoneError::BodyNotJson(_)) => {
@@ -242,6 +298,153 @@ pub fn compress_openai_chat_request(
             Outcome::Passthrough {
                 reason: PassthroughReason::NoMessages,
             }
+        }
+    }
+}
+
+/// Tracks which Phase E normalization steps mutated the dispatch
+/// body for the OpenAI Chat path. Mirrors the Anthropic walker's
+/// `NormalizationApplied`.
+#[derive(Debug, Clone, Copy, Default)]
+struct NormalizationApplied {
+    e1_tool_sort: bool,
+    e2_schema_sort: bool,
+}
+
+impl NormalizationApplied {
+    fn any(self) -> bool {
+        self.e1_tool_sort || self.e2_schema_sort
+    }
+
+    fn strategies(self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.e1_tool_sort {
+            out.push("tool_array_sort");
+        }
+        if self.e2_schema_sort {
+            out.push("schema_key_sort");
+        }
+        out
+    }
+}
+
+/// Apply PR-E1 (tool-array sort) and PR-E2 (schema-key sort) to an
+/// OpenAI Chat Completions body when the auth-mode + marker gates
+/// clear. Mirrors the Anthropic walker's `normalize_tool_definitions`
+/// — same gates, same outcome shape. Module-private; only the
+/// dispatcher above calls this.
+///
+/// OpenAI tools nest the schema at `tool.function.parameters` (not
+/// `tool.input_schema` like Anthropic) — this is the only walker
+/// shape difference between the two providers.
+fn normalize_tool_definitions_openai_chat(
+    body: &Bytes,
+    parsed: &Value,
+    auth_mode: RequestAuthMode,
+    request_id: &str,
+) -> (Bytes, NormalizationApplied) {
+    if !matches!(auth_mode, RequestAuthMode::Payg) {
+        tracing::info!(
+            event = "e1_skipped",
+            request_id = %request_id,
+            path = "/v1/chat/completions",
+            reason = "auth_mode",
+            auth_mode = auth_mode.as_str(),
+            "tool-array sort skipped: non-PAYG auth mode passes through byte-equal"
+        );
+        tracing::info!(
+            event = "e2_skipped",
+            request_id = %request_id,
+            path = "/v1/chat/completions",
+            reason = "auth_mode",
+            auth_mode = auth_mode.as_str(),
+            "schema-key sort skipped: non-PAYG auth mode passes through byte-equal"
+        );
+        return (body.clone(), NormalizationApplied::default());
+    }
+
+    let Some(tools_in) = parsed.get("tools").and_then(Value::as_array) else {
+        return (body.clone(), NormalizationApplied::default());
+    };
+    if tools_in.is_empty() {
+        return (body.clone(), NormalizationApplied::default());
+    }
+
+    let marker_present = any_tool_has_cache_control(tools_in);
+    if marker_present {
+        tracing::info!(
+            event = "e1_skipped",
+            request_id = %request_id,
+            path = "/v1/chat/completions",
+            reason = "marker_present",
+            tool_count = tools_in.len(),
+            "tool-array sort skipped: customer cache_control marker present \
+             on at least one tool; preserving customer-intentional order"
+        );
+    }
+
+    let mut working = parsed.clone();
+    let tools = working
+        .get_mut("tools")
+        .and_then(Value::as_array_mut)
+        .expect("tools array verified above");
+
+    let mut applied = NormalizationApplied::default();
+
+    if !marker_present {
+        applied.e1_tool_sort = sort_tools_deterministically(tools);
+        if applied.e1_tool_sort {
+            tracing::info!(
+                event = "e1_applied",
+                request_id = %request_id,
+                path = "/v1/chat/completions",
+                tool_count = tools.len(),
+                "tool-array sort applied: tools reordered alphabetically by name"
+            );
+        }
+    }
+
+    // PR-E2: OpenAI tool schema lives at `tool.function.parameters`.
+    for tool in tools.iter_mut() {
+        let Some(parameters) = tool
+            .get_mut("function")
+            .and_then(|f| f.get_mut("parameters"))
+        else {
+            continue;
+        };
+        let before = serde_json::to_vec(parameters).unwrap_or_default();
+        sort_schema_keys_recursive(parameters);
+        let after = serde_json::to_vec(parameters).unwrap_or_default();
+        if before != after {
+            applied.e2_schema_sort = true;
+        }
+    }
+    if applied.e2_schema_sort {
+        tracing::info!(
+            event = "e2_applied",
+            request_id = %request_id,
+            path = "/v1/chat/completions",
+            tool_count = tools.len(),
+            "schema-key sort applied: function.parameters keys rewritten in alphabetic order"
+        );
+    }
+
+    if !applied.any() {
+        return (body.clone(), applied);
+    }
+
+    match serde_json::to_vec(&working) {
+        Ok(bytes) => (Bytes::from(bytes), applied),
+        Err(e) => {
+            tracing::warn!(
+                event = "tool_def_normalize_serialize_failed",
+                request_id = %request_id,
+                path = "/v1/chat/completions",
+                error = %e,
+                "tool-def normalization failed at re-serialize; falling back \
+                 to original body bytes"
+            );
+            (body.clone(), NormalizationApplied::default())
         }
     }
 }
@@ -313,7 +516,12 @@ mod tests {
     #[test]
     fn mode_off_short_circuits() {
         let body = Bytes::from_static(b"not valid json");
-        let out = compress_openai_chat_request(&body, CompressionMode::Off, "req-1");
+        let out = compress_openai_chat_request(
+            &body,
+            CompressionMode::Off,
+            RequestAuthMode::Payg,
+            "req-1",
+        );
         assert!(matches!(
             out,
             Outcome::Passthrough {
@@ -325,7 +533,12 @@ mod tests {
     #[test]
     fn invalid_json_passthrough() {
         let body = Bytes::from_static(b"\x01\x02 not json");
-        let out = compress_openai_chat_request(&body, CompressionMode::LiveZone, "req-2");
+        let out = compress_openai_chat_request(
+            &body,
+            CompressionMode::LiveZone,
+            RequestAuthMode::Payg,
+            "req-2",
+        );
         assert!(matches!(
             out,
             Outcome::Passthrough {
@@ -337,7 +550,12 @@ mod tests {
     #[test]
     fn no_messages_passthrough() {
         let body = body_of(json!({"model": "gpt-4o"}));
-        let out = compress_openai_chat_request(&body, CompressionMode::LiveZone, "req-3");
+        let out = compress_openai_chat_request(
+            &body,
+            CompressionMode::LiveZone,
+            RequestAuthMode::Payg,
+            "req-3",
+        );
         assert!(matches!(
             out,
             Outcome::Passthrough {
@@ -352,7 +570,58 @@ mod tests {
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "hi"}]
         }));
-        let out = compress_openai_chat_request(&body, CompressionMode::LiveZone, "req-4");
+        let out = compress_openai_chat_request(
+            &body,
+            CompressionMode::LiveZone,
+            RequestAuthMode::Payg,
+            "req-4",
+        );
+        assert!(matches!(out, Outcome::NoCompression));
+    }
+
+    #[test]
+    fn e1_sorts_tools_when_payg() {
+        let body = body_of(json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"type": "function", "function": {"name": "zebra"}},
+                {"type": "function", "function": {"name": "apple"}},
+            ],
+        }));
+        let out = compress_openai_chat_request(
+            &body,
+            CompressionMode::LiveZone,
+            RequestAuthMode::Payg,
+            "req-e1",
+        );
+        match out {
+            Outcome::Compressed {
+                strategies_applied, ..
+            } => assert!(
+                strategies_applied.contains(&"tool_array_sort"),
+                "expected tool_array_sort, got {strategies_applied:?}",
+            ),
+            other => panic!("expected Compressed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn e1_passes_through_when_oauth() {
+        let body = body_of(json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"type": "function", "function": {"name": "zebra"}},
+                {"type": "function", "function": {"name": "apple"}},
+            ],
+        }));
+        let out = compress_openai_chat_request(
+            &body,
+            CompressionMode::LiveZone,
+            RequestAuthMode::OAuth,
+            "req-e1-oauth",
+        );
         assert!(matches!(out, Outcome::NoCompression));
     }
 

@@ -55,7 +55,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 axum = "0.7"
 tower = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-pyo3 = "0.22"
+pyo3 = { version = "0.22", features = ["abi3-py310"] }
 # Phase D PR-D1: AWS SigV4 signing for native Bedrock InvokeModel route.
 # `aws-sigv4` provides the canonical-request + signing-key implementation;
 # `aws-config` resolves credentials from the standard provider chain
@@ -75,3 +75,47 @@ aws-smithy-runtime-api = { version = "1", default-features = false, features = [
 # us baking provider-specific knowledge in. The token source is wrapped
 # in a `TokenSource` trait so tests inject a static-token mock.
 gcp_auth = "0.12"
+
+
+# ── Release profile — wheel size optimization ───────────────────────
+#
+# PyPI imposes a 10 GB cumulative storage limit per project. We hit it
+# at version 0.21.36 (191 versions × ~213 MB/release = 10.00 GB
+# exactly). Recent wheels were ~16-18 MB each, of which ~6.4 MB was
+# pure debug metadata (`.strtab` + `.symtab` ELF sections; uncovered
+# by post-mortem inspection of an actual production wheel).
+#
+# This profile shrinks each Linux wheel from ~18 MB → ~10-11 MB by:
+# * Stripping symbol/string tables (~6.4 MB direct savings)
+# * Link-time optimization across crate boundaries (~5-10% .text
+#   savings via dead-code elim across the workspace)
+# * Single codegen unit (better inlining + dead-code elim, at the
+#   cost of slightly slower release builds)
+#
+# We deliberately do NOT set ``panic = "abort"``. The proxy is a
+# long-lived async process — a single misbehaving request triggering
+# panic-abort would terminate the whole proxy and disconnect every
+# concurrent client. Accept the smaller savings; keep unwind behaviour.
+#
+# Estimated impact: 213 MB/release → ~130 MB/release. Buys ~30+ more
+# release slots within the 10 GB ceiling at the current release
+# cadence. Per-PyPI-version savings AND faster downloads for end
+# users. Tradeoff: release builds take ~30-50% longer due to
+# `codegen-units = 1` + LTO; acceptable for the size win.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+
+# Fast-to-compile profile for CI test wheels. The shipped wheel uses
+# `release` (lto + codegen-units=1) for runtime/size; CI only needs a working
+# extension, so trade runtime perf for ~parallel, lto-free compilation. Used
+# via `maturin build --profile ci`. Does NOT affect `--release` builds.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 256
+opt-level = 1
+strip = "none"
+debug = false
+incremental = false

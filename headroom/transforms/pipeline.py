@@ -21,7 +21,6 @@ from ..utils import deep_copy_messages
 from .base import Transform
 from .cache_aligner import CacheAligner
 from .content_router import ContentRouter
-from .smart_crusher import SmartCrusher
 
 if TYPE_CHECKING:
     from ..providers.base import Provider
@@ -37,7 +36,6 @@ class TransformPipeline:
     1. Cache Aligner - normalize prefix for cache hits
     2. Content Router - intelligent content-aware compression (routes to appropriate
        compressor: Kompress for text, SmartCrusher for JSON, CodeCompressor for code, etc.)
-    3. SmartCrusher - fallback if ContentRouter disabled
 
     Phase B PR-B1 retired the IntelligentContextManager / RollingWindow
     "drop messages from history" stage. Live-zone-only compression is the
@@ -100,26 +98,8 @@ class TransformPipeline:
         # - Logs -> LogCompressor
         # - Search results -> SearchCompressor
         # - HTML -> HTMLExtractor
-        if self.config.content_router_enabled:
-            transforms.append(ContentRouter())
-            logger.info("Pipeline using ContentRouter for intelligent content-aware compression")
-        elif self.config.smart_crusher.enabled:
-            # Fallback: SmartCrusher only handles JSON arrays
-            from .smart_crusher import SmartCrusherConfig as SCConfig
-
-            smart_config = SCConfig(
-                enabled=True,
-                min_items_to_analyze=self.config.smart_crusher.min_items_to_analyze,
-                min_tokens_to_crush=self.config.smart_crusher.min_tokens_to_crush,
-                variance_threshold=self.config.smart_crusher.variance_threshold,
-                uniqueness_threshold=self.config.smart_crusher.uniqueness_threshold,
-                similarity_threshold=self.config.smart_crusher.similarity_threshold,
-                max_items_after_crush=self.config.smart_crusher.max_items_after_crush,
-                preserve_change_points=self.config.smart_crusher.preserve_change_points,
-                factor_out_constants=self.config.smart_crusher.factor_out_constants,
-                include_summaries=self.config.smart_crusher.include_summaries,
-            )
-            transforms.append(SmartCrusher(smart_config))
+        transforms.append(ContentRouter())
+        logger.info("Pipeline using ContentRouter for intelligent content-aware compression")
 
         return transforms
 

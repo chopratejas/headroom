@@ -8,6 +8,7 @@ Covers:
 - Transform interface: apply() method
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # ── Import safety (the whole point of the fix) ─────────────────────────
@@ -64,6 +65,106 @@ class TestLazyImports:
         )
         assert result.tokens_saved == 1
         assert result.savings_percentage == 50.0
+
+
+class TestKompressBackendSelection:
+    def test_selected_backend_aliases(self, monkeypatch) -> None:
+        import headroom.transforms.kompress_compressor as kmod
+
+        monkeypatch.setenv("HEADROOM_KOMPRESS_BACKEND", "mps")
+        assert kmod._selected_backend() == "pytorch_mps"
+
+        monkeypatch.setenv("HEADROOM_KOMPRESS_BACKEND", "coreml")
+        assert kmod._selected_backend() == "onnx_coreml"
+
+        monkeypatch.setenv("HEADROOM_KOMPRESS_BACKEND", "cpu")
+        assert kmod._selected_backend() == "onnx_cpu"
+
+        monkeypatch.setenv("HEADROOM_KOMPRESS_BACKEND", "unknown")
+        assert kmod._selected_backend() == "auto"
+
+    def test_forced_pytorch_mps_backend_uses_mps_device(self, monkeypatch) -> None:
+        import headroom.transforms.kompress_compressor as kmod
+
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setenv("HEADROOM_KOMPRESS_BACKEND", "pytorch_mps")
+        monkeypatch.setattr(kmod, "_kompress_cache", {})
+        monkeypatch.setattr(
+            kmod,
+            "_load_kompress_pytorch",
+            lambda model_id, device: (
+                calls.append((model_id, device)) or ("model", "tokenizer", "pytorch")
+            ),
+        )
+
+        assert kmod._load_kompress("model-a", device="auto") == ("model", "tokenizer", "pytorch")
+        assert calls == [("model-a", "mps")]
+
+    def test_forced_coreml_backend_uses_onnx_coreml(self, monkeypatch) -> None:
+        import headroom.transforms.kompress_compressor as kmod
+
+        calls: list[tuple[str, bool]] = []
+        monkeypatch.setenv("HEADROOM_KOMPRESS_BACKEND", "onnx_coreml")
+        monkeypatch.setattr(kmod, "_kompress_cache", {})
+        monkeypatch.setattr(
+            kmod,
+            "_load_kompress_onnx",
+            lambda model_id, *, use_coreml=False: (
+                calls.append((model_id, use_coreml)) or ("model", "tokenizer", "onnx_coreml")
+            ),
+        )
+
+        assert kmod._load_kompress("model-b") == ("model", "tokenizer", "onnx_coreml")
+        assert calls == [("model-b", True)]
+
+    def test_auto_backend_preserves_onnx_first(self, monkeypatch) -> None:
+        import headroom.transforms.kompress_compressor as kmod
+
+        calls: list[str] = []
+        monkeypatch.delenv("HEADROOM_KOMPRESS_BACKEND", raising=False)
+        monkeypatch.setattr(kmod, "_kompress_cache", {})
+        monkeypatch.setattr(kmod, "_is_onnx_available", lambda: True)
+        monkeypatch.setattr(kmod, "_is_pytorch_available", lambda: True)
+        monkeypatch.setattr(
+            kmod,
+            "_load_kompress_onnx",
+            lambda model_id, *, use_coreml=False: (
+                calls.append("onnx") or ("model", "tokenizer", "onnx")
+            ),
+        )
+        monkeypatch.setattr(
+            kmod,
+            "_load_kompress_pytorch",
+            lambda model_id, device: calls.append("pytorch") or ("model", "tokenizer", "pytorch"),
+        )
+
+        assert kmod._load_kompress("model-c") == ("model", "tokenizer", "onnx")
+        assert calls == ["onnx"]
+
+    def test_onnx_session_options_read_thread_caps(self, monkeypatch) -> None:
+        import headroom.transforms.kompress_compressor as kmod
+
+        created: list[SimpleNamespace] = []
+
+        class FakeSessionOptions:
+            def __init__(self) -> None:
+                self.intra_op_num_threads = None
+                self.inter_op_num_threads = None
+                self.enable_cpu_mem_arena = True
+                self.enable_mem_pattern = True
+
+        fake_ort = SimpleNamespace(
+            SessionOptions=lambda: created.append(FakeSessionOptions()) or created[-1]
+        )
+        monkeypatch.setenv("HEADROOM_KOMPRESS_ONNX_INTRA_THREADS", "2")
+        monkeypatch.setenv("HEADROOM_KOMPRESS_ONNX_INTER_THREADS", "1")
+
+        options = kmod._onnx_session_options(fake_ort)
+
+        assert options.intra_op_num_threads == 2
+        assert options.inter_op_num_threads == 1
+        assert options.enable_cpu_mem_arena is False
+        assert options.enable_mem_pattern is False
 
 
 # ── KompressResult ──────────────────────────────────────────────────────

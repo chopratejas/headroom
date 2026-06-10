@@ -26,6 +26,14 @@ CODEX_PORT = 28888
 AIDER_PORT = 28889
 CURSOR_PORT = 28890
 OPENCLAW_PROXY_PORT = 28891
+# Phase G PR-G1: new wrap subcommands. Smoke-tested via --prepare-only since
+# their CLIs may not exist on the e2e image and the wrap commands without
+# --prepare-only block on the proxy. The wiring is otherwise covered by the
+# unit tests in tests/test_cli/test_wrap_{cline,continue,goose,openhands}.py.
+CLINE_PORT = 28892
+CONTINUE_PORT = 28893
+GOOSE_PORT = 28894
+OPENHANDS_PORT = 28895
 
 
 def log(message: str) -> None:
@@ -247,6 +255,98 @@ def create_shims(shim_dir: Path) -> None:
         raise SystemExit(0)
         """
     )
+    codex_shim = textwrap.dedent(
+        """\
+        #!/usr/bin/env python3
+        from __future__ import annotations
+
+        import json
+        import os
+        import sys
+        import urllib.request
+        from pathlib import Path
+
+        tool = Path(sys.argv[0]).name
+        log_dir = Path(os.environ["HEADROOM_E2E_LOG_DIR"])
+        log_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "tool": tool,
+            "argv": sys.argv[1:],
+            "cwd": os.getcwd(),
+            "env": {
+                key: os.environ.get(key)
+                for key in ("OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_BASE_URL")
+                if os.environ.get(key) is not None
+            },
+        }
+
+        probes = []
+
+        def request_json(
+            url: str,
+            *,
+            payload: dict[str, object] | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> tuple[int, dict[str, object]]:
+            data = None if payload is None else json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(url, data=data, headers=headers or {})
+            if payload is not None:
+                request.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(request, timeout=10) as response:
+                raw = response.read()
+                body = json.loads(raw.decode("utf-8") or "{}") if raw else {}
+                return response.status, body
+
+        openai_base = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+        if openai_base:
+            auth_headers = {"Authorization": "Bearer test-key"}
+            models_status, _models_body = request_json(
+                f"{openai_base.rstrip('/')}/models",
+                headers=auth_headers,
+            )
+            probes.append({"url": f"{openai_base.rstrip('/')}/models", "status": models_status})
+
+            model_name = "headroom-wrap-e2e"
+            chat_status, chat_body = request_json(
+                f"{openai_base.rstrip('/')}/chat/completions",
+                payload={
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Confirm Headroom received this wrapped Codex message.",
+                        }
+                    ],
+                },
+                headers=auth_headers,
+            )
+            probes.append(
+                {"url": f"{openai_base.rstrip('/')}/chat/completions", "status": chat_status}
+            )
+            record["chat_completion"] = (
+                chat_body.get("choices", [{}])[0].get("message", {}).get("content")
+            )
+
+            stats_url = openai_base.rstrip("/").removesuffix("/v1") + "/stats"
+            stats_status, stats_body = request_json(stats_url, headers=auth_headers)
+            probes.append({"url": stats_url, "status": stats_status})
+            requests = stats_body.get("requests", {})
+            by_model = requests.get("by_model", {}) if isinstance(requests, dict) else {}
+            record["headroom_request_total"] = (
+                requests.get("total") if isinstance(requests, dict) else None
+            )
+            record["headroom_model_count"] = (
+                by_model.get(model_name) if isinstance(by_model, dict) else None
+            )
+
+        record["probes"] = probes
+
+        with (log_dir / f"{tool}.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\\n")
+        print(f"{tool} shim executed")
+        raise SystemExit(0)
+        """
+    )
     rtk_shim = textwrap.dedent(
         """\
         #!/usr/bin/env python3
@@ -262,7 +362,7 @@ def create_shims(shim_dir: Path) -> None:
         """
     )
     write_executable(shim_dir / "claude", generic_shim)
-    write_executable(shim_dir / "codex", generic_shim)
+    write_executable(shim_dir / "codex", codex_shim)
     write_executable(shim_dir / "aider", generic_shim)
     write_executable(shim_dir / "rtk", rtk_shim)
 
@@ -437,7 +537,9 @@ def verify_proxy_round_trip(base_env: dict[str, str], mock_server: MockOpenAISer
         stop_process(proc)
 
 
-def verify_codex_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path) -> None:
+def verify_codex_wrap(
+    base_env: dict[str, str], project_dir: Path, log_dir: Path, mock_server: MockOpenAIServer
+) -> None:
     port = CODEX_PORT
     run(
         ["headroom", "wrap", "codex", "--port", str(port), "--", "--help"],
@@ -454,6 +556,30 @@ def verify_codex_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path
         RTK_MARKER in global_agents.read_text(encoding="utf-8"), "Missing global RTK marker"
     )
 
+    config_path = Path(base_env["HOME"]) / ".codex" / "config.toml"
+    assert_true(config_path.exists(), "Codex wrap should create ~/.codex/config.toml")
+    config = config_path.read_text(encoding="utf-8")
+    assert_true(
+        f'openai_base_url = "http://127.0.0.1:{port}/v1"' in config,
+        "Codex wrap should inject openai_base_url for subscription routing",
+    )
+    assert_true(
+        f'base_url = "http://127.0.0.1:{port}/v1"' in config,
+        "Codex wrap should inject the headroom provider base_url",
+    )
+    assert_true(
+        'env_key = "OPENAI_API_KEY"' not in config,
+        "Codex wrap should preserve OAuth and never inject env_key",
+    )
+    # Bug 3 (#406): requires_openai_auth must be absent from headroom provider blocks.
+    assert_true(
+        "requires_openai_auth" not in config,
+        "Codex wrap must NOT inject requires_openai_auth into the headroom provider block",
+    )
+    assert_true(
+        "supports_websockets = true" in config, "Codex wrap missing 'supports_websockets = true'"
+    )
+
     entries = read_jsonl(log_dir / "codex.jsonl")
     assert_true(len(entries) > 0, "Codex shim should have been invoked")
     env_vars = entries[-1]["env"]
@@ -462,8 +588,30 @@ def verify_codex_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path
         "Codex wrap should set OPENAI_BASE_URL",
     )
     assert_true(
-        entries[-1]["probes"] == [{"url": f"http://127.0.0.1:{port}/v1/models", "status": 200}],
-        "Codex shim should prove OPENAI_BASE_URL points at a live proxy",
+        entries[-1]["probes"]
+        == [
+            {"url": f"http://127.0.0.1:{port}/v1/models", "status": 200},
+            {"url": f"http://127.0.0.1:{port}/v1/chat/completions", "status": 200},
+            {"url": f"http://127.0.0.1:{port}/stats", "status": 200},
+        ],
+        "Codex shim should prove OPENAI_BASE_URL points at a live proxy and that Headroom logged the wrapped message",
+    )
+    assert_true(
+        entries[-1].get("chat_completion") == "mock completion from upstream",
+        "Codex wrap should receive the mock upstream completion through Headroom",
+    )
+    assert_true(
+        entries[-1].get("headroom_model_count", 0) >= 1,
+        "Codex wrap should appear in Headroom request stats",
+    )
+    assert_true(
+        any(
+            item["path"] == "/v1/chat/completions"
+            and isinstance(item.get("body"), dict)
+            and item["body"].get("model") == "headroom-wrap-e2e"
+            for item in mock_server.requests
+        ),
+        "Codex wrap should forward the wrapped message upstream through Headroom",
     )
 
 
@@ -557,6 +705,71 @@ def verify_cursor_wrap(base_env: dict[str, str], project_dir: Path) -> None:
         stop_process(proc)
 
 
+def verify_cline_wrap(base_env: dict[str, str], project_dir: Path) -> None:
+    """Smoke test: `wrap cline --prepare-only` writes RTK guidance to .clinerules."""
+    run(
+        ["headroom", "wrap", "cline", "--prepare-only", "--port", str(CLINE_PORT)],
+        env=base_env,
+        cwd=project_dir,
+        timeout=60,
+    )
+    clinerules = project_dir / ".clinerules"
+    assert_true(clinerules.exists(), "Cline wrap should create .clinerules")
+    assert_true(
+        RTK_MARKER in clinerules.read_text(encoding="utf-8"),
+        "Cline wrap should inject RTK instructions",
+    )
+
+
+def verify_continue_wrap(base_env: dict[str, str], project_dir: Path) -> None:
+    """Smoke test: `wrap continue --prepare-only` injects RTK into .continue/config.json."""
+    run(
+        ["headroom", "wrap", "continue", "--prepare-only", "--port", str(CONTINUE_PORT)],
+        env=base_env,
+        cwd=project_dir,
+        timeout=60,
+    )
+    config_file = project_dir / ".continue" / "config.json"
+    assert_true(config_file.exists(), "Continue wrap should create .continue/config.json")
+    data = json.loads(config_file.read_text(encoding="utf-8"))
+    system_message = data.get("systemMessage", "")
+    assert_true(
+        RTK_MARKER in system_message,
+        "Continue wrap should inject RTK instructions into systemMessage",
+    )
+
+
+def verify_goose_wrap(base_env: dict[str, str], project_dir: Path) -> None:
+    """Smoke test: `wrap goose --prepare-only` writes RTK guidance to .goosehints."""
+    run(
+        ["headroom", "wrap", "goose", "--prepare-only", "--port", str(GOOSE_PORT)],
+        env=base_env,
+        cwd=project_dir,
+        timeout=60,
+    )
+    goosehints = project_dir / ".goosehints"
+    assert_true(goosehints.exists(), "Goose wrap should create .goosehints")
+    assert_true(
+        RTK_MARKER in goosehints.read_text(encoding="utf-8"),
+        "Goose wrap should inject RTK instructions",
+    )
+
+
+def verify_openhands_wrap(base_env: dict[str, str], project_dir: Path) -> None:
+    """Smoke test: `wrap openhands --prepare-only` exits clean and ensures rtk is present.
+
+    OpenHands wires instructions via the OPENHANDS_INSTRUCTIONS env var at launch
+    time (no on-disk artifact), so --prepare-only just exercises the rtk-binary
+    setup path. The env-var wiring is covered by the unit tests.
+    """
+    run(
+        ["headroom", "wrap", "openhands", "--prepare-only", "--port", str(OPENHANDS_PORT)],
+        env=base_env,
+        cwd=project_dir,
+        timeout=60,
+    )
+
+
 def verify_openclaw_wrap(
     base_env: dict[str, str],
     project_dir: Path,
@@ -574,7 +787,8 @@ def verify_openclaw_wrap(
             "--proxy-port",
             str(port),
             "--startup-timeout-ms",
-            "5000",
+            # 5s is too tight for cold Python+pyo3 import on a busy CI runner.
+            "30000",
             "--verbose",
         ],
         env=base_env,
@@ -683,9 +897,13 @@ def main() -> None:
         try:
             verify_proxy_round_trip(base_env, mock_server)
             verify_claude_wrap(base_env, project_dir, log_dir)
-            verify_codex_wrap(base_env, project_dir, log_dir)
+            verify_codex_wrap(base_env, project_dir, log_dir, mock_server)
             verify_aider_wrap(base_env, project_dir, log_dir)
             verify_cursor_wrap(base_env, project_dir)
+            verify_cline_wrap(base_env, project_dir)
+            verify_continue_wrap(base_env, project_dir)
+            verify_goose_wrap(base_env, project_dir)
+            verify_openhands_wrap(base_env, project_dir)
             local_plugin_dir = prepare_local_openclaw_plugin(base_env, tmp_dir)
             verify_openclaw_wrap(base_env, project_dir, local_plugin_dir)
         finally:

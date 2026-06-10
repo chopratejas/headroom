@@ -1,8 +1,15 @@
 /*
- * glibc < 2.38 compatibility shim for the C23 strtol* family.
+ * glibc post-2.28 compatibility shim — provides local definitions of
+ * symbols introduced after the manylinux_2_28 floor that some of our
+ * statically-linked dependencies reference.
  *
- * Why this file exists
- * --------------------
+ * Currently shimmed:
+ *   - C23 strtol* family (`__isoc23_*`, glibc 2.38+) — see Section A
+ *   - `__libc_single_threaded` (glibc 2.32+) — see Section B
+ *
+ * ============================================================
+ * Section A: C23 strtol* family — glibc 2.38+
+ * ============================================================
  *
  * glibc 2.38 (Aug 2023) added `__isoc23_strtol`, `__isoc23_strtoll`,
  * `__isoc23_strtoul`, and `__isoc23_strtoull` as canonical C23
@@ -112,3 +119,52 @@ unsigned long __isoc23_strtoul(const char *nptr, char **endptr, int base) {
 unsigned long long __isoc23_strtoull(const char *nptr, char **endptr, int base) {
     return strtoull(nptr, endptr, base);
 }
+
+/*
+ * ============================================================
+ * Section B: __libc_single_threaded — glibc 2.32+
+ * ============================================================
+ *
+ * glibc 2.32 (Aug 2020) added the `__libc_single_threaded` global
+ * variable: a single-byte char that's set to 1 when the process has
+ * exactly one thread, 0 otherwise. Newer libstdc++ (gcc 11+) reads
+ * it inside `__cxa_thread_atexit_impl` and similar functions to
+ * elide locking on the fast path.
+ *
+ * The same ORT prebuilt static archives that triggered the
+ * `__isoc23_*` problem above are compiled with gcc-14.2.1 against
+ * glibc-2.38+ headers, so they bake in references to
+ * `__libc_single_threaded`. Manylinux_2_28 hosts have it; user
+ * machines with glibc < 2.32 (e.g. Ubuntu 20.04 + system glibc
+ * 2.31) do not, and `import headroom._core` fails with:
+ *
+ *     ImportError: undefined symbol: __libc_single_threaded
+ *
+ * Caught by the X1 smoke-import gate on the manylinux_2_28
+ * floor entry of PR #396 (X2's first dry-run run). Latent since
+ * the ORT artifact bump that started using gcc 14; we never
+ * tested wheel imports on the floor before X1.
+ *
+ * The fix
+ * -------
+ *
+ * Provide a local definition of the symbol with value 0
+ * (multi-threaded). Same dynamic-linker semantics as Section A:
+ * on glibc 2.32+, libc.so.6 has the strong symbol and ours is
+ * shadowed (harmless); on glibc < 2.32, ours is the only
+ * definition and resolves to 0, which is the safe value
+ * (libstdc++ then takes the locked, multi-threaded slow path —
+ * a tiny perf cost in exchange for an importable wheel).
+ *
+ * Setting it to 0 (rather than 1) is deliberate. If we lied and
+ * said 1, libstdc++ would skip the lock acquisition on the
+ * thread-atexit fast path. If the user actually has multiple
+ * threads (which a Rust wheel making blocking calls almost
+ * certainly does), that would race. 0 is always-correct.
+ *
+ * Reference:
+ * - https://sourceware.org/glibc/wiki/Release/2.32
+ * - glibc commit fc859c30
+ *   (`Single-threaded stdio optimization`)
+ */
+char __libc_single_threaded = 0;

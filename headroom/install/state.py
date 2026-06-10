@@ -24,7 +24,7 @@ def save_manifest(manifest: DeploymentManifest) -> None:
         root.mkdir(parents=True, exist_ok=True)
         manifest.updated_at = iso_utc_now()
         path = manifest_path(manifest.profile)
-        path.write_text(json.dumps(asdict(manifest), indent=2) + "\n")
+        path.write_text(json.dumps(asdict(manifest), indent=2) + "\n", encoding="utf-8")
     except OSError as e:
         logger.warning("Cannot save deployment manifest: %s — continuing without persistence", e)
 
@@ -35,7 +35,7 @@ def load_manifest(profile: str = "default") -> DeploymentManifest | None:
     path = manifest_path(profile)
     if not path.exists():
         return None
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     payload["mutations"] = [ManagedMutation(**item) for item in payload.get("mutations", [])]
     payload["artifacts"] = [ArtifactRecord(**item) for item in payload.get("artifacts", [])]
     return DeploymentManifest(**payload)
@@ -51,7 +51,7 @@ def list_manifests() -> list[DeploymentManifest]:
     manifests: list[DeploymentManifest] = []
     for candidate in sorted(root.glob("*/manifest.json")):
         try:
-            payload = json.loads(candidate.read_text())
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
             payload["mutations"] = [
                 ManagedMutation(**item) for item in payload.get("mutations", [])
             ]

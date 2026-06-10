@@ -6,6 +6,11 @@ import json
 import subprocess
 import sys
 import textwrap
+from importlib.metadata import PackageNotFoundError
+from pathlib import Path
+from unittest.mock import patch
+
+import headroom._version as version_module
 
 
 def test_headroom_import_stays_lazy() -> None:
@@ -38,6 +43,35 @@ def test_headroom_import_stays_lazy() -> None:
     assert data["cache_loaded"] is False
     assert data["models_registry_loaded"] is False
     assert data["memory_loaded"] is False
+
+
+def test_version_prefers_installed_distribution_metadata() -> None:
+    with (
+        patch.object(version_module, "_source_root", return_value=None),
+        patch.object(version_module, "version", return_value="9.8.7") as package_version,
+    ):
+        assert version_module.get_version() == "9.8.7"
+
+    package_version.assert_called_once_with("headroom-ai")
+
+
+def test_version_reports_unknown_when_distribution_metadata_is_missing() -> None:
+    with (
+        patch.object(version_module, "_source_root", return_value=None),
+        patch.object(version_module, "version", side_effect=PackageNotFoundError),
+    ):
+        assert version_module.get_version() == version_module.UNKNOWN_VERSION
+
+
+def test_version_prefers_source_tree_release_history() -> None:
+    with (
+        patch.object(version_module, "_source_root", return_value=Path(".")),
+        patch.object(version_module, "_source_tree_version", return_value="0.21.17"),
+        patch.object(version_module, "version", return_value="0.9.1") as package_version,
+    ):
+        assert version_module.get_version() == "0.21.17"
+
+    package_version.assert_not_called()
 
 
 def test_proxy_server_import_skips_litellm_backend() -> None:

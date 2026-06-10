@@ -1,6 +1,6 @@
 """Kompress: ModernBERT token compressor for structured tool outputs.
 
-Auto-downloads the model from HuggingFace (chopratejas/kompress-base)
+Auto-downloads the model from HuggingFace (chopratejas/kompress-v2-base)
 on first use.
 
 Requires the [ml] extra: pip install headroom-ai[ml]
@@ -14,26 +14,204 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import gc
+import hashlib
 import logging
+import os
 import threading
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from ..config import TransformResult
-from ..onnx_runtime import create_cpu_session_options, trim_process_heap
+from ..onnx_runtime import (
+    create_cpu_session_options,
+    hf_hub_download_local_first,
+    trim_process_heap,
+)
 from ..tokenizer import Tokenizer
 from .base import Transform
 
 logger = logging.getLogger(__name__)
 
 # Default HuggingFace model ID
-HF_MODEL_ID = "chopratejas/kompress-base"
+HF_MODEL_ID = "chopratejas/kompress-v2-base"
+KOMPRESS_BACKEND_ENV = "HEADROOM_KOMPRESS_BACKEND"
+KOMPRESS_ONNX_FILENAME_ENV = "HEADROOM_KOMPRESS_ONNX_FILENAME"
+
+# ONNX artifacts are resolved against the model repo in this order, falling
+# through on download miss OR session-load failure:
+#
+# - kompress-int8-wo.onnx: weight-only int8 (MatMulNBits), 261MB. Evaluated on
+#   the labeled dataset_v2 test split (n=500): f1=0.9130 vs fp32's 0.9128,
+#   must_keep_recall 0.9765 vs 0.9770, keep_rate 0.8097 vs 0.8100, 99.6%
+#   keep-decision agreement — fp32-equivalent at 2.2x less memory. Uses the
+#   com.microsoft MatMulNBits contrib op; older onnxruntime builds without the
+#   8-bit kernel fail at session load and fall through to fp32.
+# - kompress-fp32.onnx: lossless reference, 601MB.
+# - kompress-int8.onnx: v1-era dynamic int8 (kept for custom domain repos).
+#
+# An operator can pin an exact file via HEADROOM_KOMPRESS_ONNX_FILENAME.
+_DEFAULT_ONNX_FILENAMES = (
+    "onnx/kompress-int8-wo.onnx",
+    "onnx/kompress-fp32.onnx",
+    "onnx/kompress-int8.onnx",
+)
+KOMPRESS_ONNX_INTRA_THREADS_ENV = "HEADROOM_KOMPRESS_ONNX_INTRA_THREADS"
+KOMPRESS_ONNX_INTER_THREADS_ENV = "HEADROOM_KOMPRESS_ONNX_INTER_THREADS"
+KOMPRESS_COREML_CACHE_DIR_ENV = "HEADROOM_KOMPRESS_COREML_CACHE_DIR"
+KOMPRESS_MAX_CONCURRENT_ENV = "HEADROOM_KOMPRESS_MAX_CONCURRENT"
+KOMPRESS_BATCH_SIZE_ENV = "HEADROOM_KOMPRESS_BATCH_SIZE"
+
+KompressBackend = Literal["auto", "onnx", "onnx_cpu", "onnx_coreml", "pytorch", "pytorch_mps"]
 
 # Model cache: model_id -> (model, tokenizer, backend)
 # Supports multiple models loaded simultaneously.
 _kompress_cache: dict[str, tuple[Any, Any, str]] = {}
 _kompress_lock = threading.Lock()
+_execution_semaphores: dict[str, threading.BoundedSemaphore] = {}
+_execution_semaphores_lock = threading.Lock()
+
+
+def _selected_backend() -> KompressBackend:
+    raw = os.environ.get(KOMPRESS_BACKEND_ENV, "auto").strip().lower().replace("-", "_")
+    aliases = {
+        "": "auto",
+        "cpu": "onnx_cpu",
+        "coreml": "onnx_coreml",
+        "mps": "pytorch_mps",
+        "torch": "pytorch",
+        "torch_mps": "pytorch_mps",
+        "onnx": "onnx",
+        "onnx_cpu": "onnx_cpu",
+        "onnx_coreml": "onnx_coreml",
+        "pytorch": "pytorch",
+        "pytorch_mps": "pytorch_mps",
+        "auto": "auto",
+    }
+    return aliases.get(raw, "auto")  # type: ignore[return-value]
+
+
+def _env_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s must be an integer, got %r; ignoring", name, raw)
+        return None
+    if value <= 0:
+        logger.warning("%s must be positive, got %r; ignoring", name, raw)
+        return None
+    return value
+
+
+def _onnx_session_options(ort: Any) -> Any:
+    return create_cpu_session_options(
+        ort,
+        intra_op_num_threads=_env_int(KOMPRESS_ONNX_INTRA_THREADS_ENV),
+        inter_op_num_threads=_env_int(KOMPRESS_ONNX_INTER_THREADS_ENV),
+    )
+
+
+def _model_device_type(model: Any, backend: str) -> str:
+    if backend.startswith("onnx"):
+        return backend
+    if hasattr(model, "parameters"):
+        try:
+            return str(next(model.parameters()).device.type)
+        except Exception:
+            return "unknown"
+    return "unknown"
+
+
+def _default_max_concurrent(backend: str, device_type: str) -> int:
+    # MPS/CUDA execution is usually serialized under the hood; letting many
+    # Codex unit workers call the same model concurrently mostly adds queueing,
+    # memory pressure, and timeout leaks. CPU defaults to 1 as well because ONNX
+    # already owns its intra/inter-op threads.
+    if backend.startswith("onnx"):
+        return 1
+    if backend == "pytorch" and device_type in {"cuda", "mps", "cpu"}:
+        return 1
+    return 1
+
+
+def _execution_limit(backend: str, device_type: str) -> int:
+    return _env_int(KOMPRESS_MAX_CONCURRENT_ENV) or _default_max_concurrent(backend, device_type)
+
+
+def _execution_semaphore(backend: str, device_type: str) -> threading.BoundedSemaphore:
+    limit = _execution_limit(backend, device_type)
+    key = f"{backend}:{device_type}:{limit}"
+    with _execution_semaphores_lock:
+        semaphore = _execution_semaphores.get(key)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(limit)
+            _execution_semaphores[key] = semaphore
+        return semaphore
+
+
+def _batch_size() -> int:
+    return _env_int(KOMPRESS_BATCH_SIZE_ENV) or 32
+
+
+def _bucket_count(value: int) -> str:
+    """Return a coarse, privacy-preserving size bucket."""
+    if value <= 0:
+        return "0"
+    lower = 1 << (value.bit_length() - 1)
+    upper = lower << 1
+    return f"{lower}-{upper}"
+
+
+def _kompress_content_signature(content: str) -> Any:
+    """Create a first-class TOIN signature for Kompress/plain-text content.
+
+    This intentionally keys on shape, not values. Retrieval pressure should
+    teach TOIN about this class of compressed content without storing the
+    content or treating it as an anonymous fallback.
+    """
+    from ..telemetry.models import ToolSignature
+
+    words = content.split()
+    line_count = content.count("\n") + 1 if content else 0
+    nonempty_lines = [line for line in content.splitlines() if line.strip()]
+    avg_line_chars = (
+        sum(len(line) for line in nonempty_lines) // len(nonempty_lines) if nonempty_lines else 0
+    )
+    has_paths = "/" in content or "\\" in content
+    has_assignment_like_tokens = any("=" in word for word in words[:200])
+    has_brackets = any(ch in content for ch in "{}[]()")
+    has_error_terms = any(
+        term in content.lower() for term in ("error", "exception", "traceback", "failed", "fatal")
+    )
+    shape = "|".join(
+        (
+            "kompress-text",
+            f"chars:{_bucket_count(len(content))}",
+            f"words:{_bucket_count(len(words))}",
+            f"lines:{_bucket_count(line_count)}",
+            f"avg_line:{_bucket_count(avg_line_chars)}",
+            f"paths:{int(has_paths)}",
+            f"assign:{int(has_assignment_like_tokens)}",
+            f"brackets:{int(has_brackets)}",
+            f"errors:{int(has_error_terms)}",
+        )
+    )
+    structure_hash = hashlib.sha256(shape.encode()).hexdigest()[:24]
+    return ToolSignature(
+        structure_hash=structure_hash,
+        field_count=0,
+        has_nested_objects=False,
+        has_arrays=False,
+        max_depth=0,
+        string_field_count=1,
+        has_error_like_field=has_error_terms,
+        has_message_like_field=True,
+    )
 
 
 def _is_onnx_available() -> bool:
@@ -162,8 +340,56 @@ class _OnnxModel:
         return (np.array(scores) > 0.5).tolist()
 
 
-def _load_kompress_onnx(model_id: str) -> tuple[Any, Any, str]:
-    """Download ONNX INT8 model from HuggingFace and load with onnxruntime."""
+def _onnx_filename_candidates() -> tuple[str, ...]:
+    """ONNX repo paths to try, honoring an optional exact-file override."""
+    override = os.environ.get(KOMPRESS_ONNX_FILENAME_ENV, "").strip()
+    if override:
+        # Put the override first but keep the defaults as a safety net.
+        return (override, *(f for f in _DEFAULT_ONNX_FILENAMES if f != override))
+    return _DEFAULT_ONNX_FILENAMES
+
+
+def _create_onnx_session(model_id: str, ort: Any, providers: list[Any]) -> Any:
+    """Resolve and load the model's ONNX artifact, trying candidates in order.
+
+    A candidate is skipped on download miss (file not in the repo) or on
+    session-load failure (e.g. the weight-only int8 artifact uses the
+    MatMulNBits contrib op, which old onnxruntime builds can't run — those
+    installs fall through to the fp32 artifact instead of losing Kompress).
+    """
+    last_err: Exception | None = None
+    for filename in _onnx_filename_candidates():
+        try:
+            onnx_path = hf_hub_download_local_first(model_id, filename)
+        except Exception as exc:
+            last_err = exc
+            logger.debug("ONNX artifact %r not in %s: %s", filename, model_id, exc)
+            continue
+        try:
+            return ort.InferenceSession(
+                onnx_path,
+                _onnx_session_options(ort),
+                providers=providers,
+            )
+        except Exception as exc:
+            last_err = exc
+            logger.warning(
+                "ONNX artifact %r from %s failed to load (%s); trying next candidate",
+                filename,
+                model_id,
+                exc,
+            )
+    raise FileNotFoundError(
+        f"No loadable ONNX artifact in {model_id}; tried {_onnx_filename_candidates()}"
+    ) from last_err
+
+
+def _load_kompress_onnx(
+    model_id: str,
+    *,
+    use_coreml: bool = False,
+) -> tuple[Any, Any, str]:
+    """Download the ONNX model from HuggingFace and load with onnxruntime."""
     import onnxruntime as ort
     from transformers import AutoTokenizer
 
@@ -171,22 +397,42 @@ def _load_kompress_onnx(model_id: str) -> tuple[Any, Any, str]:
         if model_id in _kompress_cache:
             return _kompress_cache[model_id]
 
-        from huggingface_hub import hf_hub_download
-
         logger.info("Downloading Kompress ONNX model from %s ...", model_id)
-        onnx_path = hf_hub_download(model_id, "onnx/kompress-int8.onnx")
 
-        session = ort.InferenceSession(
-            onnx_path,
-            create_cpu_session_options(ort),
-            providers=["CPUExecutionProvider"],
-        )
+        backend = "onnx_coreml" if use_coreml else "onnx"
+        providers: list[Any]
+        if use_coreml:
+            from headroom import paths as _paths
+
+            coreml_cache_dir = os.environ.get(KOMPRESS_COREML_CACHE_DIR_ENV, "").strip()
+            cache_dir = (
+                coreml_cache_dir
+                if coreml_cache_dir
+                else str(_paths.workspace_dir() / "cache" / "coreml")
+            )
+            os.makedirs(cache_dir, exist_ok=True)
+            providers = [
+                (
+                    "CoreMLExecutionProvider",
+                    {
+                        "ModelFormat": "NeuralNetwork",
+                        "MLComputeUnits": "ALL",
+                        "RequireStaticInputShapes": "1",
+                        "ModelCacheDirectory": cache_dir,
+                    },
+                ),
+                "CPUExecutionProvider",
+            ]
+        else:
+            providers = ["CPUExecutionProvider"]
+
+        session = _create_onnx_session(model_id, ort, providers)
         model = _OnnxModel(session)
         tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
 
-        _kompress_cache[model_id] = (model, tokenizer, "onnx")
-        logger.info("Kompress ONNX INT8 loaded: %s", model_id)
-        return model, tokenizer, "onnx"
+        _kompress_cache[model_id] = (model, tokenizer, backend)
+        logger.info("Kompress ONNX loaded: %s backend=%s", model_id, backend)
+        return model, tokenizer, backend
 
 
 def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, Any, str]:
@@ -198,10 +444,9 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
         if model_id in _kompress_cache:
             return _kompress_cache[model_id]
 
-        from huggingface_hub import hf_hub_download
-
         logger.info("Downloading Kompress PyTorch model from %s ...", model_id)
-        weights_path = hf_hub_download(model_id, "model.safetensors")
+
+        weights_path = hf_hub_download_local_first(model_id, "model.safetensors")
 
         HeadroomCompressorModel = _get_model_class()
         model = HeadroomCompressorModel()
@@ -223,25 +468,79 @@ def _load_kompress_pytorch(model_id: str, device: str = "auto") -> tuple[Any, An
         model.eval()
 
         tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+        _validate_pytorch_device(model, tokenizer, device)
 
         _kompress_cache[model_id] = (model, tokenizer, "pytorch")
         logger.info("Kompress PyTorch loaded on %s (%s)", device, model_id)
         return model, tokenizer, "pytorch"
 
 
+def _validate_pytorch_device(model: Any, tokenizer: Any, device: str) -> None:
+    if device == "cpu":
+        return
+
+    encoding = tokenizer(
+        ["headroom", "kompress", "probe"],
+        is_split_into_words=True,
+        truncation=True,
+        max_length=512,
+        padding=True,
+        return_tensors="pt",
+    )
+    input_ids = encoding["input_ids"].to(device)
+    attention_mask = encoding["attention_mask"].to(device)
+    with _execution_semaphore("pytorch", device):
+        scores = model.get_scores(input_ids, attention_mask)
+        _ = scores[0].detach().cpu()
+
+
 def _load_kompress(model_id: str = HF_MODEL_ID, device: str = "auto") -> tuple[Any, Any, str]:
     """Load Kompress model, returns (model, tokenizer, backend).
 
-    Try ONNX first (lightweight), fall back to PyTorch.
+    The default keeps the historic behavior: try ONNX CPU first
+    (lightweight), then fall back to PyTorch. Operators can override via
+    HEADROOM_KOMPRESS_BACKEND:
+
+    - auto: ONNX CPU first, then PyTorch.
+    - onnx / onnx_cpu: force ONNX CPU.
+    - onnx_coreml: force ONNX Runtime CoreML provider with CPU fallback.
+    - pytorch: force PyTorch with the configured device.
+    - pytorch_mps: force PyTorch on Apple's MPS backend.
+
     Models are cached by model_id — multiple models can coexist.
     """
     if model_id in _kompress_cache:
         return _kompress_cache[model_id]
 
-    # Prefer ONNX (50MB onnxruntime vs 800MB torch)
+    backend = _selected_backend()
+    if backend in ("onnx", "onnx_cpu"):
+        return _load_kompress_onnx(model_id, use_coreml=False)
+
+    if backend == "onnx_coreml":
+        return _load_kompress_onnx(model_id, use_coreml=True)
+
+    if backend in ("pytorch", "pytorch_mps"):
+        forced_device = "mps" if backend == "pytorch_mps" else device
+        try:
+            return _load_kompress_pytorch(model_id, forced_device)
+        except Exception as exc:
+            if backend != "pytorch_mps":
+                raise
+            logger.warning(
+                "Kompress PyTorch MPS validation failed for %s; falling back to ONNX CPU: %s",
+                model_id,
+                exc,
+            )
+            if _is_onnx_available():
+                return _load_kompress_onnx(model_id, use_coreml=False)
+            return _load_kompress_pytorch(model_id, "cpu")
+
+    # Auto mode: preserve stable default behavior. This avoids changing
+    # compression quality/perf characteristics for existing installs while
+    # allowing opt-in MPS/CoreML experiments via HEADROOM_KOMPRESS_BACKEND.
     if _is_onnx_available():
         try:
-            return _load_kompress_onnx(model_id)
+            return _load_kompress_onnx(model_id, use_coreml=False)
         except Exception as e:
             logger.warning("ONNX load failed for %s, trying PyTorch: %s", model_id, e)
 
@@ -292,7 +591,7 @@ class KompressConfig:
 
     The model_id, chunk_words, and score_threshold are coupled: a model
     trained on 50-word chunks needs chunk_words=50 at inference. The
-    defaults match kompress-base. For domain-specific models, set all three.
+    defaults match kompress-v2-base. For domain-specific models, set all three.
 
     Example — financial documents::
 
@@ -345,6 +644,12 @@ class KompressCompressor(Transform):
     def __init__(self, config: KompressConfig | None = None):
         self.config = config or KompressConfig()
 
+    def preload(self) -> str:
+        """Load the backing model/tokenizer and return the selected backend."""
+
+        _model, _tokenizer, backend = _load_kompress(self.config.model_id, self.config.device)
+        return backend
+
     def compress(
         self,
         content: str,
@@ -376,11 +681,27 @@ class KompressCompressor(Transform):
         try:
             model, tokenizer, backend = _load_kompress(self.config.model_id, self.config.device)
             is_onnx = backend == "onnx"
+            device_type = _model_device_type(model, backend)
+
+            if self._should_batch_single_content(model, backend):
+                batch_result = self.compress_batch(
+                    [content],
+                    context=context,
+                    content_type=content_type,
+                    question=question,
+                    target_ratio=[target_ratio],
+                    batch_size=_batch_size(),
+                )
+                if batch_result:
+                    return batch_result[0]
 
             max_chunk_words = self.config.chunk_words
             kept_ids: set[int] = set()
+            inference_ms = 0.0
+            chunk_count = 0
 
             for chunk_start in range(0, n_words, max_chunk_words):
+                chunk_count += 1
                 chunk_words = words[chunk_start : chunk_start + max_chunk_words]
 
                 # ONNX uses numpy tensors, PyTorch uses torch tensors
@@ -403,12 +724,23 @@ class KompressCompressor(Transform):
                     input_ids = input_ids.to(device)
                     attention_mask = attention_mask.to(device)
 
-                if target_ratio is not None:
-                    scores = model.get_scores(input_ids, attention_mask)
-                    if is_onnx:
-                        score_list = scores[0]  # numpy: [seq_len]
+                with _execution_semaphore(backend, device_type):
+                    inference_started = time.perf_counter()
+                    if target_ratio is not None:
+                        scores = model.get_scores(input_ids, attention_mask)
+                        if is_onnx:
+                            score_list = scores[0]  # numpy: [seq_len]
+                        else:
+                            score_list = scores[0].cpu()
                     else:
-                        score_list = scores[0].cpu()
+                        keep_mask = model.get_keep_mask(input_ids, attention_mask)
+                        if is_onnx:
+                            mask_list = keep_mask[0]  # list of bools
+                        else:
+                            mask_list = keep_mask[0].cpu()
+                    inference_ms += (time.perf_counter() - inference_started) * 1000
+
+                if target_ratio is not None:
                     word_scores: dict[int, float] = {}
                     for idx, wid in enumerate(word_ids):
                         if wid is None:
@@ -424,11 +756,6 @@ class KompressCompressor(Transform):
                         for wid in sorted_wids[:num_keep]:
                             kept_ids.add(wid + chunk_start)
                 else:
-                    keep_mask = model.get_keep_mask(input_ids, attention_mask)
-                    if is_onnx:
-                        mask_list = keep_mask[0]  # list of bools
-                    else:
-                        mask_list = keep_mask[0].cpu()
                     for idx, wid in enumerate(word_ids):
                         if wid is None:
                             continue
@@ -436,6 +763,16 @@ class KompressCompressor(Transform):
                             kept_ids.add(wid + chunk_start)
 
             if not kept_ids:
+                if inference_ms >= 1000.0:
+                    logger.info(
+                        "Kompress slow passthrough backend=%s device=%s words=%d chunks=%d "
+                        "inference_ms=%.0f",
+                        backend,
+                        device_type,
+                        n_words,
+                        chunk_count,
+                        inference_ms,
+                    )
                 return self._passthrough(content, n_words)
 
             compressed_words = [words[w] for w in sorted(kept_ids) if w < n_words]
@@ -461,6 +798,19 @@ class KompressCompressor(Transform):
                         f"\n[{n_words} items compressed to {compressed_count}."
                         f" Retrieve more: hash={cache_key}]"
                     )
+
+            if inference_ms >= 1000.0:
+                logger.info(
+                    "Kompress slow compress backend=%s device=%s words=%d chunks=%d "
+                    "inference_ms=%.0f ratio=%.3f saved=%d",
+                    backend,
+                    device_type,
+                    n_words,
+                    chunk_count,
+                    inference_ms,
+                    ratio,
+                    result.tokens_saved,
+                )
 
             return result
 
@@ -594,7 +944,9 @@ class KompressCompressor(Transform):
             return [r for r in results if r is not None]
 
         is_onnx = backend == "onnx"
+        device_type = _model_device_type(model, backend)
         kept_ids_per_text: dict[int, set[int]] = {i: set() for i in range(n) if results[i] is None}
+        inference_ms = 0.0
 
         for batch_start in range(0, len(chunk_queue), batch_size):
             batch = chunk_queue[batch_start : batch_start + batch_size]
@@ -620,7 +972,10 @@ class KompressCompressor(Transform):
                     attention_mask = attention_mask.to(device)
 
                 # Single forward pass for all chunks in this batch.
-                scores = model.get_scores(input_ids, attention_mask)
+                with _execution_semaphore(backend, device_type):
+                    inference_started = time.perf_counter()
+                    scores = model.get_scores(input_ids, attention_mask)
+                    inference_ms += (time.perf_counter() - inference_started) * 1000
 
                 for batch_idx, (text_idx, chunk_start, _chunk_words, ratio) in enumerate(batch):
                     word_ids = encoding.word_ids(batch_index=batch_idx)
@@ -707,7 +1062,28 @@ class KompressCompressor(Transform):
                 final.append(self._passthrough(contents[i], len(word_lists[i])))
             else:
                 final.append(r)
+        if inference_ms >= 1000.0:
+            total_words = sum(len(words) for words in word_lists)
+            total_saved = sum(r.tokens_saved for r in final)
+            logger.info(
+                "Kompress slow batch backend=%s device=%s items=%d chunks=%d "
+                "batch_size=%d words=%d inference_ms=%.0f saved=%d",
+                backend,
+                device_type,
+                n,
+                len(chunk_queue),
+                batch_size,
+                total_words,
+                inference_ms,
+                total_saved,
+            )
         return final
+
+    def _should_batch_single_content(self, model: Any, backend: str) -> bool:
+        if backend != "pytorch":
+            return False
+        device_type = _model_device_type(model, backend)
+        return device_type in {"cuda", "mps"}
 
     def _should_use_sequential_fallback(self) -> bool:
         """Return True if batched inference wouldn't speed up on this backend.
@@ -800,13 +1176,30 @@ class KompressCompressor(Transform):
         try:
             from ..cache.compression_store import get_compression_store
 
+            signature = _kompress_content_signature(original)
+            compressed_tokens = len(compressed.split())
             store = get_compression_store()
-            return store.store(
+            cache_key = store.store(
                 original,
                 compressed,
                 original_tokens=original_tokens,
-                compressed_tokens=len(compressed.split()),
+                compressed_tokens=compressed_tokens,
+                original_item_count=original_tokens,
+                compressed_item_count=compressed_tokens,
+                tool_signature_hash=signature.structure_hash,
                 compression_strategy="kompress",
             )
+            with contextlib.suppress(Exception):
+                from ..telemetry import get_toin
+
+                get_toin().record_compression(
+                    tool_signature=signature,
+                    original_count=original_tokens,
+                    compressed_count=compressed_tokens,
+                    original_tokens=original_tokens,
+                    compressed_tokens=compressed_tokens,
+                    strategy="kompress",
+                )
+            return cache_key
         except Exception:
             return None

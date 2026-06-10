@@ -145,24 +145,6 @@ class TestToolPattern:
         assert pattern.full_retrieval_rate == 0.0
 
 
-@pytest.mark.skip(
-    reason=(
-        "PR-B5: CompressionHint is now private (_CompressionHint) and "
-        "the request-time hint API is retired. See "
-        "tests/test_toin_observation_only.py for the replacement contract."
-    )
-)
-class TestCompressionHint:
-    """Retired: CompressionHint was the public envelope for the
-    request-time hint API removed in PR-B5."""
-
-    def test_default_values(self):
-        pass
-
-    def test_custom_values(self):
-        pass
-
-
 class TestTOINConfig:
     """Test TOINConfig data model."""
 

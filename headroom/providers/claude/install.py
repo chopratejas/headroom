@@ -26,14 +26,14 @@ def apply_provider_scope(manifest: DeploymentManifest) -> ManagedMutation | None
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {}
     if path.exists():
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     env = payload.get("env")
     env_map = dict(env) if isinstance(env, dict) else {}
     values = manifest.tool_envs.get(ToolTarget.CLAUDE.value, {})
     previous = {name: env_map.get(name) for name in values}
     env_map.update(values)
     payload["env"] = env_map
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return ManagedMutation(
         target=ToolTarget.CLAUDE.value,
         kind="json-env",
@@ -49,7 +49,7 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
     path = Path(mutation.path)
     if not path.exists():
         return
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     env = payload.get("env")
     env_map = dict(env) if isinstance(env, dict) else {}
     previous: dict[str, object] = mutation.data.get("previous", {})
@@ -60,4 +60,4 @@ def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifes
         else:
             env_map[name] = previous[name]
     payload["env"] = env_map
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

@@ -153,7 +153,7 @@
         "properties": {
           "memory_id": {
             "type": "string",
-            "description": "The unique ID of the memory to update. Obtain this from a memory_search result."
+            "description": "The unique ID of the memory to update. Take this from the [id] prefix shown in the auto-injected memory block, or from a memory_search / memory_list result."
           },
           "new_content": {
             "type": "string",
@@ -178,7 +178,7 @@
         "properties": {
           "memory_id": {
             "type": "string",
-            "description": "The unique ID of the memory to delete. Obtain this from a memory_search result."
+            "description": "The unique ID of the memory to delete. Take this from the [id] prefix shown in the auto-injected memory block, or from a memory_search / memory_list result."
           },
           "reason": {
             "type": "string",
@@ -188,6 +188,22 @@
         "required": [
           "memory_id"
         ]
+      }
+    },
+    {
+      "name": "memory_list",
+      "description": "Browse memories without a semantic query \u2014 list recent or all memories with their IDs.\n\nUse this when:\n- You want to see what's stored without a specific search term\n  - \"What do you remember about me / this project?\"\n  - \"Show me everything you've saved recently\"\n- You need a memory ID for `memory_update` or `memory_delete` but don't have a good search query\n- You're auditing the memory store (debugging, cleanup, review)\n\nDifferences from `memory_search`:\n- `memory_search(query)` is SEMANTIC \u2014 finds memories similar to a query string\n- `memory_list()` is CHRONOLOGICAL \u2014 returns the most recent memories first\n- Use `memory_search` when you know what you're looking for; use `memory_list` when you want to browse\n\nReturns memories in reverse chronological order (newest first). Each entry includes\nthe `memory_id` you'd use to update / delete it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of memories to return (default 10, max 100). Use a smaller number for a quick overview; larger when you need to find a specific memory ID.",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": []
       }
     }
   ]

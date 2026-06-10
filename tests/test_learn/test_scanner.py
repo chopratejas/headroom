@@ -8,12 +8,13 @@ making it impossible to reconstruct names formed from three or more tokens.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from headroom.learn.scanner import _decode_project_path, _greedy_path_decode
+from headroom.learn.scanner import ClaudeCodeScanner, _decode_project_path, _greedy_path_decode
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -191,7 +192,7 @@ class TestDecodeProjectPath:
     # ------------------------------------------------------------------
 
     @pytest.fixture()
-    def users_tmp(self, tmp_path: Path) -> Path:
+    def users_tmp(self, tmp_path: Path) -> Generator[Path, None, None]:
         """Return a temporary directory whose path starts with /Users/…
 
         On macOS the system temp dir is under /private/var, so we create a
@@ -315,10 +316,75 @@ class TestDecodeProjectPath:
 
     def test_windows_users_path(self) -> None:
         """Encoded name -C-Users-foo-project detects drive letter."""
-        import sys
-
         result = _decode_project_path("-C-Users-foo-project")
-        if sys.platform == "win32":
-            assert result is None or "Users" in str(result)
-        else:
-            assert result is None
+        assert result is not None
+        assert str(result).startswith("C:")
+        assert "Users" in str(result)
+
+    def test_windows_username_with_dot_stays_single_component(self) -> None:
+        """Windows profile names like john.doe must not decode as john/doe."""
+        result = _decode_project_path("-C-Users-john.doe-work")
+
+        assert result is not None
+        rendered = str(result)
+        assert rendered.startswith("C:")
+        assert "john.doe" in rendered
+        assert "john\\doe" not in rendered
+        assert "john/doe" not in rendered
+
+    def test_discover_windows_project_uses_leaf_name(self, tmp_path: Path) -> None:
+        """A syntactic Windows path decoded on Unix should still display the project leaf."""
+        claude_dir = tmp_path / ".claude"
+        project_dir = claude_dir / "projects" / "-C-Users-john.doe-work"
+        project_dir.mkdir(parents=True)
+        (project_dir / "session.jsonl").write_text("{}\n")
+
+        projects = ClaudeCodeScanner(claude_dir=claude_dir).discover_projects()
+
+        assert len(projects) == 1
+        assert projects[0].name == "work"
+        assert str(projects[0].project_path).startswith("C:")
+
+    def test_home_dir_username_stays_single_component(self) -> None:
+        """A home-directory name must survive decoding as one component.
+
+        Claude Code flattens ``/``, ``.``, ``-`` and ``_`` all to ``-`` when
+        escaping, so a project under ``/Users/first.last`` (or
+        ``/home/first.last``) is stored as ``-Users-first-last-…``. The decoder
+        used to consume only the first token after ``Users``/``home`` as the
+        home directory and walk from ``/Users/first`` (which does not exist), so
+        it bailed out and callers fell back to the literal
+        ``/Users/first/last`` — causing ``headroom learn --apply`` to fail with
+        ``PermissionError: '/Users/first'`` for usernames such as
+        ``first.last``. This is the Unix counterpart of
+        ``test_windows_username_with_dot_stays_single_component``.
+
+        Rooted at the real home so it exercises the ``Users``/``home`` branch on
+        both macOS (``/Users/…``) and Linux (``/home/…``); skipped when the home
+        directory is neither rooted there nor writable.
+        """
+        import shutil
+
+        home = Path.home()
+        if len(home.parts) < 3 or home.parts[1] not in ("Users", "home"):
+            pytest.skip("decoder branch only activates under /Users or /home")
+
+        base = home / f"pytest_headroom_{uuid4().hex}"
+        try:
+            base.mkdir()
+        except (PermissionError, OSError):
+            pytest.skip("home directory is not writable")
+
+        try:
+            project = base / "my.project"
+            project.mkdir()
+
+            # Flatten separators exactly as Claude Code does when escaping.
+            encoded = "-" + str(project)[1:].replace("/", "-").replace(".", "-").replace("_", "-")
+            result = _decode_project_path(encoded)
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+        assert result == project
+        # The home component is reconstructed whole, never split on a separator.
+        assert home.name in result.parts

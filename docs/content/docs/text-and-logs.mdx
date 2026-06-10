@@ -11,7 +11,7 @@ Headroom provides specialized compressors for text-based content that isn't JSON
 | `LogCompressor` | Build/test logs | Errors, stack traces, summaries | 85-95% |
 | `DiffCompressor` | Unified diffs | Changed lines, context | 60-80% |
 | `TextCompressor` | General text | Relevant paragraphs, anchors | 60-80% |
-| `LLMLinguaCompressor` | Any text (max compression) | Semantic meaning via ML | 80-95% |
+| `KompressCompressor` | General text fallback | Learned token scoring via ONNX | 30-50% |
 
 ## SearchCompressor
 
@@ -134,21 +134,12 @@ print(result.compressed)
 - Headers and section markers
 - Document structure and organization
 
-## LLMLingua (Optional, Maximum Compression)
-
-For maximum compression on any text, Headroom integrates with Microsoft's LLMLingua-2, a BERT-based token classifier trained via GPT-4 distillation. It achieves up to 20x compression while preserving semantic meaning.
+## Kompress
 
 ```python
-from headroom.transforms import LLMLinguaCompressor, LLMLinguaConfig
+from headroom.transforms.kompress_compressor import KompressCompressor
 
-config = LLMLinguaConfig(
-    device="auto",                # auto, cuda, cpu, mps
-    code_compression_rate=0.4,    # Conservative for code
-    json_compression_rate=0.35,   # Moderate for JSON
-    text_compression_rate=0.25,   # Aggressive for text
-)
-
-compressor = LLMLinguaCompressor(config)
+compressor = KompressCompressor()
 result = compressor.compress(long_output)
 
 print(f"Before: {result.original_tokens} tokens")
@@ -156,21 +147,9 @@ print(f"After: {result.compressed_tokens} tokens")
 print(f"Saved: {result.savings_percentage:.1f}%")
 ```
 
-<Callout type="info" title="LLMLingua is opt-in">
-  LLMLingua adds ~2GB of model weights and 50-200ms latency per request. Install it only when you need maximum compression: `pip install "headroom-ai[llmlingua]"`
+<Callout type="info" title="LLMLingua was removed">
+  The old LLMLingua transform and helper functions are no longer exported. Use Kompress and ContentRouter for text compression.
 </Callout>
-
-### Memory Management
-
-```python
-from headroom.transforms import unload_llmlingua_model, is_llmlingua_model_loaded
-
-# Check if model is loaded
-print(is_llmlingua_model_loaded())  # True
-
-# Free ~1GB RAM when done
-unload_llmlingua_model()
-```
 
 ## Content Type Detection
 
@@ -200,7 +179,7 @@ The ContentRouter selects the right compressor automatically. Here's when each f
 | pytest, npm, cargo markers | LogCompressor | Build tool output patterns |
 | `---/+++` and `@@` markers | DiffCompressor | Unified diff format |
 | Prose, documentation | TextCompressor | Fallback for non-structured text |
-| Any (max compression mode) | LLMLinguaCompressor | Explicitly enabled |
+| Long plain text | KompressCompressor | ContentRouter fallback |
 
 ## Performance
 
@@ -210,4 +189,4 @@ The ContentRouter selects the right compressor automatically. Here's when each f
 | LogCompressor | 5,000 lines | 100-200 lines | ~3ms |
 | DiffCompressor | Large diff | Changed hunks only | ~2ms |
 | TextCompressor | 10,000 chars | 2,000 chars | ~2ms |
-| LLMLinguaCompressor | Any text | 5-20% of original | 50-200ms |
+| KompressCompressor | Plain text | 50-70% of original | model-dependent |

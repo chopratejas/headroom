@@ -139,6 +139,17 @@ class TestProxyCLITelemetryBanner:
 
         assert "HEADROOM_TELEMETRY=off" in result.output or "--no-telemetry" in result.output
 
+    def test_banner_shows_context_tool(self, runner, monkeypatch):
+        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+
+        from headroom.cli.main import main
+
+        with patch("headroom.proxy.server.run_server", side_effect=SystemExit(0)):
+            result = runner.invoke(main, ["proxy"])
+
+        assert result.exit_code == 0
+        assert "Context Tool: lean-ctx" in result.output
+
 
 # ---------------------------------------------------------------------------
 # wrap CLI telemetry notice

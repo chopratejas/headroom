@@ -87,8 +87,13 @@ class TestMultiTurnCompression:
             _make_user_msg("now edit it"),
         ]
         frozen = cache.compute_frozen_count(messages)
-        # All 4 messages stable (user, tool_use, tool_result cached, user)
-        assert frozen == 4
+        # First 3 stable; trailing user message ("now edit it") is the
+        # live zone by construction — it has not been sent upstream
+        # before, so it cannot be in any provider prefix cache. Cap at
+        # len - 1 prevents the over-freeze pattern that produced 0 %
+        # compression for prose-format clients (issue observed
+        # 2026-05-07 with Cline+DeepSeek).
+        assert frozen == 3
 
         # apply_cached should swap the content
         result = cache.apply_cached(messages)
@@ -129,9 +134,10 @@ class TestMultiTurnCompression:
         # Now cache C too
         cache.store_compressed(CompressionCache.content_hash(code_c), "cc", tokens_saved=100)
 
-        # Turn 3: all cached
+        # Turn 3: all 6 messages structurally stable, but the trailing
+        # message is reserved as live zone. Frozen prefix = 5.
         frozen = cache.compute_frozen_count(messages)
-        assert frozen == 6  # all stable
+        assert frozen == 5
 
 
 class TestNoMessageInjection:
@@ -305,3 +311,92 @@ class TestUpdateFromResult:
         msg = _make_user_msg("same content")
         cache.update_from_result([msg], [msg])
         assert cache.get_stats()["entries"] == 0
+
+
+class TestProseFormatLiveZoneInvariant:
+    """Cline / OpenClaude / Aider — prose-format clients send tool calls
+    embedded in plain assistant text and tool results pasted into plain
+    user messages. There are no `tool_use`, `tool_result`, or
+    ``role: "tool"`` blocks anywhere in the conversation.
+
+    Pre-fix: ``compute_frozen_count`` walked all messages and found no
+    "unstable" boundary, returning ``len(messages)``. The pipeline then
+    froze every message — including the brand-new user turn — leaving
+    the live zone empty. ContentRouter saw ``saved 0`` on every request.
+    Bug observed 2026-05-07 with Cline+DeepSeek over /v1/chat/completions
+    in token mode.
+
+    Post-fix: cap at ``len(messages) - 1`` always reserves the trailing
+    message as the live zone. These tests lock that invariant.
+    """
+
+    def test_pure_user_assistant_turns_leave_live_zone(self):
+        cache = CompressionCache()
+        # A 6-turn Cline-shaped conversation: alternating user/assistant
+        # plain-text. No tool blocks of any kind.
+        messages = [
+            _make_user_msg("system instructions baked into first user msg"),
+            _make_assistant_msg("<execute_command>ls</execute_command>"),
+            _make_user_msg("[tool_result]\nfile1.py\nfile2.py\n[/tool_result]"),
+            _make_assistant_msg("<read_file>file1.py</read_file>"),
+            _make_user_msg("[tool_result]\n<contents...>\n[/tool_result]"),
+            _make_user_msg("now please refactor it"),
+        ]
+        frozen = cache.compute_frozen_count(messages)
+        # Pre-fix would return 6 (every plain message is "stable").
+        # Post-fix: 6 messages stable, capped at len-1 = 5.
+        assert frozen == 5
+        assert frozen < len(messages), (
+            "Live zone must never be empty; trailing user message must "
+            "always be available for compression"
+        )
+
+    def test_single_message_yields_zero_frozen(self):
+        # Edge case: only the user's first message, nothing to freeze.
+        cache = CompressionCache()
+        messages = [_make_user_msg("first turn")]
+        assert cache.compute_frozen_count(messages) == 0
+
+    def test_empty_messages_yields_zero(self):
+        cache = CompressionCache()
+        assert cache.compute_frozen_count([]) == 0
+
+    def test_two_messages_first_is_frozen_second_is_live(self):
+        cache = CompressionCache()
+        messages = [
+            _make_user_msg("turn 1 content"),
+            _make_user_msg("turn 2 — the live zone"),
+        ]
+        # First message structurally stable; trailing is live → 1 frozen.
+        assert cache.compute_frozen_count(messages) == 1
+
+    def test_anthropic_format_last_tool_result_is_still_live(self):
+        """Even when the trailing message is a tool_result whose content
+        IS in the cache, it stays in the live zone. Trailing == live by
+        construction; the cache-read decision is upstream's job."""
+        cache = CompressionCache()
+        code = _large_code_content(50)
+        cache.store_compressed(
+            CompressionCache.content_hash(code), "compressed code", tokens_saved=200
+        )
+        messages = [
+            _make_user_msg("hi"),
+            _make_assistant_msg("ok"),
+            _make_tool_result_msg("t1", code),
+        ]
+        frozen = cache.compute_frozen_count(messages)
+        # Walk gets to 3, cap clamps to 2 (= len-1).
+        assert frozen == 2
+
+    def test_openai_format_last_tool_msg_is_live(self):
+        cache = CompressionCache()
+        content = "tool output " * 100
+        cache.store_compressed(
+            CompressionCache.content_hash(content), "compressed", tokens_saved=300
+        )
+        messages = [
+            _make_user_msg("run cmd"),
+            _make_openai_tool_msg("tc1", content),
+        ]
+        # Walk: user (stable, 1), tool (cached, 2). Cap → 1.
+        assert cache.compute_frozen_count(messages) == 1

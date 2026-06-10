@@ -92,9 +92,27 @@ def _verify_claude_local(ctx: CaseContext) -> None:
     claude_calls = [
         record["argv"] for record in _read_jsonl(ctx.shim_log) if record["tool"] == "claude"
     ]
+    # `init` auto-registers the headroom MCP server after the marketplace
+    # install (see d9d8972 — keeps `[Retrieve more: hash=…]` markers from
+    # being dead pointers for users who never ran `headroom mcp install`).
+    # The `-e HEADROOM_PROXY_URL=…` arg is only emitted when the proxy
+    # port differs from the 8787 default; this case uses --port 9011.
     expected = [
         ["plugin", "marketplace", "add", str(REPO_ROOT_IN_CONTAINER)],
         ["plugin", "install", "headroom@headroom-marketplace", "--scope", "local"],
+        [
+            "mcp",
+            "add",
+            "headroom",
+            "-s",
+            "user",
+            "-e",
+            "HEADROOM_PROXY_URL=http://127.0.0.1:9011",
+            "--",
+            "headroom",
+            "mcp",
+            "serve",
+        ],
     ]
     if claude_calls != expected:
         raise AssertionError(f"Unexpected Claude install commands: {claude_calls}")
@@ -137,6 +155,15 @@ def _verify_codex_local(ctx: CaseContext) -> None:
 
     if 'base_url = "http://127.0.0.1:9012/v1"' not in config:
         raise AssertionError("Codex config should point at the requested proxy port (9012)")
+    if 'env_key = "OPENAI_API_KEY"' in config:
+        raise AssertionError("Codex local init should preserve OAuth and never inject env_key")
+    # Bug 3 (#406): requires_openai_auth must be absent from headroom provider blocks.
+    if "requires_openai_auth" in config:
+        raise AssertionError(
+            "Codex local init must NOT inject requires_openai_auth into the headroom provider block"
+        )
+    if "supports_websockets = true" not in config:
+        raise AssertionError("Codex local init missing 'supports_websockets = true'")
     if config.count("[features]") != 1:
         raise AssertionError("Codex config should keep a single [features] table")
     if "codex_hooks = true" not in config:
@@ -170,6 +197,15 @@ def _verify_codex_global(ctx: CaseContext) -> None:
     config = (ctx.home / ".codex" / "config.toml").read_text(encoding="utf-8")
     if 'base_url = "http://127.0.0.1:8787/v1"' not in config:
         raise AssertionError("Codex user config should point at port 8787 by default")
+    if 'env_key = "OPENAI_API_KEY"' in config:
+        raise AssertionError("Codex global init should preserve OAuth and never inject env_key")
+    # Bug 3 (#406): requires_openai_auth must be absent from headroom provider blocks.
+    if "requires_openai_auth" in config:
+        raise AssertionError(
+            "Codex global init must NOT inject requires_openai_auth into the headroom provider block"
+        )
+    if "supports_websockets = true" not in config:
+        raise AssertionError("Codex global init missing 'supports_websockets = true'")
     if "codex_hooks = true" not in config:
         raise AssertionError("Codex user config should enable codex_hooks")
     hooks = json.loads((ctx.home / ".codex" / "hooks.json").read_text(encoding="utf-8"))

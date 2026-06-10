@@ -67,7 +67,7 @@ curl -s http://127.0.0.1:8787/healthz/upstream   # => 200 if upstream reachable
 
 ```bash
 # 1. Move the Python proxy to a private port (e.g. 8788)
-HEADROOM_BIND=127.0.0.1:8788 python -m headroom.proxy &     # or your existing launcher
+HEADROOM_HOST=127.0.0.1 HEADROOM_PORT=8788 python -m headroom.proxy &  # or your existing launcher
 
 # 2. Run the Rust proxy on the previously-public port (8787) pointing at it
 ./target/release/headroom-proxy --listen 0.0.0.0:8787 --upstream http://127.0.0.1:8788 &

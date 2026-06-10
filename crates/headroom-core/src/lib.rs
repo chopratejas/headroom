@@ -3,6 +3,7 @@
 pub mod auth_mode;
 pub mod cache_control;
 pub mod ccr;
+pub mod compression_policy;
 pub mod relevance;
 pub mod signals;
 pub mod tokenizer;

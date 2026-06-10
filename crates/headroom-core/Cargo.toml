@@ -61,11 +61,6 @@ flate2 = "1"
 # (release matrix, e2e/wrap, e2e/init, devcontainer, ci.yml) needs
 # system OpenSSL + perl modules for openssl-src vendored compile. Using
 # rustls everywhere removes the entire OpenSSL build-deps surface.
-fastembed = { version = "5", default-features = false, features = [
-    "hf-hub-rustls-tls",
-    "ort-download-binaries-rustls-tls",
-    "image-models",
-] }
 # `magika` is Google's ONNX-backed content classifier (Tier 1 of the
 # Stage-3d ContentRouter detection arch). Bundled standard-model is
 # loaded once per process via `OnceLock` and shared across calls. The
@@ -126,6 +121,23 @@ redis = { version = "0.27", optional = true, default-features = false }
 # classifier live with the other Phase B/F policy primitives without
 # cycling through the proxy crate. Tiny crate (no I/O, just types).
 http = "1"
+
+[target.'cfg(not(windows))'.dependencies]
+fastembed = { version = "5", default-features = false, features = [
+    "hf-hub-rustls-tls",
+    "ort-download-binaries-rustls-tls",
+    "image-models",
+] }
+
+[target.'cfg(windows)'.dependencies]
+# `ort-download-binaries-*` emits DirectML link libs on Windows (`DXCORE`,
+# `DXGI`, `D3D12`, `DirectML`). Users installing `headroom-ai[all]` from
+# sdist often do not have those SDK libs, so load ORT dynamically instead.
+fastembed = { version = "5", default-features = false, features = [
+    "hf-hub-rustls-tls",
+    "ort-load-dynamic",
+    "image-models",
+] }
 
 [features]
 default = []

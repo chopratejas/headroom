@@ -228,6 +228,18 @@ class CompressionCache:
         an assistant message with tool_use blocks, or a tool_result whose
         content hash is already in the cache. The first unstable tool_result
         (cache miss) stops the count.
+
+        The trailing message is *always* excluded from the frozen prefix
+        (cap of ``len(messages) - 1``). The trailing message represents
+        the just-arrived turn — by definition it has not yet been sent
+        upstream and therefore cannot be in any provider prefix cache.
+        Without this cap, prose-format clients (Cline, OpenClaude, Aider,
+        any client that does not use OpenAI-native or Anthropic-native
+        tool messages) would have every message marked stable, making
+        the live zone empty and producing zero compression. See issue
+        observed 2026-05-07 with Cline+DeepSeek (`Pipeline: freezing
+        first N/N messages` followed by ``Transform content_router:
+        X -> X tokens (saved 0)`` on every request).
         """
         with self._lock:
             count = 0
@@ -244,7 +256,9 @@ class CompressionCache:
                 # Regular user/assistant/system messages and assistant+tool_use
                 # are always stable — fall through.
                 count += 1
-            return count
+            # Reserve the trailing message as the live zone. `max(0, ...)`
+            # handles the empty-list edge case cleanly.
+            return min(count, max(0, len(messages) - 1))
 
     def apply_cached(self, messages: list[dict]) -> list[dict]:
         """Return a new list with cached compressions swapped into tool results.

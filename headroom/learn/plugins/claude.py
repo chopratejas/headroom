@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .._shared import classify_error, is_error_content
 from ..base import ConversationScanner, LearnPlugin
@@ -77,7 +77,7 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
                 else:
                     project_path = Path("/" + entry.name[1:].replace("-", "/"))
 
-            name = project_path.name if project_path != Path("/") else entry.name
+            name = _project_display_name(project_path, entry.name)
 
             context_file = None
             if project_path.exists():
@@ -323,6 +323,8 @@ def _decode_project_path(escaped_name: str) -> Path | None:
             result = _greedy_path_decode(win_base, parts[2:])
             if result:
                 return result
+        if len(parts) > 1 and parts[1].lower() == "users":
+            return win_path
 
     simple = Path("/" + escaped_name[1:].replace("-", "/"))
     if simple.exists():
@@ -331,17 +333,29 @@ def _decode_project_path(escaped_name: str) -> Path | None:
     if len(parts) < 3:
         return None
 
-    if parts[0] == "Users" and len(parts) > 2:
+    if parts[0] in ("Users", "home") and len(parts) > 2:
+        # Start the greedy decode at the mount root so a home-directory
+        # component containing '.', '-' or '_' (e.g. "first.last", encoded as
+        # "first-last") is matched as a single directory by tokenisation,
+        # instead of being split into "/Users/first/last". Falls back to the
+        # legacy single-token assumption if the rooted walk finds nothing.
+        result = _greedy_path_decode(Path(f"/{parts[0]}"), parts[1:])
+        if result is not None:
+            return result
         base = Path(f"/{parts[0]}/{parts[1]}")
-        remaining = parts[2:]
-        return _greedy_path_decode(base, remaining)
-
-    if parts[0] == "home" and len(parts) > 2:
-        base = Path(f"/{parts[0]}/{parts[1]}")
-        remaining = parts[2:]
-        return _greedy_path_decode(base, remaining)
+        return _greedy_path_decode(base, parts[2:])
 
     return None
+
+
+def _project_display_name(project_path: Path, fallback: str) -> str:
+    """Return a human project name for POSIX and Windows-style decoded paths."""
+    rendered = str(project_path)
+    if re.match(r"^[A-Za-z]:[\\/]", rendered):
+        return PureWindowsPath(rendered).name or fallback
+    if project_path == Path("/"):
+        return fallback
+    return project_path.name or fallback
 
 
 def _greedy_path_decode(base: Path, parts: list[str]) -> Path | None:

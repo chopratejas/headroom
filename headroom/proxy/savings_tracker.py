@@ -115,6 +115,22 @@ def _coerce_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+PROVIDER_UNKNOWN = "unknown"
+
+
+def _normalize_provider(value: Any) -> str:
+    """Normalize a provider label, falling back to a stable sentinel.
+
+    History checkpoints persisted before per-provider attribution existed have
+    no provider field, so they collapse into ``PROVIDER_UNKNOWN`` rather than
+    silently dropping their savings from the per-provider breakdown.
+    """
+    if not isinstance(value, str):
+        return PROVIDER_UNKNOWN
+    cleaned = value.strip()
+    return cleaned or PROVIDER_UNKNOWN
+
+
 def _resolve_litellm_model(model: str) -> str:
     """Resolve model name to one LiteLLM recognizes."""
     litellm = _get_litellm_module()
@@ -224,6 +240,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     compression_savings_usd = 0.0
     total_input_tokens = 0
     total_input_cost_usd = 0.0
+    provider = PROVIDER_UNKNOWN
 
     if isinstance(entry, dict):
         timestamp = _parse_timestamp(entry.get("timestamp"))
@@ -231,6 +248,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         compression_savings_usd = _coerce_float(entry.get("compression_savings_usd"))
         total_input_tokens = _coerce_int(entry.get("total_input_tokens"))
         total_input_cost_usd = _coerce_float(entry.get("total_input_cost_usd"))
+        provider = _normalize_provider(entry.get("provider"))
     elif isinstance(entry, list | tuple) and len(entry) >= 2:
         timestamp = _parse_timestamp(entry[0])
         total_tokens_saved = _coerce_int(entry[1])
@@ -248,6 +266,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
 
     return {
         "timestamp": _to_utc_iso(timestamp),
+        "provider": provider,
         "total_tokens_saved": total_tokens_saved,
         "compression_savings_usd": round(compression_savings_usd, 6),
         "total_input_tokens": total_input_tokens,
@@ -344,6 +363,7 @@ class SavingsTracker:
         *,
         model: str,
         tokens_saved: int,
+        provider: str | None = None,
         total_input_tokens: int | None = None,
         total_input_cost_usd: float | None = None,
         timestamp: datetime | str | None = None,
@@ -389,6 +409,7 @@ class SavingsTracker:
             self._state["history"].append(
                 {
                     "timestamp": _to_utc_iso(timestamp_dt),
+                    "provider": _normalize_provider(provider),
                     "total_tokens_saved": lifetime["tokens_saved"],
                     "compression_savings_usd": lifetime["compression_savings_usd"],
                     "total_input_tokens": lifetime["total_input_tokens"],
@@ -405,6 +426,7 @@ class SavingsTracker:
         model: str,
         input_tokens: int,
         tokens_saved: int,
+        provider: str | None = None,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         uncached_input_tokens: int = 0,
@@ -508,6 +530,7 @@ class SavingsTracker:
                 self._state["history"].append(
                     {
                         "timestamp": _to_utc_iso(timestamp_dt),
+                        "provider": _normalize_provider(provider),
                         "total_tokens_saved": lifetime["tokens_saved"],
                         "compression_savings_usd": lifetime["compression_savings_usd"],
                         "total_input_tokens": lifetime["total_input_tokens"],
@@ -914,6 +937,7 @@ class SavingsTracker:
                     "total_input_tokens": total_input_tokens,
                     "total_input_cost_usd_delta": 0.0,
                     "total_input_cost_usd": total_input_cost_usd,
+                    "by_provider": {},
                 },
             )
             entry["tokens_saved"] += delta_tokens
@@ -930,5 +954,31 @@ class SavingsTracker:
             entry["compression_savings_usd"] = round(total_usd, 6)
             entry["total_input_tokens"] = total_input_tokens
             entry["total_input_cost_usd"] = round(total_input_cost_usd, 6)
+
+            # Attribute this checkpoint's delta to the provider that produced
+            # it. Each checkpoint comes from a single request, so its delta is
+            # wholly owned by one provider. Skip no-op checkpoints so providers
+            # only appear in a bucket where they actually moved a counter.
+            if delta_tokens or delta_usd or delta_input_tokens or delta_input_cost_usd:
+                provider = _normalize_provider(point.get("provider"))
+                prov = entry["by_provider"].setdefault(
+                    provider,
+                    {
+                        "tokens_saved": 0,
+                        "compression_savings_usd_delta": 0.0,
+                        "total_input_tokens_delta": 0,
+                        "total_input_cost_usd_delta": 0.0,
+                    },
+                )
+                prov["tokens_saved"] += delta_tokens
+                prov["compression_savings_usd_delta"] = round(
+                    prov["compression_savings_usd_delta"] + delta_usd,
+                    6,
+                )
+                prov["total_input_tokens_delta"] += delta_input_tokens
+                prov["total_input_cost_usd_delta"] = round(
+                    prov["total_input_cost_usd_delta"] + delta_input_cost_usd,
+                    6,
+                )
 
         return list(aggregated.values())

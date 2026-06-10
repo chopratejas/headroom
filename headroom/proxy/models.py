@@ -6,7 +6,7 @@ Extracted from server.py to keep the codebase maintainable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -96,6 +96,7 @@ class ProxyConfig:
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
     cloudcode_api_url: str | None = None  # Custom Cloud Code Assist API URL override
+    vertex_api_url: str | None = None  # Custom Vertex AI regional API URL override
 
     # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     backend: str = "anthropic"
@@ -136,11 +137,26 @@ class ProxyConfig:
     # Per-tool compression profiles
     tool_profiles: dict[str, Any] | None = None
 
+    # Opt in to compressing `user` role messages. Off by default because user
+    # content is typically the subject of the request and is part of the
+    # prefix-cache zone. Enable for OpenAI/Azure chat workloads where the bulk
+    # of input lives in user messages (pasted code/text, RAG context) and the
+    # router would otherwise have nothing eligible to compress.
+    # CLI: --compress-user-messages; env: HEADROOM_COMPRESS_USER_MESSAGES=1.
+    compress_user_messages: bool = False
+
+    # Extra tool names whose outputs are never compressed, merged with the
+    # built-in DEFAULT_EXCLUDE_TOOLS. None means built-in defaults only.
+    # CLI: --exclude-tools <name1,name2>; env: HEADROOM_EXCLUDE_TOOLS=<name1,name2>
+    exclude_tools: set[str] | None = None
+
     # Read lifecycle management
     read_lifecycle: bool = True
 
-    # Smart content routing
-    smart_routing: bool = True
+    # Deprecated compatibility argument. ContentRouter is always active in
+    # the Python proxy; accepting this avoids breaking old config constructors
+    # while keeping it out of runtime state.
+    smart_routing: InitVar[bool | None] = None
 
     # Caching
     cache_enabled: bool = True
@@ -195,6 +211,13 @@ class ProxyConfig:
     memory_enabled: bool = False
     memory_backend: Literal["local", "qdrant-neo4j"] = "local"
     memory_db_path: str = ""  # Empty = auto: {cwd}/.headroom/memory.db
+    # Per-project memory routing (GH #462). ``project`` (the new default)
+    # gives each resolved workspace its own SQLite DB so cross-project
+    # bleed becomes structurally impossible. ``user`` partitions by
+    # x-headroom-user-id only. ``global`` keeps the pre-fix single-DB
+    # behaviour (existing memories remain reachable here).
+    memory_storage_mode: Literal["project", "user", "global"] = "project"
+    memory_project_root_override: str = ""
     memory_inject_tools: bool = True
     traffic_learning_enabled: bool = False
     traffic_learning_agent_type: str = "unknown"  # Which agent is being wrapped
@@ -218,7 +241,7 @@ class ProxyConfig:
     memory_qdrant_api_key: str | None = field(default_factory=qdrant_env.qdrant_env_api_key)
     memory_neo4j_uri: str = "neo4j://localhost:7687"
     memory_neo4j_user: str = "neo4j"
-    memory_neo4j_password: str = "password"
+    memory_neo4j_password: str = ""
     memory_bridge_enabled: bool = False
     memory_bridge_md_paths: list[str] = field(default_factory=list)
     memory_bridge_md_format: str = "auto"
@@ -289,6 +312,10 @@ class ProxyConfig:
     # ``HeadroomProxy._run_compression_in_executor``.
     compression_max_workers: int | None = None
 
+    def __post_init__(self, smart_routing: bool | None = None) -> None:
+        if self.retry_enabled and self.retry_max_attempts < 1:
+            raise ValueError("retry_max_attempts must be >= 1 when retry_enabled=True")
+
     @property
     def provider_api_overrides(self) -> ProviderApiOverrides:
         """Return provider API URL overrides as a dedicated provider config object."""
@@ -297,4 +324,5 @@ class ProxyConfig:
             openai=self.openai_api_url,
             gemini=self.gemini_api_url,
             cloudcode=self.cloudcode_api_url,
+            vertex=self.vertex_api_url,
         )

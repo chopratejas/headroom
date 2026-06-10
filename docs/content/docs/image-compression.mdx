@@ -130,11 +130,10 @@ compressor = ImageCompressor(
 ### Proxy Configuration
 
 ```bash
-# Enable image compression (default)
-headroom proxy --image-optimize
-
-# Disable image compression
-headroom proxy --no-image-optimize
+# Image optimization is part of the ContentRouter path when the optional image
+# dependencies are installed. There are no public proxy CLI image toggles in
+# the current release.
+headroom proxy
 ```
 
 ## Performance

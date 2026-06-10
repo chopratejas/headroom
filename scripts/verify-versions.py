@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify all package versions are in sync before publishing."""
+"""Verify all package manifest versions are in sync before publishing."""
 
 import json
 from pathlib import Path
@@ -12,26 +12,44 @@ except ImportError:  # pragma: no cover - Python 3.10 fallback
 ROOT = Path(__file__).parent.parent
 
 
-def main():
+def _read_json_version(path: Path) -> str:
+    with open(path, encoding="utf-8") as f:
+        return str(json.load(f)["version"])
+
+
+def _read_marketplace_versions(path: Path) -> dict[str, str]:
+    with open(path, encoding="utf-8") as f:
+        payload = json.load(f)
+
+    versions: dict[str, str] = {}
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        versions[f"{path}:metadata"] = str(metadata.get("version"))
+    plugins = payload.get("plugins")
+    if isinstance(plugins, list):
+        for index, plugin in enumerate(plugins):
+            if isinstance(plugin, dict):
+                versions[f"{path}:plugins[{index}]"] = str(plugin.get("version"))
+    return versions
+
+
+def main() -> None:
     with open(ROOT / "pyproject.toml", "rb") as f:
         py_ver = tomllib.load(f)["project"]["version"]
 
-    with open(ROOT / "plugins/openclaw/package.json") as f:
-        npm_openclaw_ver = json.load(f)["version"]
-
-    with open(ROOT / "sdk/typescript/package.json") as f:
-        npm_sdk_ver = json.load(f)["version"]
-
-    headroom_ver = (
-        (ROOT / "headroom" / "_version.py").read_text().split('__version__ = "')[1].split('"')[0]
-    )
-
     versions = {
         "pyproject.toml": py_ver,
-        "openclaw/package.json": npm_openclaw_ver,
-        "typescript/package.json": npm_sdk_ver,
-        "headroom/_version.py": headroom_ver,
+        "plugins/openclaw/package.json": _read_json_version(ROOT / "plugins/openclaw/package.json"),
+        "sdk/typescript/package.json": _read_json_version(ROOT / "sdk/typescript/package.json"),
+        "plugins/headroom-agent-hooks/.claude-plugin/plugin.json": _read_json_version(
+            ROOT / "plugins/headroom-agent-hooks/.claude-plugin/plugin.json"
+        ),
+        "plugins/headroom-agent-hooks/.github/plugin/plugin.json": _read_json_version(
+            ROOT / "plugins/headroom-agent-hooks/.github/plugin/plugin.json"
+        ),
     }
+    versions.update(_read_marketplace_versions(ROOT / ".claude-plugin/marketplace.json"))
+    versions.update(_read_marketplace_versions(ROOT / ".github/plugin/marketplace.json"))
 
     if not all(v == py_ver for v in versions.values()):
         print("Version mismatch detected:")

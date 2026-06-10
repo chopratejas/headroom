@@ -1025,6 +1025,49 @@ class LiteLLMBackend(Backend):
             # Make the call
             response = await acompletion(**kwargs)
 
+            # Build the usage block. LiteLLM normalizes prompt-cache stats from
+            # multiple providers (Anthropic, Bedrock-Claude, OpenAI prompt-caching,
+            # DeepSeek) onto its Usage object — top-level
+            # cache_read_input_tokens / cache_creation_input_tokens for the
+            # Anthropic-style dialect, and prompt_tokens_details.cached_tokens /
+            # cache_creation_tokens for the OpenAI nested dialect. Surface both
+            # so PrefixCacheTracker.update_from_response on the backend-routed
+            # path observes a stable shape instead of branching on key presence.
+            usage_block: dict[str, Any] = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+
+            # Defensive getattr: LiteLLM only attaches these top-level attrs
+            # when the underlying provider returned cache stats. Zero is the
+            # cold-start / no-cache value.
+            cache_read = int(getattr(response.usage, "cache_read_input_tokens", 0) or 0)
+            cache_write = int(getattr(response.usage, "cache_creation_input_tokens", 0) or 0)
+
+            # OpenAI nested dialect — fall back here if the top-level dialect is
+            # absent (pure OpenAI prompt caching).
+            ptd_obj = getattr(response.usage, "prompt_tokens_details", None)
+            ptd_cached = 0
+            ptd_cache_creation = 0
+            if ptd_obj is not None:
+                ptd_cached = int(getattr(ptd_obj, "cached_tokens", 0) or 0)
+                ptd_cache_creation = int(getattr(ptd_obj, "cache_creation_tokens", 0) or 0)
+
+            final_cache_read = cache_read or ptd_cached
+            final_cache_write = cache_write or ptd_cache_creation
+
+            if final_cache_read or final_cache_write:
+                usage_block["cache_read_input_tokens"] = final_cache_read
+                usage_block["cache_creation_input_tokens"] = final_cache_write
+                # Mirror into the OpenAI nested shape so callers that only know
+                # the OpenAI dialect can read it without branching.
+                usage_block["prompt_tokens_details"] = {"cached_tokens": final_cache_read}
+                logger.debug(
+                    f"LiteLLM OpenAI cache stats: cache_read={final_cache_read} "
+                    f"cache_write={final_cache_write} model={litellm_model}"
+                )
+
             # Convert ModelResponse to dict (OpenAI format)
             response_dict = {
                 "id": response.id,
@@ -1059,11 +1102,7 @@ class LiteLLMBackend(Backend):
                     }
                     for c in response.choices
                 ],
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                },
+                "usage": usage_block,
             }
 
             return BackendResponse(

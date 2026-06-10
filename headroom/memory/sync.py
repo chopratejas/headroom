@@ -124,7 +124,7 @@ def _load_sync_state(state_path: Path) -> dict[str, Any]:
     """Load sync state from disk."""
     if state_path.exists():
         try:
-            result: dict[str, Any] = json.loads(state_path.read_text())
+            result: dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
             return result
         except (json.JSONDecodeError, OSError):
             pass
@@ -134,7 +134,7 @@ def _load_sync_state(state_path: Path) -> dict[str, Any]:
 def _save_sync_state(state_path: Path, state: dict[str, Any]) -> None:
     """Save sync state to disk."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, indent=2))
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def _db_fingerprint(memories: list[Any]) -> str:

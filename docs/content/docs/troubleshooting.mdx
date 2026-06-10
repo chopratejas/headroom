@@ -109,6 +109,47 @@ config.smart_crusher.min_tokens_to_crush = 100  # Default is 200
 </Tab>
 </Tabs>
 
+## Claude Code context window is larger through the proxy
+
+**Symptom**: After pointing Claude Code at Headroom (`ANTHROPIC_BASE_URL`), `/context all`
+shows **more** tokens used than a direct session — the "System tools" and "MCP tools"
+lines grow by tens of thousands of tokens, before you send any message.
+
+**Cause**: Claude Code normally defers most tool schemas behind its server-side
+**Tool Search Tool** (it sends only tool *names* and loads full schemas on demand).
+It enables this only when it believes it is talking directly to `api.anthropic.com`.
+The moment `ANTHROPIC_BASE_URL` is a custom host, Claude Code can't assume the endpoint
+supports the feature, so it falls back to **eagerly** materializing every tool schema
+into the local context window. This is a Claude Code client-side decision made before
+the request reaches the proxy — no proxy header can reverse it.
+
+**Solution**: set `ENABLE_TOOL_SEARCH` so Claude Code keeps deferring tools through the
+proxy. The proxy forwards the `tool_reference` blocks correctly, so deferral works
+end-to-end (both streaming and non-streaming, subscription and API-key auth).
+
+```bash
+# Easiest: `headroom wrap claude` sets ENABLE_TOOL_SEARCH=true automatically.
+headroom wrap claude
+
+# Choose the mode (true = always defer, the default; auto / auto:N = defer only
+# when tool definitions exceed N% of the budget; false = off):
+headroom wrap claude --tool-search auto
+
+# Running `claude` manually instead of via wrap? Set it yourself:
+ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=http://localhost:8787 claude
+```
+
+**Verify (before / after)** with `/context all` in a fresh session, no messages sent:
+
+| Section | Eager (no `ENABLE_TOOL_SEARCH`) | Deferred (`ENABLE_TOOL_SEARCH=true`) |
+| --- | --- | --- |
+| System tools | fully materialized | deferred subset |
+| MCP tools | every tool shows a token cost | `(loaded on-demand)`, 0 tokens |
+
+When deferral is off, the proxy log also prints a one-time hint naming the fix.
+
+See [issue #746](https://github.com/chopratejas/headroom/issues/746) for the full analysis.
+
 ## Compression Too Aggressive
 
 **Symptom**: LLM responses are missing information that was in tool outputs.
@@ -164,6 +205,37 @@ config.rolling_window.enabled = False
 ```
 
 ## Installation Issues
+
+### pipx installs an older Headroom version
+
+**Symptom**: PyPI shows a newer `headroom-ai` release, but `pipx install` or
+`pipx upgrade` keeps an older version. A pinned install can also fail with
+`No matching distribution found`.
+
+**Cause**: `pipx` resolves packages inside its app virtual environment. If that
+environment uses a Python version that Headroom does not publish wheels for yet,
+pip may skip newer releases and choose the newest compatible build it can use.
+
+Check the interpreter:
+
+```bash
+pipx list
+```
+
+Install with a supported Python explicitly:
+
+```bash
+pipx install --python python3.13 "headroom-ai[all]"
+```
+
+For a pinned release:
+
+```bash
+pipx install --python python3.13 "headroom-ai[all]==0.21.4"
+```
+
+If you already have Headroom installed under `pipx`, uninstall it first or
+reinstall it with the supported interpreter.
 
 ### pip install fails with C++ compilation error
 

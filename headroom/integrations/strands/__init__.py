@@ -29,6 +29,7 @@ import importlib.util
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .bundle import HeadroomBundle
     from .hooks import HeadroomHookProvider
     from .model import HeadroomStrandsModel, OptimizationMetrics, optimize_messages
     from .providers import get_headroom_provider, get_model_name_from_strands
@@ -70,6 +71,10 @@ def __getattr__(name: str) -> Any:
         from .providers import get_model_name_from_strands
 
         return get_model_name_from_strands
+    elif name == "HeadroomBundle":
+        from .bundle import HeadroomBundle
+
+        return HeadroomBundle
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -85,4 +90,6 @@ __all__ = [
     # Provider detection
     "get_headroom_provider",
     "get_model_name_from_strands",
+    # One-helper MCP + hook wiring (Headroom + Serena + RTK-equivalent)
+    "HeadroomBundle",
 ]

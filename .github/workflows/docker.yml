@@ -44,6 +44,7 @@ jobs:
   # final multi-arch tagged manifest, which is what users pull by tag.
   docker-build:
     runs-on: ${{ matrix.arch.runs_on }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +84,7 @@ jobs:
 
       - name: Set up Python
         if: steps.version.outputs.version != ''
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -166,7 +167,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
 
       - name: Upload digest marker
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Variant + arch in the artifact name so the manifest job can
           # download with `pattern: digests-<variant>-*` to gather all
@@ -185,6 +186,7 @@ jobs:
   docker-manifest:
     needs: docker-build
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -236,7 +238,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download per-arch digests for this variant
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: digests-${{ matrix.variant.name || 'root' }}-*
           path: ${{ runner.temp }}/digests
@@ -331,7 +333,18 @@ jobs:
         run: |
           target="${IMAGE}@${INDEX_DIGEST}"
           echo "Signing ${target} (signatures -> ${COSIGN_REPOSITORY})"
-          cosign sign --yes "${target}"
+          for attempt in 1 2 3; do
+            if cosign sign --yes "${target}"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "ERROR: cosign signing failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep_for=$((attempt * 10))
+            echo "cosign signing failed on attempt ${attempt}; retrying in ${sleep_for}s" >&2
+            sleep "$sleep_for"
+          done
 
   promote-latest:
     # Re-push the :latest tag pointing at the root variant *after* every
@@ -340,6 +353,7 @@ jobs:
     # at the top instead of whichever variant happened to finish last.
     needs: docker-manifest
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Normalize image name
         id: image-name

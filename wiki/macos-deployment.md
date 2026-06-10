@@ -171,7 +171,7 @@ The default port is 8787. To use a custom port:
 
 1. Uninstall: `./uninstall.sh`
 2. Reinstall with new port: `./install.sh --port 9000`
-3. Update shell integration: `export HEADROOM_PROXY_PORT=9000`
+3. Update shell integration: `export HEADROOM_PORT=9000`
 
 ### Log Location
 
@@ -195,28 +195,21 @@ Configure additional options in the plist `EnvironmentVariables` section:
 <key>EnvironmentVariables</key>
 <dict>
     <!-- Required: Proxy port -->
-    <key>HEADROOM_PROXY_PORT</key>
+    <key>HEADROOM_PORT</key>
     <string>8787</string>
 
     <!-- Optional: API key (or set in shell) -->
     <key>ANTHROPIC_API_KEY</key>
     <string>sk-ant-...</string>
 
-    <!-- Optional: Enable LLMLingua compression -->
-    <key>HEADROOM_COMPRESSION_PROVIDER</key>
-    <string>llmlingua</string>
-
-    <!-- Optional: LLMLingua device (auto, cuda, cpu, mps) -->
-    <key>HEADROOM_LLMLINGUA_DEVICE</key>
-    <string>mps</string>
 </dict>
 ```
 
-**Note:** LLMLingua requires additional installation:
-
-```bash
-pip install headroom-ai[llmlingua]
-```
+**Note:** The earlier LLMLingua-2 launch-agent variables
+(`HEADROOM_COMPRESSION_PROVIDER=llmlingua`, `HEADROOM_LLMLINGUA_DEVICE`,
+the `headroom-ai[llmlingua]` extra) were retired with the
+`--llmlingua` flag. For ML compression today, install the `[ml]`
+extra and follow `wiki/transforms.md`.
 
 ### Crash Recovery
 
@@ -242,7 +235,7 @@ Add to `~/.bashrc` (bash) or `~/.zshrc` (zsh):
 
 ```bash
 # Configure port (optional, defaults to 8787)
-export HEADROOM_PROXY_PORT=8787
+export HEADROOM_PORT=8787
 
 # Source shell integration
 source /path/to/headroom/examples/deployment/macos-launchagent/shell-integration.sh
@@ -525,7 +518,7 @@ This will:
 
 # Remove shell integration from ~/.bashrc or ~/.zshrc
 # Delete or comment out:
-#   export HEADROOM_PROXY_PORT=8787
+#   export HEADROOM_PORT=8787
 #   source .../shell-integration.sh
 ```
 
@@ -683,4 +676,4 @@ A: The LaunchAgent setup is Anthropic-specific. For other providers, see [proxy.
 
 **Q: Does this work with Apple Silicon (M1/M2/M3)?**
 
-A: Yes, fully compatible. For LLMLingua compression, use `--llmlingua-device mps` for Apple Silicon acceleration.
+A: Yes, fully compatible. ML compression (Kompress, opt-in via `headroom-ai[ml]`) auto-detects MPS on Apple Silicon.

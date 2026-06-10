@@ -59,9 +59,9 @@ headroom proxy --no-ccr-responses
 # Disable proactive expansion
 headroom proxy --no-ccr-expansion
 
-# Enable LLMLingua ML compression
-headroom proxy --llmlingua
-headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.4
+# (The earlier --llmlingua flag was retired in 0.9.x and replaced by
+# Kompress (ModernBERT). See `wiki/transforms.md` for the current
+# opt-in path via the `[ml]` extra.)
 ```
 
 ### All Options
@@ -267,9 +267,6 @@ Some settings can be configured via environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HEADROOM_LOG_LEVEL` | Logging level | `INFO` |
-| `HEADROOM_STORE_URL` | Database URL | temp directory |
-| `HEADROOM_DEFAULT_MODE` | Default mode | `optimize` |
 | `HEADROOM_MODEL_LIMITS` | Custom model config (JSON string or file path) | - |
 | `HEADROOM_CONFIG_DIR` | Canonical config (read-mostly) root. Derives `models.json` and per-plugin config paths when set. | `~/.headroom/config` |
 | `HEADROOM_WORKSPACE_DIR` | Canonical workspace (read-write state) root. Derives savings ledger, memory DB, logs, TOIN, subscription state, and more when set. | `~/.headroom` |

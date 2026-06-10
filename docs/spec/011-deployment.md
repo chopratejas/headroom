@@ -30,8 +30,7 @@ services:
       - "8787:8787"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - HEADROOM_MODE=compress
-      - HEADROOM_CACHE_ENABLED=true
+      - HEADROOM_MODE=token
     volumes:
       - headroom-data:/root/.headroom
 
@@ -121,14 +120,12 @@ deployment:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HEADROOM_MODE` | `audit` | Proxy mode (audit/optimize/simulate) |
+| `HEADROOM_MODE` | `token` | Proxy mode (`token` or `cache`) |
 | `HEADROOM_PORT` | `8787` | Proxy port |
-| `HEADROOM_HOST` | `0.0.0.0` | Proxy host |
+| `HEADROOM_HOST` | `127.0.0.1` | Proxy host |
 | `ANTHROPIC_API_KEY` | - | Anthropic API key |
 | `OPENAI_API_KEY` | - | OpenAI API key |
-| `HEADROOM_CACHE_ENABLED` | `true` | Enable cache |
-| `HEADROOM_CACHE_TTL` | `3600` | Cache TTL |
-| `HEADROOM_TELEMETRY_ENABLED` | `true` | Enable telemetry |
+| `HEADROOM_TELEMETRY` | enabled | Set to `off` to disable telemetry |
 
 ### Config File
 

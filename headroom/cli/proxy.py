@@ -1,15 +1,77 @@
 """Proxy server CLI commands."""
 
+import logging
 import os
 import sys
-from typing import Any
+import warnings
+from typing import Any, Literal, cast
 
 import click
 
+from headroom import paths as _paths
 from headroom.providers.registry import resolve_api_overrides, resolve_api_targets
 from headroom.proxy.modes import PROXY_MODE_TOKEN, normalize_proxy_mode
 
 from .main import main
+
+# ---------------------------------------------------------------------------
+# Startup log suppression.
+#
+# sentence_transformers makes HEAD/GET requests to HuggingFace Hub on every
+# worker startup to validate the model manifest.  Each request produces an
+# INFO-level httpx record and a WARNING from huggingface_hub about a missing
+# HF_TOKEN.  With 8 workers this generates ~50 noisy lines per startup.
+#
+# Placing the suppression here (module-level in the first CLI module imported)
+# ensures it is in place before sentence_transformers, huggingface_hub, or
+# httpx are initialised by any downstream import or worker fork.
+#
+# The env vars silence the warnings.warn() path ("unauthenticated requests"
+# message) which bypasses the logging system entirely.
+# ---------------------------------------------------------------------------
+
+# Env-var knobs are read by huggingface_hub before its logger hierarchy forms.
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+# Logger-level suppression: httpx HEAD/GET manifest checks + HF advisory msgs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+
+# warnings.warn() path: huggingface_hub emits UserWarning for missing tokens.
+warnings.filterwarnings("ignore", message=".*unauthenticated.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*HF_TOKEN.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*huggingface.*token.*", category=UserWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
+
+# ---------------------------------------------------------------------------
+
+_CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
+_CONTEXT_TOOL_RTK = "rtk"
+_CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
+_VALID_CONTEXT_TOOLS = {_CONTEXT_TOOL_RTK, _CONTEXT_TOOL_LEAN_CTX}
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.lower() in ("true", "1", "yes", "on")
+
+
+def _selected_context_tool() -> str:
+    raw = os.environ.get(_CONTEXT_TOOL_ENV, "").strip().lower().replace("_", "-")
+    if not raw:
+        return _CONTEXT_TOOL_RTK
+    if raw == "leanctx":
+        raw = _CONTEXT_TOOL_LEAN_CTX
+    if raw not in _VALID_CONTEXT_TOOLS:
+        raise click.ClickException(
+            f"{_CONTEXT_TOOL_ENV} must be one of: {', '.join(sorted(_VALID_CONTEXT_TOOLS))}"
+        )
+    return raw
 
 
 @main.command()
@@ -62,7 +124,11 @@ from .main import main
 @click.option(
     "--mode",
     default=None,
+    metavar="[token|cache]",
     type=click.Choice(
+        # Canonical modes first; legacy aliases follow for backward compatibility.
+        # `metavar` above hides the alias clutter from --help; users see "[token|cache]"
+        # while internal callers passing "token_mode"/"cost_savings"/etc. still validate.
         [
             "token",
             "cache",
@@ -71,12 +137,15 @@ from .main import main
             "token_savings",
             "cost_savings",
             "token_headroom",
-        ]
+        ],
+        case_sensitive=False,
     ),
     help=(
-        "Optimization mode: token (prioritize compression) or cache "
-        "(freeze prior turns for prefix-cache stability). "
-        "Legacy aliases are accepted. Default: token. Env: HEADROOM_MODE"
+        "Optimization mode (default: token).\n"
+        "  token  — prioritize compression; prior turns may be rewritten for max savings.\n"
+        "  cache  — freeze prior turns to maximise provider prefix-cache hit rate.\n"
+        "Legacy aliases (token_mode, token_savings, token_headroom, cache_mode, "
+        "cost_savings) are still accepted. Env: HEADROOM_MODE."
     ),
 )
 @click.option(
@@ -178,17 +247,51 @@ from .main import main
     help="Enable full message logging (request/response content stored for live feed)",
 )
 @click.option(
+    "--codex-wire-debug",
+    is_flag=True,
+    help="Enable local Codex wire snapshots and matching proxy.log frame traces.",
+)
+@click.option(
+    "--codex-wire-debug-dir",
+    default=None,
+    help=(
+        "Directory for Codex wire snapshots (default: "
+        "~/.headroom/logs/codex_wire or workspace .headroom/logs/codex_wire)."
+    ),
+)
+@click.option(
     "--budget",
     type=float,
     default=None,
     envvar="HEADROOM_BUDGET",
     help="Daily budget limit in USD (env: HEADROOM_BUDGET)",
 )
-# Code graph: indexes project + watches files for live reindex via codebase-memory-mcp
+# Code-aware compression (AST-based, requires `pip install headroom-ai[code]`).
+# Pair of flags so users can override the env-var default in either direction.
+# We resolve HEADROOM_CODE_AWARE_ENABLED in the body (not via Click's envvar=),
+# because Click's envvar handling for paired bool flags is brittle in older
+# Click versions.
+@click.option(
+    "--code-aware/--no-code-aware",
+    "code_aware_flag",
+    default=None,
+    help=(
+        "Enable/disable AST-based code compression. Requires the optional "
+        "tree-sitter dependency: pip install headroom-ai[code]. "
+        "Default: disabled. Env: HEADROOM_CODE_AWARE_ENABLED=1 to enable."
+    ),
+)
+# Code graph: indexes project + watches files for live reindex via codebase-memory-mcp.
+# Only useful when the proxy is launched from a project root — it indexes the
+# current working directory.
 @click.option(
     "--code-graph",
     is_flag=True,
-    help="Enable code graph intelligence (indexes project, watches files for live reindex via codebase-memory-mcp)",
+    help=(
+        "Enable code graph intelligence: indexes the current working directory "
+        "and watches files for live reindex via codebase-memory-mcp. Only useful "
+        "when the proxy is launched from a project root."
+    ),
 )
 # Read lifecycle (ON by default: compresses stale/superseded Read outputs)
 @click.option(
@@ -200,13 +303,44 @@ from .main import main
 @click.option(
     "--memory",
     is_flag=True,
-    help="Enable persistent user memory. Auto-detects provider and uses appropriate tool format. "
-    "Set x-headroom-user-id header for per-user memory (defaults to 'default').",
+    help=(
+        "Enable persistent memory. Auto-detects provider and uses appropriate tool format. "
+        "By default (--memory-storage=project) each workspace gets its own DB so memories "
+        "from unrelated projects can never bleed in (GH #462). Override scoping with "
+        "x-headroom-user-id and/or x-headroom-project-id / x-headroom-cwd request headers."
+    ),
 )
 @click.option(
     "--memory-db-path",
     default="",
-    help="Path to memory database file (default: {cwd}/.headroom/memory.db)",
+    help=(
+        "Path to the legacy single-file memory DB (used in --memory-storage=global, "
+        "and as the seed for the project-mode storage root). "
+        "Default: {cwd}/.headroom/memory.db"
+    ),
+)
+@click.option(
+    "--memory-storage",
+    type=click.Choice(["project", "user", "global"], case_sensitive=False),
+    default="project",
+    show_default=True,
+    help=(
+        "Memory partitioning strategy. project (default): one SQLite DB per resolved "
+        "workspace under <db_path_dir>/memories/projects/<basename>-<hash>/memory.db — "
+        "no cross-project bleed. user: one DB per x-headroom-user-id. global: a single "
+        "shared DB (pre-fix behaviour; --memory-db-path file is reused so existing "
+        "memories remain reachable)."
+    ),
+)
+@click.option(
+    "--memory-project-root",
+    default="",
+    help=(
+        "Override the project root used for --memory-storage=project. Useful when the "
+        "client doesn't put a cwd in the system prompt or you want to force a specific "
+        "workspace. Takes effect after the x-headroom-project-id and x-headroom-cwd "
+        "headers."
+    ),
 )
 @click.option("--no-memory-tools", is_flag=True, help="Disable automatic memory tool injection")
 @click.option(
@@ -308,6 +442,11 @@ from .main import main
     help="Custom Cloud Code Assist API URL for compatibility endpoints (env: CLOUDCODE_TARGET_API_URL)",
 )
 @click.option(
+    "--vertex-api-url",
+    default=None,
+    help=("Custom Vertex AI regional API URL for publisher endpoints (env: VERTEX_TARGET_API_URL)"),
+)
+@click.option(
     "--region",
     default="us-west-2",
     help="Cloud region for Bedrock/Vertex/etc (default: us-west-2)",
@@ -358,11 +497,16 @@ def proxy(
     anthropic_pre_upstream_memory_context_timeout_seconds: float | None,
     log_file: str | None,
     log_messages: bool,
+    codex_wire_debug: bool,
+    codex_wire_debug_dir: str | None,
     budget: float | None,
+    code_aware_flag: bool | None,
     code_graph: bool,
     no_read_lifecycle: bool,
     memory: bool,
     memory_db_path: str,
+    memory_storage: str,
+    memory_project_root: str,
     no_memory_tools: bool,
     no_memory_context: bool,
     memory_top_k: int,
@@ -379,6 +523,7 @@ def proxy(
     openai_api_url: str | None,
     gemini_api_url: str | None,
     cloudcode_api_url: str | None,
+    vertex_api_url: str | None,
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
@@ -439,6 +584,7 @@ def proxy(
         openai_api_url=openai_api_url,
         gemini_api_url=gemini_api_url,
         cloudcode_api_url=cloudcode_api_url,
+        vertex_api_url=vertex_api_url,
         environ=os.environ,
     )
 
@@ -461,6 +607,12 @@ def proxy(
     # Telemetry opt-out: --no-telemetry flag sets the env var
     if no_telemetry:
         os.environ["HEADROOM_TELEMETRY"] = "off"
+
+    if codex_wire_debug or codex_wire_debug_dir:
+        os.environ["HEADROOM_CODEX_WIRE_DEBUG"] = "1"
+        os.environ["HEADROOM_CODEX_WIRE_DEBUG_DIR"] = codex_wire_debug_dir or str(
+            _paths.codex_wire_debug_dir()
+        )
 
     # Stateless mode: suppress TOIN filesystem persistence
     if is_stateless:
@@ -489,6 +641,7 @@ def proxy(
         openai_api_url=provider_api_overrides.openai,
         gemini_api_url=provider_api_overrides.gemini,
         cloudcode_api_url=provider_api_overrides.cloudcode,
+        vertex_api_url=provider_api_overrides.vertex,
         mode=effective_mode,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
@@ -514,6 +667,17 @@ def proxy(
         log_full_messages=log_messages
         or os.environ.get("HEADROOM_LOG_MESSAGES", "").lower() in ("true", "1", "yes", "on"),
         budget_limit_usd=budget,
+        # Code-aware compression resolution:
+        # 1. Explicit --code-aware / --no-code-aware always wins.
+        # 2. Otherwise read HEADROOM_CODE_AWARE_ENABLED (truthy = on).
+        # 3. Otherwise default off — matches the prior cli/proxy.py behavior so
+        #    existing users see no change unless they opt in.
+        code_aware_enabled=(
+            bool(code_aware_flag)
+            if code_aware_flag is not None
+            else os.environ.get("HEADROOM_CODE_AWARE_ENABLED", "").strip().lower()
+            in ("true", "1", "yes", "on")
+        ),
         # Code graph: live file watcher for incremental reindexing
         code_graph_watcher=code_graph,
         # Read lifecycle: ON by default (use --no-read-lifecycle to disable)
@@ -523,6 +687,8 @@ def proxy(
         # Stateless mode disables memory (requires SQLite on disk)
         memory_enabled=False if is_stateless else (memory or (learn and not no_learn)),
         memory_db_path=memory_db_path,
+        memory_storage_mode=cast(Literal["project", "user", "global"], memory_storage.lower()),
+        memory_project_root_override=memory_project_root,
         memory_inject_tools=not no_memory_tools,
         memory_inject_context=not no_memory_context,
         memory_top_k=memory_top_k,
@@ -571,6 +737,7 @@ def proxy(
     anthropic_url = provider_api_targets.anthropic
     openai_url = provider_api_targets.openai
     cloudcode_url = provider_api_targets.cloudcode
+    vertex_url = provider_api_targets.vertex
     backend_section = ""
 
     if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
@@ -609,10 +776,10 @@ Memory (Multi-Provider):
   - Anthropic: Uses native memory tool (memory_20250818) - subscription safe
   - OpenAI/Gemini/Others: Uses function calling format
   - All providers share the same semantic vector store backend
-  - Set x-headroom-user-id header for per-user memory (defaults to 'default')
+  - Storage mode: {config.memory_storage_mode} (per-project DB by default — set x-headroom-project-id / x-headroom-cwd to override)
   - Tools: {"ENABLED" if config.memory_inject_tools else "DISABLED"}
   - Context injection: {"ENABLED" if config.memory_inject_context else "DISABLED"}
-  - Database: {config.memory_db_path}
+  - Database: {config.memory_db_path} (legacy / global-mode DB)
 """
 
     # Stateless mode warning
@@ -660,6 +827,14 @@ Memory (Multi-Provider):
             f"(available: {','.join(_ext_available)})"
         )
 
+    # Code-aware status line — same logic the inner banner uses, surfaced here
+    # so the click-CLI banner is a complete picture (avoids the dual-banner
+    # confusion this branch retired).
+    from headroom.proxy.server import _get_code_aware_banner_status
+
+    code_aware_line = f"  Code-Aware:   {_get_code_aware_banner_status(config)}"
+    context_tool_line = f"  Context Tool: {_selected_context_tool()}"
+
     click.echo(f"""
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                         HEADROOM PROXY                                 ║
@@ -675,6 +850,8 @@ Starting proxy server...
   Rate Limit:   {"ENABLED" if config.rate_limit_enabled else "DISABLED"}
   Memory:       {memory_status}
   License:      {license_status}
+{code_aware_line}
+{context_tool_line}
 {extensions_line}
 {stateless_line}{telemetry_line}
 {backend_section}
@@ -683,6 +860,7 @@ Routing:
   /v1/chat/completions            → {openai_url}
   /v1/responses                   → {openai_url}  (HTTP + WebSocket)
   /v1internal:streamGenerateContent → {cloudcode_url}
+  /v1/projects/.../publishers/... → {vertex_url}
 
 Usage:
   Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
@@ -700,11 +878,15 @@ Press Ctrl+C to stop.
 """)
 
     try:
-        run_kwargs: dict[str, int] = {}
+        run_kwargs: dict[str, Any] = {}
         if workers != 1:
             run_kwargs["workers"] = workers
         if limit_concurrency != 1000:
             run_kwargs["limit_concurrency"] = limit_concurrency
+        # Suppress run_server's legacy banner — the click CLI already printed
+        # a richer one above. Direct `python -m headroom.proxy.server` keeps
+        # the legacy banner via run_server's default.
+        run_kwargs["print_banner"] = False
         run_server(config, **run_kwargs)
     except KeyboardInterrupt:
         click.echo("\nShutting down...")

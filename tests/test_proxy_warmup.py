@@ -131,7 +131,6 @@ def _stub_pipelines(monkeypatch):
         cache_enabled=False,
         rate_limit_enabled=False,
         cost_tracking_enabled=False,
-        smart_routing=False,
         code_aware_enabled=False,
     )
     proxy = HeadroomProxy(config)
@@ -168,7 +167,6 @@ async def test_startup_optimize_false_leaves_slots_null():
         cache_enabled=False,
         rate_limit_enabled=False,
         cost_tracking_enabled=False,
-        smart_routing=False,
     )
     proxy = HeadroomProxy(config)
 

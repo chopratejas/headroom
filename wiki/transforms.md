@@ -325,73 +325,16 @@ intelligent_config = IntelligentContextConfig(
 
 ---
 
-## LLMLinguaCompressor (Optional)
+## LLMLinguaCompressor — RETIRED
 
-ML-based compression using Microsoft's LLMLingua-2 model.
-
-### When to Use
-
-| Transform | Best For | Speed | Compression |
-|-----------|----------|-------|-------------|
-| SmartCrusher | JSON arrays | ~1ms | 70-90% |
-| Text Utilities | Search/logs | ~1ms | 50-90% |
-| **LLMLinguaCompressor** | Any text, max compression | 50-200ms | 80-95% |
-
-### Installation
-
-```bash
-pip install "headroom-ai[llmlingua]"  # Adds ~2GB
-```
-
-### Configuration
-
-```python
-from headroom.transforms import LLMLinguaCompressor, LLMLinguaConfig
-
-config = LLMLinguaConfig(
-    device="auto",                    # auto, cuda, cpu, mps
-    target_compression_rate=0.3,      # Keep 30% of tokens
-    min_tokens_for_compression=100,   # Skip small content
-    code_compression_rate=0.4,        # Conservative for code
-    json_compression_rate=0.35,       # Moderate for JSON
-    text_compression_rate=0.25,       # Aggressive for text
-    enable_ccr=True,                  # Store original for retrieval
-)
-
-compressor = LLMLinguaCompressor(config)
-```
-
-### Content-Aware Rates
-
-LLMLinguaCompressor auto-detects content type:
-
-| Content Type | Default Rate | Behavior |
-|--------------|--------------|----------|
-| Code | 0.4 | Conservative - preserves syntax |
-| JSON | 0.35 | Moderate - keeps structure |
-| Text | 0.3 | Aggressive - maximum compression |
-
-### Memory Management
-
-```python
-from headroom.transforms import (
-    is_llmlingua_model_loaded,
-    unload_llmlingua_model,
-)
-
-# Check if model is loaded
-print(is_llmlingua_model_loaded())  # True/False
-
-# Free ~1GB RAM when done
-unload_llmlingua_model()
-```
-
-### Proxy Integration
-
-```bash
-# Enable in proxy
-headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.3
-```
+The earlier LLMLingua-2 integration (`LLMLinguaCompressor`,
+`LLMLinguaConfig`, `is_llmlingua_model_loaded`, `unload_llmlingua_model`,
+the `headroom-ai[llmlingua]` extra, and the `--llmlingua` proxy flag)
+was retired in 0.9.x and replaced by **Kompress** (ModernBERT).
+`pip install 'headroom-ai[llmlingua]'` no longer resolves; use the
+`[ml]` extra instead. The Kompress transform shipped with the proxy
+runs as Transform 4 in the live-zone pipeline (see
+[ARCHITECTURE.md](ARCHITECTURE.md)).
 
 ---
 
@@ -405,14 +348,14 @@ AST-based compression for source code using tree-sitter.
 |-----------|----------|-------|-------------|
 | SmartCrusher | JSON arrays | ~1ms | 70-90% |
 | **CodeAwareCompressor** | Source code | ~10-50ms | 40-70% |
-| LLMLinguaCompressor | Any text | 50-200ms | 80-95% |
+| Kompress (ML) | Any text | 50-200ms | 80-95% |
 
 ### Key Benefits
 
 - **Syntax validity guaranteed** — Output always parses correctly
 - **Preserves critical structure** — Imports, signatures, types, error handlers
 - **Multi-language support** — Python, JavaScript, TypeScript, Go, Rust, Java, C, C++
-- **Lightweight** — ~50MB vs ~1GB for LLMLingua
+- **Lightweight** — ~50MB vs ~1GB for the ML compressor
 
 ### Installation
 
@@ -436,7 +379,6 @@ config = CodeCompressorConfig(
     max_body_lines=5,                   # Lines to keep per function body
     min_tokens_for_compression=100,     # Skip small content
     language_hint=None,                 # Auto-detect if None
-    fallback_to_llmlingua=True,         # Use LLMLingua for unknown langs
 )
 
 compressor = CodeAwareCompressor(config)
@@ -553,8 +495,9 @@ print(result.routing_log)  # List of routing decisions
 | SEARCH | Grep/find output | SearchCompressor |
 | LOG | Log files | LogCompressor |
 | TEXT | Plain text | TextCompressor |
-| LLMLINGUA | Any (max compression) | LLMLinguaCompressor |
 | PASSTHROUGH | Small content | None |
+
+(The earlier `LLMLINGUA` strategy was retired with the LLMLingua integration; ML compression is now provided by Kompress.)
 
 ### Content Detection
 
@@ -572,7 +515,7 @@ No manual hints required - the router inspects content directly.
 
 ContentRouter records all compressions to TOIN (Tool Output Intelligence Network) for cross-user learning:
 
-- **All strategies tracked**: Code, search, logs, text, and LLMLingua compressions are recorded
+- **All strategies tracked**: Code, search, logs, text, and ML compressions are recorded
 - **Retrieval feedback**: When users retrieve original content via CCR, TOIN learns which compressions need expansion
 - **Pattern learning**: TOIN builds signatures for each content type to improve future compressions
 
@@ -597,21 +540,9 @@ result = pipeline.transform(messages)
 print(f"Saved {result.tokens_saved} tokens")
 ```
 
-### With LLMLingua (Optional)
+### With ML compression (Optional, Kompress)
 
-```python
-from headroom.transforms import (
-    TransformPipeline, SmartCrusher, CacheAligner,
-    RollingWindow, LLMLinguaCompressor
-)
-
-pipeline = TransformPipeline([
-    CacheAligner(),         # 1. Stabilize prefix
-    SmartCrusher(),         # 2. Compress JSON arrays
-    LLMLinguaCompressor(),  # 3. ML compression on remaining text
-    RollingWindow(),        # 4. Final size constraint (always last)
-])
-```
+The earlier hand-assembled `TransformPipeline([..., LLMLinguaCompressor(), ...])` recipe is no longer supported. ML compression now ships as part of the live-zone pipeline when the `[ml]` extra is installed; see [ARCHITECTURE.md](ARCHITECTURE.md) for the current placement.
 
 ### Recommended Order
 
@@ -619,13 +550,13 @@ pipeline = TransformPipeline([
 |-------|-----------|---------|
 | 1 | CacheAligner | Stabilize prefix for caching |
 | 2 | SmartCrusher | Compress JSON tool outputs |
-| 3 | LLMLinguaCompressor | ML compression (optional) |
+| 3 | Kompress (ML) | ML compression on remaining text (optional, `[ml]` extra) |
 | 4 | RollingWindow | Enforce token limits (always last) |
 
 **Why this order?**
 - CacheAligner first to maximize prefix stability
 - SmartCrusher handles JSON arrays efficiently
-- LLMLingua compresses remaining long text
+- Kompress compresses remaining long text
 - RollingWindow truncates only if still over limit
 
 ---

@@ -126,6 +126,14 @@ async fn passthrough_no_compression_byte_equal() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode so the prompt_cache_key auto-injection
+        // hook short-circuits and the byte-equality invariant this test
+        // pins is preserved. PAYG bodies are now mutated by E4 — see
+        // `integration_e4_openai_cache_key.rs` for that coverage.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -221,6 +229,13 @@ async fn n_greater_than_one_passthrough() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality (E4 only
+        // injects on PAYG). The n>1 skip semantics are independent
+        // of auth mode.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -256,6 +271,13 @@ async fn stream_options_include_usage_preserved() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality. The
+        // dispatcher never reads stream_options regardless of mode;
+        // E4 only mutates on PAYG.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await

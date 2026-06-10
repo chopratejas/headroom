@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from headroom.memory.sync_adapters.claude_code import encode_claude_project_path
 from headroom.memory.writers.base import AgentWriter, MemoryEntry
 
 
@@ -64,8 +65,7 @@ class ClaudeCodeMemoryWriter(AgentWriter):
         project_path = self._project_path
         # Claude Code stores per-project memory at:
         # ~/.claude/projects/-<sanitized-path>/memory/MEMORY.md
-        # Replace both Unix and Windows path separators
-        sanitized = str(project_path).replace("/", "-").replace("\\", "-")
+        sanitized = encode_claude_project_path(project_path)
         claude_memory_dir = Path.home() / ".claude" / "projects" / sanitized / "memory"
         return claude_memory_dir / "MEMORY.md"
 
@@ -116,6 +116,6 @@ class ClaudeCodeMemoryWriter(AgentWriter):
 
             if not dry_run:
                 memory_dir.mkdir(parents=True, exist_ok=True)
-                (memory_dir / filename).write_text(content)
+                (memory_dir / filename).write_text(content, encoding="utf-8")
 
         return topic_files

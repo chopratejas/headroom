@@ -35,6 +35,15 @@ def decode_entry_json(raw_value: str | None) -> Any | None:
         return raw_value
 
 
+# Keys we know newer openclaw plugin schemas reject when echoed back.
+# We strip them defensively from `existing_entry` so a stale entry left
+# over from an older Headroom or older OpenClaw install doesn't cause
+# `openclaw config set` to fail with "Unrecognized key". The list is
+# narrow on purpose — anything else is assumed user-managed and
+# preserved verbatim.
+_LEGACY_REJECTED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"mcpServers"})
+
+
 def build_plugin_entry(
     *,
     existing_entry: Any,
@@ -46,7 +55,8 @@ def build_plugin_entry(
     enabled: bool,
 ) -> dict[str, object]:
     """Merge managed Headroom plugin settings with any existing entry payload."""
-    base_entry = existing_entry if isinstance(existing_entry, dict) else {}
+    raw_base = existing_entry if isinstance(existing_entry, dict) else {}
+    base_entry = {k: v for k, v in raw_base.items() if k not in _LEGACY_REJECTED_TOP_LEVEL_KEYS}
     existing_config = base_entry.get("config")
     next_config = dict(existing_config) if isinstance(existing_config, dict) else {}
 

@@ -37,9 +37,8 @@
 
 All settings can be overridden via environment variables:
 ```bash
-HEADROOM_CACHE_ENABLED=false
-HEADROOM_MODE=passthrough
-HEADROOM_MAX_TOKENS=8192
+HEADROOM_MODE=token
+headroom proxy --no-cache
 ```
 
 ### Config File

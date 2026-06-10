@@ -586,7 +586,7 @@ def run_hook_provider_demo(region: str = "us-west-2") -> dict[str, Any]:
 
     # Create BedrockModel
     model = BedrockModel(
-        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         region_name=region,
         temperature=0.1,
     )
@@ -769,7 +769,7 @@ def run_model_wrapper_demo(region: str = "us-west-2") -> dict[str, Any]:
 
     # Create base Bedrock model
     base_model = BedrockModel(
-        model_id="anthropic.claude-3-haiku-20240307-v1:0",
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         region_name=region,
         temperature=0.1,
     )

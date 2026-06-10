@@ -36,6 +36,9 @@ def _make_snapshot(
 
 def test_tracker_notify_active_update_and_basic_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SubscriptionTracker, "_load_persisted_state", lambda self: None)
+    # PR-G2: keep the unit test deterministic — do not let
+    # ``update_contribution`` call out to ``rtk gain`` via the proxy helper.
+    monkeypatch.setattr(SubscriptionTracker, "_poll_rtk_delta", lambda self: 0)
     tracker = SubscriptionTracker(enabled=False)
 
     assert tracker.is_available() is False
@@ -56,7 +59,7 @@ def test_tracker_notify_active_update_and_basic_state(monkeypatch: pytest.Monkey
     tracker.update_contribution(
         tokens_submitted=10,
         tokens_saved_compression=5,
-        tokens_saved_rtk=-1,
+        tokens_saved_cli_filtering=-1,
         tokens_saved_cache_reads=3,
         compression_savings_usd=1.25,
         cache_savings_usd=-2.0,
@@ -64,8 +67,13 @@ def test_tracker_notify_active_update_and_basic_state(monkeypatch: pytest.Monkey
     contribution = tracker._state.contribution
     assert contribution.tokens_submitted == 10
     assert contribution.tokens_saved_compression == 5
+    assert contribution.tokens_saved_cli_filtering == 0
     assert contribution.tokens_saved_rtk == 0
     assert contribution.tokens_saved_cache_reads == 3
+    assert contribution.to_dict()["tokens_saved"]["compression"] == 5
+    assert contribution.to_dict()["tokens_saved"]["proxy_compression"] == 5
+    assert contribution.to_dict()["tokens_saved"]["cli_filtering"] == 0
+    assert contribution.to_dict()["tokens_saved"]["rtk"] == 0
     assert contribution.compression_savings_usd == 1.25
     assert contribution.cache_savings_usd == 0.0
 
@@ -170,25 +178,47 @@ async def test_maybe_poll_success_updates_state_and_metrics(
     assert isinstance(metrics_calls[1], dict)
 
 
-def test_persist_and_load_state_round_trip(tmp_path: Path) -> None:
+def test_persist_and_load_state_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # PR-G2: ``update_contribution`` polls RTK by default; pin the helper to
+    # 0 so the round-trip is deterministic.
+    monkeypatch.setattr(SubscriptionTracker, "_poll_rtk_delta", lambda self: 0)
+
     persist_path = tmp_path / "tracker-state.json"
     tracker = SubscriptionTracker(persist_path=persist_path)
     tracker.update_contribution(
         tokens_submitted=11,
         tokens_saved_compression=2,
-        tokens_saved_rtk=3,
+        tokens_saved_cli_filtering=3,
         tokens_saved_cache_reads=4,
         compression_savings_usd=1.5,
         cache_savings_usd=2.5,
     )
+    # PR-G2: also write a raw RTK delta directly to assert the persisted
+    # ``rtk_raw`` field round-trips independently of cli_filtering.
+    tracker.update_contribution(tokens_saved_rtk=9)
     tracker._state.poll_count = 7
     tracker._persist_state()
 
     loader = SubscriptionTracker(persist_path=persist_path)
     assert loader._state.contribution.tokens_submitted == 11
     assert loader._state.contribution.tokens_saved_compression == 2
-    assert loader._state.contribution.tokens_saved_rtk == 3
+    # PR-G2: the raw counters now round-trip independently of the legacy
+    # dashboard alias.
+    assert loader._state.contribution.tokens_saved_cli_filtering == 3
+    assert loader._state.contribution.tokens_saved_rtk == 9
     assert loader._state.contribution.tokens_saved_cache_reads == 4
+    # ``compression`` is ``proxy_compression + cli_filtering_saved()`` =
+    # ``2 + max(3, 9)`` = 11 after PR-G2 (was 5 when rtk mirrored
+    # cli_filtering).
+    assert loader._state.contribution.to_dict()["tokens_saved"]["compression"] == 11
+    assert loader._state.contribution.to_dict()["tokens_saved"]["proxy_compression"] == 2
+    # Dashboard ``cli_filtering`` / ``rtk`` keys remain ``max(cli, rtk)``
+    # for legacy display — 9 wins. Raw counters expose the un-aliased
+    # values for the tracker's own round-trip.
+    assert loader._state.contribution.to_dict()["tokens_saved"]["cli_filtering"] == 9
+    assert loader._state.contribution.to_dict()["tokens_saved"]["rtk"] == 9
+    assert loader._state.contribution.to_dict()["tokens_saved"]["cli_filtering_raw"] == 3
+    assert loader._state.contribution.to_dict()["tokens_saved"]["rtk_raw"] == 9
     assert loader._state.contribution.compression_savings_usd == 1.5
     assert loader._state.contribution.cache_savings_usd == 2.5
     assert loader._state.poll_count == 7

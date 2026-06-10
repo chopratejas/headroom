@@ -252,6 +252,7 @@ headroom proxy --mode cache
 | `--log-file` | unset | JSONL log output path |
 | `--budget` | unset | Daily USD budget limit |
 | `--no-code-aware` | off | Disable AST-aware code compression |
+| `--code-aware` | off | Enable code-aware compression in the proxy (env: HEADROOM_CODE_AWARE_ENABLED) |
 | `--no-read-lifecycle` | off | Disable stale/superseded read compression |
 | `--no-intelligent-context` | off | Disable intelligent context manager |
 | `--no-intelligent-scoring` | off | Disable multi-factor importance scoring |

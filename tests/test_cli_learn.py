@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,9 +21,12 @@ def runner() -> CliRunner:
 class FakeWriter:
     def __init__(self) -> None:
         self.calls: list[tuple[list[object], object, bool]] = []
+        self.fail_for: object | None = None
 
     def write(self, recommendations, project, dry_run: bool):  # noqa: ANN001, ANN201
         self.calls.append((recommendations, project, dry_run))
+        if project is self.fail_for:
+            raise PermissionError(f"cannot write {project.project_path}")
         return SimpleNamespace(
             dry_run=dry_run,
             content_by_file={
@@ -150,6 +154,7 @@ def test_learn_project_lookup_and_apply_flow(
     monkeypatch.setattr("headroom.learn.analyzer._detect_default_model", lambda: "gpt-4o")
     monkeypatch.setattr("headroom.learn.registry.get_plugin", lambda name: plugin)
     monkeypatch.setattr("headroom.learn.analyzer.SessionAnalyzer", lambda model=None: analyzer)
+    monkeypatch.setattr("os.cpu_count", lambda: 12)
 
     result = runner.invoke(
         main,
@@ -216,6 +221,34 @@ def test_learn_analyze_all_uses_default_workers_and_prints_summary(
     assert "Total: 2 projects, 2 failures, 2 recommendations" in result.output
     assert plugin_a.scan_calls == [(projects_a[0], 8)]
     assert plugin_b.scan_calls == [(projects_b[0], 8)]
+
+
+def test_learn_analyze_all_continues_when_one_project_write_fails(
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner, tmp_path: Path
+) -> None:
+    blocked = SimpleNamespace(name="blocked", project_path=tmp_path / "blocked")
+    ok = SimpleNamespace(name="ok", project_path=tmp_path / "ok")
+    plugin = FakePlugin("claude", "Claude Code", [blocked, ok])
+    plugin.writer.fail_for = blocked
+    analyzer = FakeAnalyzer()
+
+    monkeypatch.setattr("headroom.learn.analyzer._detect_default_model", lambda: "gpt-4o")
+    monkeypatch.setattr("headroom.learn.registry.get_plugin", lambda name: plugin)
+    monkeypatch.setattr("headroom.learn.analyzer.SessionAnalyzer", lambda model=None: analyzer)
+
+    result = runner.invoke(
+        main,
+        ["learn", "--agent", "claude", "--all", "--apply"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: failed to write recommendations" in result.output
+    assert str(blocked.project_path) in result.output
+    assert "[WROTE]" in result.output
+    assert str(ok.project_path / "AGENTS.md") in result.output
+    expected_workers = min(os.cpu_count() or 4, 8)
+    assert plugin.scan_calls == [(blocked, expected_workers), (ok, expected_workers)]
 
 
 def test_learn_handles_empty_sessions_and_no_pattern_outputs(

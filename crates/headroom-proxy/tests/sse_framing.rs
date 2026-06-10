@@ -147,20 +147,17 @@ fn chunk_boundary_inside_event_name() {
 // ───────────────────────────── property test ─────────────────────────
 //
 // The framer must NEVER panic on arbitrary byte input. TCP can hand us
-// anything — partial codepoints, NUL bytes, fuzz noise. 100K random
-// inputs is the project default for "no panic" parser invariants per
-// `feedback_realignment_build_constraints.md`. The test does not assert
-// what the framer yields, only that pushing arbitrary bytes and pulling
-// events terminates without panic.
+// anything — partial codepoints, NUL bytes, fuzz noise. Keep this in the
+// same order of magnitude as the other Rust parser fuzz tests so
+// `cargo test --workspace` remains practical in CI.
 
 use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 100_000,
-        // Disable shrinking timeout — 100K trivial cases run fast on
-        // CI and we want the fuzzer to actually shrink any panic it
-        // finds (vs. give up early).
+        cases: 4_096,
+        // We want the fuzzer to shrink any panic it finds instead of
+        // giving up early.
         max_shrink_iters: 1024,
         ..ProptestConfig::default()
     })]

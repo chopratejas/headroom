@@ -28,9 +28,12 @@ use headroom_core::transforms::tag_protector::{
     protect_tags as rust_protect_tags, restore_tags as rust_restore_tags,
 };
 use headroom_core::transforms::{
+    compress_openai_responses_live_zone as rust_compress_openai_responses_live_zone,
     detect as rust_detect_chain, is_json_array_of_dicts as rust_is_json_array_of_dicts,
-    ContentType as RustContentType, DetectionResult as RustDetectionResult, DiffCompressionResult,
-    DiffCompressor, DiffCompressorConfig, DiffCompressorStats,
+    summarize_openai_responses_no_change_reason as rust_summarize_openai_responses_no_change_reason,
+    AuthMode as RustLiveZoneAuthMode, ContentType as RustContentType,
+    DetectionResult as RustDetectionResult, DiffCompressionResult, DiffCompressor,
+    DiffCompressorConfig, DiffCompressorStats, LiveZoneOutcome,
     LogCompressionResult as RustLogResult, LogCompressor as RustLogCompressor,
     LogCompressorConfig as RustLogConfig, LogCompressorStats as RustLogStats,
     LogFormat as RustLogFormat, LogLevel as RustLogLevel,
@@ -38,7 +41,7 @@ use headroom_core::transforms::{
     SearchCompressorConfig as RustSearchConfig, SearchCompressorStats as RustSearchStats,
 };
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
+use pyo3::types::{PyBytes, PyDict, PyString};
 
 /// Identity stub used by the Python smoke test to verify linkage.
 #[pyfunction]
@@ -1459,6 +1462,105 @@ fn known_html_tag_names() -> Vec<&'static str> {
 
 // ─── Module init ───────────────────────────────────────────────────────────
 
+/// Apply OpenAI `/v1/responses` live-zone compression to a request body.
+///
+/// Hot-fix entry point added 2026-05-06: re-enables `/v1/responses`
+/// compression on the Python proxy after PR-C5 retired the Python
+/// pipeline. PR-C5's "Rust handles it" claim assumed the standalone
+/// `crates/headroom-proxy` binary would sit in front of Python; that
+/// binary is not deployed by the CLI (`headroom proxy`,
+/// `headroom wrap codex`). This binding lets the Python proxy call
+/// the live-zone dispatcher inline so Codex `/v1/responses` traffic
+/// is compressed end-to-end.
+///
+/// # Arguments
+/// * `body` — raw request body bytes (post memory-injection).
+/// * `auth_mode` — one of `"payg"`, `"oauth"`, `"subscription"`,
+///   `"unknown"`. Currently unused by the dispatcher (the policy
+///   gating is upstream); accepted for forward-compat.
+/// * `model` — model name from the request body. Empty string defaults
+///   to `headroom_core::transforms::live_zone::DEFAULT_MODEL`.
+///
+/// # Returns
+/// `(body, modified)`:
+/// * Modified: `(new_body_bytes, True)` — caller forwards the new bytes.
+/// * Unchanged / passthrough: `(input_bytes, False)` — caller forwards
+///   the original.
+///
+/// # Failure mode
+/// Never raises. The dispatcher's `LiveZoneError` outcomes (body not
+/// JSON, no `messages`/`input` array) are passthrough conditions, not
+/// failures — matching the Rust proxy's
+/// `compress_openai_responses_request` contract.
+#[pyfunction]
+#[pyo3(signature = (body, auth_mode = "payg", model = ""))]
+fn compress_openai_responses_live_zone(
+    py: Python<'_>,
+    body: &[u8],
+    auth_mode: &str,
+    model: &str,
+) -> (Py<PyBytes>, bool, u64, Vec<String>, Option<String>) {
+    let mode = match auth_mode.to_ascii_lowercase().as_str() {
+        "payg" => RustLiveZoneAuthMode::Payg,
+        "oauth" => RustLiveZoneAuthMode::OAuth,
+        "subscription" => RustLiveZoneAuthMode::Subscription,
+        _ => RustLiveZoneAuthMode::Unknown,
+    };
+    let model_str = if model.is_empty() {
+        headroom_core::transforms::live_zone::DEFAULT_MODEL
+    } else {
+        model
+    };
+
+    match rust_compress_openai_responses_live_zone(body, mode, model_str) {
+        Ok(LiveZoneOutcome::NoChange { manifest }) => {
+            let saved = manifest.tokens_saved() as u64;
+            let transforms: Vec<String> = manifest
+                .transforms_applied()
+                .into_iter()
+                .map(String::from)
+                .collect();
+            let reason = rust_summarize_openai_responses_no_change_reason(&manifest).to_string();
+            (
+                PyBytes::new_bound(py, body).unbind(),
+                false,
+                saved,
+                transforms,
+                Some(reason),
+            )
+        }
+        Ok(LiveZoneOutcome::Modified { new_body, manifest }) => {
+            // `RawValue::get` returns the underlying serialized JSON
+            // as `&str`; bytes are valid UTF-8 by construction.
+            let bytes = new_body.get().as_bytes();
+            let saved = manifest.tokens_saved() as u64;
+            let transforms: Vec<String> = manifest
+                .transforms_applied()
+                .into_iter()
+                .map(String::from)
+                .collect();
+            (
+                PyBytes::new_bound(py, bytes).unbind(),
+                true,
+                saved,
+                transforms,
+                None,
+            )
+        }
+        Err(_) => {
+            // BodyNotJson / NoMessagesArray are non-fatal: nothing to
+            // compress, fall through to passthrough byte-for-byte.
+            (
+                PyBytes::new_bound(py, body).unbind(),
+                false,
+                0,
+                Vec::new(),
+                Some("dispatch_error".to_string()),
+            )
+        }
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hello, m)?)?;
@@ -1487,5 +1589,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(score_line, m)?)?;
     m.add_function(wrap_pyfunction!(content_has_error_indicators, m)?)?;
     m.add_function(wrap_pyfunction!(keyword_registry_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(compress_openai_responses_live_zone, m)?)?;
     Ok(())
 }

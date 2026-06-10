@@ -153,7 +153,7 @@ def _merge_recommendations(
     """
     if not file_path.exists():
         return new_recommendations
-    prior = _parse_prior_recommendations(file_path.read_text())
+    prior = _parse_prior_recommendations(file_path.read_text(encoding="utf-8"))
     if not prior:
         return new_recommendations
     new_sections = {r.section for r in new_recommendations}
@@ -166,9 +166,9 @@ def _merge_into_file(file_path: Path, new_recommendations: list[Recommendation])
     merged = _merge_recommendations(file_path, new_recommendations)
     section = _build_section(merged)
     if file_path.exists():
-        existing = file_path.read_text()
+        existing = file_path.read_text(encoding="utf-8")
         if _MARKER_START in existing:
-            return _MARKER_PATTERN.sub(section, existing)
+            return _MARKER_PATTERN.sub(lambda _match: section, existing)
         return existing.rstrip() + "\n\n" + section + "\n"
     return section + "\n"
 
@@ -199,7 +199,7 @@ class ClaudeCodeWriter(ContextWriter):
             result.add(claude_md_path, full_content)
             if not dry_run:
                 claude_md_path.parent.mkdir(parents=True, exist_ok=True)
-                claude_md_path.write_text(full_content)
+                claude_md_path.write_text(full_content, encoding="utf-8")
 
         if memory_recs:
             memory_path = self._resolve_memory_path(project)
@@ -207,7 +207,7 @@ class ClaudeCodeWriter(ContextWriter):
             result.add(memory_path, full_content)
             if not dry_run:
                 memory_path.parent.mkdir(parents=True, exist_ok=True)
-                memory_path.write_text(full_content)
+                memory_path.write_text(full_content, encoding="utf-8")
 
         return result
 
@@ -252,7 +252,7 @@ class CodexWriter(ContextWriter):
             result.add(agents_md, full_content)
             if not dry_run:
                 agents_md.parent.mkdir(parents=True, exist_ok=True)
-                agents_md.write_text(full_content)
+                agents_md.write_text(full_content, encoding="utf-8")
 
         if memory_recs:
             instructions_md = project.memory_file or (project.data_path.parent / "instructions.md")
@@ -260,7 +260,7 @@ class CodexWriter(ContextWriter):
             result.add(instructions_md, full_content)
             if not dry_run:
                 instructions_md.parent.mkdir(parents=True, exist_ok=True)
-                instructions_md.write_text(full_content)
+                instructions_md.write_text(full_content, encoding="utf-8")
 
         return result
 
@@ -290,6 +290,6 @@ class GeminiWriter(ContextWriter):
         result.add(gemini_md, full_content)
         if not dry_run:
             gemini_md.parent.mkdir(parents=True, exist_ok=True)
-            gemini_md.write_text(full_content)
+            gemini_md.write_text(full_content, encoding="utf-8")
 
         return result

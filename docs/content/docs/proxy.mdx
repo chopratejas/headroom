@@ -30,48 +30,67 @@ Telemetry is enabled by default. Opt out with `HEADROOM_TELEMETRY=off` or `--no-
 |--------|---------|-------------|
 | `--host` | `127.0.0.1` | Host to bind to |
 | `--port` | `8787` | Port to bind to |
+| `--workers` | `1` | Number of Uvicorn worker processes |
+| `--limit-concurrency` | `1000` | Maximum concurrent connections before Uvicorn returns 503 |
+| `--max-connections` | `500` | Maximum upstream HTTP connections |
+| `--max-keepalive` | `100` | Maximum upstream keep-alive connections |
+| `--mode` | `token` | Optimization mode: `token` prioritizes compression, `cache` preserves provider prefix-cache stability |
 | `--no-optimize` | `false` | Disable optimization (passthrough mode) |
 | `--no-cache` | `false` | Disable semantic caching |
 | `--no-rate-limit` | `false` | Disable rate limiting |
 | `--log-file` | None | Path to JSONL log file |
+| `--log-messages` | `false` | Store full request/response content for the live feed |
 | `--budget` | None | Daily budget limit in USD |
 | `--openai-api-url` | `https://api.openai.com` | Custom OpenAI API URL |
+| `--anthropic-api-url` | Anthropic default | Custom Anthropic API URL |
+| `--gemini-api-url` | Gemini default | Custom Gemini API URL |
+| `--backend` | `anthropic` | Backend: `anthropic`, `bedrock`, `openrouter`, `anyllm`, or `litellm-<provider>` |
+| `--no-telemetry` | `false` | Disable anonymous telemetry |
+| `--stateless` | `false` | Disable filesystem writes and keep runtime state in memory |
 
 ### Context management
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--no-intelligent-context` | `false` | Fall back to RollingWindow (oldest-first drops) |
-| `--no-intelligent-scoring` | `false` | Disable multi-factor importance scoring |
-| `--no-compress-first` | `false` | Disable trying deeper compression before dropping |
+| `--mode token` | `token` | Prioritize token compression. This is the default. |
+| `--mode cache` | `token` | Preserve prior turns to maximize provider prefix-cache hit rate. |
+| `--intercept-tool-results` | `false` | Opt into tool-result interceptors such as ast-grep Read outlining. |
+| `--no-read-lifecycle` | `false` | Disable stale/superseded Read-output compression. |
+| `--code-aware` / `--no-code-aware` | disabled | Enable or disable AST-based code compression. Requires `headroom-ai[code]`. |
+| `--code-graph` | `false` | Index the current project and watch files via codebase-memory-mcp. |
 
-By default, the proxy uses **IntelligentContextManager** which scores messages by recency, semantic similarity, TOIN-learned patterns, error indicators, and forward references. Dropped messages are stored in CCR for retrieval.
+By default, the proxy uses the shared **ContentRouter** pipeline. It routes text, logs, JSON, code, images, and tool outputs through the currently enabled compressors and preserves reversible CCR markers where applicable.
 
 ```bash
-# Use legacy RollingWindow
-headroom proxy --no-intelligent-context
+# Maximize compression
+headroom proxy --mode token
 
-# Faster but less intelligent scoring
-headroom proxy --no-intelligent-scoring
+# Preserve provider prefix cache stability
+headroom proxy --mode cache
 ```
 
-### LLMLingua (ML compression)
+### Optional features
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--llmlingua` | `false` | Enable LLMLingua-2 ML-based compression |
-| `--llmlingua-device` | `auto` | Device: `auto`, `cuda`, `cpu`, `mps` |
-| `--llmlingua-rate` | `0.3` | Target compression rate (0.3 = keep 30%) |
+| `--memory` | `false` | Enable persistent user memory and provider-appropriate memory tools |
+| `--memory-db-path` | `{cwd}/.headroom/memory.db` | Override the memory SQLite path |
+| `--no-memory-tools` | `false` | Disable automatic memory tool injection |
+| `--no-memory-context` | `false` | Disable automatic memory context injection |
+| `--memory-top-k` | `10` | Number of memories to inject as context |
+| `--learn` | `false` | Enable live traffic learning; implies `--memory` |
+| `--no-learn` | `false` | Explicitly disable traffic learning |
+| `--min-evidence` | `5` | Minimum observations before a learned pattern is persisted |
+| `--codex-wire-debug` | `false` | Write local Codex wire snapshots and matching proxy log traces |
 
 ```bash
-pip install "headroom-ai[llmlingua]"
-
-headroom proxy --llmlingua --llmlingua-device cuda
-headroom proxy --llmlingua --llmlingua-rate 0.2
+headroom proxy --memory
+headroom proxy --learn --min-evidence 3
+headroom proxy --codex-wire-debug
 ```
 
-<Callout type="info" title="LLMLingua resource cost">
-LLMLingua adds ~2 GB of dependencies (torch, transformers), 10-30s cold start, and ~1 GB RAM. Enable when maximum compression justifies the cost.
+<Callout type="info" title="LLMLingua removed from the proxy CLI">
+The old LLMLingua proxy toggles are no longer part of the CLI. Headroom's proxy compression path uses ContentRouter plus the current built-in compressors, including Kompress where applicable.
 </Callout>
 
 ## API endpoints
@@ -230,7 +249,13 @@ OPENROUTER_API_KEY=sk-or-... headroom proxy --backend openrouter
 export HEADROOM_HOST=0.0.0.0
 export HEADROOM_PORT=8787
 export HEADROOM_BUDGET=100.0
+
+# Route OpenAI passthrough requests to a custom endpoint
 export OPENAI_TARGET_API_URL=https://custom.openai.endpoint.com
+
+# Route Anthropic passthrough requests to a custom endpoint
+export ANTHROPIC_TARGET_API_URL=https://litellm.company.internal
+
 headroom proxy
 ```
 

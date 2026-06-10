@@ -25,8 +25,7 @@ The developer using an AI coding agent with Headroom.
 export ANTHROPIC_API_KEY=sk-...
 
 # Optional overrides
-export HEADROOM_MODE=compress
-export HEADROOM_CACHE_ENABLED=true
+export HEADROOM_MODE=token
 ```
 
 ---
@@ -140,10 +139,9 @@ The person assessing Headroom for organizational adoption.
 **Security Configuration:**
 ```bash
 # Maximum privacy settings
-HEADROOM_CACHE_ENABLED=false
-HEADROOM_TELEMETRY_ENABLED=false
-HEADROOM_LEARN_ENABLED=false
-HEADROOM_DASHBOARD_ENABLED=false
+HEADROOM_TELEMETRY=off
+HEADROOM_STATELESS=true
+headroom proxy --no-cache --no-optimize
 ```
 
 ---

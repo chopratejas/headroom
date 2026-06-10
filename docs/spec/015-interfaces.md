@@ -15,10 +15,19 @@ headroom proxy [OPTIONS]
 **Options:**
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host` | `0.0.0.0` | Bind host |
+| `--host` | `127.0.0.1` | Bind host |
 | `--port` | `8787` | Bind port |
-| `--llmlingua-device` | `cpu` | LLMLingua device (cpu/cuda) |
-| `--config` | - | Config file path |
+| `--mode` | `token` | Optimization mode: `token` or `cache` |
+| `--workers` | `1` | Uvicorn worker processes |
+| `--limit-concurrency` | `1000` | Maximum concurrent connections before 503 |
+| `--no-optimize` | `false` | Passthrough mode |
+| `--no-cache` | `false` | Disable semantic cache |
+| `--no-rate-limit` | `false` | Disable rate limiting |
+| `--memory` | `false` | Enable persistent memory |
+| `--learn` | `false` | Enable live traffic learning |
+| `--backend` | `anthropic` | Backend: anthropic, bedrock, openrouter, anyllm, or litellm-* |
+| `--no-telemetry` | `false` | Disable anonymous telemetry |
+| `--stateless` | `false` | Disable filesystem writes |
 
 ---
 
@@ -55,16 +64,17 @@ headroom install [OPTIONS]
 
 ### `headroom mcp`
 
-Start MCP server.
+Manage the Headroom MCP server.
 
 ```bash
-headroom mcp [OPTIONS]
+headroom mcp [OPTIONS] COMMAND [ARGS]...
 ```
 
-**Options:**
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--port` | `8766` | MCP server port |
+**Commands:**
+- `install` — Install the MCP server into detected coding agents
+- `serve` — Start the stdio MCP server
+- `status` — Check configuration status
+- `uninstall` — Remove Headroom MCP config
 
 ---
 
@@ -90,7 +100,7 @@ headroom wrap [OPTIONS] -- <command> [args...]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | `8787` | Proxy port |
-| `--no-rtk` | `false` | Skip RTK hooks |
+| `--no-context-tool` / `--no-rtk` | `false` | Skip CLI context-tool setup |
 
 **Supported Commands:**
 - `claude` — Wrap Claude Code
@@ -128,9 +138,12 @@ headroom learn [OPTIONS]
 **Options:**
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--agent` | `auto` | Agent type |
-| `--mode` | `auto` | Learn mode |
-| `--session` | - | Session ID |
+| `--project` | current directory | Project directory to analyze |
+| `--all` | `false` | Analyze all discovered projects |
+| `--apply` | `false` | Write recommendations instead of dry-run |
+| `--agent` | `auto` | Agent to analyze: auto, claude, codex, gemini, or plugin |
+| `--model` | auto | LLM model for analysis |
+| `--workers` | auto | Parallel workers for session scanning |
 
 ---
 
@@ -210,12 +223,16 @@ X-Headroom-Compressed-Tokens: 5325
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HEADROOM_MODE` | `audit` | Operation mode (audit/optimize/simulate) |
+| `HEADROOM_MODE` | `token` | Proxy optimization mode (`token` or `cache`) |
 | `HEADROOM_PORT` | `8787` | Proxy port |
-| `HEADROOM_HOST` | `0.0.0.0` | Proxy host |
-| `HEADROOM_STORE_URL` | `sqlite:///headroom.db` | Storage URL |
-| `HEADROOM_PROXY_URL` | `http://localhost:8787` | Proxy URL |
-| `HEADROOM_LOG_LEVEL` | `INFO` | Log level |
+| `HEADROOM_HOST` | `127.0.0.1` | Proxy host |
+| `HEADROOM_WORKERS` | `1` | Uvicorn worker count |
+| `HEADROOM_LIMIT_CONCURRENCY` | `1000` | Maximum concurrent connections before 503 |
+| `HEADROOM_MAX_CONNECTIONS` | `500` | Maximum upstream HTTP connections |
+| `HEADROOM_MAX_KEEPALIVE` | `100` | Maximum upstream keep-alive connections |
+| `HEADROOM_BUDGET` | - | Daily budget limit in USD |
+| `HEADROOM_TELEMETRY` | enabled | Set to `off` to disable anonymous telemetry |
+| `HEADROOM_STATELESS` | `false` | Disable filesystem writes |
 
 ### Provider
 
@@ -230,12 +247,11 @@ X-Headroom-Compressed-Tokens: 5325
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HEADROOM_CACHE_ENABLED` | `true` | Enable cache |
-| `HEADROOM_CACHE_TTL` | `3600` | Cache TTL in seconds |
-| `HEADROOM_CACHE_MAX_SIZE` | `10000` | Max cache entries |
-| `HEADROOM_LEARN_ENABLED` | `false` | Enable learn |
-| `HEADROOM_DASHBOARD_ENABLED` | `false` | Enable dashboard |
-| `HEADROOM_TELEMETRY_ENABLED` | `true` | Enable telemetry |
+| `HEADROOM_TELEMETRY` | enabled | Set to `off` to disable telemetry |
+| `HEADROOM_MIN_EVIDENCE` | `5` | Minimum observations before live learning persists a pattern |
+| `HEADROOM_PROXY_EXTENSIONS` | - | Comma-separated proxy extensions to enable |
+| `HEADROOM_STATELESS` | `false` | Disable filesystem writes |
+| `HEADROOM_MODEL_LIMITS` | - | Model limits override as JSON or file path |
 
 ### Compression
 

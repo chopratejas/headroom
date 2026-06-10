@@ -8,14 +8,17 @@ Extracted from server.py for maintainability.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import random
+import subprocess
 import threading
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -25,6 +28,186 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 logger = logging.getLogger("headroom.proxy")
+
+_CODEX_WIRE_DEBUG_ENV = "HEADROOM_CODEX_WIRE_DEBUG"
+_CODEX_WIRE_DEBUG_DIR_ENV = "HEADROOM_CODEX_WIRE_DEBUG_DIR"
+_CODEX_WIRE_REDACTED = "[REDACTED]"
+_CODEX_WIRE_SECRET_KEYS = (
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "api-key",
+    "x-api-key",
+    "openai-api-key",
+    "anthropic-api-key",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "bearer",
+    "password",
+    "secret",
+    "token",
+    "credential",
+)
+
+
+def codex_wire_debug_enabled() -> bool:
+    """Return whether opt-in Codex wire capture is enabled."""
+
+    return os.environ.get(_CODEX_WIRE_DEBUG_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _codex_wire_debug_dir() -> Path:
+    explicit = os.environ.get(_CODEX_WIRE_DEBUG_DIR_ENV, "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return _paths.codex_wire_debug_dir()
+
+
+def _should_redact_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if normalized in {marker.replace("-", "_") for marker in _CODEX_WIRE_SECRET_KEYS}:
+        return True
+    return (
+        normalized.endswith("_api_key")
+        or normalized.endswith("_secret")
+        or normalized.endswith("_password")
+        or normalized.endswith("_access_token")
+        or normalized.endswith("_refresh_token")
+    )
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            k: (_CODEX_WIRE_REDACTED if _should_redact_key(str(k)) else _redact_value(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
+def redact_for_wire_debug(value: Any) -> Any:
+    """Redact obvious secrets while preserving request/response shape."""
+
+    return _redact_value(value)
+
+
+def _safe_event_name(event: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in event)[:80]
+
+
+def _wire_debug_preview(value: Any, *, max_chars: int | None = None) -> str:
+    """Return the redacted wire payload for proxy.log.
+
+    This is intentionally not truncated. During Codex WS debugging we need the
+    proxy log itself to show the complete frame so we can decide later where a
+    deliberate trim boundary belongs.
+    """
+
+    try:
+        if isinstance(value, bytes):
+            text = value.decode("utf-8", errors="replace")
+        elif isinstance(value, str):
+            text = value
+        elif value is None:
+            return ""
+        else:
+            text = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+    except Exception:
+        text = repr(value)
+
+    text = " ".join(text.split())
+    if max_chars is not None and len(text) > max_chars:
+        return text[: max_chars - 1] + "…"
+    return text
+
+
+def capture_codex_wire_debug(
+    event: str,
+    *,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    transport: str,
+    direction: str,
+    method: str | None = None,
+    url: str | None = None,
+    headers: dict[str, Any] | None = None,
+    body: Any = None,
+    raw_text: str | None = None,
+    status_code: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Path | None:
+    """Write an opt-in redacted Codex wire snapshot to disk.
+
+    This is intentionally file-based rather than log-based: real Codex
+    requests can be large, and operators need the exact envelope shape without
+    mixing it into normal proxy logs. Header/body secret-looking keys are
+    redacted, but request content is otherwise preserved because this mode is
+    explicitly for local debugging.
+    """
+
+    if not codex_wire_debug_enabled():
+        return None
+
+    try:
+        out_dir = _codex_wire_debug_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts_ns = time.time_ns()
+        req = request_id or "no_request"
+        safe_req = _safe_event_name(req)
+        safe_event = _safe_event_name(event)
+        path = out_dir / f"{ts_ns}_{safe_req}_{safe_event}.json"
+        payload = {
+            "event": event,
+            "timestamp_ns": ts_ns,
+            "request_id": request_id,
+            "session_id": session_id,
+            "transport": transport,
+            "direction": direction,
+            "method": method,
+            "url": url,
+            "status_code": status_code,
+            "headers": redact_for_wire_debug(headers or {}),
+            "body": redact_for_wire_debug(body),
+            "raw_text": raw_text,
+            "metadata": redact_for_wire_debug(metadata or {}),
+        }
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
+        )
+        logger.info(
+            "event=codex_wire_debug_capture path=%s request_id=%s wire_event=%s",
+            path,
+            request_id or "",
+            event,
+        )
+        preview_source = redact_for_wire_debug(body) if body is not None else raw_text
+        preview = _wire_debug_preview(preview_source)
+        meta_keys = ",".join(sorted((metadata or {}).keys()))
+        logger.info(
+            "event=codex_wire_debug_frame request_id=%s session_id=%s wire_event=%s "
+            "transport=%s direction=%s status_code=%s meta_keys=%s preview=%s",
+            request_id or "",
+            session_id or "",
+            event,
+            transport,
+            direction,
+            status_code if status_code is not None else "",
+            meta_keys,
+            preview,
+        )
+        return path
+    except Exception as exc:  # pragma: no cover - debug path must never break traffic
+        logger.warning("event=codex_wire_debug_capture_failed error=%s", exc)
+        return None
+
 
 # Memory injection mode (P0-1 fix in PR-A2).
 #
@@ -109,6 +292,41 @@ def get_python_forwarder_mode() -> PythonForwarderMode:
         f"Invalid {_PYTHON_FORWARDER_MODE_ENV}={raw!r}; "
         "expected 'byte_faithful' or 'legacy_json_kwarg'"
     )
+
+
+def extract_tags(headers: Any) -> dict[str, str]:
+    """Extract ``x-headroom-*`` tags from inbound headers.
+
+    Pure function (no I/O, no state). Used by every handler at request
+    entry to capture operator slicing tags into the per-request
+    ``RequestOutcome.tags``. Free function rather than a mixin method so
+    handler mixins instantiated in isolation (tests using
+    ``object.__new__(OpenAIHandlerMixin)``) don't need a shim
+    implementation.
+
+    Header name match is case-insensitive; the returned key has the
+    ``x-headroom-`` prefix stripped.
+    """
+    return {
+        k.lower().replace("x-headroom-", ""): v
+        for k, v in headers.items()
+        if k.lower().startswith("x-headroom-")
+    }
+
+
+def _headroom_bypass_enabled(headers: Any) -> bool:
+    """Return True when inbound headers request full Headroom passthrough.
+
+    This is transport-neutral policy: HTTP and WebSocket handlers both call
+    it on original inbound headers before request-body mutation.
+    """
+
+    try:
+        bypass = str(headers.get("x-headroom-bypass", "")).strip().lower() == "true"
+        passthrough = str(headers.get("x-headroom-mode", "")).strip().lower() == "passthrough"
+    except AttributeError:
+        return False
+    return bypass or passthrough
 
 
 def serialize_body_canonical(body: dict[str, Any]) -> bytes:
@@ -371,13 +589,32 @@ def append_text_to_latest_user_input_item(
     return body_input, 0
 
 
-RTK_STATS_CACHE_TTL_SECONDS = 5.0
-_rtk_stats_cache_lock = threading.Lock()
-_rtk_stats_cache: dict[str, Any] = {
+_CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
+_CONTEXT_TOOL_RTK = "rtk"
+_CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
+
+RTK_STATS_CACHE_TTL_SECONDS = float(os.environ.get("HEADROOM_CONTEXT_TOOL_STATS_TTL_SECONDS", "60"))
+CONTEXT_TOOL_STATS_CACHE_TTL_SECONDS = RTK_STATS_CACHE_TTL_SECONDS
+_context_tool_stats_cache_lock = threading.Lock()
+_context_tool_stats_cache: dict[str, Any] = {
     "expires_at": 0.0,
     "has_value": False,
+    "tool": None,
     "value": None,
 }
+_context_tool_session_baseline: dict[str, Any] = {
+    "initialized": False,
+    "tool": None,
+    "total_commands": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "tokens_saved": 0,
+    "total_time_ms": 0,
+    "captured_at": 0.0,
+}
+_rtk_stats_cache_lock = _context_tool_stats_cache_lock
+_rtk_stats_cache = _context_tool_stats_cache
+_rtk_session_baseline = _context_tool_session_baseline
 
 # Maximum request body size (100MB - increased to support image-heavy requests)
 MAX_REQUEST_BODY_SIZE = 100 * 1024 * 1024
@@ -522,6 +759,125 @@ COMPRESSION_TIMEOUT_SECONDS = 30
 MAX_COMPRESSION_CACHE_SESSIONS = 500
 
 
+# ---------------------------------------------------------------------------
+# Compression-failure escape hatch
+# ---------------------------------------------------------------------------
+# When the proxy's compression stage fails (timeout, exception) on a frame
+# Headroom thought was large enough to compress, the legacy behaviour was to
+# fall through and forward the *original* uncompressed frame to the upstream.
+# That fail-open turned a recoverable timeout into a context-window overflow
+# downstream: Codex's auto-compaction reads ``total_usage_tokens`` from
+# upstream (which Headroom's earlier successful compressions shrunk), then
+# the un-compressed retry overflows the model context and the client
+# locks up.
+#
+# Default behaviour is now fail-CLOSED: refuse to forward, close the client
+# WS with code 1009 (or return HTTP 413) so the client knows to compact and
+# retry. Operators who want the old behaviour can set
+# ``HEADROOM_WS_FAIL_OPEN_ON_COMPRESSION_FAILURE=1``. The oversize threshold
+# below which transient errors still fall through to passthrough is
+# configurable via ``HEADROOM_WS_COMPRESSION_FAIL_THRESHOLD_BYTES``
+# (default 256 KiB ≈ 64K tokens).
+WS_COMPRESSION_FAIL_OPEN_ENV = "HEADROOM_WS_FAIL_OPEN_ON_COMPRESSION_FAILURE"
+WS_COMPRESSION_OVERSIZE_BYTES_ENV = "HEADROOM_WS_COMPRESSION_FAIL_THRESHOLD_BYTES"
+WS_COMPRESSION_OVERSIZE_BYTES_DEFAULT = 256 * 1024
+
+
+@dataclass(frozen=True)
+class CompressionFailureAction:
+    """Decision returned by :func:`decide_compression_failure_action`."""
+
+    refuse: bool
+    """If True, the caller MUST NOT forward the original frame. Close the
+    client connection with a clear error code instead."""
+
+    reason: str
+    """Short machine-readable label for telemetry. One of:
+    ``timeout``, ``oversize:bytes=<n>>threshold=<m>``,
+    ``small_frame_transient``, ``client_override:codex``, or
+    ``env_override:fail_open``."""
+
+    frame_bytes: int
+    """Original frame size in bytes (for logging / metrics)."""
+
+
+def decide_compression_failure_action(
+    exception: BaseException,
+    frame_bytes: int,
+    *,
+    client: str | None = None,
+) -> CompressionFailureAction:
+    """Decide whether to refuse-and-close vs forward-original after the
+    proxy's compression pipeline fails on a Realtime WebSocket frame
+    (or analogous HTTP body).
+
+    Decision matrix:
+
+    * env :data:`WS_COMPRESSION_FAIL_OPEN_ENV` truthy → forward (legacy
+      behaviour, opt-in for debugging or strict compatibility).
+    * Codex client compression timeout → forward. Codex currently treats
+      the proxy's 1009/413 refusal path as a hard connection failure, so
+      fail-open is safer for Codex sessions even when the proxy is run
+      standalone rather than through ``headroom wrap codex``.
+    * exception is :class:`asyncio.TimeoutError` → refuse (the compression
+      stage hit its own timeout, which only fires on frames Headroom
+      thought were big enough to need compression in the first place).
+    * ``frame_bytes`` > :data:`WS_COMPRESSION_OVERSIZE_BYTES_ENV`
+      (default 256 KiB) → refuse (large + any compression failure is a
+      strong signal the upstream will reject the original).
+    * otherwise → forward (a transient pipeline error on a small frame
+      shouldn't break the request).
+    """
+    fail_open = os.environ.get(WS_COMPRESSION_FAIL_OPEN_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if fail_open:
+        return CompressionFailureAction(
+            refuse=False,
+            reason="env_override:fail_open",
+            frame_bytes=frame_bytes,
+        )
+
+    if (client or "").strip().lower() == "codex" and isinstance(exception, asyncio.TimeoutError):
+        return CompressionFailureAction(
+            refuse=False,
+            reason="client_override:codex",
+            frame_bytes=frame_bytes,
+        )
+
+    threshold = WS_COMPRESSION_OVERSIZE_BYTES_DEFAULT
+    raw_threshold = os.environ.get(WS_COMPRESSION_OVERSIZE_BYTES_ENV, "").strip()
+    if raw_threshold:
+        try:
+            parsed = int(raw_threshold)
+            if parsed > 0:
+                threshold = parsed
+        except ValueError:
+            # Operator typo'd the env value — keep the default rather than
+            # raise on every WS frame. Loud warning instead.
+            logger.warning(
+                "Ignoring non-integer %s=%r; using default %d",
+                WS_COMPRESSION_OVERSIZE_BYTES_ENV,
+                raw_threshold,
+                WS_COMPRESSION_OVERSIZE_BYTES_DEFAULT,
+            )
+
+    if isinstance(exception, asyncio.TimeoutError):
+        return CompressionFailureAction(refuse=True, reason="timeout", frame_bytes=frame_bytes)
+    if frame_bytes > threshold:
+        return CompressionFailureAction(
+            refuse=True,
+            reason=f"oversize:bytes={frame_bytes}>threshold={threshold}",
+            frame_bytes=frame_bytes,
+        )
+    return CompressionFailureAction(
+        refuse=False, reason="small_frame_transient", frame_bytes=frame_bytes
+    )
+
+
 def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
     """Exponential backoff with 50-150% jitter.
 
@@ -595,6 +951,7 @@ def _setup_file_logging() -> None:
         # Disable propagation to root to avoid duplicate writes when
         # wrap.py redirects stderr to the same log file.
         headroom_logger = logging.getLogger("headroom")
+        headroom_logger.setLevel(logging.INFO)
         if not any(isinstance(h, RotatingFileHandler) for h in headroom_logger.handlers):
             headroom_logger.addHandler(handler)
         headroom_logger.propagate = False
@@ -603,45 +960,166 @@ def _setup_file_logging() -> None:
         pass
 
 
-def _get_rtk_stats() -> dict[str, Any] | None:
-    """Get rtk (Rust Token Killer) savings stats if rtk is installed.
+def _selected_context_tool() -> str:
+    raw = os.environ.get(_CONTEXT_TOOL_ENV, _CONTEXT_TOOL_RTK).strip().lower()
+    normalized = raw.replace("_", "-")
+    if normalized in ("leanctx", _CONTEXT_TOOL_LEAN_CTX):
+        return _CONTEXT_TOOL_LEAN_CTX
+    return _CONTEXT_TOOL_RTK
 
-    Reads from rtk's tracking database via `rtk gain --format json`.
-    Results are memoized briefly so dashboard polling does not spawn a new
-    subprocess on every refresh.
+
+def _context_tool_label(tool: str) -> str:
+    if tool == _CONTEXT_TOOL_LEAN_CTX:
+        return "lean-ctx"
+    return "RTK"
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_value(mapping: dict[str, Any], keys: tuple[str, ...], default: Any = 0) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return default
+
+
+def _context_tool_summary_payload(
+    *,
+    tool: str,
+    installed: bool,
+    summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize RTK/lean-ctx lifetime gain output into one schema.
+
+    Both tools expose cumulative counters, but field names vary slightly.
+    Headroom computes session values by subtracting a startup baseline, so
+    keeping raw input/output counters is necessary for a truthful session
+    savings percentage.
     """
-    import shutil
-    import subprocess as _sp
 
-    now = time.monotonic()
-    with _rtk_stats_cache_lock:
-        if _rtk_stats_cache["has_value"] and now < float(_rtk_stats_cache["expires_at"]):
-            return cast(dict[str, Any] | None, _rtk_stats_cache["value"])
+    summary = summary or {}
+    input_tokens = _coerce_int(
+        _first_value(
+            summary,
+            (
+                "total_input",
+                "total_input_tokens",
+                "input_tokens",
+                "tokens_input",
+                "totalBefore",
+            ),
+        )
+    )
+    output_tokens = _coerce_int(
+        _first_value(
+            summary,
+            (
+                "total_output",
+                "total_output_tokens",
+                "output_tokens",
+                "tokens_output",
+                "totalAfter",
+            ),
+        )
+    )
+    tokens_saved = _coerce_int(
+        _first_value(
+            summary,
+            (
+                "total_saved",
+                "tokens_saved",
+                "total_tokens_saved",
+                "saved_tokens",
+                "totalSaved",
+            ),
+        )
+    )
+    if tokens_saved <= 0 and input_tokens > 0 and output_tokens >= 0:
+        tokens_saved = max(input_tokens - output_tokens, 0)
+    if input_tokens <= 0 and tokens_saved > 0 and output_tokens >= 0:
+        input_tokens = tokens_saved + output_tokens
 
-    payload: dict[str, Any] | None
-    rtk_bin = shutil.which("rtk")
-    if not rtk_bin:
-        # Check headroom-managed install. Preserve the historical Unix-name
-        # behavior here (bin_dir()/"rtk") rather than switching to
-        # paths.rtk_path() which would become rtk.exe on Windows.
-        rtk_managed = _paths.bin_dir() / "rtk"
-        if rtk_managed.exists():
-            rtk_bin = str(rtk_managed)
-        else:
-            payload = None
-            with _rtk_stats_cache_lock:
-                _rtk_stats_cache.update(
-                    {
-                        "expires_at": time.monotonic() + RTK_STATS_CACHE_TTL_SECONDS,
-                        "has_value": True,
-                        "value": payload,
-                    }
-                )
-            return payload
+    lifetime_savings_pct = _coerce_float(
+        _first_value(
+            summary,
+            (
+                "avg_savings_pct",
+                "average_savings_pct",
+                "savings_pct",
+                "savings_percent",
+                "avgSavingsPct",
+            ),
+            0.0,
+        )
+    )
+    if lifetime_savings_pct <= 0 and input_tokens > 0:
+        lifetime_savings_pct = (tokens_saved / input_tokens) * 100.0
+
+    return {
+        "tool": tool,
+        "label": _context_tool_label(tool),
+        "installed": installed,
+        "scope": "project" if tool == _CONTEXT_TOOL_RTK else "local",
+        "total_commands": _coerce_int(
+            _first_value(
+                summary,
+                (
+                    "total_commands",
+                    "commands",
+                    "command_count",
+                    "totalCommandCount",
+                ),
+            )
+        ),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "tokens_saved": tokens_saved,
+        # Backward-compatible name. See `lifetime_avg_savings_pct` and
+        # `session_savings_pct` below for explicit scopes.
+        "avg_savings_pct": lifetime_savings_pct,
+        "lifetime_avg_savings_pct": lifetime_savings_pct,
+        "total_time_ms": _coerce_int(
+            _first_value(summary, ("total_time_ms", "time_ms", "totalTimeMs"))
+        ),
+    }
+
+
+def _read_rtk_lifetime_stats() -> dict[str, Any] | None:
+    """Read rtk's current project-level lifetime stats."""
+
+    from headroom.rtk import get_rtk_path
+
+    rtk_path = get_rtk_path()
+    if not rtk_path:
+        return {
+            "tool": _CONTEXT_TOOL_RTK,
+            "label": _context_tool_label(_CONTEXT_TOOL_RTK),
+            "installed": False,
+            "scope": "project",
+            "total_commands": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tokens_saved": 0,
+            "avg_savings_pct": 0.0,
+            "lifetime_avg_savings_pct": 0.0,
+            "total_time_ms": 0,
+        }
 
     try:
-        result = _sp.run(
-            [rtk_bin, "gain", "--format", "json"],
+        result = subprocess.run(
+            [str(rtk_path), "gain", "--project", "--format", "json"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -649,36 +1127,325 @@ def _get_rtk_stats() -> dict[str, Any] | None:
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
             summary = data.get("summary", {})
-            payload = {
-                "installed": True,
-                "total_commands": summary.get("total_commands", 0),
-                "tokens_saved": summary.get("total_saved", 0),
-                "avg_savings_pct": summary.get("avg_savings_pct", 0.0),
-            }
+            payload = _context_tool_summary_payload(
+                tool=_CONTEXT_TOOL_RTK,
+                installed=True,
+                summary=summary if isinstance(summary, dict) else {},
+            )
         else:
-            payload = {
+            # PR-G2 remediation (H2): structured log the synthetic-zero path
+            # so downstream consumers (subscription tracker, dashboards) can
+            # distinguish a healthy "RTK ran and saved nothing" from a broken
+            # "RTK failed and we faked zero".
+            stderr_excerpt = (result.stderr or "")[:200]
+            logger.warning(
+                "event=rtk_stats_subprocess_failed reason=non_zero_exit rc=%s stderr=%r",
+                result.returncode,
+                stderr_excerpt,
+            )
+            return {
+                "tool": _CONTEXT_TOOL_RTK,
+                "label": _context_tool_label(_CONTEXT_TOOL_RTK),
                 "installed": True,
+                "scope": "project",
                 "total_commands": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
                 "tokens_saved": 0,
                 "avg_savings_pct": 0.0,
+                "lifetime_avg_savings_pct": 0.0,
+                "total_time_ms": 0,
             }
-    except Exception:
-        payload = {
+    except Exception as exc:
+        # PR-G2 remediation (H2): log the exception path too. Reason is the
+        # exception class name (without payload — RTK exceptions can carry
+        # filesystem paths).
+        logger.warning(
+            "event=rtk_stats_subprocess_failed reason=%s error=%s",
+            type(exc).__name__,
+            exc,
+        )
+        return {
+            "tool": _CONTEXT_TOOL_RTK,
+            "label": _context_tool_label(_CONTEXT_TOOL_RTK),
             "installed": True,
+            "scope": "project",
             "total_commands": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "tokens_saved": 0,
             "avg_savings_pct": 0.0,
+            "lifetime_avg_savings_pct": 0.0,
+            "total_time_ms": 0,
         }
 
-    with _rtk_stats_cache_lock:
-        _rtk_stats_cache.update(
+    return payload
+
+
+def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
+    """Read lean-ctx's current project-level lifetime stats."""
+
+    from headroom.lean_ctx import get_lean_ctx_path
+
+    lean_ctx_path = get_lean_ctx_path()
+    if not lean_ctx_path:
+        return {
+            "tool": _CONTEXT_TOOL_LEAN_CTX,
+            "label": _context_tool_label(_CONTEXT_TOOL_LEAN_CTX),
+            "installed": False,
+            "scope": "local",
+            "total_commands": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "tokens_saved": 0,
+            "avg_savings_pct": 0.0,
+            "lifetime_avg_savings_pct": 0.0,
+            "total_time_ms": 0,
+        }
+
+    base_payload = {
+        "tool": _CONTEXT_TOOL_LEAN_CTX,
+        "label": _context_tool_label(_CONTEXT_TOOL_LEAN_CTX),
+        "installed": True,
+        "scope": "local",
+        "total_commands": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tokens_saved": 0,
+        "avg_savings_pct": 0.0,
+        "lifetime_avg_savings_pct": 0.0,
+        "total_time_ms": 0,
+    }
+
+    try:
+        result = subprocess.run(
+            [str(lean_ctx_path), "gain", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return dict(base_payload)
+
+        data = json.loads(result.stdout)
+        summary = data.get("summary", data) if isinstance(data, dict) else {}
+        if not isinstance(summary, dict):
+            return dict(base_payload)
+
+        return _context_tool_summary_payload(
+            tool=_CONTEXT_TOOL_LEAN_CTX,
+            installed=True,
+            summary=summary,
+        )
+    except Exception:
+        return dict(base_payload)
+
+
+def _read_context_tool_lifetime_stats(tool: str) -> dict[str, Any] | None:
+    if tool == _CONTEXT_TOOL_LEAN_CTX:
+        return _read_lean_ctx_lifetime_stats()
+    return _read_rtk_lifetime_stats()
+
+
+async def initialize_context_tool_session_baseline() -> None:
+    """Pin the current context-tool counters as the proxy-session baseline."""
+
+    tool = _selected_context_tool()
+    payload = await asyncio.to_thread(_read_context_tool_lifetime_stats, tool)
+    with _context_tool_stats_cache_lock:
+        _context_tool_session_baseline.update(
             {
-                "expires_at": time.monotonic() + RTK_STATS_CACHE_TTL_SECONDS,
+                "initialized": True,
+                "tool": tool,
+                "total_commands": int((payload or {}).get("total_commands", 0) or 0),
+                "input_tokens": int((payload or {}).get("input_tokens", 0) or 0),
+                "output_tokens": int((payload or {}).get("output_tokens", 0) or 0),
+                "tokens_saved": int((payload or {}).get("tokens_saved", 0) or 0),
+                "total_time_ms": int((payload or {}).get("total_time_ms", 0) or 0),
+                "captured_at": time.time(),
+            }
+        )
+        _context_tool_stats_cache.update(
+            {
+                "expires_at": 0.0,
+                "has_value": False,
+                "tool": None,
+                "value": None,
+            }
+        )
+
+
+async def initialize_rtk_session_baseline() -> None:
+    """Backward-compatible alias for initialize_context_tool_session_baseline."""
+
+    await initialize_context_tool_session_baseline()
+
+
+def _get_context_tool_stats() -> dict[str, Any] | None:
+    """Get context-tool savings for the current Headroom proxy session.
+
+    RTK and lean-ctx persist project-level lifetime counters. Dashboard stats
+    should be session-local, so we subtract the counter snapshot captured at
+    proxy startup instead of resetting the tool's own history.
+    """
+
+    tool = _selected_context_tool()
+    now = time.monotonic()
+    with _context_tool_stats_cache_lock:
+        cached_value = cast(dict[str, Any] | None, _context_tool_stats_cache["value"])
+        if (
+            _context_tool_stats_cache["has_value"]
+            and now < float(_context_tool_stats_cache["expires_at"])
+            and _context_tool_stats_cache.get("tool") == tool
+        ):
+            return cached_value
+
+    payload = _read_context_tool_lifetime_stats(tool)
+    with _context_tool_stats_cache_lock:
+        if (
+            not _context_tool_session_baseline["initialized"]
+            or _context_tool_session_baseline.get("tool") != tool
+        ):
+            _context_tool_session_baseline.update(
+                {
+                    "initialized": True,
+                    "tool": tool,
+                    "total_commands": int((payload or {}).get("total_commands", 0) or 0),
+                    "input_tokens": int((payload or {}).get("input_tokens", 0) or 0),
+                    "output_tokens": int((payload or {}).get("output_tokens", 0) or 0),
+                    "tokens_saved": int((payload or {}).get("tokens_saved", 0) or 0),
+                    "total_time_ms": int((payload or {}).get("total_time_ms", 0) or 0),
+                    "captured_at": time.time(),
+                }
+            )
+
+        if payload is not None:
+            lifetime_total_commands = int(payload.get("total_commands", 0) or 0)
+            lifetime_input_tokens = int(payload.get("input_tokens", 0) or 0)
+            lifetime_output_tokens = int(payload.get("output_tokens", 0) or 0)
+            lifetime_tokens_saved = int(payload.get("tokens_saved", 0) or 0)
+            lifetime_total_time_ms = int(payload.get("total_time_ms", 0) or 0)
+            baseline_total_commands = int(_context_tool_session_baseline["total_commands"])
+            baseline_input_tokens = int(_context_tool_session_baseline["input_tokens"])
+            baseline_output_tokens = int(_context_tool_session_baseline["output_tokens"])
+            baseline_tokens_saved = int(_context_tool_session_baseline["tokens_saved"])
+            baseline_total_time_ms = int(_context_tool_session_baseline["total_time_ms"])
+            counter_reset_detected = (
+                lifetime_total_commands < baseline_total_commands
+                or lifetime_input_tokens < baseline_input_tokens
+                or lifetime_output_tokens < baseline_output_tokens
+                or lifetime_tokens_saved < baseline_tokens_saved
+                or lifetime_total_time_ms < baseline_total_time_ms
+            )
+            if counter_reset_detected:
+                baseline_total_commands = lifetime_total_commands
+                baseline_input_tokens = lifetime_input_tokens
+                baseline_output_tokens = lifetime_output_tokens
+                baseline_tokens_saved = lifetime_tokens_saved
+                baseline_total_time_ms = lifetime_total_time_ms
+                _context_tool_session_baseline.update(
+                    {
+                        "total_commands": baseline_total_commands,
+                        "input_tokens": baseline_input_tokens,
+                        "output_tokens": baseline_output_tokens,
+                        "tokens_saved": baseline_tokens_saved,
+                        "total_time_ms": baseline_total_time_ms,
+                        "captured_at": time.time(),
+                    }
+                )
+
+            session_total_commands = max(lifetime_total_commands - baseline_total_commands, 0)
+            session_input_tokens = max(lifetime_input_tokens - baseline_input_tokens, 0)
+            session_output_tokens = max(lifetime_output_tokens - baseline_output_tokens, 0)
+            session_tokens_saved = max(lifetime_tokens_saved - baseline_tokens_saved, 0)
+            session_total_time_ms = max(lifetime_total_time_ms - baseline_total_time_ms, 0)
+            session_savings_pct = (
+                round(session_tokens_saved / session_input_tokens * 100.0, 4)
+                if session_input_tokens > 0
+                else None
+            )
+            session_avg_time_ms = (
+                round(session_total_time_ms / session_total_commands, 2)
+                if session_total_commands > 0 and session_total_time_ms > 0
+                else None
+            )
+            lifetime_savings_pct = float(payload.get("lifetime_avg_savings_pct", 0.0) or 0.0)
+
+            payload = {
+                **payload,
+                "tool": tool,
+                "label": _context_tool_label(tool),
+                # Backward-compatible session-delta fields.
+                "total_commands": session_total_commands,
+                "input_tokens": session_input_tokens,
+                "output_tokens": session_output_tokens,
+                "tokens_saved": session_tokens_saved,
+                "total_time_ms": session_total_time_ms,
+                "session_savings_pct": session_savings_pct,
+                "session_avg_time_ms": session_avg_time_ms,
+                # Keep old field for compatibility, but declare its scope.
+                "avg_savings_pct": lifetime_savings_pct,
+                "avg_savings_pct_scope": "lifetime",
+                "lifetime_avg_savings_pct": lifetime_savings_pct,
+                "lifetime_total_commands": lifetime_total_commands,
+                "lifetime_input_tokens": lifetime_input_tokens,
+                "lifetime_output_tokens": lifetime_output_tokens,
+                "lifetime_tokens_saved": lifetime_tokens_saved,
+                "lifetime_total_time_ms": lifetime_total_time_ms,
+                "session_baseline_total_commands": baseline_total_commands,
+                "session_baseline_input_tokens": baseline_input_tokens,
+                "session_baseline_output_tokens": baseline_output_tokens,
+                "session_baseline_tokens_saved": baseline_tokens_saved,
+                "session_baseline_total_time_ms": baseline_total_time_ms,
+                "session_baseline_captured_at": _context_tool_session_baseline.get(
+                    "captured_at", 0.0
+                ),
+                "session": {
+                    "commands": session_total_commands,
+                    "input_tokens": session_input_tokens,
+                    "output_tokens": session_output_tokens,
+                    "tokens_saved": session_tokens_saved,
+                    "savings_pct": session_savings_pct,
+                    "total_time_ms": session_total_time_ms,
+                    "avg_time_ms": session_avg_time_ms,
+                },
+                "lifetime": {
+                    "commands": lifetime_total_commands,
+                    "input_tokens": lifetime_input_tokens,
+                    "output_tokens": lifetime_output_tokens,
+                    "tokens_saved": lifetime_tokens_saved,
+                    "savings_pct": lifetime_savings_pct,
+                    "total_time_ms": lifetime_total_time_ms,
+                },
+                "baseline": {
+                    "commands": baseline_total_commands,
+                    "input_tokens": baseline_input_tokens,
+                    "output_tokens": baseline_output_tokens,
+                    "tokens_saved": baseline_tokens_saved,
+                    "total_time_ms": baseline_total_time_ms,
+                    "captured_at": _context_tool_session_baseline.get("captured_at", 0.0),
+                },
+                "sampled_at": time.time(),
+                "sample_ttl_seconds": CONTEXT_TOOL_STATS_CACHE_TTL_SECONDS,
+                "refresh_interval_seconds": CONTEXT_TOOL_STATS_CACHE_TTL_SECONDS,
+                "counter_reset_detected": counter_reset_detected,
+            }
+
+        _context_tool_stats_cache.update(
+            {
+                "expires_at": time.monotonic() + CONTEXT_TOOL_STATS_CACHE_TTL_SECONDS,
                 "has_value": True,
+                "tool": tool,
                 "value": payload,
             }
         )
     return payload
+
+
+def _get_rtk_stats() -> dict[str, Any] | None:
+    """Backward-compatible alias for selected context-tool stats."""
+
+    return _get_context_tool_stats()
 
 
 def is_anthropic_auth(headers: dict[str, str]) -> bool:
@@ -1537,11 +2304,14 @@ def apply_session_sticky_memory_tools(
             try:
                 tool_def = json.loads(golden_bytes.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                # Should never happen — golden bytes were produced by us.
-                # Loud failure per build constraint #4.
-                raise RuntimeError(
-                    f"corrupt golden tool bytes for session {session_id} tool {tool_name}: {exc}"
-                ) from exc
+                logger.error(
+                    "corrupt golden tool bytes for session %s tool %s: %s — skipping tool injection",
+                    session_id,
+                    tool_name,
+                    exc,
+                    exc_info=True,
+                )
+                continue
             tools_out.append(tool_def)
             existing_names.add(tool_name)
             replay_bytes += len(golden_bytes)
@@ -1817,21 +2587,24 @@ def apply_session_sticky_ccr_tool(
         if golden is not None:
             try:
                 tool_def = json.loads(golden.decode("utf-8"))
+                tools_out.append(tool_def)
+                log_tool_injection_decision(
+                    provider=provider,
+                    session_id=session_id,
+                    decision="inject_sticky_replay",
+                    tool_definition_bytes_count=len(golden),
+                    request_id=request_id,
+                )
+                return tools_out, True
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                # Should never happen — golden bytes were produced by us.
-                raise RuntimeError(
-                    f"corrupt golden CCR tool bytes for session {session_id}: {exc}"
-                ) from exc
-            tools_out.append(tool_def)
-            log_tool_injection_decision(
-                provider=provider,
-                session_id=session_id,
-                decision="inject_sticky_replay",
-                tool_definition_bytes_count=len(golden),
-                request_id=request_id,
-            )
-            return tools_out, True
-        # Tracker says "done CCR" but somehow has no golden bytes. Pin
+                logger.error(
+                    "corrupt golden CCR tool bytes for session %s: %s — regenerating fresh definition",
+                    session_id,
+                    exc,
+                    exc_info=True,
+                )
+                # Fall through to fresh creation below
+        # Tracker says "done CCR" but has no golden bytes (or they were corrupt). Pin
         # them now so future turns are stable.
         tool_def = create_ccr_tool_definition(provider)
         canonical = serialize_tool_definition_canonical(tool_def)
@@ -2054,3 +2827,112 @@ def compute_turn_id(
     h.update(b"\0")
     h.update(prefix_json.encode("utf-8", errors="replace"))
     return h.hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Issue #746: Claude Code on-demand tool loading (deferral) detection
+#
+# When Claude Code points at a custom ``ANTHROPIC_BASE_URL`` (the proxy) with
+# ``ENABLE_TOOL_SEARCH`` unset, it stops deferring MCP/system tool schemas
+# behind the server-side Tool Search Tool and materializes them all into its
+# local context window — tens of K tokens. That decision is made client-side
+# before the request reaches us, so the proxy cannot reverse it; the only
+# remedy is the ``ENABLE_TOOL_SEARCH`` env var (set automatically by
+# ``headroom wrap claude``). For users who run ``claude`` manually we cannot
+# touch their environment, so the proxy emits a single actionable hint.
+# ---------------------------------------------------------------------------
+
+_TOOL_SEARCH_TOOL_TYPE_PREFIX = "tool_search_tool_"
+# Substrings of the ``anthropic-beta`` tokens that gate tool search:
+# ``advanced-tool-use-2025-11-20`` (firstParty/foundry) and
+# ``tool-search-tool-2025-10-19`` (vertex/bedrock/mantle/gateway).
+_TOOL_SEARCH_BETA_MARKERS = ("advanced-tool-use", "tool-search-tool")
+
+_tool_search_hint_lock = threading.Lock()
+_tool_search_hint_emitted = False
+
+
+def claude_code_tool_search_inactive(
+    *,
+    client: str | None,
+    tools: Any,
+    anthropic_beta: str | None,
+) -> bool:
+    """Return ``True`` when a Claude Code request is *not* deferring tools.
+
+    Detected from request shape alone — no token thresholds, so it scales to
+    any tool surface:
+
+    * the request is from Claude Code (``client == "claude-code"``),
+    * it carries one or more tool definitions, yet
+    * it includes neither a ``tool_search_tool_*`` tool nor a tool-search
+      ``anthropic-beta`` token.
+
+    In that combination Claude Code has eagerly materialized every tool schema
+    into its local context window (issue #746).
+    """
+    if client != "claude-code":
+        return False
+    if not isinstance(tools, list) or not tools:
+        return False
+    for tool in tools:
+        if isinstance(tool, dict) and str(tool.get("type", "")).startswith(
+            _TOOL_SEARCH_TOOL_TYPE_PREFIX
+        ):
+            return False
+    beta = (anthropic_beta or "").lower()
+    return not any(marker in beta for marker in _TOOL_SEARCH_BETA_MARKERS)
+
+
+def format_tool_search_disabled_hint(tools: list[Any]) -> str:
+    """Build the one-time, actionable hint for issue #746.
+
+    Reports factual, directional numbers (tool count and serialized schema
+    size) rather than a derived token estimate, which avoids implying a
+    precision the proxy cannot measure for the client's tokenizer.
+    """
+    try:
+        schema_kb = len(json.dumps(tools, separators=(",", ":"), default=str)) / 1024
+    except (TypeError, ValueError):
+        schema_kb = 0.0
+    return (
+        f"Claude Code is sending all {len(tools)} tool definitions eagerly "
+        f"(~{schema_kb:.0f} KB of tool schema in local context) because "
+        "ENABLE_TOOL_SEARCH is unset with a custom ANTHROPIC_BASE_URL. Set "
+        "ENABLE_TOOL_SEARCH=true (or auto) to keep on-demand tool loading active, "
+        "or launch via `headroom wrap claude` (which sets it automatically). "
+        "See https://github.com/chopratejas/headroom/issues/746"
+    )
+
+
+def tool_search_hint_pending() -> bool:
+    """Cheap, lock-free check of whether the one-time hint may still fire.
+
+    Lets the request hot path skip the (O(number-of-tools)) detection scan on
+    every request once the hint has already been emitted. A benign race here
+    only costs one extra detection scan, never a duplicate warning — the
+    actual one-shot guarantee lives in :func:`take_tool_search_hint_slot`.
+    """
+    return not _tool_search_hint_emitted
+
+
+def take_tool_search_hint_slot() -> bool:
+    """Return ``True`` exactly once per process, gating the one-time hint.
+
+    Thread-safe so concurrent requests cannot each emit the warning.
+    """
+    global _tool_search_hint_emitted
+    if _tool_search_hint_emitted:
+        return False
+    with _tool_search_hint_lock:
+        if _tool_search_hint_emitted:
+            return False
+        _tool_search_hint_emitted = True
+        return True
+
+
+def reset_tool_search_hint_state() -> None:
+    """Reset the one-time hint guard. Test helper only."""
+    global _tool_search_hint_emitted
+    with _tool_search_hint_lock:
+        _tool_search_hint_emitted = False

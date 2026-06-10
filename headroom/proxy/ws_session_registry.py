@@ -50,6 +50,7 @@ TerminationCause = Literal[
     "upstream_disconnect",
     "upstream_error",
     "client_error",
+    "client_cancel",
     "response_completed",
     "client_timeout",
     "unknown",

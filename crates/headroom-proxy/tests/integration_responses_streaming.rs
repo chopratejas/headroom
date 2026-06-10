@@ -192,6 +192,13 @@ async fn streaming_request_bytes_byte_equal_upstream() {
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
+        // PR-E4: OAuth auth mode preserves byte-equality (E4 only
+        // injects prompt_cache_key on PAYG). These tests pin the
+        // streaming-side byte fidelity, independent of E4.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -229,6 +236,13 @@ async fn streaming_response_round_trips_through_framer() {
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
+        // PR-E4: OAuth auth mode preserves byte-equality (E4 only
+        // injects prompt_cache_key on PAYG). These tests pin the
+        // streaming-side byte fidelity, independent of E4.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body)
         .send()
         .await
@@ -297,6 +311,13 @@ async fn streaming_pipeline_disabled_still_passes_bytes() {
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
+        // PR-E4: OAuth auth mode preserves byte-equality (E4 only
+        // injects prompt_cache_key on PAYG). These tests pin the
+        // streaming-side byte fidelity, independent of E4.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body)
         .send()
         .await
@@ -344,6 +365,13 @@ async fn streaming_request_no_compression_when_input_below_threshold() {
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
         .header("accept", "text/event-stream")
+        // PR-E4: OAuth auth mode preserves byte-equality (E4 only
+        // injects prompt_cache_key on PAYG). These tests pin the
+        // streaming-side byte fidelity, independent of E4.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await

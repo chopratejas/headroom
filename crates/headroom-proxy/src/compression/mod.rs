@@ -44,7 +44,9 @@ pub mod model_limits;
 // itself stays through B1 → B2 transition for parallel review;
 // `compress_anthropic_request` is sourced from the live-zone module.
 pub use anthropic::resolve_frozen_count;
-pub use live_zone_anthropic::{compress_anthropic_request, Outcome, PassthroughReason};
+pub use live_zone_anthropic::{
+    compress_anthropic_request, Outcome, PassthroughReason, PerStrategyTokens,
+};
 pub use live_zone_openai::{
     compress_openai_chat_request, should_skip_compression, SkipCompressionReason,
 };

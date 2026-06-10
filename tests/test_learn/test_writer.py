@@ -7,6 +7,7 @@ from headroom.learn.writer import (
     _MARKER_END,
     _MARKER_START,
     ClaudeCodeWriter,
+    _merge_into_file,
     _parse_prior_recommendations,
     extract_marker_block,
 )
@@ -145,6 +146,33 @@ class TestClaudeCodeWriter:
         assert "old stale environment note" not in content
         # Only one Environment section in the final block
         assert content.count("### Environment") == 1
+
+    def test_replacing_existing_block_handles_literal_backslash_escapes(self, tmp_path):
+        """LLM text with backslash escapes must not be interpreted as a regex replacement."""
+        proj = _project(tmp_path)
+        claude_md = proj.project_path / "CLAUDE.md"
+        claude_md.write_text(
+            f"# Existing\n\n{_MARKER_START}\n"
+            "## Headroom Learned Patterns\n\n"
+            "### Windows Paths\n"
+            "- stale\n\n"
+            f"{_MARKER_END}\n"
+        )
+
+        full_content = _merge_into_file(
+            claude_md,
+            [
+                _rec(
+                    RecommendationTarget.CONTEXT_FILE,
+                    "Windows Paths",
+                    r"- Keep the literal \u sequence and C:\Users\john.doe\repo path",
+                )
+            ],
+        )
+
+        assert r"\u sequence" in full_content
+        assert r"C:\Users\john.doe\repo" in full_content
+        assert "stale" not in full_content
 
     def test_memory_md_carry_forward(self, tmp_path):
         """Carry-forward also works for MEMORY.md."""

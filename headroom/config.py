@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -473,10 +473,10 @@ class HeadroomConfig:
     # to the top-level config when PR-B1 retired the rolling-window stage.
     output_buffer_tokens: int = 4000
 
-    # Content Router - intelligent content-type based compression
-    # Routes content to appropriate compressor (Kompress for text, SmartCrusher for JSON,
-    # CodeCompressor for code, LogCompressor for logs, etc.)
-    content_router_enabled: bool = True
+    # Deprecated compatibility argument. ContentRouter is always present
+    # in the default pipeline; accepting this avoids breaking old config
+    # constructors while keeping it out of runtime state.
+    content_router_enabled: InitVar[bool | None] = None
 
     # Tool-result interceptors (ast-grep Read outline, etc.). Opt-in for now.
     # Env var HEADROOM_INTERCEPT_ENABLED=1 also enables (for CLI `--intercept-tool-results`).

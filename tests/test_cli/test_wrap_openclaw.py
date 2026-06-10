@@ -407,6 +407,28 @@ def test_build_openclaw_unwrap_entry_preserves_top_level_metadata() -> None:
     assert entry["config"] == {"customFlag": True}
 
 
+def test_unwrap_openclaw_stops_proxy_by_default(runner: CliRunner) -> None:
+    calls: list[dict] = []
+
+    def which(name: str) -> str | None:
+        return "openclaw" if name == "openclaw" else None
+
+    with patch("headroom.cli.wrap.shutil.which", side_effect=which):
+        with patch("headroom.cli.wrap.subprocess.run", side_effect=_make_successful_run(calls)):
+            with patch(
+                "headroom.cli.wrap._stop_local_proxy_for_unwrap",
+                return_value="stopped",
+            ) as stop_proxy:
+                result = runner.invoke(
+                    main,
+                    ["unwrap", "openclaw", "--proxy-port", "9999", "--no-restart"],
+                )
+
+    assert result.exit_code == 0, result.output
+    stop_proxy.assert_called_once_with(9999)
+    assert "Stopped local Headroom proxy on port 9999" in result.output
+
+
 def test_wrap_openclaw_no_auto_start_does_not_default_python_path(
     runner: CliRunner, plugin_dir: Path
 ) -> None:

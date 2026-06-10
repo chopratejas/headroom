@@ -36,11 +36,14 @@ scrape_configs:
 
 OpenTelemetry tracing support.
 
-**Configuration:**
+**Configuration (Langfuse):**
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-OTEL_SERVICE_NAME=headroom
-HEADROOM_TRACING_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+HEADROOM_LANGFUSE_ENABLED=1
+# Optional: override endpoint and service name
+# LANGFUSE_BASE_URL=https://cloud.langfuse.com
+# HEADROOM_LANGFUSE_SERVICE_NAME=headroom
 ```
 
 **Spans:**
@@ -78,8 +81,8 @@ HEADROOM_TRACING_ENABLED=true
 
 **Configuration:**
 ```bash
-HEADROOM_LOG_LEVEL=INFO
-HEADROOM_LOG_FORMAT=json
+# Logging level is controlled via the --log-level CLI flag (headroom proxy --log-level debug)
+# or RUST_LOG env var for the Rust proxy. No HEADROOM_LOG_LEVEL env var exists.
 ```
 
 Or in config:
@@ -102,7 +105,7 @@ logging:
 - Top compressed endpoints
 - Session overview
 
-**Requires:** `HEADROOM_DASHBOARD_ENABLED=true`
+**Requires:** the proxy process to be running. The dashboard is served by default at `/dashboard`.
 
 ---
 

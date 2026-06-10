@@ -108,6 +108,7 @@ _LOG_PATTERNS = [
     re.compile(r"^\s*PASSED|^\s*FAILED|^\s*SKIPPED"),  # test results
     re.compile(r"^npm ERR!|^yarn error|^cargo error"),  # build tools
     re.compile(r"Traceback \(most recent call last\)"),  # Python traceback
+    re.compile(r"^\w*(Error|Exception):"),  # Python exception final line
     re.compile(r"^\s*at\s+[\w.$]+\("),  # JS/Java stack trace
 ]
 

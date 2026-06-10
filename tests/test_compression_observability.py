@@ -273,6 +273,73 @@ def test_prometheus_metrics_accumulates_per_strategy_counters():
     assert m.tokens_saved_by_strategy == {"smart_crusher": 210}
 
 
+def test_prometheus_metrics_accumulates_codex_ws_unit_and_frame_counters():
+    from headroom.proxy.prometheus_metrics import PrometheusMetrics
+
+    m = PrometheusMetrics()
+
+    m.record_codex_ws_unit(
+        strategy="mixed",
+        reason_category="applied",
+        elapsed_ms=1250,
+        text_bytes=10_000,
+        tokens_before=2500,
+        tokens_after=1000,
+        tokens_saved=1500,
+        modified=True,
+        strategy_chain=["mixed", "kompress"],
+        content_type="text",
+        text_shape="jsonl_like",
+    )
+    m.record_codex_ws_unit(
+        strategy="passthrough",
+        reason_category="size_floor",
+        elapsed_ms=2,
+        text_bytes=100,
+        tokens_before=20,
+        tokens_after=20,
+        tokens_saved=0,
+        modified=False,
+        strategy_chain=["passthrough"],
+        content_type="unknown",
+        text_shape="plain_text_like",
+    )
+    m.record_codex_ws_frame(
+        elapsed_ms=1260,
+        bytes_before=20_000,
+        bytes_after=8_000,
+        attempted_tokens=2500,
+        tokens_saved=1500,
+        modified=True,
+        strategy_chain=["mixed", "kompress"],
+        final_strategies=["mixed"],
+    )
+    m.record_codex_ws_frame(
+        elapsed_ms=30_000,
+        bytes_before=426_318,
+        failed=True,
+    )
+
+    assert m.codex_ws_units_total == 2
+    assert m.codex_ws_units_modified_total == 1
+    assert m.codex_ws_units_by_strategy == {"mixed": 1, "passthrough": 1}
+    assert m.codex_ws_units_by_category == {"applied": 1, "size_floor": 1}
+    assert m.codex_ws_units_by_content_type == {"text": 1, "unknown": 1}
+    assert m.codex_ws_units_by_text_shape == {"jsonl_like": 1, "plain_text_like": 1}
+    assert m.codex_ws_units_to_kompress_total == 0
+    assert m.codex_ws_units_kompress_attempted_total == 1
+    assert m.codex_ws_unit_elapsed_ms_max == 1250
+    assert m.codex_ws_unit_tokens_saved_sum == 1500
+
+    assert m.codex_ws_frames_attempted_total == 2
+    assert m.codex_ws_frames_compressed_total == 1
+    assert m.codex_ws_frames_failed_total == 1
+    assert m.codex_ws_frames_to_kompress_total == 0
+    assert m.codex_ws_frames_kompress_attempted_total == 1
+    assert m.codex_ws_frame_elapsed_ms_max == 30_000
+    assert m.codex_ws_frame_tokens_saved_sum == 1500
+
+
 def test_prometheus_export_does_not_leak_per_strategy_metrics():
     """Per-strategy state is tracked in-process only. The Prometheus
     scrape output deliberately must NOT emit new metric names — the

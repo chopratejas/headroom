@@ -69,7 +69,7 @@ import time
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from typing import Any, Final
 
 from .models import FieldSemantics, ToolSignature
 
@@ -378,45 +378,6 @@ class ToolPattern:
             }
 
         return pattern
-
-
-@dataclass
-class _CompressionHint:
-    """Internal recommendation envelope (PR-B5: private, observation-only).
-
-    Pre-B5 this was the public return type of `get_recommendation()` —
-    the request-time hint API now retired. The dataclass is retained as
-    `_CompressionHint` purely for the deprecated stub's signature and
-    for the publish CLI's internal aggregation; no new code should
-    construct or consume it. Read recommendations from
-    `recommendations.toml` produced by `headroom.cli.toin_publish`.
-    """
-
-    # Should we compress at all?
-    skip_compression: bool = False
-
-    # How aggressively to compress
-    max_items: int = 20
-    compression_level: Literal["none", "conservative", "moderate", "aggressive"] = "moderate"
-
-    # Which fields to preserve (never remove)
-    preserve_fields: list[str] = field(default_factory=list)
-
-    # Which strategy to use
-    recommended_strategy: str = "default"
-
-    # Why this recommendation
-    reason: str = ""
-    confidence: float = 0.0
-
-    # Source of recommendation
-    source: Literal["network", "local", "default"] = "default"
-    based_on_samples: int = 0
-
-    # === TOIN Evolution: Learned Field Semantics ===
-    # These enable zero-latency signal detection in SmartCrusher.
-    # field_hash -> FieldSemantics (learned semantic type, important values, etc.)
-    field_semantics: dict[str, FieldSemantics] = field(default_factory=dict)
 
 
 @dataclass
@@ -1008,7 +969,7 @@ class ToolIntelligenceNetwork:
         sites from flooding logs.
 
         Returns:
-            Always `None`. The legacy `_CompressionHint` envelope is no
+            Always `None`. The legacy compression-hint envelope is no
             longer constructed at request time.
         """
         cls = type(self)

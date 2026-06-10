@@ -55,6 +55,30 @@ pub struct ResponseState {
     pub items: HashMap<String, ItemState>,
     pub usage: Option<Value>,
     pub status: StreamStatus,
+    /// Phase G PR-G3: `service_tier` extracted from the
+    /// `response.completed` envelope. Drives
+    /// `proxy_service_tier_count_total`.
+    pub service_tier: Option<String>,
+    /// Phase G PR-G3: `incomplete_details.reason` when
+    /// `status == "incomplete"`. Paired with the
+    /// `proxy_response_status_count_total{status="incomplete"}` log
+    /// line so operators see WHY a stream landed in `incomplete`.
+    pub incomplete_reason: Option<String>,
+}
+
+impl ResponseState {
+    /// Phase G PR-G3: stable terminal-status string for the metrics
+    /// label vocabulary. Returns `None` when the stream is still
+    /// `Open` — caller skips the counter increment in that case.
+    pub fn terminal_status(&self) -> Option<&'static str> {
+        use crate::observability::metric_names::response_status::{COMPLETED, FAILED, INCOMPLETE};
+        match self.status {
+            StreamStatus::Completed => Some(COMPLETED),
+            StreamStatus::Failed => Some(FAILED),
+            StreamStatus::Incomplete => Some(INCOMPLETE),
+            StreamStatus::Open => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -139,10 +163,30 @@ impl ResponseState {
             "response.completed" => self.on_response_completed(&v),
             "response.failed" => {
                 self.status = StreamStatus::Failed;
+                // Phase G PR-G3: capture `service_tier` from the
+                // failed envelope too — the proxy still wants the
+                // tier dimension on failed responses so dashboards
+                // can attribute failure rate to tiers.
+                self.capture_envelope_metadata(&v);
                 Ok(())
             }
             "response.incomplete" => {
                 self.status = StreamStatus::Incomplete;
+                // Phase G PR-G3: pick up incomplete_details.reason
+                // from the envelope. Spec field name is
+                // `incomplete_details.reason`; we tolerate both
+                // the top-level and the nested location, since the
+                // OpenAI shape has shifted across SDK versions.
+                if let Some(resp) = v.get("response") {
+                    if let Some(reason) = resp
+                        .get("incomplete_details")
+                        .and_then(|d| d.get("reason"))
+                        .and_then(|x| x.as_str())
+                    {
+                        self.incomplete_reason = Some(reason.to_string());
+                    }
+                }
+                self.capture_envelope_metadata(&v);
                 Ok(())
             }
             other => {
@@ -369,7 +413,32 @@ impl ResponseState {
                 }
             }
         }
+        self.capture_envelope_metadata(v);
         Ok(())
+    }
+
+    /// Phase G PR-G3: extract `service_tier` and (when present)
+    /// `incomplete_details.reason` from a top-level
+    /// `response.{completed,failed,incomplete}` event payload. The
+    /// `service_tier` field is on the `response` envelope on every
+    /// terminal event per the OpenAI Responses API spec; we keep
+    /// the most-recent value (later events override earlier ones).
+    fn capture_envelope_metadata(&mut self, v: &Value) {
+        if let Some(resp) = v.get("response") {
+            if let Some(tier) = resp.get("service_tier").and_then(|x| x.as_str()) {
+                self.service_tier = Some(tier.to_string());
+            }
+            // Best-effort pull of incomplete_details.reason from the
+            // completed/failed envelope (in addition to the dedicated
+            // arm in `apply` for `response.incomplete`).
+            if let Some(reason) = resp
+                .get("incomplete_details")
+                .and_then(|d| d.get("reason"))
+                .and_then(|x| x.as_str())
+            {
+                self.incomplete_reason = Some(reason.to_string());
+            }
+        }
     }
 }
 

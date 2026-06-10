@@ -47,15 +47,30 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-# Symbol families introduced after specific glibc versions, beyond what
-# `auditwheel` already checks. Add here as new bug classes surface.
+# Symbols introduced after specific glibc versions, beyond what
+# `auditwheel` already checks (auditwheel relies on the GLIBC_x.y
+# version tag baked into versioned symbols; the entries below are
+# either tagless or family-tagged, neither of which auditwheel
+# catches). Add here as new bug classes surface.
 #
 # Each entry is `(symbol_name_prefix, min_glibc_version_introduced, justification_url)`.
+# `startswith(prefix)` is used to match — for a single symbol use the
+# full name as the prefix (no other symbol starts with it).
 POST_FLOOR_SYMBOLS = [
+    # C23 strtol family. Issue #355.
     (
         "__isoc23_",
         (2, 38),
         "https://sourceware.org/glibc/wiki/Release/2.38",
+    ),
+    # Single-threaded fast-path flag read by libstdc++ (gcc 11+).
+    # Caught by the X1 smoke gate on PR #396 (X2 dry-run) on the
+    # manylinux_2_28 floor entry — the audit had let the wheel
+    # through because it didn't know about this symbol.
+    (
+        "__libc_single_threaded",
+        (2, 32),
+        "https://sourceware.org/glibc/wiki/Release/2.32",
     ),
 ]
 

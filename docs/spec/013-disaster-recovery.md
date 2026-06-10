@@ -51,10 +51,7 @@ sqlite3 ~/.headroom/headroom_memory.db ".backup /tmp/headroom_incremental.db"
 
 ### External Storage
 
-```bash
-export HEADROOM_DB_URL=postgresql://user:pass@host:5432/headroom
-export HEADROOM_CACHE_BACKEND=redis
-```
+> **Note:** External PostgreSQL/Redis storage is not yet implemented. Headroom uses SQLite at `~/.headroom/` (configurable via `HEADROOM_WORKSPACE_DIR`). The `HEADROOM_DB_URL` and `HEADROOM_CACHE_BACKEND` vars do not exist.
 
 ---
 

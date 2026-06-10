@@ -157,3 +157,86 @@ def test_codex_responses_subpath_passthrough_derives_chatgpt_routing_from_jwt(pa
     assert url == expected_url
     assert headers["authorization"] == f"Bearer {token}"
     assert headers["ChatGPT-Account-ID"] == "acct-from-jwt"
+
+
+def test_codex_model_metadata_fetches_codex_registry_for_chatgpt_auth(monkeypatch):
+    """Issue #478: under Codex ChatGPT-subscription OAuth, the proxy
+    must NOT forward `/v1/models[/{id}]` to chatgpt.com/backend-api —
+    that endpoint returns 403 to OAuth tokens. Instead, Headroom should
+    fetch the Codex-specific model registry and synthesize an
+    OpenAI-compatible payload from its slugs.
+    """
+
+    class FakeAsyncClient:
+        def __init__(self):
+            self.calls: list[tuple[str, str, dict[str, str]]] = []
+
+        async def get(self, url, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append(("GET", url, dict(kwargs.get("headers", {}))))
+            return httpx.Response(
+                200,
+                json={"models": [{"slug": "gpt-5.5"}, {"slug": "gpt-5.3-codex-spark"}]},
+            )
+
+        async def aclose(self):
+            return None
+
+    token = _jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-from-jwt",
+            }
+        }
+    )
+
+    with TestClient(create_app(ProxyConfig())) as client:
+        fake_http_client = FakeAsyncClient()
+        client.app.state.proxy.http_client = fake_http_client
+        client.app.state.proxy.OPENAI_API_URL = "https://api.openai.test"
+
+        list_response = client.get(
+            "/v1/models?client_version=0.130.0",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        known_response = client.get(
+            "/v1/models/gpt-5.5",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        unknown_response = client.get(
+            "/v1/models/gpt-99-future?client_version=0.130.0",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert len(fake_http_client.calls) == 3
+    for method, url, headers in fake_http_client.calls:
+        assert method == "GET"
+        assert url == "https://chatgpt.com/backend-api/codex/models?client_version=0.130.0"
+        assert headers["authorization"] == f"Bearer {token}"
+        assert headers["chatgpt-account-id"] == "acct-from-jwt"
+        assert headers["accept"] == "application/json"
+        assert "ChatGPT-Account-ID" not in headers
+        assert "Accept" not in headers
+
+    # List endpoint returns a non-empty OpenAI-compatible list.
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert list_payload["object"] == "list"
+    assert isinstance(list_payload["data"], list)
+    assert len(list_payload["data"]) > 0
+    assert {entry["id"] for entry in list_payload["data"]} == {
+        "gpt-5.5",
+        "gpt-5.3-codex-spark",
+    }
+
+    # Single-model GET returns a model object when known.
+    assert known_response.status_code == 200
+    known_payload = known_response.json()
+    assert known_payload == {
+        "id": "gpt-5.5",
+        "object": "model",
+        "created": 0,
+        "owned_by": "openai",
+    }
+
+    # Unknown model variants 404 against the dynamic registry.
+    assert unknown_response.status_code == 404

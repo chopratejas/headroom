@@ -1,14 +1,10 @@
-ARG PYTHON_VERSION=3.11
-ARG UV_VERSION=0.6.17
-# Pinned 2026-04-15. Update via Dependabot or: docker pull python:3.11-slim
-ARG PYTHON_DIGEST=sha256:233de06753d30d120b1a3ce359d8d3be8bda78524cd8f520c99883bfe33964cf
-# Pinned 2026-04-15. Update via Dependabot or: docker pull gcr.io/distroless/python3-debian13
-ARG DISTROLESS_DIGEST=sha256:ed3a4beb46f8f8baac068743ba1b1f95ea3f793422129cf6dd23967f779b6018
+ARG PYTHON_VERSION=3.13
+ARG UV_VERSION=0.11.18
 ARG DISTROLESS_IMAGE=gcr.io/distroless/python3-debian13
 ARG PYTHON_SITE_PACKAGES=/usr/local/lib/python${PYTHON_VERSION}/site-packages
 
 # ---- Build stage: compile native extensions, build wheel ----
-FROM python:${PYTHON_VERSION}-slim@${PYTHON_DIGEST} AS builder
+FROM python:${PYTHON_VERSION}-slim AS builder
 
 ARG UV_VERSION
 
@@ -65,7 +61,7 @@ RUN cd /tmp && python -c "from headroom._core import DiffCompressor, SmartCrushe
     print(f'build-stage rust core verify OK: {DiffCompressor.__name__}, {SmartCrusher.__name__}')"
 
 # ---- Runtime stage (python-slim): supports root/nonroot via build arg ----
-FROM python:${PYTHON_VERSION}-slim@${PYTHON_DIGEST} AS runtime-slim-base
+FROM python:${PYTHON_VERSION}-slim AS runtime-slim-base
 
 ARG RUNTIME_USER=nonroot
 ARG PYTHON_SITE_PACKAGES
@@ -102,7 +98,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 ENTRYPOINT ["headroom", "proxy"]
 CMD ["--host", "0.0.0.0", "--port", "8787"]
 
-FROM ${DISTROLESS_IMAGE}@${DISTROLESS_DIGEST} AS runtime-slim
+FROM ${DISTROLESS_IMAGE} AS runtime-slim
 
 ARG RUNTIME_USER=nonroot
 ARG PYTHON_SITE_PACKAGES

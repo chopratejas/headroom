@@ -194,6 +194,63 @@ def test_should_apply_false_without_system_message(tokenizer: Tokenizer) -> None
     assert not aligner.should_apply(messages, tokenizer)
 
 
+def test_should_apply_false_when_policy_disables_aligner(tokenizer: Tokenizer) -> None:
+    """F2.1 c4/5: ``compression_policy.cache_aligner_enabled=False``
+    must disable the detector even when content + config would
+    otherwise opt in.
+
+    This is the canary that the per-auth-mode plumbing actually
+    reaches CacheAligner. A regression here means subscription
+    requests would silently keep updating
+    ``self._previous_prefix_hash`` and emitting volatility warnings,
+    which are the exact log lines #327/#388 reporters complained
+    about.
+
+    F2.2 added three per-mode tuning fields to CompressionPolicy
+    (``volatile_token_threshold``, ``max_lossy_ratio``,
+    ``toin_read_only``); the policy here uses the Subscription
+    defaults from ``policy_for_mode(AuthMode.SUBSCRIPTION)`` so the
+    fixture mirrors a real subscription request.
+    """
+    from headroom.transforms.compression_policy import CompressionPolicy
+
+    messages = _system_user_messages("Session: 550e8400-e29b-41d4-a716-446655440000")
+    aligner = CacheAligner(CacheAlignerConfig(enabled=True))
+    # Sanity: without a policy, the detector opts in.
+    assert aligner.should_apply(messages, tokenizer)
+    # F2.1 gate: with the subscription policy, the detector opts out.
+    sub_policy = CompressionPolicy(
+        live_zone_only=True,
+        cache_aligner_enabled=False,
+        volatile_token_threshold=32,
+        max_lossy_ratio=0.25,
+        toin_read_only=True,
+    )
+    assert not aligner.should_apply(messages, tokenizer, compression_policy=sub_policy)
+
+
+def test_should_apply_true_when_policy_enables_aligner(tokenizer: Tokenizer) -> None:
+    """F2.1 c4/5: ``compression_policy.cache_aligner_enabled=True``
+    must NOT short-circuit. PAYG/OAuth keep current behaviour.
+
+    F2.2 added three per-mode tuning fields; the policy here uses the
+    PAYG defaults from ``policy_for_mode(AuthMode.PAYG)`` so the
+    fixture mirrors a real PAYG request.
+    """
+    from headroom.transforms.compression_policy import CompressionPolicy
+
+    messages = _system_user_messages("Session: 550e8400-e29b-41d4-a716-446655440000")
+    aligner = CacheAligner(CacheAlignerConfig(enabled=True))
+    payg_policy = CompressionPolicy(
+        live_zone_only=False,
+        cache_aligner_enabled=True,
+        volatile_token_threshold=128,
+        max_lossy_ratio=0.45,
+        toin_read_only=False,
+    )
+    assert aligner.should_apply(messages, tokenizer, compression_policy=payg_policy)
+
+
 # ---------------------------------------------------------------------------
 # Pure-function detection tests
 # ---------------------------------------------------------------------------

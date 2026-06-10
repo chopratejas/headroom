@@ -103,6 +103,14 @@ async fn v4a_patch_byte_equal_through_proxy() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -147,6 +155,14 @@ async fn local_shell_call_command_argv_array_preserved() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -190,6 +206,14 @@ async fn codex_phase_commentary_preserved() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -228,6 +252,14 @@ async fn codex_phase_final_answer_preserved() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -264,6 +296,14 @@ async fn compaction_item_byte_equal() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -296,6 +336,14 @@ async fn reasoning_encrypted_content_byte_equal() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -336,6 +384,14 @@ async fn function_call_arguments_string_preserved() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -386,6 +442,14 @@ async fn call_id_referenced_not_id() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -431,6 +495,14 @@ async fn apply_patch_output_below_2kb_no_compression() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -477,6 +549,14 @@ async fn apply_patch_output_above_2kb_compressed() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -538,6 +618,14 @@ async fn local_shell_output_compressed() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -588,6 +676,14 @@ async fn mcp_tool_call_byte_equal() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -623,6 +719,14 @@ async fn computer_call_byte_equal() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -663,6 +767,14 @@ async fn image_generation_call_no_log_redaction_in_test_mode() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -712,6 +824,14 @@ async fn unknown_item_type_logged_warning_byte_equal() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await
@@ -768,6 +888,14 @@ async fn representative_request_round_trip() {
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/responses", proxy.url()))
         .header("content-type", "application/json")
+        // PR-E4: OAuth auth mode preserves byte-equality across the
+        // proxy (E4 only injects prompt_cache_key on PAYG). These
+        // dispatcher byte-fidelity tests pin the live-zone surgery,
+        // independent of the E4 cache-stabilization hook.
+        .header(
+            "authorization",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_bytes",
+        )
         .body(body.clone())
         .send()
         .await

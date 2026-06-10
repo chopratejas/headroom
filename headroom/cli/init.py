@@ -199,30 +199,90 @@ def _ensure_copilot_hooks(path: Path, profile: str) -> None:
     _write_json(path, payload)
 
 
-def _replace_marker_block(content: str, marker_start: str, marker_end: str, block: str) -> str:
+def _replace_marker_block(
+    content: str, marker_start: str, marker_end: str, block: str, *, at_root: bool = False
+) -> str:
     if marker_start in content and marker_end in content:
         start = content.index(marker_start)
         end = content.index(marker_end) + len(marker_end)
         content = content[:start].rstrip() + "\n\n" + content[end:].lstrip()
-    return (content.rstrip() + "\n\n" + block.strip() + "\n").lstrip()
+    block = block.strip()
+    if at_root:
+        # The block carries top-level keys, so it must sit above the first table
+        # header; appended after a table (e.g. [features]) TOML scopes those keys
+        # into that table and Codex rejects the config (#260).
+        lines = content.splitlines()
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                head = "\n".join(lines[:index]).rstrip()
+                tail = "\n".join(lines[index:]).lstrip("\n")
+                prefix = f"{head}\n\n" if head else ""
+                return (f"{prefix}{block}\n\n{tail}").rstrip() + "\n"
+    return (content.rstrip() + "\n\n" + block + "\n").lstrip()
+
+
+def _strip_codex_init_block(content: str) -> str:
+    """Remove all Headroom init-managed blocks and orphan keys from a Codex config.toml string."""
+    import re
+
+    # Remove any provider marker → end marker span, possibly repeated.
+    while _CODEX_PROVIDER_MARKER_START in content and _CODEX_PROVIDER_MARKER_END in content:
+        start = content.index(_CODEX_PROVIDER_MARKER_START)
+        end_idx = content.index(_CODEX_PROVIDER_MARKER_END, start)
+        if end_idx < start:
+            break
+        end = end_idx + len(_CODEX_PROVIDER_MARKER_END)
+        content = content[:start].rstrip("\n") + "\n" + content[end:].lstrip("\n")
+
+    # Remove stale unpaired markers.
+    content = content.replace(_CODEX_PROVIDER_MARKER_START + "\n", "")
+    content = content.replace(_CODEX_PROVIDER_MARKER_END + "\n", "")
+
+    # Strip any orphan top-level keys that a crashed or partial write may have
+    # left outside the marker block.
+    content = re.sub(r'(?m)^[ \t]*model_provider[ \t]*=[ \t]*"headroom"[ \t]*\r?\n', "", content)
+    content = re.sub(
+        r'(?m)^[ \t]*openai_base_url[ \t]*=[ \t]*"http://127\.0\.0\.1:\d+/v1"[ \t]*\r?\n',
+        "",
+        content,
+    )
+
+    # Strip any orphaned [model_providers.headroom] table that is recognisably ours.
+    orphan_headroom_table = re.compile(
+        r"(?ms)^\[model_providers\.headroom\][^\[]*?"
+        r'base_url[ \t]*=[ \t]*"http://127\.0\.0\.1:\d+/v1"[^\[]*?'
+        r"(?=^\[|\Z)"
+    )
+    content = orphan_headroom_table.sub("", content)
+
+    return content.lstrip("\n").rstrip() + "\n" if content.strip() else ""
 
 
 def _ensure_codex_provider(path: Path, port: int) -> None:
+    import re
+
     logger.debug("ensure codex provider block: %s (port=%s)", path, port)
     block = (
         f"{_CODEX_PROVIDER_MARKER_START}\n"
-        'model_provider = "headroom"\n\n'
+        'model_provider = "headroom"\n'
+        f'openai_base_url = "http://127.0.0.1:{port}/v1"\n\n'
         "[model_providers.headroom]\n"
         'name = "Headroom init proxy"\n'
         f'base_url = "http://127.0.0.1:{port}/v1"\n'
-        'env_key = "OPENAI_API_KEY"\n'
-        "requires_openai_auth = true\n"
         "supports_websockets = true\n"
         f"{_CODEX_PROVIDER_MARKER_END}"
     )
     content = path.read_text(encoding="utf-8") if path.exists() else ""
+    # init owns model_provider/openai_base_url: drop any prior assignment (any
+    # value, including one an older version mis-scoped under a table) so we
+    # replace it instead of emitting a duplicate top-level key (#260).
+    content = re.sub(r"(?m)^[ \t]*model_provider[ \t]*=.*\r?\n", "", content)
+    content = re.sub(r"(?m)^[ \t]*openai_base_url[ \t]*=.*\r?\n", "", content)
+    # The provider block carries top-level keys (model_provider, openai_base_url),
+    # so it must land at the document root rather than after a trailing table (#260).
     content = _replace_marker_block(
-        content, _CODEX_PROVIDER_MARKER_START, _CODEX_PROVIDER_MARKER_END, block
+        content, _CODEX_PROVIDER_MARKER_START, _CODEX_PROVIDER_MARKER_END, block, at_root=True
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -660,6 +720,32 @@ def _run_init_targets(
             _init_codex(global_scope=global_scope, profile=profile, port=port)
         elif target == "openclaw":
             _init_openclaw(global_scope=global_scope, port=port)
+
+    # Register the headroom MCP server with every targeted agent that has
+    # a registrar implemented. Wave 1 covers Claude Code; subsequent waves
+    # add Cursor / Codex / Continue / Cline / Windsurf / Goose without
+    # touching the call sites.
+    _install_headroom_mcp_for_targets(targets=targets, port=port)
+
+
+def _install_headroom_mcp_for_targets(*, targets: list[str], port: int) -> None:
+    """Install the headroom MCP server into each detected target agent."""
+    from headroom.mcp_registry import format_results, install_everywhere
+
+    proxy_url = f"http://127.0.0.1:{port}"
+    results = install_everywhere(proxy_url=proxy_url, agents=targets)
+    if not results:
+        return
+
+    lines = format_results(
+        results,
+        verbose=True,
+        overwrite_hint=f"headroom mcp install --proxy-url {proxy_url} --force",
+    )
+    if lines:
+        click.echo("\nMCP retrieve tool:")
+        for line in lines:
+            click.echo(line)
 
 
 @main.group(invoke_without_command=True)

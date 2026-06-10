@@ -500,7 +500,7 @@ class TelemetryCollector:
                 type_counts["string"] = type_counts.get("string", 0) + 1
             elif isinstance(v, bool):
                 type_counts["boolean"] = type_counts.get("boolean", 0) + 1
-            elif isinstance(v, (int, float)):
+            elif isinstance(v, int | float):
                 type_counts["numeric"] = type_counts.get("numeric", 0) + 1
             elif isinstance(v, list):
                 type_counts["array"] = type_counts.get("array", 0) + 1
@@ -532,7 +532,7 @@ class TelemetryCollector:
                 dist.looks_like_id = dist.unique_ratio > 0.9 and dist.avg_length > 5
 
         elif field_type == "numeric":
-            num_values = [v for v in values if isinstance(v, (int, float))]
+            num_values = [v for v in values if isinstance(v, int | float)]
             # Filter out infinity and NaN which can cause issues
             num_values = [
                 v
@@ -744,8 +744,19 @@ def get_telemetry_collector(
     if _telemetry_collector is None:
         with _collector_lock:
             if _telemetry_collector is None:
-                # Check environment for opt-out
-                if os.environ.get("HEADROOM_TELEMETRY_DISABLED", "").lower() in ("1", "true"):
+                # Honour HEADROOM_TELEMETRY (the documented opt-out var,
+                # also used by the Supabase beacon at telemetry/beacon.py).
+                # Pre-#390 this only checked HEADROOM_TELEMETRY_DISABLED,
+                # so users who set HEADROOM_TELEMETRY=off (the value in
+                # the docs) still saw /v1/telemetry report enabled=true.
+                # HEADROOM_TELEMETRY_DISABLED stays accepted for back-compat.
+                from headroom.telemetry.beacon import is_telemetry_enabled
+
+                disabled_legacy = os.environ.get("HEADROOM_TELEMETRY_DISABLED", "").lower() in (
+                    "1",
+                    "true",
+                )
+                if disabled_legacy or not is_telemetry_enabled():
                     config = config or TelemetryConfig()
                     config.enabled = False
 

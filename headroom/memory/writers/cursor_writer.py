@@ -100,10 +100,10 @@ class CursorMemoryWriter(AgentWriter):
 
         # If file exists and has our markers, only replace marker section
         if target.exists():
-            existing = target.read_text()
+            existing = target.read_text(encoding="utf-8")
             if MARKER_START in existing:
                 section = f"{MARKER_START}\n{body}\n{MARKER_END}"
-                full_content = MARKER_PATTERN.sub(section, existing)
+                full_content = MARKER_PATTERN.sub(lambda _match: section, existing)
             else:
                 # Append our section
                 section = f"{MARKER_START}\n{body}\n{MARKER_END}"
@@ -127,6 +127,6 @@ class CursorMemoryWriter(AgentWriter):
 
         if not dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(full_content)
+            target.write_text(full_content, encoding="utf-8")
 
         return result

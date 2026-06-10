@@ -62,17 +62,16 @@
 ## Configuration for Maximum Privacy
 
 ```bash
-HEADROOM_CACHE_ENABLED=false
-HEADROOM_TELEMETRY_ENABLED=false
-HEADROOM_LEARN_ENABLED=false
-HEADROOM_DASHBOARD_ENABLED=false
+HEADROOM_TELEMETRY=off
+HEADROOM_STATELESS=true
+headroom proxy --no-cache --no-optimize
 ```
 
 This configuration results in:
 - No prompt data stored
 - No data exported
 - No analytics collected
-- Headroom acts as pure compression proxy
+- Headroom acts as a passthrough proxy
 
 ---
 

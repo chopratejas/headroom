@@ -357,7 +357,9 @@ class UsageReporter:
             return
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self._cache_path.write_text(json.dumps(self._license_info.to_dict(), indent=2))
+            self._cache_path.write_text(
+                json.dumps(self._license_info.to_dict(), indent=2), encoding="utf-8"
+            )
         except OSError:
             logger.warning("Could not save license cache to %s", self._cache_path)
 
@@ -365,7 +367,7 @@ class UsageReporter:
         """Load cached license info, or return a default if expired/missing."""
         try:
             if self._cache_path.exists():
-                data = json.loads(self._cache_path.read_text())
+                data = json.loads(self._cache_path.read_text(encoding="utf-8"))
                 cached = LicenseInfo.from_dict(data)
                 age = (datetime.now(timezone.utc) - cached.validated_at).total_seconds()
                 if age < GRACE_PERIOD_SECONDS:

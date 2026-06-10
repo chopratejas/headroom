@@ -117,6 +117,43 @@ headroom mcp uninstall
 headroom mcp serve --debug
 ```
 
+## MCP host configuration
+
+For MCP hosts that let you configure a local stdio server, point them at `headroom mcp serve`. If you also run the proxy, pass the proxy URL explicitly so retrieval and stats come from the intended proxy instance.
+
+```json
+{
+  "mcpServers": {
+    "headroom": {
+      "type": "stdio",
+      "command": "headroom",
+      "args": ["mcp", "serve", "--proxy-url", "http://127.0.0.1:8787"]
+    }
+  }
+}
+```
+
+For multiple proxy instances, register one stdio MCP server per proxy URL:
+
+```json
+{
+  "mcpServers": {
+    "headroom": {
+      "type": "stdio",
+      "command": "headroom",
+      "args": ["mcp", "serve", "--proxy-url", "http://127.0.0.1:8787"]
+    },
+    "headroom-azure": {
+      "type": "stdio",
+      "command": "headroom",
+      "args": ["mcp", "serve", "--proxy-url", "http://127.0.0.1:8788"]
+    }
+  }
+}
+```
+
+Do not assume that a running proxy exposes an HTTP MCP endpoint at `/mcp`. If `http://127.0.0.1:<port>/mcp` returns `404`, use the stdio configuration above.
+
 ## Cross-tool compatibility
 
 | Tool | MCP Support | Setup |
@@ -147,3 +184,30 @@ The proxy compresses all traffic at the HTTP level (before the LLM sees content)
 **"Entry not found or expired"** -- Local content expires after 1 hour, proxy content after 5 minutes.
 
 **Claude doesn't see headroom tools** -- Run `headroom mcp status`, restart Claude Code, and verify with `/mcp` inside Claude Code.
+
+### Claude Code `/usage` attributes a large share to `headroom` MCP
+
+Claude Code counts MCP tool calls and MCP tool results as session context. If a
+long-running workflow or a subagent-heavy command calls `headroom_compress`,
+`headroom_retrieve`, or `headroom_stats` many times, `/usage` can show a visible
+share under the `headroom` MCP server even when Headroom is saving tokens inside
+individual tool results.
+
+That number is not a direct "Headroom overhead" bill. It means Claude Code kept
+Headroom MCP interactions in the conversation context. Deep research workflows
+can amplify this because each subagent has its own requests and may keep its own
+MCP results in context.
+
+Use these checks when the MCP share looks high:
+
+- Run `headroom_stats` and compare `tokens_saved` with the number of MCP calls.
+- Use `/compact` after large MCP-backed investigation steps so old MCP tool
+  results stop occupying the active context window.
+- Prefer the proxy path for automatic compression of normal Claude Code traffic:
+  `headroom proxy` plus `ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude`.
+- Disable the MCP server for sessions where you only want proxy-level
+  compression and do not need on-demand `headroom_compress` or
+  `headroom_retrieve`.
+- For deep research or custom subagent workflows, reduce unnecessary subagent
+  fan-out first; subagent traffic usually dominates the usage picture before
+  MCP overhead does.

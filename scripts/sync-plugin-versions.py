@@ -1,7 +1,22 @@
-"""Sync plugin manifest versions to the repo's computed release semver."""
+"""Sync plugin manifest versions to the repo's computed release semver.
+
+Branch-aware: by default this script is a NO-OP on feature branches.
+Pre-this-fix it ran on every commit and bumped the manifests to the
+PREDICTED next release version, which polluted every PR with version-
+bump noise (the prediction advanced as commits landed; each PR ended
+up carrying the bump as collateral).
+
+Sync now only runs when EITHER:
+  * We're on the ``main`` branch, OR
+  * ``HEADROOM_SYNC_VERSIONS=1`` is set explicitly (release workflow)
+
+Result: feature-branch PRs no longer carry manifest bumps; the
+release workflow still gets a canonical sync at publish time.
+"""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +48,50 @@ def compute_repo_semver(root: Path) -> str:
     return info.npm_version
 
 
+def _current_branch(root: Path) -> str | None:
+    """Return the current git branch name, or None if git isn't usable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _should_sync(root: Path) -> bool:
+    """Decide whether to actually run the sync.
+
+    Release workflow opts in via ``HEADROOM_SYNC_VERSIONS=1``; otherwise
+    we only sync on ``main`` (where the next-release prediction
+    legitimately lives). On feature branches we no-op — the prediction
+    would just create PR-level noise.
+    """
+    if os.environ.get("HEADROOM_SYNC_VERSIONS") == "1":
+        return True
+    branch = _current_branch(root)
+    if branch is None:
+        # Git unavailable or detached HEAD — safest default is no-op.
+        return False
+    return branch == "main"
+
+
 def main() -> None:
     root = ROOT
+    if not _should_sync(root):
+        # Quiet no-op on feature branches. Print a single line so
+        # pre-commit users see the reason if they look.
+        branch = _current_branch(root) or "<unknown>"
+        print(
+            f"sync-plugin-versions: skipping on branch '{branch}' (set HEADROOM_SYNC_VERSIONS=1 to force)"
+        )
+        return
     version = compute_repo_semver(root)
     subprocess.run(
         [

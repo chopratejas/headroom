@@ -22,15 +22,14 @@
 
 ## Compression Capabilities
 
-### Semantic Cache
+### Proxy Cache
 
-**Description:** Caches semantically similar requests using CCR pattern.
+**Description:** The proxy has semantic cache support and CCR-backed retrieval, controlled by CLI configuration.
 
 **Configuration:**
 ```bash
-HEADROOM_CACHE_ENABLED=true
-HEADROOM_CACHE_TTL=3600
-HEADROOM_CACHE_MAX_SIZE=10000
+headroom proxy          # cache enabled by default
+headroom proxy --no-cache
 ```
 
 **Behavior:**
@@ -59,9 +58,8 @@ class CCRConfig:
 
 **Configuration:**
 ```bash
-HEADROOM_SUMMARY_ENABLED=true
-HEADROOM_SUMMARY_THRESHOLD=5000  # tokens
-HEADROOM_SUMMARY_RATIO=0.3  # compress to 30%
+# Note: HEADROOM_SUMMARY_* env vars are not yet implemented.
+# Summary compression is currently configured programmatically only.
 ```
 
 **Behavior:**

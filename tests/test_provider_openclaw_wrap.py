@@ -117,3 +117,34 @@ def test_build_unwrap_entry_disables_plugin_and_removes_managed_keys_only() -> N
 def test_build_unwrap_entry_handles_non_mapping_input() -> None:
     # Arrange / Act / Assert
     assert build_unwrap_entry("not-a-dict") == {"enabled": False, "config": {}}
+
+
+def test_build_plugin_entry_strips_mcpServers_from_existing_entry() -> None:
+    """Newer OpenClaw schemas reject `mcpServers` at the plugin-entry root.
+
+    `headroom init -g` was failing with `Config invalid: Unrecognized
+    key: "mcpServers"` because the prior plugin entry in the user's
+    config still had that legacy field, and we were spreading it back in
+    via `**existing_entry`. Pin the strip so we don't regress.
+    """
+    existing_entry = {
+        "enabled": True,
+        "name": "headroom",
+        "mcpServers": {"some": "stale-block"},  # legacy, must be removed
+        "config": {"keep": "value"},
+    }
+
+    entry = build_plugin_entry(
+        existing_entry=existing_entry,
+        proxy_port=8787,
+        startup_timeout_ms=1500,
+        python_path=None,
+        no_auto_start=False,
+        gateway_provider_ids=None,
+        enabled=True,
+    )
+
+    assert "mcpServers" not in entry
+    assert entry["enabled"] is True
+    assert entry["name"] == "headroom"
+    assert entry["config"]["keep"] == "value"

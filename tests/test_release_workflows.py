@@ -38,7 +38,7 @@ def test_release_workflow_publishes_python_distributions_to_github_release() -> 
     assert 'gh release upload "$TAG" release-assets/*.tgz --clobber' in content
 
 
-def test_create_release_runs_after_successful_build_even_if_other_publishes_fail() -> None:
+def test_create_release_requires_successful_build_and_pypi_publish() -> None:
     content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     # Single-wheel maturin refactor (PR #360) added `build-wheels` (the
@@ -60,6 +60,7 @@ def test_create_release_runs_after_successful_build_even_if_other_publishes_fail
     assert "needs.build-wheels.result == 'success'" in content
     assert "needs.collect-dist.result == 'success'" in content
     assert "needs.smoke-import-wheels.result == 'success'" in content
+    assert "(vars.PYPI_SKIP == 'true' || needs.publish-pypi.result == 'success')" in content
 
 
 def test_macos_native_wrapper_dependency_install_retries_pypi_downloads() -> None:
@@ -184,6 +185,27 @@ def test_fastembed_uses_rustls_features() -> None:
     # `image-models` is in default; we re-enable it explicitly so we
     # don't lose the image-embedding capability when defaults are off.
     assert '"image-models"' in cargo
+
+
+def test_fastembed_uses_dynamic_ort_on_windows() -> None:
+    """Windows sdist builds must not link Pyke's DirectML ORT binaries.
+
+    `ort-download-binaries-*` emits DXCORE/DXGI/D3D12/DirectML link libs on
+    Windows. Those SDK libs are not present on many Python build hosts, so the
+    Windows target must use ORT dynamic loading instead.
+    """
+
+    cargo = (ROOT / "crates" / "headroom-core" / "Cargo.toml").read_text(encoding="utf-8")
+    assert "[target.'cfg(windows)'.dependencies]" in cargo
+    windows_section = cargo.split("[target.'cfg(windows)'.dependencies]", 1)[1].split(
+        "\n[",
+        1,
+    )[0]
+    windows_dependency_lines = "\n".join(
+        line for line in windows_section.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert '"ort-load-dynamic"' in windows_section
+    assert "ort-download-binaries" not in windows_dependency_lines
 
 
 def test_dockerfiles_no_longer_install_openssl_devel() -> None:
@@ -493,6 +515,81 @@ def test_sdist_build_conditional_keyed_on_target_not_os() -> None:
     )
 
 
+def test_release_workflow_verifies_versions_before_build_outputs() -> None:
+    """Release sync must be followed by an explicit cross-package version gate."""
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert "scripts/verify-versions.py" in content
+    assert "scripts/version-sync.py" in content
+    assert content.count("python scripts/verify-versions.py") >= 2
+
+    first_sync = content.index("python scripts/version-sync.py --version")
+    first_verify = content.index("python scripts/verify-versions.py", first_sync)
+    changelog = content.index("name: Run changelog generation", first_verify)
+    assert first_sync < first_verify < changelog
+
+    second_sync = content.index("python scripts/version-sync.py --version", first_verify)
+    second_verify = content.index("python scripts/verify-versions.py", second_sync)
+    build_wheels = content.index("name: Build wheels", second_verify)
+    assert second_sync < second_verify < build_wheels
+
+
+def test_sdist_license_is_packaged_and_verified_before_upload() -> None:
+    """STRUCTURAL INVARIANT: the sdist tarball must physically contain
+    every license file PEP 639 declares in PKG-INFO, and the release
+    workflow must verify that match before upload.
+
+    PyPI rejects sdists whose `License-File:` metadata entries
+    reference files missing from the tarball with `400 License-File X
+    does not exist in distribution file ...`. Maturin's PEP 639
+    auto-discovery emits both `LICENSE` and `NOTICE` into PKG-INFO
+    because both files exist at the project root and match the default
+    glob — but maturin sdists don't get the package-directory
+    treatment wheels do, so each file must be explicitly listed in
+    `[tool.maturin].include` with `format = "sdist"`. Issue trail:
+    sdist publish broke at v0.20.16 (the hatch -> maturin migration
+    in 2a91cbb dropped NOTICE from the include list), masked for ~22
+    releases by an earlier twine `400 File already exists` failure on
+    duplicate wheels, surfaced once PR #412 added skip-existing.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    release_yml = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert '{ path = "LICENSE", format = "sdist" }' in pyproject, (
+        "pyproject.toml [tool.maturin].include must list LICENSE for sdist format"
+    )
+    assert '{ path = "NOTICE", format = "sdist" }' in pyproject, (
+        "pyproject.toml [tool.maturin].include must list NOTICE for sdist format. "
+        "Maturin's PEP 639 auto-discovery emits `License-File: NOTICE` into "
+        "PKG-INFO because NOTICE exists at the project root, so the file MUST "
+        "ship in the tarball or PyPI rejects the sdist with a 400."
+    )
+    assert "name: Verify sdist license-file metadata matches tarball contents" in release_yml, (
+        "release.yml must run the License-File / tarball-contents cross-check before publish"
+    )
+    assert 'if line.startswith("License-File:")' in release_yml, (
+        "release.yml verifier must parse PKG-INFO License-File entries — "
+        "not just a hardcoded LICENSE check — so any future PEP 639-discoverable "
+        "file (COPYING, AUTHORS, ...) is also gated."
+    )
+    assert "declares License-File entries that are missing from the tarball" in release_yml, (
+        "release.yml verifier must fail loudly when declared license files "
+        "are missing — silent passes would let the same regression resurface."
+    )
+
+
+def test_pypi_publish_failure_blocks_github_release() -> None:
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    pypi_job_start = content.index("publish-pypi:")
+    npm_job_start = content.index("publish-npm:", pypi_job_start)
+    pypi_job = content[pypi_job_start:npm_job_start]
+
+    assert "uses: pypa/gh-action-pypi-publish@release/v1" in pypi_job
+    assert "continue-on-error: true" not in pypi_job
+    assert "(vars.PYPI_SKIP == 'true' || needs.publish-pypi.result == 'success')" in content
+
+
 def test_glibc_compat_shim_present_in_headroom_py() -> None:
     """STRUCTURAL INVARIANT: the headroom-py crate ships a glibc-2.38
     compatibility shim that defines weak `__isoc23_*` aliases.
@@ -710,3 +807,281 @@ def test_npm_publish_jobs_do_not_download_dist_artifact() -> None:
             f"its own tarball and the speculative download fails when "
             f"collect-dist hasn't run."
         )
+
+
+def test_release_workflow_runs_dry_run_on_pull_request() -> None:
+    """X2: the release workflow MUST trigger on `pull_request` for paths
+    that change wheel-layout / release pipeline so the wheel matrix +
+    smoke-import gate run BEFORE merge.
+
+    Issues this gate would have caught at PR time instead of after-merge:
+    - #379 (docker bake `name=` regression in PR #376)
+    - #382 (sdist os-mismatch — `ubuntu-latest` → `ubuntu-24.04` rename)
+    - #384 / #385 / #386 (glibc shim iterations — alias, link-order)
+    - #387's heredoc-indent regression that broke main on first release
+      run after merge
+
+    Required:
+    1. `pull_request:` trigger present.
+    2. Path filter is narrow enough to skip source-only PRs to
+       `crates/headroom-core` / `crates/headroom-proxy` (where wheel
+       layout doesn't change), but wide enough to cover release.yml,
+       docker.yml, headroom-py crate, pyproject.toml, root Cargo.
+    3. publish-pypi / publish-npm / publish-github-packages /
+       publish-docker / create-release ALL gate on
+       `github.event_name != 'pull_request'` so a PR run never
+       publishes anything — the dry-run is build+smoke only.
+    4. concurrency.group is namespaced by PR number for PR runs and by
+       ref_name for main runs, AND cancel-in-progress is true for PR
+       runs (rapid PR pushes cancel stale dry-runs) and false for main
+       runs (a tag-push release should never be cancelled mid-flight).
+
+    A future "lighten CI by dropping the dry-run" refactor — exactly
+    the impulse that gave us PR #382 and PR #387 — fails this test
+    at PR time.
+    """
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    # 1. pull_request trigger present.
+    on_block_end = content.index("\nconcurrency:")
+    on_block = content[:on_block_end]
+    assert "\n  pull_request:" in on_block, (
+        "release.yml must trigger on `pull_request` so the wheel matrix + "
+        "smoke-import gate run BEFORE merge. Without this, wheel-layout / "
+        "release-pipeline regressions are only caught after the tag is "
+        "pushed and main is broken (see #382, #387 for canonical examples)."
+    )
+
+    # 2. Path filter covers wheel-layout-affecting paths.
+    pr_idx = content.index("\n  pull_request:")
+    pr_end = content.index("\n  workflow_dispatch:", pr_idx)
+    pr_block = content[pr_idx:pr_end]
+    required_paths = [
+        ".github/workflows/release.yml",
+        ".github/workflows/docker.yml",
+        "crates/headroom-py/**",
+        "pyproject.toml",
+        "Cargo.toml",
+        "Cargo.lock",
+    ]
+    for path in required_paths:
+        assert f'"{path}"' in pr_block, (
+            f"pull_request path filter missing {path!r}. The dry-run must "
+            f"trigger when this path changes — otherwise a regression in "
+            f"that file lands on main without exercising the wheel matrix."
+        )
+
+    # 3. Each publish job + create-release gates on event_name != pull_request.
+    publish_jobs = [
+        ("publish-pypi", "\n  publish-npm:"),
+        ("publish-npm", "\n  publish-github-packages:"),
+        ("publish-github-packages", "\n  publish-docker:"),
+        ("publish-docker", "\n  create-release:"),
+    ]
+    for job_name, next_marker in publish_jobs:
+        start = content.index(f"\n  {job_name}:")
+        end = content.index(next_marker, start)
+        body = content[start:end]
+        assert "github.event_name != 'pull_request'" in body, (
+            f"{job_name} must gate on `github.event_name != 'pull_request'`. "
+            f"Without this gate, a PR dry-run would attempt to publish — "
+            f"in the best case the publish credentials are missing and the "
+            f"job fails noisily; in the worst case it succeeds and a "
+            f"non-merged PR ships to PyPI / npm / GHCR."
+        )
+
+    create_release_idx = content.index("\n  create-release:")
+    create_release_block = content[create_release_idx:]
+    assert "github.event_name != 'pull_request'" in create_release_block, (
+        "create-release must gate on `github.event_name != 'pull_request'`. "
+        "Without it, a PR dry-run would cut a GitHub Release for an unmerged "
+        "branch."
+    )
+
+    # 4. Concurrency: PR runs use a per-PR group and DO cancel-in-progress;
+    #    main runs use ref_name and DO NOT cancel.
+    concurrency_idx = content.index("\nconcurrency:")
+    jobs_idx = content.index("\njobs:", concurrency_idx)
+    concurrency_block = content[concurrency_idx:jobs_idx]
+
+    assert "github.event.pull_request.number" in concurrency_block, (
+        "concurrency.group must include the PR number for pull_request runs "
+        "(via `format('pr-{0}', github.event.pull_request.number)`) — "
+        "otherwise PR runs collide with each other or with main."
+    )
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in concurrency_block, (
+        "concurrency.cancel-in-progress must be conditional: TRUE for "
+        "pull_request (rapid PR pushes shouldn't queue N parallel wheel "
+        "builds) and FALSE for main (a tag-push release that's mid-flight "
+        "must not be cancelled — partial PyPI/Docker state is worse than "
+        "a slow CI queue)."
+    )
+
+
+def test_release_yml_triggers_on_release_published_not_every_push_to_main() -> None:
+    """release.yml fires when release-please publishes a release, not per main push.
+
+    The prior trigger (`push: branches: [main]`) caused a fresh wheel
+    matrix to be uploaded to PyPI for every merged `fix:`/`feat:` PR.
+    PyPI enforces a 10 GiB per-project storage quota and the project
+    breached it in May 2026 (publish-pypi failing on every main merge
+    from PR #482 forward). The fix routes releases through
+    release-please's release-PR pattern: bot opens/maintains a
+    `chore: release vX.Y.Z` PR aggregating conventional-commit traffic;
+    merging that PR creates the tag + GitHub Release; THAT release
+    event is what triggers this workflow.
+
+    Reverting to a per-push trigger would re-create the quota
+    blowup. This test fails any refactor that does so silently.
+    """
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    on_block_end = content.index("\nconcurrency:")
+    on_block = content[:on_block_end]
+
+    assert "\n  release:\n    types: [published]" in on_block, (
+        "release.yml must trigger on the `release: published` event so "
+        "release-please's release-PR merge is the only way to publish — "
+        "see .github/workflows/release-please.yml."
+    )
+    assert "\n  push:\n    branches: [main]" not in on_block, (
+        "release.yml MUST NOT trigger on every push to main. That pattern "
+        "burned PyPI's 10 GiB storage quota (one fresh wheel matrix per "
+        "merged PR). Route releases through release-please instead."
+    )
+
+
+def test_release_yml_resolves_manual_ver_from_release_tag() -> None:
+    """When fired by release event, MANUAL_VER must come from the release tag.
+
+    release_version.py defaults to deriving the next version from git
+    log + canonical pyproject.toml version. On a release-published
+    run, that derivation would re-bump past the version the bot just
+    tagged, producing wheels for the wrong version. The detect-version
+    job must read `github.event.release.tag_name` and strip the leading
+    `v` so the SemVer parser accepts it.
+    """
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert "Resolve MANUAL_VER from trigger" in content, (
+        "detect-version must include a step that resolves MANUAL_VER from "
+        "the trigger context (release.tag_name on release events; "
+        "inputs.version on workflow_dispatch)."
+    )
+    assert "RELEASE_TAG: ${{ github.event.release.tag_name }}" in content, (
+        "Resolver must read the tag from github.event.release.tag_name."
+    )
+    assert "${RELEASE_TAG#v}" in content, (
+        "Resolver must strip the leading 'v' from the release tag — "
+        "release_version.py's SemVer regex rejects 'v0.9.2'."
+    )
+    assert "MANUAL_VER: ${{ steps.manualver.outputs.value }}" in content, (
+        "Compute-version step must consume the resolver's output."
+    )
+
+
+def test_release_yml_preserves_release_please_notes_when_release_exists() -> None:
+    """create-release must not clobber release-please's auto-generated notes.
+
+    release-please creates the GitHub Release with an auto-generated
+    changelog body when its release PR merges. If create-release then
+    runs `gh release edit --notes-file .changelog.md`, the bot's
+    changelog gets overwritten with this workflow's full-history
+    fallback (which has no `--since` bound when MANUAL_VER is set
+    and previous_tag comes back empty). Keep the bot's notes intact;
+    only update title.
+    """
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    create_release_idx = content.index("\n  create-release:")
+    create_release_block = content[create_release_idx:]
+
+    assert 'gh release edit "$TAG" --title "$TITLE"\n' in create_release_block, (
+        "When the release already exists (release-please case), the edit "
+        "must only sync title — NOT pass --notes-file, which would "
+        "clobber the bot's auto-generated changelog."
+    )
+
+
+def test_release_please_workflow_exists_and_targets_main() -> None:
+    """The release-please bot workflow must be present and watch main."""
+    rp_path = ROOT / ".github" / "workflows" / "release-please.yml"
+    assert rp_path.exists(), (
+        "release-please.yml is the bot that opens/maintains the release "
+        "PR. Without it, no release ever fires (release.yml now only "
+        "triggers on the release event the bot emits)."
+    )
+
+    content = rp_path.read_text(encoding="utf-8")
+    assert any(f"googleapis/release-please-action@v{v}" in content for v in (4, 5)), (
+        "release-please.yml must use the v4 or v5 action — earlier versions "
+        "have different manifest semantics."
+    )
+    assert "branches: [main]" in content, (
+        "release-please.yml must watch main; that's where the bot reads "
+        "conventional-commit traffic to compute version bumps."
+    )
+    assert "config-file: .release-please-config.json" in content
+    assert "manifest-file: .release-please-manifest.json" in content
+    assert "pull-requests: write" in content, (
+        "Bot needs write permission to open/update its release PR."
+    )
+    assert "contents: write" in content, (
+        "Bot needs contents write to tag the release commit on merge."
+    )
+
+
+def test_release_please_config_and_manifest_are_present_and_consistent() -> None:
+    """Config and manifest must agree with pyproject.toml's version."""
+    import json
+
+    # tomllib is stdlib on 3.11+; tomli is the backport for 3.10 (which
+    # the project still supports per pyproject.toml `requires-python`).
+    # Matches the same fallback pattern in headroom/release_version.py.
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    manifest = json.loads((ROOT / ".release-please-manifest.json").read_text(encoding="utf-8"))
+    config = json.loads((ROOT / ".release-please-config.json").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    # Manifest tracks current version per package; the root package must
+    # match pyproject.toml exactly. A drift here means the bot will
+    # propose a version bump from the wrong base.
+    assert manifest["."] == pyproject["project"]["version"], (
+        f"manifest['.'] ({manifest['.']}) must match "
+        f"pyproject.toml version ({pyproject['project']['version']}). "
+        "Update the manifest when you bump pyproject.toml manually, or "
+        "let release-please own both."
+    )
+
+    # Config: the root package must declare python release-type so the
+    # bot updates pyproject.toml.
+    root_pkg = config["packages"]["."]
+    assert root_pkg["release-type"] == "python"
+    assert root_pkg["package-name"] == "headroom-ai"
+
+    # Tag format: existing tags in this repo are `vX.Y.Z`, NOT
+    # `headroom-ai-vX.Y.Z`. release-please's default for manifest
+    # configs prepends the component name; that would produce
+    # `headroom-ai-v0.22.4` and the bot would never find the existing
+    # `v0.22.3` baseline tag. include-component-in-tag MUST be false
+    # to keep tag format consistent with the project's pre-bot tags.
+    assert config.get("include-component-in-tag") is False, (
+        "include-component-in-tag must be false — existing tags are "
+        "`vX.Y.Z`, not `headroom-ai-vX.Y.Z`. Reverting this setting "
+        "would orphan every prior tag and produce a months-long "
+        "changelog because the bot can't find its baseline."
+    )
+
+    # extra-files: TypeScript SDK and openclaw plugin package.json
+    # files must be in lockstep with pyproject.toml.
+    extra_paths = {ef["path"] for ef in root_pkg.get("extra-files", [])}
+    assert "sdk/typescript/package.json" in extra_paths, (
+        "release-please must bump sdk/typescript/package.json so the npm "
+        "publish in release.yml ships the same version as the wheel."
+    )
+    assert "plugins/openclaw/package.json" in extra_paths, (
+        "release-please must bump plugins/openclaw/package.json so the "
+        "openclaw npm publish stays in sync."
+    )

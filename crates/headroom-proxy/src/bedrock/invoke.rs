@@ -157,7 +157,7 @@ pub async fn handle_invoke(
 
     let is_anthropic = model_id.starts_with(ANTHROPIC_VENDOR_PREFIX);
     let outbound_body: Bytes = if is_anthropic {
-        run_anthropic_compression(&body, &state, &request_id)
+        run_anthropic_compression(&body, &state, auth_mode, &request_id)
     } else {
         tracing::info!(
             event = "bedrock_compression_skipped",
@@ -357,7 +357,12 @@ pub async fn handle_invoke(
 /// re-emission step (`ensure_anthropic_version_first`) almost always
 /// no-ops. We still call it as a defence-in-depth assertion that
 /// the byte order is correct before signing.
-fn run_anthropic_compression(body: &Bytes, state: &AppState, request_id: &str) -> Bytes {
+fn run_anthropic_compression(
+    body: &Bytes,
+    state: &AppState,
+    _auth_mode: AuthMode,
+    request_id: &str,
+) -> Bytes {
     // Validate envelope shape. If the body isn't a valid Bedrock
     // envelope we still forward verbatim — the compressor would have
     // refused too — but log loudly.

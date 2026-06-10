@@ -22,6 +22,7 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from headroom.proxy.loopback_guard import require_loopback  # noqa: E402
 from headroom.proxy.server import ProxyConfig, create_app  # noqa: E402
 
 
@@ -35,6 +36,7 @@ def openai_responses_client():
         cost_tracking_enabled=False,
     )
     app = create_app(config)
+    app.dependency_overrides[require_loopback] = lambda: None
     with TestClient(app) as client:
         yield client
 
@@ -295,8 +297,9 @@ class TestOpenAIResponsesCompression:
         assert response.status_code == 200
 
         stats = openai_responses_client.get("/stats").json()
-        # With bypass, no tokens should be saved
-        assert stats["tokens"]["saved"] == 0
+        # With bypass, proxy compression should not save tokens. The headline
+        # saved count may include RTK CLI savings from the developer shell.
+        assert stats["tokens"]["proxy_compression_saved"] == 0
 
 
 class TestOpenAIResponsesStats:

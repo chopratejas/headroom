@@ -215,6 +215,14 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
         future = loop.run_in_executor(self._compression_executor, _wrapped)
         return await asyncio.wait_for(future, timeout=timeout)
 
+    async def _record_request_outcome(self, outcome) -> None:  # noqa: ANN001
+        # Mirror of ``HeadroomProxy._record_request_outcome`` for the
+        # mixin tests. Delegates to the free function in ``outcome.py``
+        # so the wire shape is identical to production.
+        from headroom.proxy.outcome import emit_request_outcome
+
+        await emit_request_outcome(self, outcome)
+
     async def _next_request_id(self) -> str:
         # Unique IDs so log assertions remain disambiguated under parallelism.
         return f"req-{id(object()):x}"
@@ -550,7 +558,7 @@ def test_memory_context_timeout_fails_open_and_releases_semaphore():
             self.initialized = False
             self.backend = None
 
-        async def search_and_format_context(self, _user_id, _messages):
+        async def search_and_format_context(self, _user_id, _messages, **_kwargs):
             await asyncio.sleep(5.0)
             return "should-timeout"
 
@@ -563,7 +571,7 @@ def test_memory_context_timeout_fails_open_and_releases_semaphore():
         def has_memory_tool_calls(self, _response, _provider) -> bool:
             return False
 
-        async def handle_memory_tool_calls(self, _response, _user_id, _provider):
+        async def handle_memory_tool_calls(self, _response, _user_id, _provider, **_kwargs):
             return []
 
     async def _run() -> None:
@@ -721,7 +729,7 @@ def _run_cli_capture(args: list[str], env: dict | None = None) -> ProxyConfig:
     captured: dict[str, ProxyConfig] = {}
     orig_run = server_mod.run_server
 
-    def _fake_run(config: ProxyConfig):  # noqa: D401 - stub
+    def _fake_run(config: ProxyConfig, **_kwargs):  # noqa: D401 - stub
         captured["config"] = config
         return 0
 

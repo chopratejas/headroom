@@ -300,11 +300,17 @@ def merge_cost_stats(
     Each savings layer is reported separately with its own scope:
     - savings_usd: compression savings at model list price (monotonic)
     - cache_savings_usd: prefix cache discount from provider (separate)
-    - cli_tokens_avoided: tokens filtered by rtk (token count only, no $ estimate)
+    - cli_tokens_avoided: tokens filtered by the selected CLI context tool
+      (token count only, no $ estimate)
 
-    The hero metric (savings_usd) is ONLY compression savings priced at
-    the model's published input rate. Cache and CLI are shown separately.
-    This avoids the non-monotonic moving-average repricing bug (#83).
+    The dollar metric (savings_usd) remains ONLY proxy compression savings
+    priced at the model's published input rate. CLI filtering is folded into
+    the dashboard's compression token total, but it has no reliable
+    model-specific dollar estimate because those tokens never reached the
+    proxy request.
+    Prefix cache savings stay separate because they are a provider discount,
+    not token removal. This avoids the non-monotonic moving-average repricing
+    bug (#83).
     """
     if cost_stats is None:
         return None
@@ -318,6 +324,60 @@ def merge_cost_stats(
         "compression_savings_usd": round(compression_savings, 4),
         "cache_savings_usd": round(cache_net, 4),
         "cli_tokens_avoided": cli_tokens_avoided,
+        "cli_filtering_tokens_avoided": cli_tokens_avoided,
+        "cli_tokens_included_in_compression": True,
+        "cli_filtering_tokens_included_in_compression": True,
+    }
+
+
+def _aggregate_mcp_events() -> dict[str, int]:
+    """Aggregate compression / retrieval events written by Headroom MCP
+    server instances to the cross-process shared events file.
+
+    The Headroom MCP server (``headroom mcp serve``) records every
+    ``headroom_compress`` and ``headroom_retrieve`` invocation to a
+    file-locked shared log (see :func:`headroom.ccr.mcp_server._append_shared_event`).
+    This helper reads that log and aggregates within the rolling window
+    so the proxy's ``/stats`` can surface MCP-side work alongside the
+    proxy's own HTTP-path compression numbers.
+
+    Returns zeros for every key if the MCP SDK isn't installed, the
+    shared file doesn't exist yet, or any read error occurs — the
+    intent is "if there's nothing to report, report zero" so this
+    helper never blocks the summary.
+
+    Keys: ``compressions`` (count of headroom_compress calls),
+    ``tokens_removed`` (sum of input_tokens-output_tokens across
+    compress events), ``retrievals`` (count of headroom_retrieve
+    calls — the load-bearing over-compression signal).
+    """
+    zero = {"compressions": 0, "tokens_removed": 0, "retrievals": 0}
+    try:
+        from headroom.ccr.mcp_server import _read_shared_events
+    except ImportError:
+        return zero
+
+    try:
+        events = _read_shared_events()
+    except Exception:  # noqa: BLE001 — never break /stats on a stats-read error
+        return zero
+
+    compressions = 0
+    tokens_removed = 0
+    retrievals = 0
+    for evt in events:
+        kind = evt.get("type")
+        if kind == "compress":
+            compressions += 1
+            in_tok = int(evt.get("input_tokens", 0) or 0)
+            out_tok = int(evt.get("output_tokens", 0) or 0)
+            tokens_removed += max(0, in_tok - out_tok)
+        elif kind == "retrieve":
+            retrievals += 1
+    return {
+        "compressions": compressions,
+        "tokens_removed": tokens_removed,
+        "retrievals": retrievals,
     }
 
 
@@ -382,7 +442,9 @@ def build_session_summary(
         best_compression = best["savings_pct"]
         best_detail = f"{best['original']:,} → {best['optimized']:,} tokens"
 
-    # Cost summary — savings_usd is compression savings at model list price (monotonic)
+    # Cost summary — dollar savings are proxy-compression only at model list
+    # price. CLI filtering tokens are counted in token savings but have no
+    # model-specific price because they never reached the proxy request.
     cost_stats = proxy.cost_tracker.stats() if proxy.cost_tracker else {}
     cost_with = cost_stats.get("cost_with_headroom_usd", 0.0)
     compression_savings = cost_stats.get("savings_usd", 0.0)
@@ -407,6 +469,14 @@ def build_session_summary(
             "best_compression_pct": best_compression,
             "best_detail": best_detail,
             "total_tokens_removed": metrics.tokens_saved_total,
+            "cli_filtering_tokens_avoided": cli_tokens_avoided,
+            "total_tokens_saved_with_cli_filtering": (
+                metrics.tokens_saved_total + cli_tokens_avoided
+            ),
+            "total_tokens_before_with_cli_filtering": total_tokens_before,
+            "rtk_tokens_avoided": cli_tokens_avoided,
+            "total_tokens_saved_with_rtk": metrics.tokens_saved_total + cli_tokens_avoided,
+            "total_tokens_before_with_rtk": total_tokens_before,
         },
         "uncompressed_requests": {k: v for k, v in uncompressed_reasons.items() if v > 0},
         "cost": {
@@ -417,9 +487,27 @@ def build_session_summary(
             "breakdown": {
                 "cache_savings_usd": round(cache_net, 2),
                 "compression_savings_usd": round(compression_savings, 2),
+                "cli_filtering_savings_usd": None,
+                "cli_filtering_savings_note": (
+                    "CLI filtering tokens are included in token savings only; "
+                    "dollar savings use proxy compression tokens at model list price."
+                ),
+                "rtk_savings_usd": None,
+                "rtk_savings_note": (
+                    "CLI filtering tokens are included in token savings only; dollar savings "
+                    "use proxy compression tokens at model list price."
+                ),
             },
         },
     }
+
+    # MCP-side compression: events written by `headroom mcp serve`
+    # instances (one or more) to the shared stats log. Surfaces direct
+    # tool invocations the proxy HTTP path never sees, plus the
+    # `retrievals` counter — the load-bearing signal for over-compression
+    # (if it grows linearly with turn count, our lossy compressors are
+    # dropping info the model actually needs).
+    summary["mcp"] = _aggregate_mcp_events()
 
     # Add tip if token mode would help
     if proxy.config.mode == PROXY_MODE_CACHE and uncompressed_reasons["prefix_frozen"] > 10:
@@ -465,58 +553,18 @@ class CostTracker:
         self._api_cache_write_1h_by_model: dict[str, int] = {}
         self._api_uncached_by_model: dict[str, int] = {}
 
-    # Cache resolved model names to avoid repeated litellm lookups.
-    # This is critical: litellm.cost_per_token() is synchronous and can block
-    # the async event loop if it triggers I/O (lazy model info download).
-    _resolved_model_cache: dict[str, str] = {}
-
-    @classmethod
-    def _resolve_litellm_model(cls, model: str) -> str:
-        """Resolve model name to one LiteLLM recognizes, adding provider prefix if needed.
-
-        Results are cached per model name to avoid blocking the event loop
-        with repeated synchronous litellm lookups.
-        """
-        if model in cls._resolved_model_cache:
-            return cls._resolved_model_cache[model]
-
-        resolved = cls._resolve_litellm_model_uncached(model)
-        cls._resolved_model_cache[model] = resolved
-        return resolved
-
-    @staticmethod
-    def _resolve_litellm_model_uncached(model: str) -> str:
-        """Uncached resolution — called once per unique model name."""
-        litellm = _get_litellm_module()
-        if litellm is None:
-            return model
-
-        # Try as-is first
-        try:
-            litellm.cost_per_token(model=model, prompt_tokens=1, completion_tokens=0)
-            return model
-        except Exception:
-            pass
-
-        # Try with provider prefix
-        prefixes = {
-            "claude-": "anthropic/",
-            "gpt-": "openai/",
-            "o1-": "openai/",
-            "o3-": "openai/",
-            "o4-": "openai/",
-            "gemini-": "google/",
-        }
-        for pattern, prefix in prefixes.items():
-            if model.startswith(pattern):
-                prefixed = f"{prefix}{model}"
-                try:
-                    litellm.cost_per_token(model=prefixed, prompt_tokens=1, completion_tokens=0)
-                    return prefixed
-                except Exception:
-                    break
-
-        return model
+    def reset_runtime(self) -> None:
+        """Reset in-memory cost/token counters for local test/debug use."""
+        self._costs.clear()
+        self._last_prune_time = datetime.now()
+        self._tokens_saved_by_model.clear()
+        self._tokens_sent_by_model.clear()
+        self._requests_by_model.clear()
+        self._api_cache_read_by_model.clear()
+        self._api_cache_write_by_model.clear()
+        self._api_cache_write_5m_by_model.clear()
+        self._api_cache_write_1h_by_model.clear()
+        self._api_uncached_by_model.clear()
 
     def estimate_cost(
         self,
@@ -544,7 +592,9 @@ class CostTracker:
             return None
 
         try:
-            resolved_model = self._resolve_litellm_model(model)
+            from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+            resolved_model = resolve_litellm_model(model)
 
             # litellm.cost_per_token handles all token types natively:
             # prompt_tokens at input rate, cache_read at ~10%, cache_creation at ~125%
@@ -652,7 +702,9 @@ class CostTracker:
         if litellm is None:
             return None
         try:
-            resolved = self._resolve_litellm_model(model)
+            from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+            resolved = resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
             cost_per_token = info.get("input_cost_per_token")
             return cost_per_token * 1_000_000 if cost_per_token else None
@@ -669,7 +721,9 @@ class CostTracker:
         if litellm is None:
             return None
         try:
-            resolved = self._resolve_litellm_model(model)
+            from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+            resolved = resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
             uncached = info.get("input_cost_per_token")
             if not uncached:

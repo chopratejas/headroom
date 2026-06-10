@@ -30,7 +30,6 @@
 //! engaged in dashboards.
 
 use axum::body::{to_bytes, Body};
-use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use std::net::SocketAddr;
@@ -38,92 +37,7 @@ use std::net::SocketAddr;
 use crate::compression;
 use crate::headers::{build_forward_request_headers, filter_response_headers};
 use crate::proxy::AppState;
-use crate::vertex::{adc::TokenSourceError, envelope, split_model_action, VertexVerb};
-
-/// Axum handler for the rawPredict route.
-///
-/// Path parameters:
-/// - `project` — GCP project ID.
-/// - `location` — Vertex region (e.g. `us-central1`).
-/// - `model_action` — combined `<model_id>:<verb>` segment. We split
-///   on the last `:` and dispatch on the verb. The streaming sibling
-///   `:streamRawPredict` lives in [`super::stream_raw_predict`] and
-///   is registered under the same route shape.
-pub async fn handle_raw_predict(
-    State(state): State<AppState>,
-    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
-    Path((project, location, model_action)): Path<(String, String, String)>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    let request_id = headers
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    let (model_id, verb) = match split_model_action(&model_action) {
-        Some(parts) => parts,
-        None => {
-            tracing::warn!(
-                event = "vertex_path_parse_failed",
-                request_id = %request_id,
-                path = %uri.path(),
-                segment = %model_action,
-                "vertex path final segment missing `:verb` separator"
-            );
-            return error_response(StatusCode::NOT_FOUND, "vertex path: bad model_action");
-        }
-    };
-    let parsed_verb = match VertexVerb::parse(verb) {
-        Some(VertexVerb::RawPredict) => VertexVerb::RawPredict,
-        Some(VertexVerb::StreamRawPredict) => {
-            // Wrong handler. The router mounts both verbs at this
-            // path shape; the dispatcher inside [`super::stream_raw_predict`]
-            // wraps the streaming case. If we ever land here it's a
-            // routing bug — log and 500 rather than silently forward.
-            tracing::error!(
-                event = "vertex_verb_routing_bug",
-                request_id = %request_id,
-                verb = "streamRawPredict",
-                "streamRawPredict request reached non-streaming handler"
-            );
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "vertex routing bug: stream verb on non-stream handler",
-            );
-        }
-        None => {
-            tracing::warn!(
-                event = "vertex_unknown_verb",
-                request_id = %request_id,
-                verb = %verb,
-                "vertex path verb not recognized; only rawPredict / streamRawPredict are supported"
-            );
-            return error_response(StatusCode::NOT_FOUND, "vertex: unknown verb");
-        }
-    };
-
-    forward_vertex_request(
-        state,
-        client_addr,
-        request_id,
-        method,
-        uri,
-        headers,
-        body,
-        VertexCallContext {
-            project,
-            location,
-            model_id: model_id.to_string(),
-            verb: parsed_verb,
-        },
-        /* attach_sse_tee */ false,
-    )
-    .await
-}
+use crate::vertex::{adc::TokenSourceError, envelope, VertexVerb};
 
 /// Carrier struct for the bits parsed out of the URL path; passed
 /// down so logs and error paths share a consistent set of fields.
@@ -250,6 +164,7 @@ pub(crate) async fn forward_vertex_request(
                 tokens_after,
                 strategies_applied,
                 markers_inserted,
+                ..
             } => {
                 tracing::info!(
                     event = "vertex_compression_applied",
@@ -343,10 +258,17 @@ pub(crate) async fn forward_vertex_request(
         .get(http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    // Honour the scheme set by a TLS-terminating upstream (e.g. a load
+    // balancer that sets X-Forwarded-Proto: https). Fall back to "http"
+    // for plain connections that carry no such header.
+    let forwarded_proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
     let mut outgoing_headers = build_forward_request_headers(
         &headers,
         client_addr.ip(),
-        "http",
+        forwarded_proto,
         forwarded_host.as_deref(),
         &request_id,
         strip_internal,

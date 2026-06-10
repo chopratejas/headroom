@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, cast
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response
@@ -20,6 +22,7 @@ def _api_target(proxy: Any, provider_name: str) -> str:
         "openai": "OPENAI_API_URL",
         "gemini": "GEMINI_API_URL",
         "cloudcode": "CLOUDCODE_API_URL",
+        "vertex": "VERTEX_API_URL",
     }
     legacy_attr = legacy_attrs[provider_name]
     return cast(str, getattr(proxy, legacy_attr, proxy.provider_runtime.api_target(provider_name)))
@@ -46,8 +49,280 @@ def _select_passthrough_base_url(proxy: Any, headers: dict[str, str]) -> str:
     return _api_target(proxy, provider_name)
 
 
+# Codex ChatGPT-subscription auth doesn't have access to
+# `chatgpt.com/backend-api/models` — that endpoint returns 403 to OAuth
+# bearer tokens (issue #478). Codex polls `/v1/models` every few seconds
+# to populate its model-picker UI, so the 403 storm is noisy and breaks
+# refresh. The fix: when Codex hits `/v1/models` under ChatGPT auth,
+# fetch the Codex-specific registry first and synthesize an
+# OpenAI-compatible response from its slugs. If that registry is
+# unavailable, fall back to the known-supported static set.
+#
+# The list mirrors what Codex itself ships in its built-in model
+# registry (the same models its provider config exposes); it's the
+# safe-by-construction set since these are what `/v1/responses` actually
+# accepts under ChatGPT auth.
+_CHATGPT_AUTH_CODEX_MODELS: tuple[str, ...] = (
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3",
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+)
+
+
+def _codex_client_version(requested_client_version: str | None = None) -> str:
+    """Return the Codex client version to use for model-registry requests."""
+    if requested_client_version:
+        return requested_client_version
+    return "0.130.0"
+
+
+def _models_list_response(model_ids: tuple[str, ...]) -> Response:
+    """Build an OpenAI-compatible model-list response for Codex metadata callers."""
+    payload = {
+        "object": "list",
+        "data": [
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            }
+            for model_id in model_ids
+        ],
+    }
+    return Response(
+        content=json.dumps(payload),
+        status_code=200,
+        headers={"content-type": "application/json"},
+    )
+
+
+def _synthetic_models_list_response() -> Response:
+    """OpenAI-compatible `/v1/models` payload for Codex ChatGPT auth."""
+    return _models_list_response(_CHATGPT_AUTH_CODEX_MODELS)
+
+
+def _synthetic_model_get_response(model_id: str) -> Response:
+    """OpenAI-compatible `/v1/models/{id}` payload."""
+    if model_id not in _CHATGPT_AUTH_CODEX_MODELS:
+        return Response(
+            content=json.dumps(
+                {
+                    "error": {
+                        "message": f"Model {model_id!r} not available under ChatGPT auth",
+                        "type": "invalid_request_error",
+                        "code": "model_not_found",
+                    }
+                }
+            ),
+            status_code=404,
+            headers={"content-type": "application/json"},
+        )
+    return Response(
+        content=json.dumps(
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            }
+        ),
+        status_code=200,
+        headers={"content-type": "application/json"},
+    )
+
+
+def _normalize_codex_registry_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Prepare inbound ChatGPT auth headers for the Codex model registry."""
+    upstream_headers = dict(headers)
+    upstream_headers.pop("host", None)
+    account_id = (
+        upstream_headers.get("chatgpt-account-id")
+        or upstream_headers.get("ChatGPT-Account-ID")
+        or ""
+    )
+    if account_id:
+        upstream_headers["chatgpt-account-id"] = account_id
+        upstream_headers.pop("ChatGPT-Account-ID", None)
+    upstream_headers["accept"] = "application/json"
+    upstream_headers.pop("Accept", None)
+    return upstream_headers
+
+
+async def _fetch_chatgpt_codex_model_ids(
+    proxy: Any,
+    headers: dict[str, str],
+    requested_client_version: str | None,
+) -> tuple[str, ...] | None:
+    """Fetch Codex model slugs from ChatGPT, returning None when fallback should apply."""
+    client_version = _codex_client_version(requested_client_version)
+    upstream_headers = _normalize_codex_registry_headers(headers)
+    url = (
+        "https://chatgpt.com/backend-api/codex/models"
+        f"?client_version={quote(client_version, safe='')}"
+    )
+    try:
+        assert proxy.http_client is not None
+        resp = await proxy.http_client.get(
+            url,
+            headers=upstream_headers,
+            timeout=15.0,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                "Codex model registry fetch failed: HTTP %s: %s",
+                resp.status_code,
+                resp.text[:300],
+            )
+            return None
+
+        data = resp.json()
+        models_raw = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models_raw, list):
+            logger.warning("Codex model registry response did not contain models[]")
+            return None
+
+        model_ids = tuple(
+            slug
+            for entry in models_raw
+            if isinstance(entry, dict)
+            for slug in (entry.get("slug"),)
+            if isinstance(slug, str) and slug
+        )
+        if not model_ids:
+            logger.warning("Codex model registry returned no model slugs")
+            return None
+
+        logger.info("Fetched %d Codex models from upstream model registry", len(model_ids))
+        logger.debug("Fetched Codex model IDs from upstream model registry: %s", list(model_ids))
+        return model_ids
+    except Exception:
+        logger.exception("Codex model registry fetch failed")
+        return None
+
+
+async def _fetch_chatgpt_codex_models_response(
+    proxy: Any,
+    headers: dict[str, str],
+    requested_client_version: str | None,
+) -> Response | None:
+    """Build a dynamic `/v1/models` response from the Codex registry when available."""
+    model_ids = await _fetch_chatgpt_codex_model_ids(proxy, headers, requested_client_version)
+    if model_ids is None:
+        return None
+    return _models_list_response(model_ids)
+
+
+async def _fetch_chatgpt_codex_model_get_response(
+    proxy: Any,
+    headers: dict[str, str],
+    model_id: str,
+    requested_client_version: str | None,
+) -> Response | None:
+    """Build a dynamic `/v1/models/{id}` response from the Codex registry when available."""
+    model_ids = await _fetch_chatgpt_codex_model_ids(proxy, headers, requested_client_version)
+    if model_ids is None:
+        return None
+    if model_id in model_ids:
+        return Response(
+            content=json.dumps(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "openai",
+                }
+            ),
+            status_code=200,
+            headers={"content-type": "application/json"},
+        )
+    return Response(
+        content=json.dumps(
+            {
+                "error": {
+                    "message": f"Model {model_id!r} not available under ChatGPT auth",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found",
+                }
+            }
+        ),
+        status_code=404,
+        headers={"content-type": "application/json"},
+    )
+
+
+async def _handle_chatgpt_model_metadata(
+    proxy: Any,
+    request: Request,
+    upstream_path: str,
+) -> Response | None:
+    headers = dict(request.headers.items())
+    headers.pop("host", None)
+    headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
+    if not is_chatgpt_auth:
+        return None
+
+    # Avoid generic `/backend-api/models[/{id}]`, which returns 403 for
+    # OAuth tokens, but prefer the Codex-specific registry when available.
+    requested_client_version = request.query_params.get("client_version")
+    if upstream_path == "/backend-api/models":
+        upstream_response = await _fetch_chatgpt_codex_models_response(
+            proxy,
+            headers,
+            requested_client_version,
+        )
+        if upstream_response is not None:
+            return upstream_response
+        return _synthetic_models_list_response()
+    if upstream_path.startswith("/backend-api/models/"):
+        model_id = upstream_path[len("/backend-api/models/") :]
+        upstream_response = await _fetch_chatgpt_codex_model_get_response(
+            proxy,
+            headers,
+            model_id,
+            requested_client_version,
+        )
+        if upstream_response is not None:
+            return upstream_response
+        return _synthetic_model_get_response(model_id)
+
+    url = f"https://chatgpt.com{upstream_path}"
+    if request.url.query:
+        url = f"{url}?{request.url.query}"
+
+    body = await request.body()
+    try:
+        assert proxy.http_client is not None
+        resp = await proxy.http_client.request(
+            request.method,
+            url,
+            headers=headers,
+            content=body,
+            timeout=120.0,
+        )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
+    except Exception as exc:
+        logger.error("Passthrough %s failed: %s", upstream_path, exc)
+        return Response(content=str(exc), status_code=502)
+
+
 def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     """Register provider-specific proxy endpoints."""
+
+    async def vertex_publisher_passthrough(request: Request, publisher: str, action: str):
+        return await proxy.handle_passthrough(
+            request,
+            _api_target(proxy, "vertex"),
+            action,
+            f"vertex:{publisher}",
+        )
 
     @app.post("/v1/messages")
     async def anthropic_messages(request: Request):
@@ -201,12 +476,122 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     async def google_cloudcode_stream_generate_content_v1(request: Request):
         return await proxy.handle_google_cloudcode_stream(request)
 
-    @app.post("/serving-endpoints/{model}/invocations")
-    async def databricks_invocations(request: Request, model: str):
-        return await proxy.handle_databricks_invocations(request, model)
+    @app.post(
+        "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:generateContent"
+    )
+    async def vertex_generate_content(
+        request: Request,
+        api_version: str,
+        project: str,
+        location: str,
+        publisher: str,
+        model: str,
+    ):
+        del api_version, project, location
+        if publisher == "google":
+            return await proxy.handle_gemini_generate_content(
+                request,
+                model,
+                _api_target(proxy, "vertex"),
+                "vertex:google",
+            )
+        return await vertex_publisher_passthrough(request, publisher, "generateContent")
+
+    @app.post(
+        "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamGenerateContent"
+    )
+    async def vertex_stream_generate_content(
+        request: Request,
+        api_version: str,
+        project: str,
+        location: str,
+        publisher: str,
+        model: str,
+    ):
+        del api_version, project, location
+        if publisher == "google":
+            return await proxy.handle_gemini_generate_content(
+                request,
+                model,
+                _api_target(proxy, "vertex"),
+                "vertex:google",
+            )
+        return await vertex_publisher_passthrough(request, publisher, "streamGenerateContent")
+
+    @app.post(
+        "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:countTokens"
+    )
+    async def vertex_count_tokens(
+        request: Request,
+        api_version: str,
+        project: str,
+        location: str,
+        publisher: str,
+        model: str,
+    ):
+        del api_version, project, location
+        if publisher == "google":
+            return await proxy.handle_gemini_count_tokens(
+                request,
+                model,
+                _api_target(proxy, "vertex"),
+                "vertex:google",
+            )
+        return await vertex_publisher_passthrough(request, publisher, "countTokens")
+
+    @app.post(
+        "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:rawPredict"
+    )
+    async def vertex_raw_predict(
+        request: Request,
+        api_version: str,
+        project: str,
+        location: str,
+        publisher: str,
+        model: str,
+    ):
+        del api_version, project, location
+        if publisher == "anthropic":
+            return await proxy.handle_anthropic_messages(
+                request,
+                _api_target(proxy, "vertex"),
+                "vertex:anthropic",
+                model,
+            )
+        return await vertex_publisher_passthrough(request, publisher, "rawPredict")
+
+    @app.post(
+        "/{api_version}/projects/{project}/locations/{location}/publishers/{publisher}/models/{model}:streamRawPredict"
+    )
+    async def vertex_stream_raw_predict(
+        request: Request,
+        api_version: str,
+        project: str,
+        location: str,
+        publisher: str,
+        model: str,
+    ):
+        del api_version, project, location
+        if publisher == "anthropic":
+            return await proxy.handle_anthropic_messages(
+                request,
+                _api_target(proxy, "vertex"),
+                "vertex:anthropic",
+                model,
+                True,
+            )
+        return await vertex_publisher_passthrough(request, publisher, "streamRawPredict")
 
     @app.get("/v1/models")
     async def list_models(request: Request):
+        chatgpt_response = await _handle_chatgpt_model_metadata(
+            proxy,
+            request,
+            "/backend-api/models",
+        )
+        if chatgpt_response is not None:
+            return chatgpt_response
+
         provider_name = proxy.provider_runtime.model_metadata_provider(dict(request.headers))
         return await proxy.handle_passthrough(
             request,
@@ -217,6 +602,14 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
 
     @app.get("/v1/models/{model_id}")
     async def get_model(request: Request, model_id: str):
+        chatgpt_response = await _handle_chatgpt_model_metadata(
+            proxy,
+            request,
+            f"/backend-api/models/{model_id}",
+        )
+        if chatgpt_response is not None:
+            return chatgpt_response
+
         provider_name = proxy.provider_runtime.model_metadata_provider(dict(request.headers))
         return await proxy.handle_passthrough(
             request,

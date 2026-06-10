@@ -94,7 +94,7 @@
 //! parameter in the signature now means later PRs are pure
 //! implementation swaps, not signature redesigns.
 
-use std::sync::OnceLock;
+use std::{collections::HashSet, sync::OnceLock};
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -148,27 +148,27 @@ pub const DEFAULT_MODEL: &str = "claude-3-5-sonnet-20241022";
 // Pinned as `const` rather than a hard-coded `match` so the values are
 // grep-able and reviewable in one place.
 
-/// JSON-array tool_results below this size route to no-op (1 KiB).
-const THRESHOLD_JSON_ARRAY: usize = 1024;
+/// JSON-array tool_results below this size route to no-op.
+const THRESHOLD_JSON_ARRAY: usize = 512;
 /// Build / log output below this size routes to no-op (512 B). Logs
 /// are the most repetitive content type so the threshold is the
 /// lowest of the bunch.
 const THRESHOLD_BUILD_OUTPUT: usize = 512;
-/// Search-result blocks below this size route to no-op (1 KiB).
-const THRESHOLD_SEARCH_RESULTS: usize = 1024;
-/// Git-diff blocks below this size route to no-op (1 KiB).
-const THRESHOLD_GIT_DIFF: usize = 1024;
-/// Source-code blocks below this size route to no-op (2 KiB). Pinned
+/// Search-result blocks below this size route to no-op.
+const THRESHOLD_SEARCH_RESULTS: usize = 512;
+/// Git-diff blocks below this size route to no-op.
+const THRESHOLD_GIT_DIFF: usize = 512;
+/// Source-code blocks below this size route to no-op. Pinned
 /// for the future Rust code-compressor port — currently unused
 /// because `ContentType::SourceCode` short-circuits to no-op above
 /// the dispatch (see `dispatch_compressor`).
-const THRESHOLD_SOURCE_CODE: usize = 2048;
-/// Plain-text blocks below this size route to no-op (5 KiB). Pinned
+const THRESHOLD_SOURCE_CODE: usize = 512;
+/// Plain-text blocks below this size route to no-op. Pinned
 /// for the future Kompress wiring (PR-B7 follow-up); currently unused.
-const THRESHOLD_PLAIN_TEXT: usize = 5120;
+const THRESHOLD_PLAIN_TEXT: usize = 512;
 /// HTML blocks have no compressor; threshold matches plain text so
 /// when an HTML compressor lands the value is already pinned.
-const THRESHOLD_HTML: usize = 5120;
+const THRESHOLD_HTML: usize = 512;
 
 /// Map a content type to its byte threshold. Returning `usize` rather
 /// than an `Option` because every variant has a sensible default;
@@ -223,6 +223,22 @@ impl AuthMode {
             AuthMode::OAuth => "oauth",
             AuthMode::Subscription => "subscription",
             AuthMode::Unknown => "unknown",
+        }
+    }
+}
+
+/// Map F1's classifier output (`crate::auth_mode::AuthMode`) to the
+/// dispatcher-local enum. The two enums differ only by `Unknown` (the
+/// dispatcher carries a sentinel for the case where a stored
+/// recommendation row didn't include an auth tag); F1 always returns
+/// one of the three real classes, so this `From` is total and
+/// infallible.
+impl From<crate::auth_mode::AuthMode> for AuthMode {
+    fn from(mode: crate::auth_mode::AuthMode) -> Self {
+        match mode {
+            crate::auth_mode::AuthMode::Payg => AuthMode::Payg,
+            crate::auth_mode::AuthMode::OAuth => AuthMode::OAuth,
+            crate::auth_mode::AuthMode::Subscription => AuthMode::Subscription,
         }
     }
 }
@@ -373,6 +389,95 @@ impl CompressionManifest {
         self.block_outcomes
             .iter()
             .any(|b| matches!(b.action, BlockAction::Compressed { .. }))
+    }
+
+    /// Aggregate `original_tokens − compressed_tokens` across every
+    /// `BlockAction::Compressed` outcome. Zero when no block was
+    /// rewritten. Saturating subtraction guards against the
+    /// theoretically-impossible case where a `Compressed` variant
+    /// reports compressed > original (the dispatcher's
+    /// `RejectedNotSmaller` gate should make this unreachable, but the
+    /// saturating arithmetic keeps callers panic-free).
+    pub fn tokens_saved(&self) -> usize {
+        self.block_outcomes
+            .iter()
+            .filter_map(|b| match &b.action {
+                BlockAction::Compressed {
+                    original_tokens,
+                    compressed_tokens,
+                    ..
+                } => Some(original_tokens.saturating_sub(*compressed_tokens)),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Distinct compressor strategies that actually produced rewritten
+    /// output, in first-seen order. Mirrors what the proxy logs as
+    /// `transforms_applied`. Empty when no block was rewritten.
+    pub fn transforms_applied(&self) -> Vec<&'static str> {
+        let mut seen: Vec<&'static str> = Vec::new();
+        for b in &self.block_outcomes {
+            if let BlockAction::Compressed { strategy, .. } = &b.action {
+                if !seen.contains(strategy) {
+                    seen.push(*strategy);
+                }
+            }
+        }
+        seen
+    }
+}
+
+/// Summarize why a Responses live-zone dispatch made no changes.
+///
+/// The proxy uses this to log stable, grep-able reasons instead of the
+/// generic `rust_no_compression` bucket. The classification is
+/// intentionally coarse: operators want to know whether the dispatcher
+/// saw no eligible items, hit a size floor, rejected output as not
+/// smaller, or encountered a compressor error.
+pub fn summarize_openai_responses_no_change_reason(manifest: &CompressionManifest) -> &'static str {
+    if manifest.block_outcomes.is_empty() {
+        return "no_eligible_items";
+    }
+
+    let mut saw_no_compression_applied = false;
+    let mut saw_excluded = false;
+    let mut saw_below_output_floor = false;
+    let mut saw_below_plain_text_floor = false;
+    let mut saw_rejected_not_smaller = false;
+    let mut saw_compressor_error = false;
+
+    for outcome in &manifest.block_outcomes {
+        match &outcome.action {
+            BlockAction::CompressorError { .. } => saw_compressor_error = true,
+            BlockAction::RejectedNotSmaller { .. } => saw_rejected_not_smaller = true,
+            BlockAction::BelowByteThreshold { content_type, .. } => {
+                if *content_type == "output_item" {
+                    saw_below_output_floor = true;
+                } else {
+                    saw_below_plain_text_floor = true;
+                }
+            }
+            BlockAction::NoCompressionApplied { .. } => saw_no_compression_applied = true,
+            BlockAction::Excluded { .. } => saw_excluded = true,
+            BlockAction::Compressed { .. } => {}
+        }
+    }
+
+    if saw_compressor_error {
+        "compressor_error"
+    } else if saw_rejected_not_smaller {
+        "rejected_not_smaller"
+    } else if saw_below_output_floor {
+        "below_output_floor"
+    } else if saw_below_plain_text_floor {
+        "below_plain_text_floor"
+    } else if saw_excluded {
+        "excluded_live_zone"
+    } else if saw_no_compression_applied {
+        "no_compressible_content"
+    } else {
+        "no_change"
     }
 }
 
@@ -1430,7 +1535,7 @@ mod tests {
         let out = compress_anthropic_live_zone(&b, 0, AuthMode::Payg, DEFAULT_MODEL).unwrap();
         let actions = outcome_block_actions(&out);
         assert_eq!(actions.len(), 3);
-        // tool_result with tiny content → BelowByteThreshold (1 byte < 5 KiB plain-text threshold).
+        // tool_result with tiny content → BelowByteThreshold.
         assert!(matches!(actions[0], BlockAction::BelowByteThreshold { .. }));
         assert!(matches!(
             actions[1],
@@ -1438,7 +1543,7 @@ mod tests {
                 reason: ExclusionReason::HotZoneBlockType
             }
         ));
-        // text block with "ok" → BelowByteThreshold (2 bytes < 5 KiB plain-text threshold).
+        // text block with "ok" → BelowByteThreshold.
         assert!(matches!(actions[2], BlockAction::BelowByteThreshold { .. }));
     }
 
@@ -1454,7 +1559,7 @@ mod tests {
         };
         assert_eq!(manifest.block_outcomes.len(), 1);
         assert_eq!(manifest.block_outcomes[0].block_type, "string_content");
-        // 13 bytes of plain text is well below the 5 KiB plain-text threshold.
+        // 13 bytes of plain text is well below the plain-text threshold.
         assert!(matches!(
             manifest.block_outcomes[0].action,
             BlockAction::BelowByteThreshold { .. }
@@ -1537,6 +1642,111 @@ mod tests {
         };
         assert_eq!(manifest.messages_below_frozen_floor, 1);
         assert_eq!(manifest.latest_user_message_index, None);
+    }
+
+    // ─── Manifest accessor helpers (consumed by PyO3 binding) ─────────
+
+    fn make_manifest(actions: Vec<BlockAction>) -> CompressionManifest {
+        CompressionManifest {
+            messages_total: actions.len(),
+            messages_below_frozen_floor: 0,
+            latest_user_message_index: None,
+            block_outcomes: actions
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| BlockOutcome {
+                    message_index: i,
+                    block_index: None,
+                    block_type: "test".to_string(),
+                    action: a,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn tokens_saved_zero_for_empty_manifest() {
+        let m = CompressionManifest::empty();
+        assert_eq!(m.tokens_saved(), 0);
+        assert!(m.transforms_applied().is_empty());
+    }
+
+    #[test]
+    fn tokens_saved_sums_compressed_outcomes_only() {
+        let m = make_manifest(vec![
+            BlockAction::Compressed {
+                strategy: "smart_crusher",
+                original_bytes: 0,
+                compressed_bytes: 0,
+                original_tokens: 100,
+                compressed_tokens: 30,
+            },
+            BlockAction::NoCompressionApplied {
+                content_type: "image".to_string(),
+            },
+            BlockAction::Compressed {
+                strategy: "log_compressor",
+                original_bytes: 0,
+                compressed_bytes: 0,
+                original_tokens: 200,
+                compressed_tokens: 50,
+            },
+            BlockAction::RejectedNotSmaller {
+                strategy: "smart_crusher",
+                original_bytes: 0,
+                compressed_bytes: 0,
+                original_tokens: 80,
+                compressed_tokens: 90,
+            },
+        ]);
+        // 70 + 150 = 220; rejected variant must not contribute.
+        assert_eq!(m.tokens_saved(), 220);
+    }
+
+    #[test]
+    fn transforms_applied_dedup_first_seen_order() {
+        let m = make_manifest(vec![
+            BlockAction::Compressed {
+                strategy: "log_compressor",
+                original_bytes: 0,
+                compressed_bytes: 0,
+                original_tokens: 50,
+                compressed_tokens: 10,
+            },
+            BlockAction::Compressed {
+                strategy: "smart_crusher",
+                original_bytes: 0,
+                compressed_bytes: 0,
+                original_tokens: 50,
+                compressed_tokens: 10,
+            },
+            BlockAction::Compressed {
+                strategy: "log_compressor",
+                original_bytes: 0,
+                compressed_bytes: 0,
+                original_tokens: 50,
+                compressed_tokens: 10,
+            },
+        ]);
+        assert_eq!(
+            m.transforms_applied(),
+            vec!["log_compressor", "smart_crusher"]
+        );
+    }
+
+    #[test]
+    fn tokens_saved_saturates_when_compressed_exceeds_original() {
+        // Defensive — the dispatcher's RejectedNotSmaller gate should
+        // make this unreachable, but the helper must not panic if a
+        // future caller hand-constructs such a manifest.
+        let m = make_manifest(vec![BlockAction::Compressed {
+            strategy: "smart_crusher",
+            original_bytes: 0,
+            compressed_bytes: 0,
+            original_tokens: 10,
+            compressed_tokens: 50,
+        }]);
+        assert_eq!(m.tokens_saved(), 0);
     }
 }
 
@@ -1996,14 +2206,14 @@ mod openai_chat_tests {
 // records a `NoCompressionApplied` outcome but never plans a
 // replacement.
 //
-// Output items must additionally clear a 2 KiB minimum (per spec line
+// Output items must additionally clear a 512-byte minimum
 // 167) before the per-content-type byte threshold even runs.
 
 /// Output-item floor below which the Responses dispatcher does not
-/// even attempt compression. Per spec PR-C3 §scope. Matches
+/// even attempt compression. Matches
 /// `responses_items::OUTPUT_ITEM_MIN_BYTES`; pinned here too because
 /// `headroom-core` is independent of the proxy crate.
-const RESPONSES_OUTPUT_MIN_BYTES: usize = 2 * 1024;
+const RESPONSES_OUTPUT_MIN_BYTES: usize = 512;
 
 /// Compress live-zone blocks of an OpenAI Responses request.
 ///
@@ -2025,11 +2235,13 @@ const RESPONSES_OUTPUT_MIN_BYTES: usize = 2 * 1024;
 /// }
 /// ```
 ///
-/// Live zone = the latest item of each compressible kind:
-/// `function_call_output`, `local_shell_call_output`,
-/// `apply_patch_call_output`, plus the latest `message` text. Earlier
-/// items of those kinds are frozen (cached prefix); never rewritten.
-/// All other item types pass through verbatim.
+/// Live zone = every current-frame output item with a byte-safe
+/// string payload (`function_call_output`, `local_shell_call_output`,
+/// `apply_patch_call_output`), except CCR retrieval outputs that must
+/// reach the model byte-for-byte.
+/// Codex commonly batches parallel tool results in one `response.create`
+/// frame; those sibling outputs are all live input for the next model
+/// turn. All other item types pass through verbatim.
 ///
 /// Cache-safety invariant matches the Anthropic / Chat dispatchers:
 /// bytes outside the rewritten ranges are *literally copied* from the
@@ -2060,54 +2272,46 @@ pub fn compress_openai_responses_live_zone(
 
     let items_total = items.len();
 
-    // Walk items from the back, tagging the first occurrence of each
-    // compressible kind. This naturally yields "latest" semantics.
-    let mut latest_function_output: Option<usize> = None;
-    let mut latest_local_shell_output: Option<usize> = None;
-    let mut latest_apply_patch_output: Option<usize> = None;
-    let mut latest_message: Option<usize> = None;
-
-    for (idx, item) in items.iter().enumerate().rev() {
-        let type_tag = item.get("type").and_then(Value::as_str).unwrap_or("");
-        match type_tag {
-            "function_call_output" if latest_function_output.is_none() => {
-                latest_function_output = Some(idx);
-            }
-            "local_shell_call_output" if latest_local_shell_output.is_none() => {
-                latest_local_shell_output = Some(idx);
-            }
-            "apply_patch_call_output" if latest_apply_patch_output.is_none() => {
-                latest_apply_patch_output = Some(idx);
-            }
-            // Only consider user-role messages for compression.
-            // Assistant messages are part of the cache hot zone
-            // (next-turn continuation context).
-            "message"
-                if latest_message.is_none()
-                    && item.get("role").and_then(Value::as_str) == Some("user") =>
-            {
-                latest_message = Some(idx);
-            }
-            _ => {}
+    // Output items in the current Responses frame are live deltas, not
+    // cached history. Codex often sends several sibling tool outputs
+    // after parallel local commands; compressing only the last one
+    // leaves large same-frame payloads untouched.
+    let mut headroom_retrieve_call_ids: HashSet<&str> = HashSet::new();
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
         }
-        // Early-exit if we've found everything we care about.
-        if latest_function_output.is_some()
-            && latest_local_shell_output.is_some()
-            && latest_apply_patch_output.is_some()
-            && latest_message.is_some()
-        {
-            break;
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+        if name == "headroom_retrieve" || name.ends_with("__headroom_retrieve") {
+            if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                headroom_retrieve_call_ids.insert(call_id);
+            }
         }
     }
 
-    let candidates: &[(Option<usize>, &str)] = &[
-        (latest_function_output, "function_call_output"),
-        (latest_local_shell_output, "local_shell_call_output"),
-        (latest_apply_patch_output, "apply_patch_call_output"),
-        (latest_message, "message"),
-    ];
+    let mut output_candidates: Vec<(usize, &str)> = Vec::new();
+    let latest_message: Option<usize> = None;
 
-    if candidates.iter().all(|(idx, _)| idx.is_none()) {
+    for (idx, item) in items.iter().enumerate() {
+        let type_tag = item.get("type").and_then(Value::as_str).unwrap_or("");
+        match type_tag {
+            "function_call_output" | "local_shell_call_output" | "apply_patch_call_output" => {
+                let call_id = item.get("call_id").and_then(Value::as_str);
+                if call_id.is_some_and(|id| headroom_retrieve_call_ids.contains(id)) {
+                    continue;
+                }
+                output_candidates.push((idx, type_tag));
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidates = output_candidates;
+    if let Some(idx) = latest_message {
+        candidates.push((idx, "message"));
+    }
+
+    if candidates.is_empty() {
         return Ok(LiveZoneOutcome::NoChange {
             manifest: CompressionManifest {
                 messages_total: items_total,
@@ -2122,10 +2326,9 @@ pub fn compress_openai_responses_live_zone(
     // one slot (output items have a single string field; messages
     // have a single text content slot).
     let mut all_slots: Vec<(usize, ResponsesPlanSlot)> = Vec::new();
-    for (maybe_idx, kind_tag) in candidates {
-        let Some(idx) = maybe_idx else { continue };
-        match plan_responses_item(body_raw, *idx, kind_tag) {
-            Ok(Some(slot)) => all_slots.push((*idx, slot)),
+    for (idx, kind_tag) in candidates {
+        match plan_responses_item(body_raw, idx, kind_tag) {
+            Ok(Some(slot)) => all_slots.push((idx, slot)),
             Ok(None) => {}
             Err(_) => {
                 // Body shape doesn't match what we expect for this
@@ -2151,7 +2354,7 @@ pub fn compress_openai_responses_live_zone(
     let mut replacements: Vec<Replacement> = Vec::new();
 
     for (msg_idx, slot) in all_slots {
-        // Output items must clear the 2 KiB floor BEFORE the
+        // Output items must clear the response-output floor BEFORE the
         // per-content-type threshold even runs. This is on top of the
         // existing per-block byte-threshold gate.
         if slot.is_output_item && slot.content_text.len() < RESPONSES_OUTPUT_MIN_BYTES {
@@ -2211,7 +2414,7 @@ pub fn compress_openai_responses_live_zone(
 
 /// Per-kind plan slot for the Responses dispatcher. Mirrors
 /// `OpenAiPlanSlot` but tracks whether the slot is an `*_output` item
-/// (so the 2 KiB floor only applies there, not to `message` text).
+/// (so the response-output floor only applies there, not to `message` text).
 struct ResponsesPlanSlot {
     block_index: Option<usize>,
     block_type: String,
@@ -2219,7 +2422,7 @@ struct ResponsesPlanSlot {
     content_byte_range: (usize, usize),
     /// True when the slot is one of `function_call_output`,
     /// `local_shell_call_output`, `apply_patch_call_output`. Used to
-    /// gate the 2 KiB output-item floor.
+    /// gate the response-output floor.
     is_output_item: bool,
 }
 
@@ -2421,9 +2624,9 @@ mod openai_responses_tests {
     }
 
     #[test]
-    fn output_below_2kb_skipped() {
-        // 1 KB output → below the output-item floor.
-        let small = "x".repeat(1024);
+    fn output_below_512b_skipped() {
+        // 256 B output → below the output-item floor.
+        let small = "x".repeat(256);
         let b = body(json!({
             "model": "gpt-4o",
             "input": [
@@ -2441,8 +2644,8 @@ mod openai_responses_tests {
                         threshold_bytes,
                     } => {
                         assert_eq!(*content_type, "output_item");
-                        assert_eq!(*byte_count, 1024);
-                        assert_eq!(*threshold_bytes, 2048);
+                        assert_eq!(*byte_count, 256);
+                        assert_eq!(*threshold_bytes, RESPONSES_OUTPUT_MIN_BYTES);
                     }
                     other => panic!("expected BelowByteThreshold, got {other:?}"),
                 }
@@ -2452,10 +2655,10 @@ mod openai_responses_tests {
     }
 
     #[test]
-    fn picks_latest_function_output_only() {
-        // Two function_call_output items; only the latest is in the
-        // live zone. Both small, so neither compresses, but the
-        // manifest must show one slot, not two.
+    fn plans_all_same_frame_function_outputs() {
+        // Codex can batch parallel tool results in a single
+        // response.create frame. They are all current-frame live
+        // inputs, so each byte-safe output string gets a slot.
         let b = body(json!({
             "model": "gpt-4o",
             "input": [
@@ -2474,8 +2677,45 @@ mod openai_responses_tests {
             .iter()
             .filter(|b| b.block_type == "function_call_output")
             .collect();
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].message_index, 2);
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].message_index, 0);
+        assert_eq!(outputs[1].message_index, 2);
+    }
+
+    #[test]
+    fn compresses_multiple_same_frame_outputs() {
+        let mut first = String::new();
+        let mut second = String::new();
+        for i in 0..400 {
+            first.push_str(&format!(
+                "./src/foo_{i}.rs:12: error[E0308]: mismatched types in module foo_{i}\n"
+            ));
+            second.push_str(&format!(
+                "./tests/bar_{i}.rs:44: warning: unused variable in test bar_{i}\n"
+            ));
+        }
+        let b = body(json!({
+            "model": "gpt-4o",
+            "input": [
+                {"type": "function_call_output", "call_id": "c1", "output": first},
+                {"type": "function_call", "call_id": "c2", "name": "f", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c2", "output": second},
+            ]
+        }));
+        let out = compress_openai_responses_live_zone(&b, AuthMode::Payg, "gpt-4o").unwrap();
+        let manifest = match &out {
+            LiveZoneOutcome::NoChange { manifest } => manifest,
+            LiveZoneOutcome::Modified { manifest, .. } => manifest,
+        };
+        let compressed_outputs = manifest
+            .block_outcomes
+            .iter()
+            .filter(|b| {
+                b.block_type == "function_call_output"
+                    && matches!(b.action, BlockAction::Compressed { .. })
+            })
+            .count();
+        assert_eq!(compressed_outputs, 2, "{manifest:?}");
     }
 
     #[test]
@@ -2545,7 +2785,7 @@ mod openai_responses_tests {
     }
 
     #[test]
-    fn message_user_content_planned() {
+    fn message_user_content_not_in_live_zone() {
         let b = body(json!({
             "model": "gpt-4o",
             "input": [
@@ -2556,8 +2796,35 @@ mod openai_responses_tests {
         let out = compress_openai_responses_live_zone(&b, AuthMode::Payg, "gpt-4o").unwrap();
         match &out {
             LiveZoneOutcome::NoChange { manifest } => {
-                assert_eq!(manifest.block_outcomes.len(), 1);
-                assert_eq!(manifest.block_outcomes[0].block_type, "message_input_text");
+                assert!(manifest.block_outcomes.is_empty());
+            }
+            _ => panic!("expected NoChange"),
+        }
+    }
+
+    #[test]
+    fn headroom_retrieve_output_not_in_live_zone() {
+        let retrieved = "retrieved original content ".repeat(100);
+        let b = body(json!({
+            "model": "gpt-4o",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_retrieve",
+                    "name": "mcp__headroom__headroom_retrieve",
+                    "arguments": "{}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_retrieve",
+                    "output": retrieved
+                }
+            ]
+        }));
+        let out = compress_openai_responses_live_zone(&b, AuthMode::Payg, "gpt-4o").unwrap();
+        match &out {
+            LiveZoneOutcome::NoChange { manifest } => {
+                assert!(manifest.block_outcomes.is_empty());
             }
             _ => panic!("expected NoChange"),
         }
@@ -2581,5 +2848,37 @@ mod openai_responses_tests {
             }
             _ => panic!("expected NoChange"),
         }
+    }
+
+    #[test]
+    fn no_change_reason_empty_input_is_no_eligible_items() {
+        let manifest = CompressionManifest::empty();
+        assert_eq!(
+            summarize_openai_responses_no_change_reason(&manifest),
+            "no_eligible_items"
+        );
+    }
+
+    #[test]
+    fn no_change_reason_prefers_output_floor() {
+        let manifest = CompressionManifest {
+            messages_total: 1,
+            messages_below_frozen_floor: 0,
+            latest_user_message_index: Some(0),
+            block_outcomes: vec![BlockOutcome {
+                message_index: 0,
+                block_index: None,
+                block_type: "function_call_output".to_string(),
+                action: BlockAction::BelowByteThreshold {
+                    content_type: "output_item",
+                    byte_count: 1024,
+                    threshold_bytes: RESPONSES_OUTPUT_MIN_BYTES,
+                },
+            }],
+        };
+        assert_eq!(
+            summarize_openai_responses_no_change_reason(&manifest),
+            "below_output_floor"
+        );
     }
 }

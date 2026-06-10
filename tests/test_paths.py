@@ -326,6 +326,12 @@ def test_rtk_path_suffix(fake_home: Path) -> None:
     assert paths.rtk_path().parent == paths.bin_dir()
 
 
+def test_lean_ctx_path_suffix(fake_home: Path) -> None:
+    expected_name = "lean-ctx.exe" if os.name == "nt" else "lean-ctx"
+    assert paths.lean_ctx_path().name == expected_name
+    assert paths.lean_ctx_path().parent == paths.bin_dir()
+
+
 def test_deploy_root_default(fake_home: Path) -> None:
     assert paths.deploy_root() == fake_home / ".headroom" / "deploy"
 
@@ -382,6 +388,15 @@ def test_rtk_path_follows_workspace_env(
     clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
     expected_name = "rtk.exe" if os.name == "nt" else "rtk"
     assert paths.rtk_path() == ws / "bin" / expected_name
+
+
+def test_lean_ctx_path_follows_workspace_env(
+    fake_home: Path, clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws = tmp_path / "state"
+    clean_env.setenv(paths.HEADROOM_WORKSPACE_DIR_ENV, str(ws))
+    expected_name = "lean-ctx.exe" if os.name == "nt" else "lean-ctx"
+    assert paths.lean_ctx_path() == ws / "bin" / expected_name
 
 
 def test_beacon_lock_path_follows_workspace_env(

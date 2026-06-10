@@ -30,6 +30,8 @@ from headroom.memory.sync import (
 from headroom.memory.sync_adapters.claude_code import (
     ClaudeCodeAdapter,
     _parse_frontmatter,
+    encode_claude_project_path,
+    get_claude_memory_dir,
 )
 from headroom.memory.sync_adapters.codex_agent import CodexAdapter
 
@@ -408,6 +410,17 @@ class TestClaudeCodeAdapter:
         assert fm == {}
         assert body == "Just plain content."
 
+    def test_encode_claude_project_path_windows_user_with_dot(self):
+        assert encode_claude_project_path(r"C:\Users\john.doe\work") == "-C-Users-john.doe-work"
+
+    def test_get_claude_memory_dir_uses_windows_safe_project_encoding(self):
+        memory_dir = get_claude_memory_dir(Path(r"C:\Users\john.doe\work"))
+
+        rendered = str(memory_dir)
+        assert "-C-Users-john.doe-work" in rendered
+        assert "john-doe" not in rendered
+        assert rendered.endswith("memory")
+
     @pytest.mark.asyncio
     async def test_read_memories_skips_memory_md(self, memory_dir):
         (memory_dir / "MEMORY.md").write_text("# Index\n- entry")
@@ -535,6 +548,23 @@ class TestCodexAdapter:
 
         content = agents_md.read_text()
         assert "new fact" in content
+        assert "old fact" not in content
+
+    @pytest.mark.asyncio
+    async def test_write_replaces_existing_section_with_literal_backslashes(self, agents_md):
+        agents_md.write_text(
+            "# Instructions\n\n"
+            "<!-- headroom:memory:start -->\n"
+            "## Old\n- old fact\n"
+            "<!-- headroom:memory:end -->\n"
+        )
+
+        adapter = CodexAdapter(agents_md)
+        await adapter.write_memories([{"content": r"Use C:\Users\john.doe\repo and literal \u"}])
+
+        content = agents_md.read_text()
+        assert r"C:\Users\john.doe\repo" in content
+        assert r"literal \u" in content
         assert "old fact" not in content
 
     @pytest.mark.asyncio

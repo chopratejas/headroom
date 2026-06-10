@@ -7,6 +7,7 @@ and proper wiring between components.
 
 from __future__ import annotations
 
+import threading
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,14 @@ if TYPE_CHECKING:
 _MEMORY_STORE_GROUP = "headroom.memory_store"
 _MEMORY_VECTOR_GROUP = "headroom.memory_vector"
 _MEMORY_TEXT_GROUP = "headroom.memory_text"
+
+# Process-wide embedder cache keyed by (backend, model). Embedders are
+# stateless with respect to the memory store, so a single instance can
+# safely serve every per-project ``LocalBackend`` created by the
+# BackendRouter. Without this cache, opening N project DBs would load
+# the sentence-transformers / ONNX model N times.
+_EMBEDDER_CACHE: dict[tuple[str, str], Embedder] = {}
+_EMBEDDER_CACHE_LOCK = threading.Lock()
 
 
 def _load_external_backend(
@@ -133,7 +142,13 @@ def _create_store(config: MemoryConfig) -> MemoryStore:
 
 
 def _create_embedder(config: MemoryConfig) -> Embedder:
-    """Create an embedder backend.
+    """Create or return a cached embedder backend.
+
+    The embedder is shared across every ``LocalBackend`` instance that
+    requests the same ``(embedder_backend, embedder_model)`` pair. This
+    matters for the per-project storage router, which can open many
+    backends in the same process and must not pay the
+    sentence-transformers / ONNX model-load cost more than once.
 
     Args:
         config: Memory system configuration.
@@ -144,35 +159,64 @@ def _create_embedder(config: MemoryConfig) -> Embedder:
     Raises:
         ValueError: If the embedder backend is not supported.
     """
-    if config.embedder_backend == EmbedderBackend.LOCAL:
-        from headroom.memory.adapters.embedders import LocalEmbedder
 
-        return LocalEmbedder(model_name=config.embedder_model)
+    # Validate inputs ahead of the cache. The cache key is
+    # ``(backend, model)`` and intentionally does NOT include the API
+    # key — but that means a cached OpenAI embedder would shadow the
+    # config-validation step for a subsequent caller who forgot to pass
+    # ``openai_api_key``. Run the validation up front instead.
+    if config.embedder_backend == EmbedderBackend.OPENAI and not config.openai_api_key:
+        raise ValueError("openai_api_key is required for OpenAI embedder")
 
-    if config.embedder_backend == EmbedderBackend.ONNX:
-        from headroom.memory.adapters.embedders import OnnxLocalEmbedder
+    key = (
+        config.embedder_backend.value
+        if hasattr(config.embedder_backend, "value")
+        else str(config.embedder_backend),
+        config.embedder_model or "",
+    )
 
-        return OnnxLocalEmbedder()
+    with _EMBEDDER_CACHE_LOCK:
+        cached = _EMBEDDER_CACHE.get(key)
+        if cached is not None:
+            return cached
 
-    if config.embedder_backend == EmbedderBackend.OPENAI:
-        from headroom.memory.adapters.embedders import OpenAIEmbedder
+        if config.embedder_backend == EmbedderBackend.LOCAL:
+            from headroom.memory.adapters.embedders import LocalEmbedder
 
-        if not config.openai_api_key:
-            raise ValueError("openai_api_key is required for OpenAI embedder")
-        return OpenAIEmbedder(
-            api_key=config.openai_api_key,
-            model_name=config.embedder_model,
-        )
+            embedder: Embedder = LocalEmbedder(model_name=config.embedder_model)
 
-    if config.embedder_backend == EmbedderBackend.OLLAMA:
-        from headroom.memory.adapters.embedders import OllamaEmbedder
+        elif config.embedder_backend == EmbedderBackend.ONNX:
+            from headroom.memory.adapters.embedders import OnnxLocalEmbedder
 
-        return OllamaEmbedder(
-            base_url=config.ollama_base_url,
-            model_name=config.embedder_model,
-        )
+            embedder = OnnxLocalEmbedder()
 
-    raise ValueError(f"Unknown embedder backend: {config.embedder_backend}")
+        elif config.embedder_backend == EmbedderBackend.OPENAI:
+            from headroom.memory.adapters.embedders import OpenAIEmbedder
+
+            embedder = OpenAIEmbedder(
+                api_key=config.openai_api_key,
+                model_name=config.embedder_model,
+            )
+
+        elif config.embedder_backend == EmbedderBackend.OLLAMA:
+            from headroom.memory.adapters.embedders import OllamaEmbedder
+
+            embedder = OllamaEmbedder(
+                base_url=config.ollama_base_url,
+                model_name=config.embedder_model,
+            )
+        else:
+            raise ValueError(f"Unknown embedder backend: {config.embedder_backend}")
+
+        _EMBEDDER_CACHE[key] = embedder
+        return embedder
+
+
+def _reset_embedder_cache_for_tests() -> None:
+    """Clear the process-wide embedder cache. Test-only seam."""
+
+    with _EMBEDDER_CACHE_LOCK:
+        _EMBEDDER_CACHE.clear()
 
 
 def _create_vector_index(config: MemoryConfig) -> VectorIndex:

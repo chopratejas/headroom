@@ -182,7 +182,7 @@ The update creates a new version while preserving history, allowing point-in-tim
                 "properties": {
                     "memory_id": {
                         "type": "string",
-                        "description": "The unique ID of the memory to update. Obtain this from a memory_search result.",
+                        "description": "The unique ID of the memory to update. Take this from the [id] prefix shown in the auto-injected memory block, or from a memory_search / memory_list result.",
                     },
                     "new_content": {
                         "type": "string",
@@ -232,7 +232,7 @@ Always provide a reason for deletion to maintain an audit trail.""",
                 "properties": {
                     "memory_id": {
                         "type": "string",
-                        "description": "The unique ID of the memory to delete. Obtain this from a memory_search result.",
+                        "description": "The unique ID of the memory to delete. Take this from the [id] prefix shown in the auto-injected memory block, or from a memory_search / memory_list result.",
                     },
                     "reason": {
                         "type": "string",
@@ -240,6 +240,40 @@ Always provide a reason for deletion to maintain an audit trail.""",
                     },
                 },
                 "required": ["memory_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_list",
+            "description": """Browse memories without a semantic query — list recent or all memories with their IDs.
+
+Use this when:
+- You want to see what's stored without a specific search term
+  - "What do you remember about me / this project?"
+  - "Show me everything you've saved recently"
+- You need a memory ID for `memory_update` or `memory_delete` but don't have a good search query
+- You're auditing the memory store (debugging, cleanup, review)
+
+Differences from `memory_search`:
+- `memory_search(query)` is SEMANTIC — finds memories similar to a query string
+- `memory_list()` is CHRONOLOGICAL — returns the most recent memories first
+- Use `memory_search` when you know what you're looking for; use `memory_list` when you want to browse
+
+Returns memories in reverse chronological order (newest first). Each entry includes
+the `memory_id` you'd use to update / delete it.""",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of memories to return (default 10, max 100). Use a smaller number for a quick overview; larger when you need to find a specific memory ID.",
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -388,6 +422,7 @@ MEMORY_TOOLS_OPTIMIZED: list[dict[str, Any]] = [
     MEMORY_TOOLS[1],  # memory_search (unchanged)
     MEMORY_TOOLS[2],  # memory_update (unchanged)
     MEMORY_TOOLS[3],  # memory_delete (unchanged)
+    MEMORY_TOOLS[4],  # memory_list (new — chronological browse)
 ]
 
 

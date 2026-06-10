@@ -180,4 +180,83 @@ def classify_auth_mode(headers: Mapping[str, Any] | Any) -> AuthMode:
     return AuthMode.PAYG
 
 
-__all__ = ["AuthMode", "SUBSCRIPTION_UA_PREFIXES", "classify_auth_mode"]
+# Client (harness) identification — maps a User-Agent substring to a
+# short normalized client name. The dashboard / `headroom perf` use
+# this to slice traffic by harness ("aider is 30% of cache writes",
+# "codex p99 latency vs claude-code", etc).
+#
+# Adding a new client: one line. Same surface as
+# :data:`SUBSCRIPTION_UA_PREFIXES`. The classifier is intentionally
+# substring-based (not regex) so a tuple of literals stays the
+# extension point.
+CLIENT_UA_MAP: tuple[tuple[str, str], ...] = (
+    # Anthropic ecosystem
+    ("claude-code/", "claude-code"),
+    ("claude-cli/", "claude-code"),
+    ("claude-vscode/", "claude-vscode"),
+    ("anthropic-cli/", "anthropic-cli"),
+    # OpenAI ecosystem
+    ("codex-cli/", "codex"),
+    # Editors / IDEs
+    ("cursor/", "cursor"),
+    ("zed/", "zed"),
+    # Other AI coding harnesses
+    ("aider/", "aider"),
+    ("droid/", "droid"),
+    ("opencode/", "opencode"),
+    ("github-copilot/", "copilot"),
+    # Google's experimental harness
+    ("antigravity/", "antigravity"),
+    # AWS Strands Agents SDK. The default openai-python User-Agent
+    # is `OpenAI/Python <ver>` which does not embed any Strands
+    # signal, so production callers should set `X-Client: strands`
+    # explicitly (see `headroom/integrations/strands/README.md`).
+    # The UA prefix below covers any Strands runtime that injects
+    # its own segment ahead of the openai-python UA.
+    ("strands-agents/", "strands"),
+)
+
+
+def classify_client(headers: Mapping[str, Any] | Any) -> str | None:
+    """Identify the client harness (Codex / Claude Code / aider / etc).
+
+    Decision order:
+
+    1. **``X-Client`` header** (explicit override) — clients that
+       know they're talking to Headroom can self-identify with a
+       short name. Trimmed, lowercased. Wins over UA matching.
+    2. **User-Agent substring match** against :data:`CLIENT_UA_MAP`
+       — covers the unmodified-client case. Substring, not prefix,
+       because some clients prepend a corporate-wrapper UA before
+       their own.
+    3. **None** when neither produces a hit. ``None`` is the loud
+       "unknown harness" signal; downstream consumers can group
+       these as "unidentified" rather than silently bucketing them
+       into a default.
+
+    Returns ``str | None`` rather than a string default so future
+    code can distinguish "no client identified" from "client is the
+    empty string". The :class:`RequestOutcome` field has the same
+    type for the same reason.
+    """
+    # 1. Explicit override
+    explicit = _header_get(headers, "x-client").strip().lower()
+    if explicit:
+        return explicit
+    # 2. User-Agent substring match
+    ua_lower = _header_get(headers, "user-agent").lower()
+    if not ua_lower:
+        return None
+    for needle, name in CLIENT_UA_MAP:
+        if needle in ua_lower:
+            return name
+    return None
+
+
+__all__ = [
+    "AuthMode",
+    "CLIENT_UA_MAP",
+    "SUBSCRIPTION_UA_PREFIXES",
+    "classify_auth_mode",
+    "classify_client",
+]

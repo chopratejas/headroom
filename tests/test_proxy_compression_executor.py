@@ -13,8 +13,9 @@ Locks the following invariants:
    ``TimeoutError`` — but the worker thread keeps running (Python cannot
    preempt running CPython bytecode or in-flight Rust calls), and when the
    work eventually completes, ``compression_leaked_threads`` increments.
-4. ``/stats runtime.compression_executor`` surfaces the gauge + counter so
-   operators can see leaked-thread rate.
+4. Jobs that time out while still queued do not leak the running gauge.
+5. ``/stats runtime.compression_executor`` surfaces the gauges + counters so
+   operators can see leaked-thread rate and queue pressure.
 
 These tests also serve as documentation: anyone reading them sees that
 "timeout fired" does not mean "compression was cancelled" — it means "we
@@ -205,6 +206,58 @@ def test_timeout_fires_and_leaked_thread_is_counted() -> None:
         assert proxy._compression_in_flight == 0
 
 
+def test_timeout_before_worker_start_does_not_leak_in_flight() -> None:
+    """If a queued job times out before a worker starts, queued accounting
+    is cleaned up without touching the running gauge.
+    """
+    proxy = _make_proxy(compression_max_workers=1)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+
+    def _blocking_compression():
+        first_started.set()
+        release_first.wait(timeout=5.0)
+        return "first"
+
+    def _queued_compression():
+        second_started.set()
+        return "second"
+
+    async def _drive():
+        first_task = asyncio.create_task(
+            proxy._run_compression_in_executor(_blocking_compression, timeout=10.0)
+        )
+        for _ in range(50):
+            if first_started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert first_started.is_set()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await proxy._run_compression_in_executor(_queued_compression, timeout=0.05)
+
+        with proxy._compression_metrics_lock:
+            mid_queued = proxy._compression_queued
+            mid_in_flight = proxy._compression_in_flight
+            queue_timeouts = proxy._compression_queue_timeouts
+
+        release_first.set()
+        assert await first_task == "first"
+        return mid_queued, mid_in_flight, queue_timeouts
+
+    mid_queued, mid_in_flight, queue_timeouts = asyncio.run(_drive())
+
+    assert not second_started.is_set()
+    assert mid_queued == 0
+    assert mid_in_flight == 1
+    assert queue_timeouts == 1
+    with proxy._compression_metrics_lock:
+        assert proxy._compression_queued == 0
+        assert proxy._compression_in_flight == 0
+        assert proxy._compression_leaked_threads == 0
+
+
 def test_compression_executor_metrics_appear_in_runtime_payload() -> None:
     """``/stats runtime.compression_executor`` surfaces the new gauges."""
     from fastapi.testclient import TestClient
@@ -232,7 +285,12 @@ def test_compression_executor_metrics_appear_in_runtime_payload() -> None:
         assert "compression_executor" in runtime
         ce = runtime["compression_executor"]
         assert ce["max_workers"] == 5
+        assert ce["queued"] == 0
+        assert ce["running"] == 0
         assert ce["in_flight"] == 0
+        assert ce["queue_timeouts_total"] == 0
+        assert ce["queue_wait_seconds_total"] == 0.0
+        assert ce["run_seconds_total"] == 0.0
         assert ce["leaked_threads_total"] == 0
         assert ce["source"] == "explicit"
 

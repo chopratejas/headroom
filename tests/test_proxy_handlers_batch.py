@@ -93,6 +93,23 @@ class DummyBatchHandler(batch_module.BatchHandlerMixin):
         self._request_counter += 1
         return f"req-{self._request_counter}"
 
+    async def _record_request_outcome(self, outcome) -> None:  # noqa: ANN001
+        # Mirror of HeadroomProxy._record_request_outcome for the batch
+        # mixin tests. Delegates to the free funnel so the wire shape
+        # matches production.
+        from headroom.proxy.outcome import emit_request_outcome
+
+        await emit_request_outcome(self, outcome)
+
+    def _extract_tags(self, headers: dict) -> dict[str, str]:
+        # Mirror of HeadroomProxy._extract_tags. Handlers now call this
+        # at entry to capture x-headroom-* slicing tags into the outcome.
+        return {
+            k.lower().replace("x-headroom-", ""): v
+            for k, v in headers.items()
+            if k.lower().startswith("x-headroom-")
+        }
+
     async def handle_passthrough(self, request, base_url):  # noqa: ANN001, ANN201
         return {"request": request, "base_url": base_url}
 

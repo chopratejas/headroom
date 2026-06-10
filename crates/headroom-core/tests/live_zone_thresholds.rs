@@ -51,14 +51,14 @@ fn first_tool_result_action(out: &LiveZoneOutcome) -> BlockAction {
 
 #[test]
 fn below_threshold_no_compression_attempted() {
-    // 200 bytes of homogeneous JSON dicts — well below the 1 KiB
+    // 200 bytes of homogeneous JSON dicts — well below the 512 B
     // JsonArray threshold. The dispatcher must record
     // `BelowByteThreshold` and emit `NoChange`; no compressor runs.
     let small_array: Vec<Value> = (0..3).map(|i| json!({"id": i, "v": "x"})).collect();
     let payload = serde_json::to_string(&small_array).unwrap();
     assert!(
-        payload.len() < 1024,
-        "fixture must stay below the 1 KiB JsonArray threshold; got {}",
+        payload.len() < 512,
+        "fixture must stay below the 512 B JsonArray threshold; got {}",
         payload.len()
     );
 
@@ -80,7 +80,7 @@ fn below_threshold_no_compression_attempted() {
         } => {
             assert_eq!(content_type, "json_array");
             assert_eq!(byte_count, payload.len());
-            assert_eq!(threshold_bytes, 1024);
+            assert_eq!(threshold_bytes, 512);
         }
         other => panic!("expected BelowByteThreshold for sub-threshold JSON, got {other:?}"),
     }

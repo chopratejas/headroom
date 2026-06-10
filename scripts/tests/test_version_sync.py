@@ -34,7 +34,7 @@ def temp_project(tmp_path: Path) -> dict[str, Path]:
     pyproject = root / "pyproject.toml"
     pyproject.write_text('[project]\nversion = "0.5.25"\n')
 
-    # headroom/_version.py
+    # headroom/_version.py is runtime-derived and must not be rewritten by version-sync.
     version_py = headroom / "_version.py"
     version_py.write_text('"""Package version metadata."""\n\n__version__ = "0.5.25"\n')
 
@@ -102,9 +102,9 @@ def test_version_sync_explicit_version(temp_project: dict[str, Path]) -> None:
     pyproject_content = temp_project["pyproject"].read_text()
     assert 'version = "0.7.0"' in pyproject_content
 
-    # Verify headroom/_version.py
+    # Verify headroom/_version.py is not a synced manifest.
     version_py_content = temp_project["version_py"].read_text()
-    assert '__version__ = "0.7.0"' in version_py_content
+    assert '__version__ = "0.5.25"' in version_py_content
 
     # Verify plugins/openclaw/package.json
     openclaw_pkg = json.loads(temp_project["openclaw_pkg"].read_text())
@@ -157,7 +157,7 @@ def test_bump_patch(temp_project: dict[str, Path]) -> None:
     assert 'version = "0.5.26"' in pyproject_content
 
     version_py_content = temp_project["version_py"].read_text()
-    assert '__version__ = "0.5.26"' in version_py_content
+    assert '__version__ = "0.5.25"' in version_py_content
 
     openclaw_pkg = json.loads(temp_project["openclaw_pkg"].read_text())
     assert openclaw_pkg["version"] == "0.5.26"
@@ -187,7 +187,7 @@ def test_bump_minor(temp_project: dict[str, Path]) -> None:
     assert 'version = "0.6.0"' in pyproject_content
 
     version_py_content = temp_project["version_py"].read_text()
-    assert '__version__ = "0.6.0"' in version_py_content
+    assert '__version__ = "0.5.25"' in version_py_content
 
     openclaw_pkg = json.loads(temp_project["openclaw_pkg"].read_text())
     assert openclaw_pkg["version"] == "0.6.0"
@@ -217,7 +217,7 @@ def test_bump_major(temp_project: dict[str, Path]) -> None:
     assert 'version = "1.0.0"' in pyproject_content
 
     version_py_content = temp_project["version_py"].read_text()
-    assert '__version__ = "1.0.0"' in version_py_content
+    assert '__version__ = "0.5.25"' in version_py_content
 
     openclaw_pkg = json.loads(temp_project["openclaw_pkg"].read_text())
     assert openclaw_pkg["version"] == "1.0.0"

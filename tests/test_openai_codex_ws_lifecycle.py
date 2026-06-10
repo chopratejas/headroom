@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from headroom.proxy.handlers.openai import OpenAIHandlerMixin
+from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 
 # ---------------------------------------------------------------------------
@@ -31,8 +32,10 @@ class _DummyMetrics:
         self.ws_session_durations: list[float] = []
         self.stage_timings: list[tuple[str, dict[str, float]]] = []
         self.termination_causes: list[str] = []
+        self.recorded_requests: list[dict] = []
 
     async def record_request(self, **kwargs):  # pragma: no cover
+        self.recorded_requests.append(dict(kwargs))
         return None
 
     async def record_stage_timings(self, path: str, timings: dict[str, float]) -> None:
@@ -76,9 +79,24 @@ class _DummyOpenAIHandler(OpenAIHandlerMixin):
         self.cost_tracker = None
         self.memory_handler = None
         self.ws_sessions = ws_sessions or WebSocketSessionRegistry()
+        self.compression_executor_calls = 0
+        self.compression_executor_timeouts: list[float] = []
 
     async def _next_request_id(self) -> str:
         return "req-lifecycle-test"
+
+    async def _run_compression_in_executor(self, fn, *, timeout: float):
+        self.compression_executor_calls += 1
+        self.compression_executor_timeouts.append(timeout)
+        return fn()
+
+    async def _record_request_outcome(self, outcome) -> None:
+        # Mirror of ``HeadroomProxy._record_request_outcome`` for the
+        # mixin tests. Delegates to the free funnel function so the
+        # wire shape is identical to production.
+        from headroom.proxy.outcome import emit_request_outcome
+
+        await emit_request_outcome(self, outcome)
 
 
 class _FakeWebSocketDisconnect(Exception):
@@ -103,6 +121,7 @@ class _FakeWebSocket:
         *,
         disconnect_after_n_sends: int | None = None,
         hold_after_initial: bool = False,
+        call_log: list[str] | None = None,
     ) -> None:
         self.headers = {"authorization": "Bearer test"}
         self._frames = list(frames or [])
@@ -111,14 +130,19 @@ class _FakeWebSocket:
         self.sent_text: list[str] = []
         self.sent_bytes: list[bytes] = []
         self.accepted_subprotocol: str | None = None
+        self.accepted_headers: list[tuple[bytes, bytes]] | None = None
         self.closed = False
         self.close_code: int | None = None
+        self._call_log = call_log
         # "client" can trip this event to simulate mid-stream disconnect.
         self._disconnect_event = asyncio.Event()
         self.client = SimpleNamespace(host="127.0.0.1", port=12345)
 
-    async def accept(self, subprotocol=None) -> None:
+    async def accept(self, subprotocol=None, headers=None) -> None:
         self.accepted_subprotocol = subprotocol
+        self.accepted_headers = list(headers) if headers is not None else None
+        if self._call_log is not None:
+            self._call_log.append("accept")
 
     async def receive_text(self) -> str:
         if self._frames:
@@ -151,6 +175,26 @@ class _FakeWebSocket:
         self._disconnect_event.set()
 
 
+class _FakeHeaders:
+    """Minimal stand-in for websockets' handshake ``Headers``.
+
+    Exposes both ``raw_items()`` (preferred by the production header
+    extractor to survive duplicate names like ``set-cookie``) and
+    ``items()``.
+    """
+
+    def __init__(self, pairs) -> None:
+        if isinstance(pairs, dict):
+            pairs = list(pairs.items())
+        self._pairs = [(str(k), str(v)) for k, v in pairs]
+
+    def raw_items(self):
+        return list(self._pairs)
+
+    def items(self):
+        return list(self._pairs)
+
+
 class _FakeUpstream:
     """Upstream that streams scripted events then optionally blocks.
 
@@ -169,12 +213,16 @@ class _FakeUpstream:
         *,
         hold_after_events: bool = False,
         raise_mid_stream: Exception | None = None,
+        response_headers=None,
     ) -> None:
         self._events = list(events)
         self._hold_after_events = hold_after_events
         self._raise_mid_stream = raise_mid_stream
         self.sent: list[str] = []
         self.closed = False
+        # Mirror websockets' ClientConnection.response.headers, which is the
+        # only place OpenAI delivers the Codex x-codex-* subscription window.
+        self.response = SimpleNamespace(headers=_FakeHeaders(response_headers or []))
 
     async def __aenter__(self) -> _FakeUpstream:
         return self
@@ -201,9 +249,29 @@ class _FakeUpstream:
             await asyncio.Event().wait()
 
 
-def _make_fake_websockets_module(upstream: _FakeUpstream):
+def _make_fake_websockets_module(
+    upstream: _FakeUpstream | None,
+    *,
+    call_log: list[str] | None = None,
+    connect_error: Exception | None = None,
+):
+    """Build a fake ``websockets`` module.
+
+    Production now does ``upstream = await websockets.connect(...)`` (then
+    ``async with upstream``), so ``connect`` must return an awaitable that
+    resolves to the connection. ``connect_error`` makes the await raise to
+    simulate an upstream handshake failure.
+    """
     module = MagicMock()
-    module.connect = MagicMock(return_value=upstream)
+
+    async def _connect(*args, **kwargs):
+        if call_log is not None:
+            call_log.append("connect")
+        if connect_error is not None:
+            raise connect_error
+        return upstream
+
+    module.connect = _connect
     module.Subprotocol = str
     return module
 
@@ -220,6 +288,39 @@ def _first_frame() -> str:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_first_frame_compression_uses_bounded_executor():
+    """Codex WS compression must not run synchronously on the event loop."""
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+    handler._compress_openai_responses_payload = MagicMock(
+        return_value=(
+            {"model": "gpt-5.4", "input": "hi"},
+            False,
+            0,
+            [],
+            "router_no_compression",
+            10,
+            10,
+        )
+    )
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert handler.compression_executor_calls == 1
+    assert handler.compression_executor_timeouts == [COMPRESSION_TIMEOUT_SECONDS]
+    handler._compress_openai_responses_payload.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -250,6 +351,96 @@ async def test_happy_path_registry_empty_after_response_completed():
         "client_disconnect",
         "upstream_disconnect",
     }
+
+
+@pytest.mark.asyncio
+async def test_ws_session_metrics_include_response_completed_usage():
+    """Codex WS sessions should report real upstream usage, not zero-token sessions."""
+
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "r_1",
+                    "usage": {
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 75},
+                        "output_tokens": 12,
+                    },
+                },
+            }
+        ),
+    ]
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    handler = _DummyOpenAIHandler()
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert handler.metrics.recorded_requests
+    recorded = handler.metrics.recorded_requests[-1]
+    assert recorded["input_tokens"] == 100
+    assert recorded["output_tokens"] == 12
+    assert recorded["cache_read_tokens"] == 75
+    assert recorded["cache_write_tokens"] == 25
+    assert recorded["uncached_input_tokens"] == 25
+
+
+@pytest.mark.asyncio
+async def test_ws_session_metrics_include_dashboard_performance_timings():
+    """Codex WS response metrics should feed the dashboard Performance tab."""
+
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "r_1",
+                    "usage": {
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 75},
+                        "output_tokens": 12,
+                    },
+                },
+            }
+        ),
+    ]
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    handler = _DummyOpenAIHandler()
+    handler.config.optimize = True
+
+    def _noop_compress(payload, *, model, request_id, timing=None):
+        if timing is not None:
+            timing["compression_live_unit_extraction"] = 2.0
+            timing["compression_unit_router_strategy_passthrough"] = 3.0
+        return payload, False, 0, [], "test_noop", 10, 10, 0
+
+    handler._compress_openai_responses_payload = _noop_compress  # type: ignore[method-assign]
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert handler.metrics.recorded_requests
+    recorded = handler.metrics.recorded_requests[-1]
+    assert recorded["overhead_ms"] > 0
+    assert recorded["ttfb_ms"] > 0
+    assert recorded["pipeline_timing"]["codex_ws.compression"] > 0
+    assert recorded["pipeline_timing"]["codex_ws.upstream_first_event"] > 0
+    assert recorded["pipeline_timing"]["codex_ws.compression_preflight_serialization"] > 0
+    assert recorded["pipeline_timing"]["codex_ws.compression_executor_wait_run"] > 0
+    assert recorded["pipeline_timing"]["codex_ws.compression_live_unit_extraction"] == 2.0
+    assert (
+        recorded["pipeline_timing"]["codex_ws.compression_unit_router_strategy_passthrough"] == 3.0
+    )
 
 
 @pytest.mark.asyncio
@@ -385,23 +576,53 @@ async def test_upstream_error_mid_stream_classifies_as_upstream_error():
 
 
 @pytest.mark.asyncio
+async def test_response_cancel_frame_is_logged_as_client_cancel_lifecycle():
+    """A Codex Ctrl-C maps to response.cancel on the WS stream.
+
+    The proxy should relay it upstream and classify the lifecycle as a
+    client-side cancel when no response.completed event follows.
+    """
+    cancel_frame = json.dumps({"type": "response.cancel", "response_id": "r_1"})
+    upstream = _FakeUpstream([], hold_after_events=True)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(
+        frames=[_first_frame(), cancel_frame],
+        hold_after_initial=True,
+    )
+    handler = _DummyOpenAIHandler()
+
+    async def _trigger() -> None:
+        await asyncio.sleep(0.05)
+        client_ws.trigger_disconnect()
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        trigger_task = asyncio.create_task(_trigger())
+        try:
+            await asyncio.wait_for(
+                handler.handle_openai_responses_ws(client_ws),
+                timeout=2.0,
+            )
+        finally:
+            trigger_task.cancel()
+            try:
+                await trigger_task
+            except asyncio.CancelledError:
+                pass
+
+    assert cancel_frame in upstream.sent
+    assert handler.metrics.termination_causes[-1] == "client_cancel"
+    assert handler.ws_sessions.active_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_upstream_connect_failure_still_deregisters_cleanly():
     """Handshake-phase leak must be impossible: if upstream connect
     raises before relay tasks are created, the session is still
     registered+deregistered cleanly (or never registered). Either way,
     no leak.
     """
-
-    class _BoomUpstream:
-        async def __aenter__(self):
-            raise RuntimeError("upstream refused")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    fake_ws_mod = MagicMock()
-    fake_ws_mod.connect = MagicMock(return_value=_BoomUpstream())
-    fake_ws_mod.Subprotocol = str
+    fake_ws_mod = _make_fake_websockets_module(None, connect_error=RuntimeError("upstream refused"))
 
     client_ws = _FakeWebSocket(frames=[_first_frame()])
     handler = _DummyOpenAIHandler()
@@ -414,6 +635,157 @@ async def test_upstream_connect_failure_still_deregisters_cleanly():
     with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
         await handler.handle_openai_responses_ws(client_ws)
 
+    assert handler.ws_sessions.active_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_ws_connect_failure_falls_back_to_http():
+    """When every upstream connect attempt fails, the client is still
+    accepted (with no x-codex-* headers, since there is no upstream
+    window) and the request is served via the HTTP POST fallback with
+    the client's first frame. Preserves the pre-reorder WS-upgrade-
+    failure behaviour.
+    """
+    fake_ws_mod = _make_fake_websockets_module(
+        None, connect_error=RuntimeError("HTTP 500 from upstream")
+    )
+
+    first = _first_frame()
+    client_ws = _FakeWebSocket(frames=[first])
+    handler = _DummyOpenAIHandler()
+
+    fallback_calls: list[tuple] = []
+
+    async def _fallback(websocket, body, first_msg_raw, upstream_headers, request_id):
+        fallback_calls.append((body, first_msg_raw))
+
+    handler._ws_http_fallback = _fallback  # type: ignore[assignment]
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    # Client was accepted with no upstream window to forward.
+    assert client_ws.accepted_headers is None
+    # Fallback ran with the first frame.
+    assert len(fallback_calls) == 1
+    _body, _first_raw = fallback_calls[0]
+    assert _first_raw == first
+    assert _body == json.loads(first)
+    # Clean teardown.
+    assert handler.ws_sessions.active_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_ws_connect_happens_before_accept():
+    """The upstream connect must complete before the client 101 is sent,
+    so OpenAI's x-codex-* handshake headers are available to attach.
+    """
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    call_log: list[str] = []
+    upstream = _FakeUpstream(upstream_events)
+    fake_ws_mod = _make_fake_websockets_module(upstream, call_log=call_log)
+
+    client_ws = _FakeWebSocket(frames=[_first_frame()], call_log=call_log)
+    handler = _DummyOpenAIHandler()
+
+    with patch.dict(sys.modules, {"websockets": fake_ws_mod}):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert "connect" in call_log and "accept" in call_log
+    assert call_log.index("connect") < call_log.index("accept"), (
+        f"connect must precede accept, got {call_log}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ws_forwards_codex_headers_to_client_accept():
+    """OpenAI's x-codex-* subscription window from the upstream WS
+    handshake must be forwarded onto the client-facing 101 (and only
+    that subset — never set-cookie/authorization), and Python /stats
+    state must be refreshed.
+    """
+    upstream_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
+        json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
+    ]
+    # Include duplicate set-cookie to ensure raw_items() is used (a plain
+    # dict-style .items() on real websockets Headers raises on dupes).
+    handshake_headers = [
+        ("x-codex-primary-used-percent", "42"),
+        ("X-Codex-Primary-Window-Minutes", "300"),
+        ("set-cookie", "a=1"),
+        ("set-cookie", "b=2"),
+        ("authorization", "Bearer leak"),
+    ]
+    upstream = _FakeUpstream(upstream_events, response_headers=handshake_headers)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    client_ws = _FakeWebSocket(frames=[_first_frame()])
+    handler = _DummyOpenAIHandler()
+
+    captured: dict = {}
+
+    def _fake_state():
+        class _S:
+            def update_from_headers(self, headers):
+                captured.update(headers)
+
+        return _S()
+
+    with (
+        patch.dict(sys.modules, {"websockets": fake_ws_mod}),
+        patch(
+            "headroom.subscription.codex_rate_limits.get_codex_rate_limit_state",
+            _fake_state,
+        ),
+    ):
+        await handler.handle_openai_responses_ws(client_ws)
+
+    assert client_ws.accepted_headers is not None
+    names = {name.decode("latin-1").lower() for name, _ in client_ws.accepted_headers}
+    assert names == {"x-codex-primary-used-percent", "x-codex-primary-window-minutes"}
+    assert "set-cookie" not in names
+    assert "authorization" not in names
+    # Original-case names preserved on the wire.
+    sent = {name.decode("latin-1") for name, _ in client_ws.accepted_headers}
+    assert "X-Codex-Primary-Window-Minutes" in sent
+    # Python /stats state refreshed with the same x-codex-* subset.
+    assert captured == {
+        "x-codex-primary-used-percent": "42",
+        "X-Codex-Primary-Window-Minutes": "300",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ws_first_frame_timeout_after_connect_closes_upstream():
+    """If the client never sends its first frame after we connected, the
+    upstream WS must be closed (no leak) and the session deregistered.
+    """
+    upstream = _FakeUpstream([], hold_after_events=True)
+    fake_ws_mod = _make_fake_websockets_module(upstream)
+
+    # No frames + hold => receive_text blocks until disconnect; we force a
+    # short first-frame timeout so the handler hits the timeout branch.
+    client_ws = _FakeWebSocket(frames=[], hold_after_initial=True)
+    handler = _DummyOpenAIHandler()
+
+    with (
+        patch.dict(sys.modules, {"websockets": fake_ws_mod}),
+        patch(
+            "headroom.proxy.handlers.openai.WS_FIRST_FRAME_TIMEOUT_SECONDS",
+            0.05,
+        ),
+    ):
+        await asyncio.wait_for(
+            handler.handle_openai_responses_ws(client_ws),
+            timeout=2.0,
+        )
+
+    assert upstream.closed, "upstream not closed on first-frame timeout"
+    assert client_ws.closed and client_ws.close_code == 1001
     assert handler.ws_sessions.active_count() == 0
 
 

@@ -422,6 +422,30 @@ def _register_builtin_models() -> None:
         notes="DeepSeek Coder - Specialized for code",
     )
 
+    _MODELS["deepseek-v4-flash"] = ModelInfo(
+        name="deepseek-v4-flash",
+        provider="deepseek",
+        context_window=1_000_000,
+        max_output_tokens=384_000,
+        supports_tools=True,
+        supports_vision=False,
+        supports_streaming=True,
+        tokenizer_backend="huggingface",
+        notes="DeepSeek V4 Flash - 13B active params; non-thinking + thinking modes",
+    )
+
+    _MODELS["deepseek-v4-pro"] = ModelInfo(
+        name="deepseek-v4-pro",
+        provider="deepseek",
+        context_window=1_000_000,
+        max_output_tokens=384_000,
+        supports_tools=True,
+        supports_vision=False,
+        supports_streaming=True,
+        tokenizer_backend="huggingface",
+        notes="DeepSeek V4 Pro - 49B active params",
+    )
+
     # ============================================================
     # Qwen Models
     # ============================================================

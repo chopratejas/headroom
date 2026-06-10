@@ -466,7 +466,7 @@ class TestDetectDefaultModel:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "test")
-        assert _detect_default_model() == "gemini/gemini-2.0-flash"
+        assert _detect_default_model() == "gemini/gemini-flash-latest"
 
     def test_anthropic_preferred_over_openai(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")

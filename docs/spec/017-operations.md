@@ -66,16 +66,13 @@ curl http://localhost:8787/readyz
 
 ### Log Levels
 
-Set via environment:
+Set via CLI flag or `RUST_LOG` env var for the Rust proxy:
 ```bash
-HEADROOM_LOG_LEVEL=INFO
-```
+# Python proxy
+headroom proxy --log-level debug
 
-Or in config:
-```yaml
-logging:
-  level: INFO
-  format: json
+# Rust proxy
+RUST_LOG=debug headroom-proxy --upstream http://...
 ```
 
 ---
@@ -165,8 +162,8 @@ rate(headroom_cache_hits_total[5m]) / (rate(headroom_cache_hits_total[5m]) + rat
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
-| "Connection refused" | Proxy not running | `headroom proxy start` |
-| "Cache miss on every request" | Cache disabled | Set `HEADROOM_CACHE_ENABLED=true` |
+| "Connection refused" | Proxy not running | Start it with `headroom proxy` |
+| "Cache miss on every request" | Cache disabled | Start without `--no-cache` |
 | "No savings shown" | Database locked | Check file permissions |
 | "Provider timeout" | Network issue | Check firewall/proxy |
 

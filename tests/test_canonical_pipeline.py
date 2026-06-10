@@ -15,6 +15,8 @@ from headroom.pipeline import (
     summarize_routing_markers,
 )
 from headroom.providers.base import Provider, TokenCounter
+from headroom.transforms import ContentRouter, TransformPipeline
+from headroom.transforms.content_router import CompressionStrategy
 
 
 class RecordingExtension:
@@ -144,6 +146,49 @@ def test_pipeline_extension_manager_uses_canonical_stage_contract():
     ]
     assert recorder.stages == [PipelineStage.INPUT_RECEIVED]
     assert event.messages == [{"role": "user", "content": "mutated"}]
+
+
+def test_default_transform_pipeline_always_uses_content_router() -> None:
+    config = HeadroomConfig()
+
+    pipeline = TransformPipeline(config)
+
+    assert any(isinstance(transform, ContentRouter) for transform in pipeline.transforms)
+    assert not any(type(transform).__name__ == "SmartCrusher" for transform in pipeline.transforms)
+
+
+def test_content_router_protects_instruction_roles_but_compresses_tool_outputs() -> None:
+    class Tokenizer:
+        def count_text(self, text: str) -> int:
+            return max(1, len(text.split()))
+
+    router = ContentRouter()
+    calls: list[str] = []
+
+    def fake_compress(text: str, **kwargs: Any) -> SimpleNamespace:
+        calls.append(text)
+        return SimpleNamespace(
+            compressed="COMPRESSED",
+            compression_ratio=0.1,
+            strategy_used=CompressionStrategy.KOMPRESS,
+        )
+
+    router.compress = fake_compress  # type: ignore[method-assign]
+    tool_text = "tool output " * 120
+    messages = [
+        {"role": "system", "content": "system instructions " * 120},
+        {"role": "developer", "content": "developer instructions " * 120},
+        {"role": "user", "content": "user prompt " * 120},
+        {"role": "tool", "tool_call_id": "call_1", "content": tool_text},
+    ]
+
+    result = router.apply(messages, Tokenizer())
+
+    assert result.messages[0]["content"] == messages[0]["content"]
+    assert result.messages[1]["content"] == messages[1]["content"]
+    assert result.messages[2]["content"] == messages[2]["content"]
+    assert result.messages[3]["content"] == "COMPRESSED"
+    assert calls == [tool_text]
 
 
 def test_pipeline_extension_manager_replaces_events_and_ignores_failures(caplog):

@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +33,100 @@ from headroom.cache.compression_store import (
     get_compression_store,
     reset_compression_store,
 )
+
+
+@contextmanager
+def _capture_headroom_retrieve_events():
+    events: list[dict[str, Any]] = []
+    prefix = "event=headroom_retrieve "
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            message = record.getMessage()
+            if prefix in message:
+                events.append(json.loads(message.split(prefix, 1)[1]))
+
+    logger = logging.getLogger("headroom.cache.compression_store")
+    previous_level = logger.level
+    handler = _Handler(level=logging.INFO)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        yield events
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+
+def test_retrieve_logs_payload_preview():
+    store = CompressionStore(enable_feedback=False)
+    hash_key = store.store(
+        original="secret-ish payload for operator debugging",
+        compressed="payload",
+        original_tokens=8,
+        compressed_tokens=1,
+        original_item_count=1,
+        compressed_item_count=1,
+        tool_name="tool_a",
+    )
+
+    with _capture_headroom_retrieve_events() as events:
+        entry = store.retrieve(hash_key)
+
+    assert entry is not None
+    assert len(events) == 1
+    assert events[0]["hash"] == hash_key
+    assert events[0]["retrieval_type"] == "full"
+    assert events[0]["payload_preview"] == "secret-ish payload for operator debugging"
+    assert "payload" not in events[0]
+    assert events[0]["payload_truncated"] is False
+    assert events[0]["tool_name"] == "tool_a"
+
+
+def test_retrieve_log_redacts_secret_payload_values():
+    store = CompressionStore(enable_feedback=False)
+    hash_key = store.store(
+        original="OPENAI_API_KEY=sk-proj-secret1234567890 Authorization: Bearer token123456789",
+        compressed="payload",
+    )
+
+    with _capture_headroom_retrieve_events() as events:
+        entry = store.retrieve(hash_key)
+
+    assert entry is not None
+    assert len(events) == 1
+    assert "sk-proj-secret1234567890" not in events[0]["payload_preview"]
+    assert "Bearer token123456789" not in events[0]["payload_preview"]
+    assert "OPENAI_API_KEY=[REDACTED]" in events[0]["payload_preview"]
+    assert "Authorization: [REDACTED]" in events[0]["payload_preview"]
+
+
+def test_search_logs_retrieved_payload_preview():
+    store = CompressionStore(enable_feedback=False)
+    items = [
+        {"id": 1, "text": "alpha target"},
+        {"id": 2, "text": "beta other"},
+    ]
+    hash_key = store.store(
+        original=json.dumps(items),
+        compressed="[]",
+        original_item_count=2,
+        compressed_item_count=0,
+        tool_name="search_tool",
+    )
+
+    with _capture_headroom_retrieve_events() as events:
+        results = store.search(hash_key, "alpha", score_threshold=0.0)
+
+    assert results
+    assert len(events) == 1
+    assert events[0]["hash"] == hash_key
+    assert events[0]["retrieval_type"] == "search"
+    assert events[0]["query"] == "alpha"
+    assert events[0]["payload_preview"] == json.dumps(results, ensure_ascii=False)
+    assert events[0]["payload_preview_chars"] == len(json.dumps(results, ensure_ascii=False))
+    assert events[0]["payload_truncated"] is False
+
 
 # =============================================================================
 # Fixtures
@@ -803,8 +899,40 @@ class TestCompressionStoreSearch:
         results = store.search(hash_key, "query")
         assert results == []
 
+    def test_search_plain_text_returns_matching_chunks(self, store: CompressionStore):
+        """search() can find content in Kompress-style plain-text originals."""
+        original = (
+            "The OpenAI handler contains def _compress_openai_responses_payload "
+            "for Responses API live-zone compression. Other text is irrelevant."
+        )
+        hash_key = store.store(original=original, compressed="compressed")
+
+        results = store.search(hash_key, "def _compress_openai_responses_payload")
+
+        assert len(results) == 1
+        assert results[0]["type"] == "text"
+        assert "_compress_openai_responses_payload" in results[0]["text"]
+
+    def test_search_json_object_returns_matching_leaf(self, store: CompressionStore):
+        """search() can find values inside JSON objects, not only arrays."""
+        original = json.dumps(
+            {
+                "module": {
+                    "name": "openai",
+                    "function": "_compress_openai_responses_payload",
+                }
+            }
+        )
+        hash_key = store.store(original=original, compressed="{}")
+
+        results = store.search(hash_key, "_compress_openai_responses_payload")
+
+        assert len(results) == 1
+        assert results[0]["path"] == "module.function"
+        assert results[0]["value"] == "_compress_openai_responses_payload"
+
     def test_search_non_array_returns_empty(self, store: CompressionStore):
-        """search() returns empty for non-array content."""
+        """search() returns empty for JSON objects without matching leaves."""
         hash_key = store.store(original=json.dumps({"key": "value"}), compressed="{}")
         results = store.search(hash_key, "query")
         assert results == []
@@ -1249,11 +1377,26 @@ class TestHashCollisionDetection:
         # Should not have collision warning
         assert "Hash collision detected" not in caplog.text
 
-    def test_hash_uses_md5_truncated(self, store: CompressionStore):
-        """Hash is MD5 truncated to 24 characters (fast, non-crypto)."""
+    def test_hash_uses_sha256_truncated(self, store: CompressionStore):
+        """Hash is SHA-256 truncated to 24 characters.
+
+        Switched from MD5[:24] in PR #395 to silence CodeQL's
+        py/weak-sensitive-data-hashing rule. SHA-256[:24] gives the
+        same 96-bit collision space (~280 trillion entries for 50%
+        collision under birthday bound) and is FIPS-clean. The cache
+        is in-memory, so changing the hash function on upgrade has no
+        persistence-side effect.
+        """
         content = "test content"
-        expected_hash = hashlib.md5(content.encode()).hexdigest()[:24]  # nosec B324
+        expected_hash = hashlib.sha256(content.encode()).hexdigest()[:24]
 
         hash_key = store.store(original=content, compressed="[]")
 
-        assert hash_key == expected_hash
+        assert hash_key == expected_hash, (
+            "compression_store key must be SHA-256(original)[:24]. "
+            "If this test fails because the hash function was changed, "
+            "verify that no caller (incl. /v1/retrieve consumers) "
+            "depends on the specific MD5/SHA-256 value — the cache is "
+            "in-memory so upgrade-time mismatch is fine, but external "
+            "systems that hash-and-lookup independently need to match."
+        )

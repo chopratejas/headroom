@@ -37,18 +37,6 @@ def bump_version(version: str, bump_type: str) -> str:
     return f"{major}.{minor}.{patch}"
 
 
-def update_version_py(root: Path, version: str) -> None:
-    """Update headroom/_version.py with new version."""
-    version_py_path = root / "headroom" / "_version.py"
-    content = version_py_path.read_text(encoding="utf-8")
-    updated = re.sub(
-        r'__version__ = "[^"]+"',
-        f'__version__ = "{version}"',
-        content,
-    )
-    version_py_path.write_text(updated, encoding="utf-8")
-
-
 def update_package_json(file_path: Path, version: str) -> None:
     """Update a package.json version field."""
     with open(file_path, encoding="utf-8") as f:
@@ -178,7 +166,6 @@ def main() -> None:
 
     # Update all versioned files
     update_pyproject_version(args.root, version)
-    update_version_py(args.root, version)
     update_openclaw_package_json(
         args.root / "plugins" / "openclaw" / "package.json", version, version
     )

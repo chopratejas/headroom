@@ -25,7 +25,7 @@
 //!   (`function_call_output`, `local_shell_call_output`,
 //!   `apply_patch_call_output`) are eligible for live-zone
 //!   compression — but only the *latest* of each kind, only above the
-//!   2 KiB output-item floor, and only when the per-content-type
+//!   output-item floor, and only when the per-content-type
 //!   compressor agrees the result shrinks the token count.
 //! - **Unknown item types** are logged at warn level and preserved
 //!   byte-for-byte via `serde_json::value::RawValue`. This is the
@@ -122,7 +122,7 @@ pub struct ApplyPatchOperation<'a> {
 ///   the wire; never parse it as JSON inside the proxy. The model
 ///   built it; the model parses it.
 /// - `output` on `*_output` items is a string. Compressors run only
-///   on the latest of each kind, and only above the 2 KiB output-item
+///   on the latest of each kind, and only above the output-item
 ///   floor (see [`OUTPUT_ITEM_MIN_BYTES`]).
 /// - String fields use `Cow<'a, str>` so escape-bearing JSON values
 ///   (e.g. `"{\"q\":\"hello\"}"`) succeed without allocation on the
@@ -180,7 +180,7 @@ pub enum ResponseItem<'a> {
 
     /// Function tool output. `output` is the string the proxy may
     /// compress when this is the latest `function_call_output` and
-    /// the bytes exceed the 2 KiB floor.
+    /// the bytes exceed the output-item floor.
     #[serde(rename = "function_call_output")]
     FunctionCallOutput {
         #[serde(default, borrow)]
@@ -379,11 +379,10 @@ impl<'a> ResponseItem<'a> {
 }
 
 /// Per-item-type minimum bytes before the live-zone dispatcher even
-/// inspects an `*_output` payload. Per spec PR-C3 §scope: 2 KiB.
+/// inspects an `*_output` payload.
 /// Per-content-type thresholds from `transforms::live_zone` still
-/// apply on top of this floor (e.g. logs at 512 B → still skipped
-/// because output items must clear 2 KiB first).
-pub const OUTPUT_ITEM_MIN_BYTES: usize = 2 * 1024;
+/// apply on top of this floor.
+pub const OUTPUT_ITEM_MIN_BYTES: usize = 512;
 
 /// Two-pass result: a typed view alongside the byte-faithful raw
 /// slice. Lifetime ties to the underlying request body. Always
