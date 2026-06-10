@@ -60,6 +60,56 @@ _OPENAI_RESPONSES_UNIT_EXECUTOR_LOCK = threading.RLock()
 _OPENAI_RESPONSES_UNIT_EXECUTOR: ThreadPoolExecutor | None = None
 
 
+def _usage_int(value: Any) -> int:
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _passthrough_usage_from_json(payload: Any) -> dict[str, int]:
+    """Normalize usage from pass-through provider response shapes."""
+    if not isinstance(payload, dict):
+        return {}
+
+    usage_meta = payload.get("usageMetadata")
+    if isinstance(usage_meta, dict):
+        return {
+            "input_tokens": _usage_int(usage_meta.get("promptTokenCount")),
+            "output_tokens": _usage_int(usage_meta.get("candidatesTokenCount")),
+            "cache_read_input_tokens": _usage_int(usage_meta.get("cachedContentTokenCount")),
+        }
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        input_tokens = usage.get("input_tokens")
+        if input_tokens is None:
+            input_tokens = usage.get("prompt_tokens")
+        output_tokens = usage.get("output_tokens")
+        if output_tokens is None:
+            output_tokens = usage.get("completion_tokens")
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+        cache_read = details.get("cached_tokens") if isinstance(details, dict) else None
+        return {
+            "input_tokens": _usage_int(input_tokens),
+            "output_tokens": _usage_int(output_tokens),
+            "cache_read_input_tokens": _usage_int(usage.get("cache_read_input_tokens", cache_read)),
+            "cache_creation_input_tokens": _usage_int(usage.get("cache_creation_input_tokens")),
+        }
+
+    return {}
+
+
+def _passthrough_model_from_path(path: str, endpoint_name: str) -> str:
+    marker = "/models/"
+    if marker in path:
+        model_part = path.split(marker, 1)[1].split("/", 1)[0]
+        model = model_part.split(":", 1)[0]
+        if model:
+            return model
+    return f"passthrough:{endpoint_name}"
+
+
 def _openai_responses_unit_parallelism() -> int:
     raw = os.getenv(_OPENAI_RESPONSES_UNIT_PARALLELISM_ENV)
     if raw is None or raw.strip() == "":
@@ -215,23 +265,27 @@ def _json_byte_len(value: Any) -> int:
 
 def _compact_openai_tool_schema_value(
     value: Any,
+    _parent_key: str | None = None,
 ) -> Any:
     if isinstance(value, list):
-        return [_compact_openai_tool_schema_value(item) for item in value]
+        return [_compact_openai_tool_schema_value(item, _parent_key) for item in value]
 
     if not isinstance(value, dict):
         return value
 
     compacted: dict[str, Any] = {}
     for key, child in value.items():
-        if key in _OPENAI_TOOL_SCHEMA_DROP_KEYS:
+        # Don't drop keys that are property *names* inside a JSON Schema
+        # `properties` object — only drop them when they are schema annotations.
+        # e.g. a tool with a field literally named "title" must not be stripped.
+        if _parent_key != "properties" and key in _OPENAI_TOOL_SCHEMA_DROP_KEYS:
             continue
 
         if key == "description" and isinstance(child, str):
             compacted[key] = " ".join(child.split())
             continue
 
-        compacted[key] = _compact_openai_tool_schema_value(child)
+        compacted[key] = _compact_openai_tool_schema_value(child, key)
 
     return compacted
 
@@ -5814,6 +5868,14 @@ class OpenAIHandlerMixin:
         """
         from fastapi.responses import Response
 
+        if endpoint_name in {"streamGenerateContent", "streamRawPredict"} and provider:
+            return await self._handle_streaming_passthrough(
+                request=request,
+                base_url=base_url,
+                endpoint_name=endpoint_name,
+                provider=provider,
+            )
+
         start_time = time.time()
         path = request.url.path
         url = build_copilot_upstream_url(base_url, path)
@@ -5876,21 +5938,36 @@ class OpenAIHandlerMixin:
 
         # Passthrough request: forwarded upstream with no transforms.
         # Still recorded so dashboards see traffic on the passthrough
-        # endpoints. Funnel handles the "no tokens, no cache" shape
-        # via zero defaults.
+        # endpoints. When the upstream exposes provider-native usage
+        # fields, normalize them so dashboard totals do not collapse to
+        # zero for Vertex/Gemini and other pass-through endpoints.
         if endpoint_name and provider:
             latency_ms = (time.time() - start_time) * 1000
             request_id = await self._next_request_id()
+            usage: dict[str, int] = {}
+            if response.headers.get("content-type", "").lower().startswith("application/json"):
+                try:
+                    usage = _passthrough_usage_from_json(response.json())
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    usage = {}
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+            cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
+            uncached_input_tokens = max(0, input_tokens - cache_read_tokens - cache_write_tokens)
             await self._record_request_outcome(
                 RequestOutcome(
                     request_id=request_id,
                     provider=provider,
-                    model=f"passthrough:{endpoint_name}",
-                    original_tokens=0,
-                    optimized_tokens=0,
-                    output_tokens=0,
+                    model=_passthrough_model_from_path(path, endpoint_name),
+                    original_tokens=input_tokens,
+                    optimized_tokens=input_tokens,
+                    output_tokens=output_tokens,
                     tokens_saved=0,
-                    attempted_input_tokens=0,
+                    attempted_input_tokens=input_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    uncached_input_tokens=uncached_input_tokens,
                     total_latency_ms=latency_ms,
                     tags=tags,
                     client=client,
@@ -5901,4 +5978,185 @@ class OpenAIHandlerMixin:
             content=response.content,
             status_code=response.status_code,
             headers=response_headers,
+        )
+
+    async def _handle_streaming_passthrough(
+        self,
+        request: Request,
+        base_url: str,
+        endpoint_name: str,
+        provider: str,
+    ) -> Response:
+        """Stream pass-through responses without buffering the upstream body."""
+        from fastapi.responses import Response, StreamingResponse
+
+        from headroom.proxy.helpers import MAX_SSE_BUFFER_SIZE
+
+        start_time = time.time()
+        path = request.url.path
+        url = build_copilot_upstream_url(base_url, path)
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
+
+        headers = dict(request.headers.items())
+        headers.pop("host", None)
+        headers.pop("accept-encoding", None)
+        client = classify_client(headers)
+        tags = extract_tags(headers)
+
+        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+
+        _pre_strip_count_pt = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
+        headers = _strip_internal_headers(headers)
+        log_outbound_headers(
+            forwarder="streaming_passthrough",
+            stripped_count=_pre_strip_count_pt,
+            request_id=None,
+        )
+
+        body = await request.body()
+        headers = await apply_copilot_api_auth(headers, url=url)
+        request_id = await self._next_request_id()
+        stream_provider = "gemini" if provider == "vertex:google" else "anthropic"
+        stream_state: dict[str, Any] = {
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation_ephemeral_5m_input_tokens": 0,
+            "cache_creation_ephemeral_1h_input_tokens": 0,
+            "total_bytes": 0,
+            "sse_buffer": bytearray(),
+            "ttfb_ms": None,
+        }
+
+        assert self.http_client is not None, "http_client must be initialized before streaming"
+        try:
+            upstream_request = self.http_client.build_request(
+                request.method,
+                url,
+                headers=headers,
+                content=body,
+            )
+            upstream_response = await self.http_client.send(upstream_request, stream=True)
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            logger.warning(
+                "Streaming passthrough failed before upstream response: %s %s -> %s: %s",
+                request.method,
+                path,
+                url,
+                e,
+            )
+            return Response(
+                content=json.dumps(
+                    {
+                        "error": {
+                            "type": "connection_error",
+                            "message": f"Failed to connect to upstream API: {e}",
+                        }
+                    }
+                ),
+                status_code=502,
+                media_type="application/json",
+            )
+
+        response_headers = dict(upstream_response.headers)
+        response_headers.pop("content-length", None)
+        response_headers.pop("transfer-encoding", None)
+        response_headers.pop("connection", None)
+        response_headers.pop("content-encoding", None)
+
+        if upstream_response.status_code >= 400:
+            try:
+                error_content = await upstream_response.aread()
+            finally:
+                await upstream_response.aclose()
+            return Response(
+                content=error_content,
+                status_code=upstream_response.status_code,
+                headers=response_headers,
+            )
+
+        def _absorb_usage(usage: dict[str, int] | None) -> None:
+            if not usage:
+                return
+            if "input_tokens" in usage:
+                stream_state["input_tokens"] = usage["input_tokens"]
+            if "output_tokens" in usage:
+                stream_state["output_tokens"] = usage["output_tokens"]
+            if "cache_read_input_tokens" in usage:
+                stream_state["cache_read_input_tokens"] = usage["cache_read_input_tokens"]
+            if "cache_creation_input_tokens" in usage:
+                stream_state["cache_creation_input_tokens"] = usage["cache_creation_input_tokens"]
+            if "cache_creation_ephemeral_5m_input_tokens" in usage:
+                stream_state["cache_creation_ephemeral_5m_input_tokens"] = usage[
+                    "cache_creation_ephemeral_5m_input_tokens"
+                ]
+            if "cache_creation_ephemeral_1h_input_tokens" in usage:
+                stream_state["cache_creation_ephemeral_1h_input_tokens"] = usage[
+                    "cache_creation_ephemeral_1h_input_tokens"
+                ]
+
+        async def generate():
+            try:
+                async with contextlib.aclosing(upstream_response) as response:
+                    async for chunk in response.aiter_bytes():
+                        if stream_state["ttfb_ms"] is None:
+                            stream_state["ttfb_ms"] = (time.time() - start_time) * 1000
+                        stream_state["total_bytes"] += len(chunk)
+                        stream_state["sse_buffer"].extend(chunk)
+                        if len(stream_state["sse_buffer"]) > MAX_SSE_BUFFER_SIZE:
+                            tail = bytes(stream_state["sse_buffer"][-MAX_SSE_BUFFER_SIZE // 2 :])
+                            stream_state["sse_buffer"] = bytearray(tail)
+
+                        _absorb_usage(
+                            self._parse_sse_usage_from_buffer(stream_state, stream_provider)
+                        )
+                        yield chunk
+            finally:
+                buf = stream_state["sse_buffer"]
+                if len(buf) > 0:
+                    buf.extend(b"\n\n")
+                    _absorb_usage(self._parse_sse_usage_from_buffer(stream_state, stream_provider))
+
+                input_tokens = stream_state["input_tokens"] or 0
+                output_tokens = stream_state["output_tokens"] or 0
+                cache_read_tokens = stream_state["cache_read_input_tokens"] or 0
+                cache_write_tokens = stream_state["cache_creation_input_tokens"] or 0
+                uncached_input_tokens = max(
+                    0,
+                    input_tokens - cache_read_tokens - cache_write_tokens,
+                )
+                await self._record_request_outcome(
+                    RequestOutcome(
+                        request_id=request_id,
+                        provider=provider,
+                        model=_passthrough_model_from_path(path, endpoint_name),
+                        original_tokens=input_tokens,
+                        optimized_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        tokens_saved=0,
+                        attempted_input_tokens=input_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        cache_write_5m_tokens=stream_state[
+                            "cache_creation_ephemeral_5m_input_tokens"
+                        ],
+                        cache_write_1h_tokens=stream_state[
+                            "cache_creation_ephemeral_1h_input_tokens"
+                        ],
+                        uncached_input_tokens=uncached_input_tokens,
+                        total_latency_ms=(time.time() - start_time) * 1000,
+                        ttfb_ms=stream_state["ttfb_ms"] or 0,
+                        tags=tags,
+                        client=client,
+                    )
+                )
+
+        media_type = upstream_response.headers.get("content-type") or "text/event-stream"
+        return StreamingResponse(
+            generate(),
+            status_code=upstream_response.status_code,
+            headers=response_headers,
+            media_type=media_type,
         )

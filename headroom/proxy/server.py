@@ -96,6 +96,7 @@ from headroom.providers.registry import (
     DEFAULT_CLOUDCODE_API_URL,
     DEFAULT_GEMINI_API_URL,
     DEFAULT_OPENAI_API_URL,
+    DEFAULT_VERTEX_API_URL,
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
@@ -302,6 +303,7 @@ class HeadroomProxy(
     OPENAI_API_URL = DEFAULT_OPENAI_API_URL
     GEMINI_API_URL = DEFAULT_GEMINI_API_URL
     CLOUDCODE_API_URL = DEFAULT_CLOUDCODE_API_URL
+    VERTEX_API_URL = DEFAULT_VERTEX_API_URL
 
     def __init__(self, config: ProxyConfig):
         self.config = config
@@ -321,6 +323,7 @@ class HeadroomProxy(
         HeadroomProxy.OPENAI_API_URL = api_targets.openai
         HeadroomProxy.GEMINI_API_URL = api_targets.gemini
         HeadroomProxy.CLOUDCODE_API_URL = api_targets.cloudcode
+        HeadroomProxy.VERTEX_API_URL = api_targets.vertex
         self.anthropic_provider = self.provider_runtime.pipeline_provider("anthropic")
         self.openai_provider = self.provider_runtime.pipeline_provider("openai")
 
@@ -2973,6 +2976,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         port=_get_env_int("HEADROOM_PORT", 8787),
         openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
         anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
+        vertex_api_url=os.environ.get("VERTEX_TARGET_API_URL"),
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
@@ -3054,6 +3058,7 @@ def run_server(
 ║    OpenAI:     {api_targets.openai:<57}║
 ║    Gemini:     {api_targets.gemini:<57}║
 ║    Cloud Code: {api_targets.cloudcode:<57}║
+║    Vertex AI:  {api_targets.vertex:<57}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -3240,6 +3245,10 @@ if __name__ == "__main__":
         "--anthropic-api-url",
         help=f"Custom Anthropic API URL (default: {DEFAULT_ANTHROPIC_API_URL})",
     )
+    parser.add_argument(
+        "--vertex-api-url",
+        help=f"Custom Vertex AI regional API URL (default: {DEFAULT_VERTEX_API_URL})",
+    )
 
     # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
     parser.add_argument(
@@ -3391,6 +3400,7 @@ if __name__ == "__main__":
         port=_get_env_int("HEADROOM_PORT", args.port),
         openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
         anthropic_api_url=_get_env_str("ANTHROPIC_TARGET_API_URL", args.anthropic_api_url),
+        vertex_api_url=_get_env_str("VERTEX_TARGET_API_URL", args.vertex_api_url),
         # Backend settings
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),

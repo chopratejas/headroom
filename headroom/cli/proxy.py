@@ -442,6 +442,11 @@ def _selected_context_tool() -> str:
     help="Custom Cloud Code Assist API URL for compatibility endpoints (env: CLOUDCODE_TARGET_API_URL)",
 )
 @click.option(
+    "--vertex-api-url",
+    default=None,
+    help=("Custom Vertex AI regional API URL for publisher endpoints (env: VERTEX_TARGET_API_URL)"),
+)
+@click.option(
     "--region",
     default="us-west-2",
     help="Cloud region for Bedrock/Vertex/etc (default: us-west-2)",
@@ -518,6 +523,7 @@ def proxy(
     openai_api_url: str | None,
     gemini_api_url: str | None,
     cloudcode_api_url: str | None,
+    vertex_api_url: str | None,
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
@@ -578,6 +584,7 @@ def proxy(
         openai_api_url=openai_api_url,
         gemini_api_url=gemini_api_url,
         cloudcode_api_url=cloudcode_api_url,
+        vertex_api_url=vertex_api_url,
         environ=os.environ,
     )
 
@@ -634,6 +641,7 @@ def proxy(
         openai_api_url=provider_api_overrides.openai,
         gemini_api_url=provider_api_overrides.gemini,
         cloudcode_api_url=provider_api_overrides.cloudcode,
+        vertex_api_url=provider_api_overrides.vertex,
         mode=effective_mode,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
@@ -729,6 +737,7 @@ def proxy(
     anthropic_url = provider_api_targets.anthropic
     openai_url = provider_api_targets.openai
     cloudcode_url = provider_api_targets.cloudcode
+    vertex_url = provider_api_targets.vertex
     backend_section = ""
 
     if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
@@ -851,6 +860,7 @@ Routing:
   /v1/chat/completions            → {openai_url}
   /v1/responses                   → {openai_url}  (HTTP + WebSocket)
   /v1internal:streamGenerateContent → {cloudcode_url}
+  /v1/projects/.../publishers/... → {vertex_url}
 
 Usage:
   Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude

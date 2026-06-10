@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from fastapi import Request
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from headroom.copilot_auth import build_copilot_upstream_url
 from headroom.proxy.auth_mode import classify_client
 from headroom.proxy.compression_decision import CompressionDecision
 from headroom.proxy.helpers import extract_tags
@@ -145,6 +146,8 @@ class GeminiHandlerMixin:
         self,
         request: Request,
         model: str,
+        upstream_base_url: str | None = None,
+        provider_name: str = "gemini",
     ) -> Response | StreamingResponse:
         """Handle Gemini native /v1beta/models/{model}:generateContent endpoint.
 
@@ -275,7 +278,7 @@ class GeminiHandlerMixin:
             rate_key = headers.get("x-goog-api-key", "default")[:20]
             allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
             if not allowed:
-                await self.metrics.record_rate_limited(provider="gemini")
+                await self.metrics.record_rate_limited(provider=provider_name)
                 raise HTTPException(
                     status_code=429,
                     detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
@@ -294,17 +297,32 @@ class GeminiHandlerMixin:
         if len(preserved_indices) == len(contents):
             # All content has non-text parts, skip compression entirely
             # Just forward the request as-is
-            url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:generateContent"
             query_params = dict(request.query_params)
-            is_streaming = query_params.get("alt") == "sse"
-            if "key" in query_params:
+            is_streaming = query_params.get("alt") == "sse" or request.url.path.endswith(
+                ":streamGenerateContent"
+            )
+            if upstream_base_url:
+                url = build_copilot_upstream_url(upstream_base_url, request.url.path)
+                if is_streaming:
+                    url = url.replace(":generateContent", ":streamGenerateContent")
+                if request.url.query:
+                    url = f"{url}?{request.url.query}"
+            else:
+                url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:generateContent"
+            if "key" in query_params and not upstream_base_url:
                 url += f"?key={query_params['key']}"
 
             if is_streaming:
-                stream_url = (
-                    f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?alt=sse"
-                )
-                if "key" in query_params:
+                if upstream_base_url:
+                    stream_url = url
+                    separator = "&" if "?" in stream_url else "?"
+                    if "alt=" not in request.url.query:
+                        stream_url = f"{stream_url}{separator}alt=sse"
+                else:
+                    stream_url = (
+                        f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?alt=sse"
+                    )
+                if "key" in query_params and not upstream_base_url:
                     stream_url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?key={query_params['key']}&alt=sse"
                 return await self._stream_response(
                     stream_url,
@@ -319,12 +337,49 @@ class GeminiHandlerMixin:
                     [],
                     tags,
                     0,
+                    outcome_provider=provider_name,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
+                total_latency = (time.time() - start_time) * 1000
+                total_input_tokens = 0
+                output_tokens = 0
+                cache_read_tokens = 0
+                try:
+                    resp_json = response.json()
+                    usage = resp_json.get("usageMetadata", {})
+                    total_input_tokens = usage.get("promptTokenCount", 0)
+                    output_tokens = usage.get("candidatesTokenCount", 0)
+                    cache_read_tokens = usage.get("cachedContentTokenCount", 0)
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError):
+                    pass
+                await self._record_request_outcome(
+                    RequestOutcome(
+                        request_id=request_id,
+                        provider=provider_name,
+                        model=model,
+                        original_tokens=total_input_tokens,
+                        optimized_tokens=total_input_tokens,
+                        output_tokens=output_tokens,
+                        tokens_saved=0,
+                        attempted_input_tokens=total_input_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        uncached_input_tokens=max(0, total_input_tokens - cache_read_tokens),
+                        total_latency_ms=total_latency,
+                        num_messages=len(contents),
+                        tags=tags or {},
+                        client=client,
+                    )
+                )
                 response_headers = dict(response.headers)
                 response_headers.pop("content-encoding", None)
                 response_headers.pop("content-length", None)
+                response_headers["x-headroom-tokens-before"] = str(total_input_tokens)
+                response_headers["x-headroom-tokens-after"] = str(total_input_tokens)
+                response_headers["x-headroom-tokens-saved"] = "0"
+                response_headers["x-headroom-model"] = model
+                if cache_read_tokens > 0:
+                    response_headers["x-headroom-cached"] = "true"
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
@@ -458,24 +513,41 @@ class GeminiHandlerMixin:
             elif "systemInstruction" in body:
                 del body["systemInstruction"]
 
-        # Build URL - model is extracted from path
-        url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:generateContent"
-
         # Check if streaming requested via query param
         query_params = dict(request.query_params)
-        is_streaming = query_params.get("alt") == "sse"
+        is_streaming = query_params.get("alt") == "sse" or request.url.path.endswith(
+            ":streamGenerateContent"
+        )
+
+        # Build URL - model is extracted from path. Vertex publisher
+        # routes use the request's full path under the Vertex base URL;
+        # native Gemini uses the public Gemini API shape.
+        if upstream_base_url:
+            url = build_copilot_upstream_url(upstream_base_url, request.url.path)
+            if is_streaming:
+                url = url.replace(":generateContent", ":streamGenerateContent")
+            if request.url.query:
+                url = f"{url}?{request.url.query}"
+        else:
+            url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:generateContent"
 
         # Preserve API key in query params if present
-        if "key" in query_params:
+        if "key" in query_params and not upstream_base_url:
             url += f"?key={query_params['key']}"
 
         try:
             if is_streaming:
                 # For streaming, use streamGenerateContent endpoint
-                stream_url = (
-                    f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?alt=sse"
-                )
-                if "key" in query_params:
+                if upstream_base_url:
+                    stream_url = url
+                    separator = "&" if "?" in stream_url else "?"
+                    if "alt=" not in request.url.query:
+                        stream_url = f"{stream_url}{separator}alt=sse"
+                else:
+                    stream_url = (
+                        f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?alt=sse"
+                    )
+                if "key" in query_params and not upstream_base_url:
                     stream_url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?key={query_params['key']}&alt=sse"
 
                 return await self._stream_response(
@@ -491,6 +563,7 @@ class GeminiHandlerMixin:
                     transforms_applied,
                     tags,
                     optimization_latency,
+                    outcome_provider=provider_name,
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
@@ -530,7 +603,7 @@ class GeminiHandlerMixin:
                 # without per-handler conditionals.
                 outcome = RequestOutcome(
                     request_id=request_id,
-                    provider="gemini",
+                    provider=provider_name,
                     model=model,
                     original_tokens=original_tokens,
                     optimized_tokens=total_input_tokens,
@@ -580,7 +653,7 @@ class GeminiHandlerMixin:
                     headers=response_headers,
                 )
         except Exception as e:
-            await self.metrics.record_failed(provider="gemini")
+            await self.metrics.record_failed(provider=provider_name)
             logger.error(f"[{request_id}] Gemini request failed: {type(e).__name__}: {e}")
             return JSONResponse(
                 status_code=502,
@@ -826,6 +899,8 @@ class GeminiHandlerMixin:
         self,
         request: Request,
         model: str,
+        upstream_base_url: str | None = None,
+        provider_name: str = "gemini",
     ) -> Response:
         """Handle Gemini /v1beta/models/{model}:countTokens endpoint with compression.
 
@@ -889,9 +964,14 @@ class GeminiHandlerMixin:
         if len(preserved_indices) == len(contents):
             # All content has non-text parts, skip compression entirely
             # Just forward the countTokens request as-is
-            url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:countTokens"
+            if upstream_base_url:
+                url = build_copilot_upstream_url(upstream_base_url, request.url.path)
+                if request.url.query:
+                    url = f"{url}?{request.url.query}"
+            else:
+                url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:countTokens"
             query_params = dict(request.query_params)
-            if "key" in query_params:
+            if "key" in query_params and not upstream_base_url:
                 url += f"?key={query_params['key']}"
 
             response = await self._retry_request("POST", url, headers, body)
@@ -961,11 +1041,16 @@ class GeminiHandlerMixin:
                 del body["systemInstruction"]
 
         # Build URL
-        url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:countTokens"
+        if upstream_base_url:
+            url = build_copilot_upstream_url(upstream_base_url, request.url.path)
+            if request.url.query:
+                url = f"{url}?{request.url.query}"
+        else:
+            url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:countTokens"
 
         # Preserve API key in query params if present
         query_params = dict(request.query_params)
-        if "key" in query_params:
+        if "key" in query_params and not upstream_base_url:
             url += f"?key={query_params['key']}"
 
         try:
@@ -993,7 +1078,7 @@ class GeminiHandlerMixin:
             await self._record_request_outcome(
                 RequestOutcome(
                     request_id=request_id,
-                    provider="gemini",
+                    provider=provider_name,
                     model=model,
                     original_tokens=original_tokens,
                     optimized_tokens=compressed_tokens,
@@ -1028,7 +1113,7 @@ class GeminiHandlerMixin:
                 headers=response_headers,
             )
         except Exception as e:
-            await self.metrics.record_failed(provider="gemini")
+            await self.metrics.record_failed(provider=provider_name)
             logger.error(f"[{request_id}] Gemini countTokens failed: {type(e).__name__}: {e}")
             return JSONResponse(
                 status_code=502,
