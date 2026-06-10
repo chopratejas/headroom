@@ -712,7 +712,7 @@ class StreamingMixin:
         effective_optimized_tokens = optimized_tokens
         effective_original_tokens = original_tokens
         if (
-            provider == "openai"
+            provider in {"openai", "gemini"}
             and isinstance(provider_input_tokens, int)
             and provider_input_tokens > 0
         ):

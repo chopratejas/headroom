@@ -597,17 +597,20 @@ class AnthropicHandlerMixin:
                 )
             model = body.get("model") or model_override or "unknown"
             messages = body.get("messages", [])
+            pipeline_provider = provider_name
+            pipeline_path = request.url.path if upstream_base_url else "/v1/messages"
+            pipeline_stream = bool(body.get("stream", False) or force_stream)
             with stage_timer.measure("deep_copy"):
                 original_client_messages = copy.deepcopy(messages)
             input_event = self.pipeline_extensions.emit(
                 PipelineStage.INPUT_RECEIVED,
                 operation="proxy.request",
                 request_id=request_id,
-                provider="anthropic",
+                provider=pipeline_provider,
                 model=model,
                 messages=messages,
                 tools=body.get("tools"),
-                metadata={"path": "/v1/messages", "stream": body.get("stream", False)},
+                metadata={"path": pipeline_path, "stream": pipeline_stream},
             )
             if input_event.messages is not None:
                 messages = input_event.messages
@@ -631,7 +634,7 @@ class AnthropicHandlerMixin:
                     },
                 )
 
-            stream = bool(body.get("stream", False) or force_stream)
+            stream = pipeline_stream
 
             # Bypass: skip ALL compression, TOIN learning, and CCR injection
             # when the caller explicitly opts out via header.
@@ -786,10 +789,10 @@ class AnthropicHandlerMixin:
                         PipelineStage.INPUT_CACHED,
                         operation="proxy.request",
                         request_id=request_id,
-                        provider="anthropic",
+                        provider=pipeline_provider,
                         model=model,
                         messages=messages,
-                        metadata={"cache_hit": True, "path": "/v1/messages"},
+                        metadata={"cache_hit": True, "path": pipeline_path},
                     )
                     optimization_latency = (time.time() - start_time) * 1000
 
@@ -803,7 +806,7 @@ class AnthropicHandlerMixin:
                     await self._record_request_outcome(
                         RequestOutcome(
                             request_id=request_id,
-                            provider="anthropic",
+                            provider=provider_name,
                             model=model,
                             original_tokens=0,
                             optimized_tokens=0,
@@ -844,7 +847,7 @@ class AnthropicHandlerMixin:
                     messages, _security_ctx = self.security.scan_request(
                         messages,
                         {
-                            "provider": "anthropic",
+                            "provider": provider_name,
                             "model": model,
                             "request_id": str(request_id),
                             "user_id": headers.get("x-api-key", "")[:16],
@@ -877,7 +880,7 @@ class AnthropicHandlerMixin:
                 _hook_ctx = CompressContext(
                     model=model,
                     user_query=extract_user_query(messages),
-                    provider="anthropic",
+                    provider=provider_name,
                 )
                 try:
                     messages = self.config.hooks.pre_compress(messages, _hook_ctx)
@@ -1181,7 +1184,7 @@ class AnthropicHandlerMixin:
                     PipelineStage.INPUT_ROUTED,
                     operation="proxy.request",
                     request_id=request_id,
-                    provider="anthropic",
+                    provider=pipeline_provider,
                     model=model,
                     messages=optimized_messages,
                     metadata={
@@ -1200,7 +1203,7 @@ class AnthropicHandlerMixin:
                 PipelineStage.INPUT_COMPRESSED,
                 operation="proxy.request",
                 request_id=request_id,
-                provider="anthropic",
+                provider=pipeline_provider,
                 model=model,
                 messages=optimized_messages,
                 metadata={
@@ -1232,7 +1235,7 @@ class AnthropicHandlerMixin:
                             transforms_applied=transforms_applied,
                             model=model,
                             user_query=_hook_ctx.user_query if self.config.hooks else "",
-                            provider="anthropic",
+                            provider=provider_name,
                         )
                     )
                 except Exception as e:
@@ -1632,7 +1635,7 @@ class AnthropicHandlerMixin:
                     PipelineStage.INPUT_REMEMBERED,
                     operation="proxy.request",
                     request_id=request_id,
-                    provider="anthropic",
+                    provider=pipeline_provider,
                     model=model,
                     messages=optimized_messages,
                     tools=tools,
@@ -1659,12 +1662,12 @@ class AnthropicHandlerMixin:
                 PipelineStage.PRE_SEND,
                 operation="proxy.request",
                 request_id=request_id,
-                provider="anthropic",
+                provider=pipeline_provider,
                 model=model,
                 messages=optimized_messages,
                 tools=tools,
                 headers=headers,
-                metadata={"path": "/v1/messages", "stream": stream},
+                metadata={"path": pipeline_path, "stream": stream},
             )
             previous_presend_messages = optimized_messages
             if presend_event.messages is not None:
@@ -1710,11 +1713,11 @@ class AnthropicHandlerMixin:
                             PipelineStage.POST_SEND,
                             operation="proxy.request",
                             request_id=request_id,
-                            provider="anthropic",
+                            provider=pipeline_provider,
                             model=model,
                             messages=body["messages"],
                             tools=tools,
-                            metadata={"path": "/v1/messages", "stream": True},
+                            metadata={"path": pipeline_path, "stream": True},
                         )
                         await _finalize_pre_upstream()
                         return await self._stream_response_bedrock(
@@ -1740,13 +1743,13 @@ class AnthropicHandlerMixin:
                             PipelineStage.POST_SEND,
                             operation="proxy.request",
                             request_id=request_id,
-                            provider="anthropic",
+                            provider=pipeline_provider,
                             model=model,
                             messages=body["messages"],
                             tools=tools,
                             response=backend_response.body,
                             metadata={
-                                "path": "/v1/messages",
+                                "path": pipeline_path,
                                 "stream": False,
                                 "status_code": backend_response.status_code,
                             },
@@ -1755,11 +1758,11 @@ class AnthropicHandlerMixin:
                             PipelineStage.RESPONSE_RECEIVED,
                             operation="proxy.request",
                             request_id=request_id,
-                            provider="anthropic",
+                            provider=pipeline_provider,
                             model=model,
                             response=backend_response.body,
                             metadata={
-                                "path": "/v1/messages",
+                                "path": pipeline_path,
                                 "stream": False,
                                 "status_code": backend_response.status_code,
                             },
@@ -1869,11 +1872,11 @@ class AnthropicHandlerMixin:
                         PipelineStage.POST_SEND,
                         operation="proxy.request",
                         request_id=request_id,
-                        provider="anthropic",
+                        provider=pipeline_provider,
                         model=model,
                         messages=body["messages"],
                         tools=tools,
-                        metadata={"path": "/v1/messages", "stream": True},
+                        metadata={"path": pipeline_path, "stream": True},
                     )
                     await _finalize_pre_upstream()
                     return await self._stream_response(
@@ -1917,13 +1920,13 @@ class AnthropicHandlerMixin:
                         PipelineStage.POST_SEND,
                         operation="proxy.request",
                         request_id=request_id,
-                        provider="anthropic",
+                        provider=pipeline_provider,
                         model=model,
                         messages=body["messages"],
                         tools=tools,
                         response=response,
                         metadata={
-                            "path": "/v1/messages",
+                            "path": pipeline_path,
                             "stream": False,
                             "status_code": response.status_code,
                         },
@@ -1932,11 +1935,11 @@ class AnthropicHandlerMixin:
                         PipelineStage.RESPONSE_RECEIVED,
                         operation="proxy.request",
                         request_id=request_id,
-                        provider="anthropic",
+                        provider=pipeline_provider,
                         model=model,
                         response=response,
                         metadata={
-                            "path": "/v1/messages",
+                            "path": pipeline_path,
                             "stream": False,
                             "status_code": response.status_code,
                         },

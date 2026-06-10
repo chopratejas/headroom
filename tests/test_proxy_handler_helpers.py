@@ -84,6 +84,35 @@ class _VertexStreamPassthroughRequest:
         return b'{"contents":[]}'
 
 
+class _VertexGeminiImageRequest:
+    method = "POST"
+    headers = {}
+    query_params = {}
+    url = SimpleNamespace(
+        path="/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent",
+        query="",
+    )
+
+    async def body(self) -> bytes:
+        return json.dumps(
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": "aW1hZ2U=",
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+
 class _VertexUsageClient:
     async def request(self, **kwargs):  # noqa: ANN001, ANN201
         request = httpx.Request(kwargs["method"], kwargs["url"], content=kwargs["content"])
@@ -359,6 +388,66 @@ def test_stream_finalizer_records_vertex_provider_for_dashboard() -> None:
     assert outcome.output_tokens == 5
     assert outcome.tokens_saved == 8
     assert outcome.cache_read_tokens == 2
+
+
+def test_vertex_gemini_non_text_generate_records_dashboard_outcome() -> None:
+    handler = object.__new__(HeadroomProxy)
+    handler.memory_handler = None
+    handler.rate_limiter = None
+    outcomes = []
+    upstream_urls = []
+
+    async def next_request_id():  # noqa: ANN202
+        return "req_vertex_image"
+
+    async def record(outcome):  # noqa: ANN001, ANN202
+        outcomes.append(outcome)
+
+    async def retry_request(method, url, headers, body):  # noqa: ANN001, ANN202
+        upstream_urls.append(url)
+        request = httpx.Request(method, url, headers=headers)
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            json={
+                "usageMetadata": {
+                    "promptTokenCount": 31,
+                    "candidatesTokenCount": 4,
+                    "cachedContentTokenCount": 6,
+                }
+            },
+        )
+
+    handler._next_request_id = next_request_id
+    handler._record_request_outcome = record
+    handler._retry_request = retry_request
+
+    response = asyncio.run(
+        handler.handle_gemini_generate_content(
+            _VertexGeminiImageRequest(),
+            "gemini-2.0-flash",
+            "https://vertex.test",
+            "vertex:google",
+        )
+    )
+
+    assert response.status_code == 200
+    assert upstream_urls == [
+        "https://vertex.test/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent"
+    ]
+    assert response.headers["x-headroom-tokens-before"] == "31"
+    assert response.headers["x-headroom-tokens-after"] == "31"
+    assert response.headers["x-headroom-tokens-saved"] == "0"
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provider == "vertex:google"
+    assert outcome.model == "gemini-2.0-flash"
+    assert outcome.original_tokens == 31
+    assert outcome.optimized_tokens == 31
+    assert outcome.output_tokens == 4
+    assert outcome.cache_read_tokens == 6
+    assert outcome.num_messages == 1
 
 
 def test_retry_request_retries_connect_timeout() -> None:

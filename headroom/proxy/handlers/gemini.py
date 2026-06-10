@@ -341,9 +341,45 @@ class GeminiHandlerMixin:
                 )
             else:
                 response = await self._retry_request("POST", url, headers, body)
+                total_latency = (time.time() - start_time) * 1000
+                total_input_tokens = 0
+                output_tokens = 0
+                cache_read_tokens = 0
+                try:
+                    resp_json = response.json()
+                    usage = resp_json.get("usageMetadata", {})
+                    total_input_tokens = usage.get("promptTokenCount", 0)
+                    output_tokens = usage.get("candidatesTokenCount", 0)
+                    cache_read_tokens = usage.get("cachedContentTokenCount", 0)
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError):
+                    pass
+                await self._record_request_outcome(
+                    RequestOutcome(
+                        request_id=request_id,
+                        provider=provider_name,
+                        model=model,
+                        original_tokens=total_input_tokens,
+                        optimized_tokens=total_input_tokens,
+                        output_tokens=output_tokens,
+                        tokens_saved=0,
+                        attempted_input_tokens=total_input_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        uncached_input_tokens=max(0, total_input_tokens - cache_read_tokens),
+                        total_latency_ms=total_latency,
+                        num_messages=len(contents),
+                        tags=tags or {},
+                        client=client,
+                    )
+                )
                 response_headers = dict(response.headers)
                 response_headers.pop("content-encoding", None)
                 response_headers.pop("content-length", None)
+                response_headers["x-headroom-tokens-before"] = str(total_input_tokens)
+                response_headers["x-headroom-tokens-after"] = str(total_input_tokens)
+                response_headers["x-headroom-tokens-saved"] = "0"
+                response_headers["x-headroom-model"] = model
+                if cache_read_tokens > 0:
+                    response_headers["x-headroom-cached"] = "true"
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
