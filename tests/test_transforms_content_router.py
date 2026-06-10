@@ -100,6 +100,29 @@ def test_router_result_helpers_and_summary() -> None:
     assert mixed.summary().startswith("Mixed content: 2 sections, routed to ")
 
 
+def test_eager_load_kompress_uses_local_cache_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    class FakeKompress:
+        def preload(self, *, allow_download: bool = True) -> str:
+            calls.append(allow_download)
+            raise RuntimeError("cache miss")
+
+    router = ContentRouter(
+        ContentRouterConfig(
+            enable_kompress=True,
+            enable_smart_crusher=False,
+            enable_code_aware=False,
+        )
+    )
+    monkeypatch.setattr(router, "_get_kompress", lambda: FakeKompress())
+
+    status = router.eager_load_compressors()
+
+    assert calls == [False]
+    assert status["kompress"] == "lazy"
+
+
 def test_content_signature_and_detection_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stage-3d (PR5) wired `_detect_content` through the Rust chain
     (`headroom._core.detect_content_type` → magika → unidiff →

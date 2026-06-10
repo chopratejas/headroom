@@ -7,12 +7,12 @@ import sys
 from typing import Any
 
 
-def hf_hub_download_local_first(repo_id: str, filename: str) -> str:
+def hf_hub_download_local_first(repo_id: str, filename: str, *, allow_download: bool = True) -> str:
     """Download a file from HuggingFace Hub, preferring the local cache.
 
     Tries ``local_files_only=True`` first to avoid a network HEAD request when
     the model is already cached.  Falls back to a normal (network-allowed)
-    download on the first cold start.
+    download on the first cold start unless ``allow_download`` is false.
 
     Args:
         repo_id: HuggingFace Hub repository identifier (e.g. ``"org/model"``).
@@ -30,6 +30,8 @@ def hf_hub_download_local_first(repo_id: str, filename: str) -> str:
     try:
         return str(hf_hub_download(repo_id, filename, local_files_only=True))
     except (LocalEntryNotFoundError, EntryNotFoundError, OSError):
+        if not allow_download:
+            raise
         return str(hf_hub_download(repo_id, filename))
 
 
