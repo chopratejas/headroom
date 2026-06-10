@@ -122,15 +122,14 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
         --out /tmp/wheels && \
     uv pip install --system /tmp/wheels/*.whl
 
-# Bake HF weights with retry for flaky network. Only kompress-base is
-# needed — it's already a fine-tuned ModernBERT (model.safetensors +
-# tokenizer.json + config.json are all self-contained). The
-# `_name_or_path: answerdotai/ModernBERT-base` in its config is metadata
-# only and does NOT trigger a download at load time.
+# Bake HF weights with retry for flaky network. kompress-v2-base is the
+# current Kompress default (weight-only int8 ONNX, self-contained:
+# model.onnx + tokenizer.json + config.json). It loads via onnxruntime,
+# not transformers, so TRANSFORMERS_OFFLINE does not block it.
 RUN if echo ",${HEADROOM_EXTRAS}," | grep -q ",ml,"; then \
         for i in 1 2 3; do \
             python -c "from huggingface_hub import snapshot_download; \
-                snapshot_download('chopratejas/kompress-base')" \
+                snapshot_download('chopratejas/kompress-v2-base')" \
             && break || { echo \"hf download attempt $i failed, retrying\"; sleep 10; }; \
         done; \
         test -d /opt/hf-cache && ls /opt/hf-cache; \
