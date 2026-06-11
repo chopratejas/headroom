@@ -1745,7 +1745,10 @@ class OpenAIHandlerMixin:
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
-                logger.warning(f"Optimization failed: {e}")
+                logger.warning(
+                    f"Optimization failed: {type(e).__name__}: {e}",
+                    exc_info=True,
+                )
                 # Flag compression failure for observability
                 _compression_failed = True
 
