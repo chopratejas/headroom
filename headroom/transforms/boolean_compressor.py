@@ -32,7 +32,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +427,7 @@ def _looks_like_nl_logic(content: str) -> bool:
     return len(hits) >= 2 and len(content.split()) < 80
 
 
-def _detect_provider() -> Optional[Any]:
+def _detect_provider() -> Any | None:
     """Return an NL provider if a supported API key is set, else None."""
     try:
         from boolean_algebra_engine.nl.nl import AnthropicProvider, OpenAIProvider
