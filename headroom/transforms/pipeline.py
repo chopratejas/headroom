@@ -6,8 +6,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..config import (
     CacheAlignerConfig,
@@ -28,6 +29,24 @@ if TYPE_CHECKING:
     from ..providers.base import Provider
 
 logger = logging.getLogger(__name__)
+
+_N = TypeVar("_N", int, float)
+
+
+def _breaker_env(name: str, default: _N, cast: Callable[[str], _N]) -> _N:
+    """Parse a circuit-breaker env var, falling back on bad input.
+
+    The breaker is a safety net — a typo'd value must degrade to the
+    default with a warning, not crash proxy startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
 
 
 class TransformPipeline:
@@ -71,10 +90,8 @@ class TransformPipeline:
         # failures, pass messages through untouched for a cooldown window
         # instead of re-running (and re-failing) transforms on every
         # request. Threshold <= 0 disables the breaker.
-        self._breaker_threshold = int(os.environ.get("HEADROOM_PIPELINE_BREAKER_THRESHOLD", "3"))
-        self._breaker_cooldown_s = float(
-            os.environ.get("HEADROOM_PIPELINE_BREAKER_COOLDOWN_S", "60")
-        )
+        self._breaker_threshold = _breaker_env("HEADROOM_PIPELINE_BREAKER_THRESHOLD", 3, int)
+        self._breaker_cooldown_s = _breaker_env("HEADROOM_PIPELINE_BREAKER_COOLDOWN_S", 60.0, float)
         self._breaker_lock = threading.Lock()
         self._breaker_failures = 0
         self._breaker_open_until = 0.0

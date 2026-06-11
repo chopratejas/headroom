@@ -66,6 +66,24 @@ _NEUTRAL_TOOL_OUTPUT = (
 )
 
 
+# Benign outputs that merely MENTION errors — exactly one distinct
+# indicator keyword ("error"). A lax substring gate would exempt these
+# from compression (savings regression); the strong gate must not.
+_BENIGN_GREP_OUTPUT = (
+    "src/error_handler.py:12:def handle_error(code):\n"
+    "src/error_handler.py:48:    log_error(code, context)\n"
+    + "\n".join(
+        f"src/module_{i}.py:{i * 3}:    error_count = metrics.get('error', 0)" for i in range(20)
+    )
+)
+
+_BENIGN_JSON_OUTPUT = (
+    '{"status": "completed", "errors": [], "warnings": [], "items": ['
+    + ", ".join(f'{{"id": {i}, "name": "artifact_{i}", "size": {i * 1024}}}' for i in range(30))
+    + "]}"
+)
+
+
 def _filler_messages(n: int = 2) -> list[dict[str, Any]]:
     return [{"role": "user", "content": f"step {i}: please continue the task"} for i in range(n)]
 
@@ -120,6 +138,56 @@ class TestErrorOutputProtection:
         assert "router:protected:error_output" in result.transforms_applied
         block = result.messages[-1]["content"][0]
         assert block["content"] == _TRACEBACK
+
+    def test_single_indicator_string_output_not_protected(self, tokenizer: Tokenizer) -> None:
+        """Grep-style output mentioning "error" must not skip compression."""
+        router = ContentRouter()
+        messages = _filler_messages() + [
+            {"role": "tool", "tool_call_id": "call_1", "content": _BENIGN_GREP_OUTPUT},
+        ]
+        result = router.apply(messages, tokenizer)
+        assert "router:protected:error_output" not in result.transforms_applied
+
+    def test_single_indicator_block_not_protected_without_flag(self, tokenizer: Tokenizer) -> None:
+        """`"errors": []` JSON without `is_error` must not skip compression."""
+        router = ContentRouter()
+        messages = _filler_messages() + [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_3",
+                        "content": _BENIGN_JSON_OUTPUT,
+                    }
+                ],
+            },
+        ]
+        result = router.apply(messages, tokenizer)
+        assert "router:protected:error_output" not in result.transforms_applied
+
+    def test_is_error_flag_alone_protects_single_indicator_block(
+        self, tokenizer: Tokenizer
+    ) -> None:
+        """The explicit `is_error` flag needs no indicator corroboration."""
+        router = ContentRouter()
+        messages = _filler_messages() + [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_4",
+                        "is_error": True,
+                        "content": _BENIGN_JSON_OUTPUT,
+                    }
+                ],
+            },
+        ]
+        result = router.apply(messages, tokenizer)
+        assert "router:protected:error_output" in result.transforms_applied
+        block = result.messages[-1]["content"][0]
+        assert block["content"] == _BENIGN_JSON_OUTPUT
 
     def test_oversized_error_output_falls_through(self, tokenizer: Tokenizer) -> None:
         config = ContentRouterConfig(error_protection_max_chars=100)
@@ -227,6 +295,16 @@ class TestPipelineCircuitBreaker:
         time.sleep(0.1)
         result = pipeline.apply(_MESSAGES, model="gpt-4o", model_limit=1024)
         assert result.transforms_applied != ["pipeline:circuit_open"]
+
+    def test_invalid_env_values_fall_back_to_defaults(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typo'd breaker env vars must not crash proxy startup."""
+        monkeypatch.setenv("HEADROOM_PIPELINE_BREAKER_THRESHOLD", "three")
+        monkeypatch.setenv("HEADROOM_PIPELINE_BREAKER_COOLDOWN_S", "1m")
+        pipeline = TransformPipeline(HeadroomConfig(), transforms=[_FailingTransform()])
+        assert pipeline._breaker_threshold == 3
+        assert pipeline._breaker_cooldown_s == 60.0
 
     def test_disabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HEADROOM_PIPELINE_BREAKER_THRESHOLD", "0")

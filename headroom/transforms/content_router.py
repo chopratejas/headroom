@@ -50,7 +50,7 @@ from ..tokenizer import Tokenizer
 from .base import Transform
 from .content_detector import ContentType, DetectionResult
 from .content_detector import detect_content_type as _regex_detect_content_type
-from .error_detection import content_has_error_indicators
+from .error_detection import content_has_strong_error_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -2109,13 +2109,15 @@ class ContentRouter(Transform):
 
             # Protection: failed tool calls / error outputs stay verbatim
             # (issue #847). The model needs exact tracebacks to recover.
-            # Above the size cap, fall through — LogCompressor preserves
-            # error lines in big logs.
+            # Strong (>=2 distinct indicators) match only — a single
+            # keyword false-positives on benign outputs that mention
+            # errors. Above the size cap, fall through — LogCompressor
+            # preserves error lines in big logs.
             if (
                 self.config.protect_error_outputs
                 and role == "tool"
                 and len(content) <= self.config.error_protection_max_chars
-                and content_has_error_indicators(content)
+                and content_has_strong_error_indicators(content)
             ):
                 result_slots[i] = message
                 transforms_applied.append("router:protected:error_output")
@@ -2462,15 +2464,18 @@ class ContentRouter(Transform):
 
                 # Protection: failed tool calls / error outputs stay verbatim
                 # (issue #847). `is_error` is Anthropic's explicit failure
-                # flag; the indicator scan catches error text without the
-                # flag. Above the size cap, fall through — LogCompressor
-                # preserves error lines in big logs.
+                # flag and suffices alone; the indicator scan catches error
+                # text without the flag but requires >=2 distinct keywords
+                # so benign outputs mentioning errors don't skip compression.
+                # Above the size cap, fall through — LogCompressor preserves
+                # error lines in big logs.
                 if (
                     self.config.protect_error_outputs
                     and isinstance(tool_content, str)
                     and len(tool_content) <= self.config.error_protection_max_chars
                     and (
-                        block.get("is_error") is True or content_has_error_indicators(tool_content)
+                        block.get("is_error") is True
+                        or content_has_strong_error_indicators(tool_content)
                     )
                 ):
                     new_blocks.append(block)
