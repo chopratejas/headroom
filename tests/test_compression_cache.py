@@ -557,8 +557,8 @@ class TestCompressionCacheConcurrency:
     def test_concurrent_hits_misses_consistent(self) -> None:
         """Under concurrent reads + writes, hits+misses must be bounded by
         total lookups (hits ≤ entries, misses ≥ 0 at all moments)."""
-        import threading
         import random
+        import threading
 
         cache = CompressionCache(max_entries=1_000_000)
         n_threads = 16

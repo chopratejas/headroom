@@ -799,10 +799,10 @@ class TestExcludeTools:
         from headroom.config import DEFAULT_EXCLUDE_TOOLS
 
         assert "Bash" not in DEFAULT_EXCLUDE_TOOLS, (
-            f"Bash should NOT be in DEFAULT_EXCLUDE_TOOLS — "
-            f"its outputs (build logs, test output) are ideal compression targets"
+            "Bash should NOT be in DEFAULT_EXCLUDE_TOOLS — "
+            "its outputs (build logs, test output) are ideal compression targets"
         )
-        assert "bash" not in DEFAULT_EXCLUDE_TOOLS, f"'bash' should NOT be in DEFAULT_EXCLUDE_TOOLS"
+        assert "bash" not in DEFAULT_EXCLUDE_TOOLS, "'bash' should NOT be in DEFAULT_EXCLUDE_TOOLS"
 
     def test_bash_lowercase_not_in_exclude_tools(self):
         """Lowercase 'bash' is also NOT in default exclude tools."""
