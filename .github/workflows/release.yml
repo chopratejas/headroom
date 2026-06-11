@@ -84,7 +84,7 @@ jobs:
       bump: ${{ steps.ver.outputs.bump }}
       previous_tag: ${{ steps.ver.outputs.previous_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -126,17 +126,17 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -179,7 +179,7 @@ jobs:
         shell: bash
 
       - name: Upload changelog via action
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: changelog
           path: /tmp/changelog-backup.md
@@ -203,7 +203,7 @@ jobs:
           npm pack --pack-destination ../../release-assets
 
       - name: Upload release assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: release-assets/
@@ -261,12 +261,12 @@ jobs:
             manylinux: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -393,7 +393,7 @@ jobs:
           done
 
       - name: Upload wheels artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*
@@ -407,14 +407,14 @@ jobs:
       contents: read
     steps:
       - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: wheels-tmp/
           merge-multiple: true
 
       - name: Download release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-assets
           path: release-assets/
@@ -429,13 +429,13 @@ jobs:
           ls -la release-assets/
 
       - name: Upload merged dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
 
       - name: Upload merged release-assets artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets-merged
           path: release-assets/
@@ -502,7 +502,7 @@ jobs:
 
     steps:
       - name: Download wheels artifact for this target
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.wheel_artifact }}
           path: dist/
@@ -604,6 +604,22 @@ jobs:
               esac
               whl=$(find /wheels -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-${arch_tag}.whl" -print -quit)
               if [ -z "$whl" ]; then
+                # No version-specific wheel — fall back to a stable-ABI
+                # (abi3) wheel. A cp3<floor>-abi3 wheel installs on any
+                # CPython >= floor, which is what makes a single wheel
+                # forward-compatible to 3.14+ (Cargo.toml pyo3 abi3-py310).
+                # Pick the abi3 wheel whose floor is <= the interpreter.
+                py_minor=${PYTHON_VERSION#*.}
+                abi3=$(find /wheels -maxdepth 1 -type f -name "headroom_ai-*-abi3-${arch_tag}.whl" -print -quit)
+                if [ -n "$abi3" ]; then
+                  abi3_base=${abi3##*/}
+                  abi3_floor=${abi3_base#*-cp3}
+                  abi3_floor=${abi3_floor%%-*}
+                  case "$abi3_floor" in *[!0-9]*) abi3_floor= ;; esac
+                  if [ -n "$abi3_floor" ] && [ "$abi3_floor" -le "$py_minor" ]; then whl="$abi3"; fi
+                fi
+              fi
+              if [ -z "$whl" ]; then
                 echo "ERROR: no wheel matching python=$PYTHON_VERSION arch=$arch_tag in /wheels/" >&2
                 find /wheels -maxdepth 1 -type f -printf "%f\n" >&2
                 exit 1
@@ -633,6 +649,19 @@ jobs:
           # macOS wheels are tagged macosx_*_arm64 (Apple Silicon only).
           whl=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_arm64.whl" -print -quit)
           if [ -z "$whl" ]; then
+            # Stable-ABI (abi3) fallback — see the Linux path above. A
+            # cp3<floor>-abi3 wheel installs on any CPython >= floor.
+            py_minor=${PYTHON_VERSION#*.}
+            abi3=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-abi3-macosx_*_arm64.whl" -print -quit)
+            if [ -n "$abi3" ]; then
+              abi3_base=${abi3##*/}
+              abi3_floor=${abi3_base#*-cp3}
+              abi3_floor=${abi3_floor%%-*}
+              case "$abi3_floor" in *[!0-9]*) abi3_floor= ;; esac
+              if [ -n "$abi3_floor" ] && [ "$abi3_floor" -le "$py_minor" ]; then whl="$abi3"; fi
+            fi
+          fi
+          if [ -z "$whl" ]; then
             echo "ERROR: no macOS wheel matching python=$PYTHON_VERSION"
             find dist -maxdepth 1 -type f -exec basename {} \;
             exit 1
@@ -660,7 +689,7 @@ jobs:
       id-token: write  # Required for OIDC trusted publishing
     steps:
       - name: Download merged dist artifact (sdist + cross-platform wheels)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -687,12 +716,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           registry-url: ${{ env.NPM_REGISTRY_URL }}
@@ -743,7 +772,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -754,7 +783,7 @@ jobs:
           printf 'scope=%s\n' "$scope" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js for GitHub Package Registry
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "20"
           registry-url: ${{ env.GITHUB_PACKAGES_REGISTRY_URL }}
@@ -875,18 +904,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download changelog artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: changelog
           path: /tmp
 
       - name: Download merged release assets (npm tarballs + wheels + sdist)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-assets-merged
           path: release-assets

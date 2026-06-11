@@ -88,6 +88,31 @@ def test_ensure_proxy_falls_back_when_persistent_manifest_is_stale(monkeypatch) 
     assert calls == ["start"]
 
 
+def test_ensure_proxy_reports_unbindable_port_before_starting_subprocess(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: False)
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: None)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_port_bind_error",
+        lambda port: PermissionError(10013, "access denied by OS port reservation"),
+    )
+    monkeypatch.setattr(wrap_cli, "_start_proxy", lambda *args, **kwargs: calls.append("start"))
+
+    try:
+        wrap_cli._ensure_proxy(8787, False, agent_type="cursor")
+    except click.ClickException as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected unbindable port to raise before starting proxy")
+
+    assert "Port 8787 is unavailable" in message
+    assert "Windows" in message
+    assert "headroom wrap cursor --port 8788" in message
+    assert calls == []
+
+
 def test_ensure_proxy_restarts_idle_stale_persistent_deployment(monkeypatch) -> None:
     calls: list[str] = []
     health = {
@@ -204,6 +229,46 @@ def test_ensure_proxy_restarts_idle_stale_ephemeral_proxy(monkeypatch) -> None:
     assert result is None
     assert calls[0] == ("kill", 12345, 8787)
     assert calls[1][0] == "start"
+
+
+def test_ensure_proxy_restarts_ephemeral_proxy_for_openai_api_url_mismatch(monkeypatch) -> None:
+    calls: list[object] = []
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": "12345",
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": "https://api.githubcopilot.com",
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: None)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: len(calls) == 0)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_kill_proxy_by_pid",
+        lambda pid, port: calls.append(("kill", pid, port)) or True,
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+
+    result = wrap_cli._ensure_proxy(
+        8787,
+        False,
+        openai_api_url="https://api.individual.githubcopilot.com",
+    )
+
+    assert result is None
+    assert calls[0] == ("kill", 12345, 8787)
+    assert calls[1][0] == "start"
+    assert calls[1][2]["openai_api_url"] == "https://api.individual.githubcopilot.com"
 
 
 def test_ensure_proxy_leaves_active_stale_ephemeral_proxy_running(monkeypatch) -> None:

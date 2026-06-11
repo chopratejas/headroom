@@ -222,6 +222,29 @@ class RequestOutcome:
         """
         from headroom.proxy.helpers import compute_turn_id
 
+        request_items = body.get("messages")
+        turn_messages = request_items
+        if request_items is None:
+            request_items = body.get("contents", [])
+            if isinstance(request_items, list):
+                turn_messages = []
+                for item in request_items:
+                    if not isinstance(item, dict):
+                        continue
+                    parts = item.get("parts")
+                    text = ""
+                    if isinstance(parts, list):
+                        text = "\n".join(
+                            str(part.get("text"))
+                            for part in parts
+                            if isinstance(part, dict) and part.get("text")
+                        )
+                    role = "assistant" if item.get("role") == "model" else "user"
+                    turn_messages.append({"role": role, "content": text})
+        system = body.get("system")
+        if system is None:
+            system = body.get("systemInstruction")
+
         return cls(
             request_id=request_id,
             provider=provider,
@@ -243,11 +266,11 @@ class RequestOutcome:
             pipeline_timing=pipeline_timing,
             transforms_applied=tuple(transforms_applied),
             waste_signals=waste_signals,
-            num_messages=len(body.get("messages", [])),
-            turn_id=compute_turn_id(model, body.get("system"), body.get("messages")),
+            num_messages=len(request_items) if isinstance(request_items, list) else 0,
+            turn_id=compute_turn_id(model, system, turn_messages),
             tags=tags or {},
             client=client,
-            request_messages=body.get("messages") if log_full_messages else None,
+            request_messages=request_items if log_full_messages else None,
         )
 
 

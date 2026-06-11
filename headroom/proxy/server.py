@@ -96,9 +96,11 @@ from headroom.providers.registry import (
     DEFAULT_CLOUDCODE_API_URL,
     DEFAULT_GEMINI_API_URL,
     DEFAULT_OPENAI_API_URL,
+    DEFAULT_VERTEX_API_URL,
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
+    resolve_api_targets,
 )
 
 # =============================================================================
@@ -141,6 +143,7 @@ from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
+from headroom.proxy.ssl_context import find_ca_bundle
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -300,6 +303,7 @@ class HeadroomProxy(
     OPENAI_API_URL = DEFAULT_OPENAI_API_URL
     GEMINI_API_URL = DEFAULT_GEMINI_API_URL
     CLOUDCODE_API_URL = DEFAULT_CLOUDCODE_API_URL
+    VERTEX_API_URL = DEFAULT_VERTEX_API_URL
 
     def __init__(self, config: ProxyConfig):
         self.config = config
@@ -319,6 +323,7 @@ class HeadroomProxy(
         HeadroomProxy.OPENAI_API_URL = api_targets.openai
         HeadroomProxy.GEMINI_API_URL = api_targets.gemini
         HeadroomProxy.CLOUDCODE_API_URL = api_targets.cloudcode
+        HeadroomProxy.VERTEX_API_URL = api_targets.vertex
         self.anthropic_provider = self.provider_runtime.pipeline_provider("anthropic")
         self.openai_provider = self.provider_runtime.pipeline_provider("openai")
 
@@ -870,6 +875,7 @@ class HeadroomProxy(
             operation="proxy.startup",
             metadata={"port": self.config.port, "host": self.config.host},
         )
+        _ca_bundle = find_ca_bundle()
         self.http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=self.config.connect_timeout_seconds,
@@ -882,6 +888,7 @@ class HeadroomProxy(
                 max_keepalive_connections=self.config.max_keepalive_connections,
             ),
             http2=self.config.http2,
+            verify=_ca_bundle if _ca_bundle is not None else True,
         )
         logger.info("Headroom Proxy started")
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
@@ -992,6 +999,13 @@ class HeadroomProxy(
             logger.info("Magika: ENABLED (ML content detection)")
 
         if self.memory_handler:
+            if (
+                self.config.memory_backend == "qdrant-neo4j"
+                and not self.config.memory_neo4j_password
+            ):
+                logger.warning(
+                    "NEO4J password is not set — using default credentials is insecure in production"
+                )
             self.warmup.memory_backend.mark_loading()
             try:
                 await self.memory_handler.ensure_initialized()
@@ -1289,7 +1303,11 @@ class HeadroomProxy(
                 )
                 await asyncio.sleep(delay_with_jitter / 1000)
 
-        raise last_error  # type: ignore[misc]
+        if last_error is None:
+            raise RuntimeError(
+                "retry loop exhausted with no error recorded; retry_max_attempts must be >= 1"
+            )
+        raise last_error
 
 
 async def _log_toin_stats_periodically(interval_seconds: int = 300) -> None:
@@ -1453,7 +1471,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         app.state.started_at = time.time()
         app.state.ready = False
         app.state.startup_error = None
-        initialize_context_tool_session_baseline()
+        await initialize_context_tool_session_baseline()
 
         try:
             try:
@@ -1666,6 +1684,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "memory": config.memory_enabled,
                 "learn": config.traffic_learning_enabled,
                 "code_graph": config.code_graph_watcher,
+                "anthropic_api_url": config.anthropic_api_url,
+                "openai_api_url": config.openai_api_url,
+                "gemini_api_url": config.gemini_api_url,
+                "cloudcode_api_url": config.cloudcode_api_url,
                 "pid": os.getpid(),
             }
         return payload
@@ -1746,7 +1768,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 proxy.metrics.record_inbound_aborted(reason=type(exc).__name__)
             except Exception:
                 logger.debug("record_inbound_aborted failed", exc_info=True)
-            logger.info(
+            logger.error(
                 "event=proxy_inbound_request_aborted id=%s method=%s path=%s reason=%s "
                 "duration_ms=%.2f",
                 inbound_id,
@@ -1754,6 +1776,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 path,
                 type(exc).__name__,
                 (time.perf_counter() - started) * 1000.0,
+                exc_info=True,
             )
             raise
         try:
@@ -1910,7 +1933,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         # Fetch CLI filtering savings from the selected context tool. These
         # tokens are avoided before they reach model context.
-        cli_filtering_stats = _get_context_tool_stats()
+        cli_filtering_stats = await asyncio.to_thread(_get_context_tool_stats)
         cli_filtering_tool = (
             str(cli_filtering_stats.get("tool", "rtk")) if cli_filtering_stats else "rtk"
         )
@@ -2311,7 +2334,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         await proxy.metrics.reset_runtime()
         if proxy.cost_tracker:
             proxy.cost_tracker.reset_runtime()
-        initialize_context_tool_session_baseline()
+        await initialize_context_tool_session_baseline()
         async with _stats_snapshot_lock:
             _stats_snapshot["value"] = None
             _stats_snapshot["expires_at"] = 0.0
@@ -2407,7 +2430,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
 
     # Debug endpoints
-    @app.get("/debug/memory")
+    @app.get("/debug/memory", dependencies=[Depends(_require_loopback)])
     async def debug_memory():
         """Get detailed memory usage statistics.
 
@@ -2953,6 +2976,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         port=_get_env_int("HEADROOM_PORT", 8787),
         openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
         anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
+        vertex_api_url=os.environ.get("VERTEX_TARGET_API_URL"),
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
@@ -3016,6 +3040,9 @@ def run_server(
         bedrock_region=config.bedrock_region,
     )
 
+    # Resolve upstream API targets for display in the banner (#583).
+    api_targets = resolve_api_targets(config.provider_api_overrides)
+
     if print_banner:
         print(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -3025,6 +3052,13 @@ def run_server(
 ║  Listening: http://{config.host}:{config.port:<5}                                      ║
 ║  Workers: {workers:<3}  Concurrency Limit: {limit_concurrency:<5}                          ║
 ║  Backend: {backend_status:<59}║
+╠══════════════════════════════════════════════════════════════════════╣
+║  UPSTREAM TARGETS:                                                   ║
+║    Anthropic:  {api_targets.anthropic:<57}║
+║    OpenAI:     {api_targets.openai:<57}║
+║    Gemini:     {api_targets.gemini:<57}║
+║    Cloud Code: {api_targets.cloudcode:<57}║
+║    Vertex AI:  {api_targets.vertex:<57}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -3073,12 +3107,13 @@ def run_server(
         # sticky-session workaround.
         logger.warning(
             "Headroom is running with workers=%d. The in-memory CCR store, "
-            "compression cache, prefix tracker, and TOIN state are all "
+            "compression cache, prefix tracker, TOIN state, and CostTracker are all "
             "per-process; multi-worker deployments produce silent retrieval "
-            "failures and avoidable cache busts when sessions land on different "
-            "workers. Run --workers 1 (or place a sticky-session load balancer "
-            "in front of multiple --workers 1 processes). See RUST_DEV.md → "
-            "'Multi-worker deployment — CCR fragmentation'.",
+            "failures, avoidable cache busts, and an unstable dashboard 'Proxy $ Saved' "
+            "hero tile (each /stats poll hits a different worker's partial total) when "
+            "sessions land on different workers. Run --workers 1 (or place a "
+            "sticky-session load balancer in front of multiple --workers 1 processes). "
+            "See RUST_DEV.md → 'Multi-worker deployment — CCR fragmentation'.",
             workers,
         )
         os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))
@@ -3209,6 +3244,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--anthropic-api-url",
         help=f"Custom Anthropic API URL (default: {DEFAULT_ANTHROPIC_API_URL})",
+    )
+    parser.add_argument(
+        "--vertex-api-url",
+        help=f"Custom Vertex AI regional API URL (default: {DEFAULT_VERTEX_API_URL})",
     )
 
     # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
@@ -3361,6 +3400,7 @@ if __name__ == "__main__":
         port=_get_env_int("HEADROOM_PORT", args.port),
         openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
         anthropic_api_url=_get_env_str("ANTHROPIC_TARGET_API_URL", args.anthropic_api_url),
+        vertex_api_url=_get_env_str("VERTEX_TARGET_API_URL", args.vertex_api_url),
         # Backend settings
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),

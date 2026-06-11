@@ -96,6 +96,7 @@ class ProxyConfig:
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
     cloudcode_api_url: str | None = None  # Custom Cloud Code Assist API URL override
+    vertex_api_url: str | None = None  # Custom Vertex AI regional API URL override
 
     # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     backend: str = "anthropic"
@@ -240,7 +241,7 @@ class ProxyConfig:
     memory_qdrant_api_key: str | None = field(default_factory=qdrant_env.qdrant_env_api_key)
     memory_neo4j_uri: str = "neo4j://localhost:7687"
     memory_neo4j_user: str = "neo4j"
-    memory_neo4j_password: str = "password"
+    memory_neo4j_password: str = ""
     memory_bridge_enabled: bool = False
     memory_bridge_md_paths: list[str] = field(default_factory=list)
     memory_bridge_md_format: str = "auto"
@@ -311,6 +312,10 @@ class ProxyConfig:
     # ``HeadroomProxy._run_compression_in_executor``.
     compression_max_workers: int | None = None
 
+    def __post_init__(self, smart_routing: bool | None = None) -> None:
+        if self.retry_enabled and self.retry_max_attempts < 1:
+            raise ValueError("retry_max_attempts must be >= 1 when retry_enabled=True")
+
     @property
     def provider_api_overrides(self) -> ProviderApiOverrides:
         """Return provider API URL overrides as a dedicated provider config object."""
@@ -319,4 +324,5 @@ class ProxyConfig:
             openai=self.openai_api_url,
             gemini=self.gemini_api_url,
             cloudcode=self.cloudcode_api_url,
+            vertex=self.vertex_api_url,
         )

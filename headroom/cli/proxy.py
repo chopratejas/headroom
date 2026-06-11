@@ -1,7 +1,9 @@
 """Proxy server CLI commands."""
 
+import logging
 import os
 import sys
+import warnings
 from typing import Any, Literal, cast
 
 import click
@@ -11,6 +13,40 @@ from headroom.providers.registry import resolve_api_overrides, resolve_api_targe
 from headroom.proxy.modes import PROXY_MODE_TOKEN, normalize_proxy_mode
 
 from .main import main
+
+# ---------------------------------------------------------------------------
+# Startup log suppression.
+#
+# sentence_transformers makes HEAD/GET requests to HuggingFace Hub on every
+# worker startup to validate the model manifest.  Each request produces an
+# INFO-level httpx record and a WARNING from huggingface_hub about a missing
+# HF_TOKEN.  With 8 workers this generates ~50 noisy lines per startup.
+#
+# Placing the suppression here (module-level in the first CLI module imported)
+# ensures it is in place before sentence_transformers, huggingface_hub, or
+# httpx are initialised by any downstream import or worker fork.
+#
+# The env vars silence the warnings.warn() path ("unauthenticated requests"
+# message) which bypasses the logging system entirely.
+# ---------------------------------------------------------------------------
+
+# Env-var knobs are read by huggingface_hub before its logger hierarchy forms.
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+# Logger-level suppression: httpx HEAD/GET manifest checks + HF advisory msgs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+
+# warnings.warn() path: huggingface_hub emits UserWarning for missing tokens.
+warnings.filterwarnings("ignore", message=".*unauthenticated.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*HF_TOKEN.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*huggingface.*token.*", category=UserWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="huggingface_hub")
+
+# ---------------------------------------------------------------------------
 
 _CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
@@ -406,6 +442,11 @@ def _selected_context_tool() -> str:
     help="Custom Cloud Code Assist API URL for compatibility endpoints (env: CLOUDCODE_TARGET_API_URL)",
 )
 @click.option(
+    "--vertex-api-url",
+    default=None,
+    help=("Custom Vertex AI regional API URL for publisher endpoints (env: VERTEX_TARGET_API_URL)"),
+)
+@click.option(
     "--region",
     default="us-west-2",
     help="Cloud region for Bedrock/Vertex/etc (default: us-west-2)",
@@ -482,6 +523,7 @@ def proxy(
     openai_api_url: str | None,
     gemini_api_url: str | None,
     cloudcode_api_url: str | None,
+    vertex_api_url: str | None,
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
@@ -542,6 +584,7 @@ def proxy(
         openai_api_url=openai_api_url,
         gemini_api_url=gemini_api_url,
         cloudcode_api_url=cloudcode_api_url,
+        vertex_api_url=vertex_api_url,
         environ=os.environ,
     )
 
@@ -598,6 +641,7 @@ def proxy(
         openai_api_url=provider_api_overrides.openai,
         gemini_api_url=provider_api_overrides.gemini,
         cloudcode_api_url=provider_api_overrides.cloudcode,
+        vertex_api_url=provider_api_overrides.vertex,
         mode=effective_mode,
         optimize=not no_optimize,
         cache_enabled=not no_cache,
@@ -693,6 +737,7 @@ def proxy(
     anthropic_url = provider_api_targets.anthropic
     openai_url = provider_api_targets.openai
     cloudcode_url = provider_api_targets.cloudcode
+    vertex_url = provider_api_targets.vertex
     backend_section = ""
 
     if config.backend == "anyllm" or config.backend.startswith("anyllm-"):
@@ -815,6 +860,7 @@ Routing:
   /v1/chat/completions            → {openai_url}
   /v1/responses                   → {openai_url}  (HTTP + WebSocket)
   /v1internal:streamGenerateContent → {cloudcode_url}
+  /v1/projects/.../publishers/... → {vertex_url}
 
 Usage:
   Claude Code:   ANTHROPIC_BASE_URL=http://{config.host}:{config.port} claude
