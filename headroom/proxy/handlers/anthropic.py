@@ -1210,6 +1210,9 @@ class AnthropicHandlerMixin:
                     "tokens_before": original_tokens,
                     "tokens_after": optimized_tokens,
                     "transforms_applied": transforms_applied,
+                    # Read-only reference for recording extensions (probe
+                    # recorder); extensions must not mutate it.
+                    "original_messages": original_messages,
                 },
             )
             if compressed_event.messages is not None:

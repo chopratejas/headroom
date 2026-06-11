@@ -139,6 +139,7 @@ from headroom.proxy.modes import (
     is_token_mode,
     normalize_proxy_mode,
 )
+from headroom.proxy.probe_recorder import probe_recorder_from_env
 from headroom.proxy.project_context import (
     classify_project,
     set_current_project,
@@ -314,9 +315,13 @@ class HeadroomProxy(
     def __init__(self, config: ProxyConfig):
         self.config = config
         self.config.mode = normalize_proxy_mode(self.config.mode)
+        pipeline_extensions = list(config.pipeline_extensions or [])
+        probe_recorder = probe_recorder_from_env()
+        if probe_recorder is not None:
+            pipeline_extensions.append(probe_recorder)
         self.pipeline_extensions = PipelineExtensionManager(
             hooks=config.hooks,
-            extensions=config.pipeline_extensions,
+            extensions=pipeline_extensions,
             discover=config.discover_pipeline_extensions,
         )
 
