@@ -137,7 +137,7 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
         msg_index = 0
 
         try:
-            with open(jsonl_path) as f:
+            with open(jsonl_path, encoding="utf-8") as f:
                 for line in f:
                     try:
                         d = json.loads(line)
@@ -306,6 +306,23 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
 
 def _decode_project_path(escaped_name: str) -> Path | None:
     """Decode a Claude Code escaped project path."""
+    # Handle Windows drive-letter paths: E--UnityProject-DayByDay → E:\UnityProject\DayByDay
+    if len(escaped_name) >= 3 and escaped_name[1:3] == "--" and escaped_name[0].isalpha():
+        drive = escaped_name[0].upper()
+        rest = escaped_name[3:]  # UnityProject-DayByDay
+        win_path = Path(f"{drive}:\\" + rest.replace("-", "\\"))
+        if win_path.exists():
+            return win_path
+        # Try greedy decode for paths with hyphens in directory names
+        parts = rest.split("-")
+        if parts:
+            base = Path(f"{drive}:\\{parts[0]}")
+            if base.exists():
+                result = _greedy_path_decode(base, parts[1:])
+                if result:
+                    return result
+        return win_path  # Return best guess even if doesn't exist
+
     if not escaped_name.startswith("-"):
         return None
 

@@ -120,7 +120,7 @@ class CodexPlugin(LearnPlugin, ConversationScanner):
     def _scan_json_session(self, json_path: Path) -> SessionData | None:
         """Parse a single Codex session file."""
         try:
-            with open(json_path) as f:
+            with open(json_path, encoding="utf-8") as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             logger.debug("Failed to read Codex session %s: %s", json_path, e)
@@ -203,7 +203,7 @@ class CodexPlugin(LearnPlugin, ConversationScanner):
         msg_index = 0
 
         try:
-            with open(jsonl_path) as f:
+            with open(jsonl_path, encoding="utf-8") as f:
                 for line in f:
                     try:
                         entry = json.loads(line)

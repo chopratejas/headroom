@@ -40,7 +40,7 @@ _MODEL_DEFAULTS: list[tuple[str, str]] = [
     ("GEMINI_API_KEY", "gemini/gemini-flash-latest"),
 ]
 
-_MAX_DIGEST_TOKENS = 80_000  # Budget for the digest (leave room for prompt + output)
+_MAX_DIGEST_TOKENS = 30_000  # Budget for the digest (leave room for prompt + output)
 
 # CLI tools to try when no API key is set (checked in order).
 # Each entry: (binary_name, model_identifier, command_prefix)
@@ -55,7 +55,7 @@ _CLI_MODEL_IDS: set[str] = {model for _, model, _ in _CLI_BACKENDS}
 
 _USER_PROMPT_PREFIX = "Analyze these coding agent sessions and return JSON recommendations:\n\n"  # Shared by _call_cli_llm and _call_llm
 _MAX_SNIPPET_LEN = 2000  # Max chars of CLI output (stdout/stderr) in error messages
-_CLI_TIMEOUT = 120  # Subprocess timeout for CLI backends, in seconds
+_CLI_TIMEOUT = 300  # Subprocess timeout for CLI backends, in seconds
 
 
 def _detect_default_model() -> str:
@@ -164,7 +164,7 @@ def _build_prior_patterns_section(project: ProjectInfo) -> str:
     for label, path in candidates:
         if path is None or not path.exists():
             continue
-        block = extract_marker_block(path.read_text())
+        block = extract_marker_block(path.read_text(encoding="utf-8"))
         if block:
             parts.append((label, block))
 
@@ -436,14 +436,24 @@ def _call_cli_llm(digest: str, model: str) -> dict:
     if cmd is None:
         raise ValueError(f"Unknown CLI model: {model}")
 
+    # Resolve full executable path (needed on Windows where subprocess.run
+    # can't find .CMD/.BAT files without the extension)
+    exe = shutil.which(cmd[0])
+    if exe is None:
+        raise RuntimeError(
+            f"`{cmd[0]}` not found in PATH. Install it or use a different backend "
+            "with --model <litellm-model-name>."
+        )
+    resolved_cmd = [exe] + cmd[1:]
+
     prompt = _SYSTEM_PROMPT + "\n\n" + _USER_PROMPT_PREFIX + digest
 
     try:
         result = subprocess.run(
-            cmd,
+            resolved_cmd,
             input=prompt,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=_CLI_TIMEOUT,
         )
     except FileNotFoundError:
