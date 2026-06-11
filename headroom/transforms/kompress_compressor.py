@@ -410,7 +410,9 @@ def _create_onnx_session(
             logger.debug("ONNX artifact %r unavailable for %s: %s", filename, model_id, exc)
             continue
         if ort is None:
-            import onnxruntime as ort
+            import onnxruntime
+
+            ort = onnxruntime
         try:
             return ort.InferenceSession(
                 onnx_path,
