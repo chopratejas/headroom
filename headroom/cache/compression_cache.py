@@ -58,12 +58,14 @@ def _extract_tool_result_content(msg: dict) -> str | None:
                 # tool_result content as a list of blocks. Only all-text lists
                 # are safe to flatten — mixed lists (e.g. images) pass through.
                 if isinstance(inner, list) and inner:
-                    texts = [
-                        b.get("text")
-                        for b in inner
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    ]
-                    if len(texts) == len(inner) and all(isinstance(t, str) for t in texts):
+                    texts: list[str] = []
+                    for b in inner:
+                        if not (isinstance(b, dict) and b.get("type") == "text"):
+                            continue
+                        text = b.get("text")
+                        if isinstance(text, str):
+                            texts.append(text)
+                    if len(texts) == len(inner):
                         return "\n".join(texts)
     return None
 
