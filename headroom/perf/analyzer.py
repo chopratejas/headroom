@@ -621,6 +621,7 @@ PERF_RECORD_FIELDS = [
     "timestamp",
     "request_id",
     "model",
+    "client",
     "num_messages",
     "tokens_before",
     "tokens_after",
