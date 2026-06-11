@@ -846,21 +846,45 @@ class TestSmartCrusherFallback:
     """
 
     def test_smart_crusher_with_no_savings_triggers_kompress_fallback(self, router, monkeypatch):
-        """When SmartCrusher produces no savings on non-JSON content,
-        the strategy_chain must include kompress fallback."""
-        # Repetitive plain text — SmartCrusher returns unchanged
+        """When SmartCrusher produces no savings (returns content unchanged),
+        the unified post-strategy block must fire Kompress fallback.
+
+        Monkeypatches ``_get_smart_crusher`` to return a mock whose
+        ``crush()`` returns *content* unchanged — this simulates "ran
+        but produced no savings" without depending on the Rust
+        ``headroom._core`` extension or an LLM round-trip.
+        """
+        from unittest.mock import MagicMock
+
+        import headroom.transforms.content_router as crm
+        from headroom.transforms.smart_crusher import CrushResult
+
         content = "this is repetitive text. " * 300
+
+        # Mock SmartCrusher: ran successfully but returned content as-is
+        # (no savings), so the unified fallback block is entered.
+        mock_crush_result = CrushResult(
+            compressed=content,
+            original=content,
+            was_modified=False,
+            strategy="passthrough",
+        )
+        mock_crusher = MagicMock()
+        mock_crusher.crush.return_value = mock_crush_result
+        monkeypatch.setattr(
+            crm.ContentRouter,
+            "_get_smart_crusher",
+            lambda self: mock_crusher,
+        )
 
         # Patch _try_ml_compressor to simulate Kompress also returning
         # unchanged (no savings), forcing the full chain to exercise
-        import headroom.transforms.content_router as crm
-
         monkeypatch.setattr(
             crm.ContentRouter,
             "_try_ml_compressor",
-            lambda self, content, context="", question=None: (
-                content,
-                len(content.split()),
+            lambda self, c, context="", question=None: (
+                c,
+                len(c.split()),
             ),
         )
 
@@ -878,12 +902,36 @@ class TestSmartCrusherFallback:
             f"unified post-strategy block should have fired"
         )
 
-    def test_smart_crusher_json_compresses_directly(self, router):
+    def test_smart_crusher_json_compresses_directly(self, router, monkeypatch):
         """When SmartCrusher successfully compresses JSON, the chain is
-        just [smart_crusher] with no fallback entries."""
+        just [smart_crusher] with no fallback entries.
+
+        Uses a mock SmartCrusher to avoid depending on the Rust
+        ``headroom._core`` extension in test environments.
+        """
         import json
+        from unittest.mock import MagicMock
+
+        import headroom.transforms.content_router as crm
+        from headroom.transforms.smart_crusher import CrushResult
 
         content = json.dumps([{"id": i, "name": f"item_{i}", "value": i * 10} for i in range(100)])
+
+        # Mock SmartCrusher: simulated compression (shorter output)
+        mock_compressed = json.dumps([{"id": i, "name": f"item_{i}"} for i in range(50)])
+        mock_crush_result = CrushResult(
+            compressed=mock_compressed,
+            original=content,
+            was_modified=True,
+            strategy="smart_crusher",
+        )
+        mock_crusher = MagicMock()
+        mock_crusher.crush.return_value = mock_crush_result
+        monkeypatch.setattr(
+            crm.ContentRouter,
+            "_get_smart_crusher",
+            lambda self: mock_crusher,
+        )
 
         compressed, compressed_tokens, strategy_chain = router._apply_strategy_to_content(
             content,
@@ -893,7 +941,8 @@ class TestSmartCrusherFallback:
 
         # SmartCrusher should handle JSON directly
         assert "smart_crusher" in strategy_chain
-        # SmartCrusher handles JSON natively without Kompress fallback
+        # With real savings, no fallback should be triggered
+        assert "kompress" not in strategy_chain
         assert len(compressed.strip()) > 0
 
     def test_post_strategy_block_no_duplicate_kompress(self, router, monkeypatch):
@@ -903,21 +952,44 @@ class TestSmartCrusherFallback:
         Pre-PR #704: an inline duplicate Kompress fallback existed for
         SmartCrusher that could fire alongside the post-strategy block,
         causing 'kompress' to appear twice in the chain.
+
+        Uses a mock SmartCrusher returning no savings so the fallback
+        block is entered deterministically, without depending on the
+        Rust ``headroom._core`` extension.
         """
+        from unittest.mock import MagicMock
+
         import headroom.transforms.content_router as crm
+        from headroom.transforms.smart_crusher import CrushResult
+
+        repetitive = "line " * 300 + "\n"
+
+        # Mock SmartCrusher: ran successfully but returned content as-is
+        # (no savings) — fallback block must fire.
+        mock_crush_result = CrushResult(
+            compressed=repetitive,
+            original=repetitive,
+            was_modified=False,
+            strategy="passthrough",
+        )
+        mock_crusher = MagicMock()
+        mock_crusher.crush.return_value = mock_crush_result
+        monkeypatch.setattr(
+            crm.ContentRouter,
+            "_get_smart_crusher",
+            lambda self: mock_crusher,
+        )
 
         # Monkeypatch Kompress to return unchanged (no savings),
         # forcing the full fallback chain without network access
         monkeypatch.setattr(
             crm.ContentRouter,
             "_try_ml_compressor",
-            lambda self, content, context="", question=None: (
-                content,
-                len(content.split()),
+            lambda self, c, context="", question=None: (
+                c,
+                len(c.split()),
             ),
         )
-
-        repetitive = "line " * 300 + "\n"
 
         compressed, compressed_tokens, strategy_chain = router._apply_strategy_to_content(
             repetitive,
