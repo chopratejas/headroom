@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -157,6 +158,7 @@ class SmartCrusher(Transform):
         ccr_config: CCRConfig | None = None,
         with_compaction: bool = True,
         observer: Any = None,
+        compaction_format: str | None = None,
     ):
         # Hard import — no Python fallback. If the wheel is missing the
         # caller must build it (scripts/build_rust_extension.sh) or
@@ -273,10 +275,25 @@ class SmartCrusher(Transform):
         # markers. Pass `with_compaction=False` to opt into the
         # pre-PR4 lossy-only path (used by retention-property tests
         # that depend on row-level item preservation).
-        if with_compaction:
+        #
+        # `compaction_format` picks the lossless renderer:
+        # "csv-schema" (default), "json", or "markdown-kv" (opt-in
+        # trade of tokens for model read accuracy). Falls back to the
+        # HEADROOM_COMPACTION_FORMAT env var when the kwarg is None.
+        # Ignored when with_compaction=False.
+        resolved_format = compaction_format or os.environ.get(
+            "HEADROOM_COMPACTION_FORMAT", "csv-schema"
+        )
+        self._compaction_format = resolved_format if with_compaction else None
+        if not with_compaction:
+            self._rust = _RustSmartCrusher.without_compaction(rust_cfg)
+        elif resolved_format == "csv-schema":
+            # Keep the `new()` constructor for the default path so its
+            # byte-parity coverage stays on the exact production
+            # codepath.
             self._rust = _RustSmartCrusher(rust_cfg)
         else:
-            self._rust = _RustSmartCrusher.without_compaction(rust_cfg)
+            self._rust = _RustSmartCrusher.with_compaction_format(rust_cfg, resolved_format)
 
     def crush(self, content: str, query: str = "", bias: float = 1.0) -> CrushResult:
         """Crush a single JSON content string.
