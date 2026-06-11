@@ -62,7 +62,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom._version import __version__
 from headroom.cache.compression_feedback import get_compression_feedback
-from headroom.cache.compression_store import get_compression_store
+from headroom.cache.compression_store import format_retrieval_miss_detail, get_compression_store
 from headroom.ccr import (
     CCR_TOOL_NAME,
     # Batch processing
@@ -96,6 +96,7 @@ from headroom.providers.registry import (
     DEFAULT_CLOUDCODE_API_URL,
     DEFAULT_GEMINI_API_URL,
     DEFAULT_OPENAI_API_URL,
+    DEFAULT_VERTEX_API_URL,
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
@@ -138,6 +139,11 @@ from headroom.proxy.modes import (
     is_token_mode,
     normalize_proxy_mode,
 )
+from headroom.proxy.project_context import (
+    classify_project,
+    set_current_project,
+    strip_project_path_prefix,
+)
 from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
@@ -159,6 +165,7 @@ from headroom.transforms import (
     CacheAligner,
     CodeAwareCompressor,
     CodeCompressorConfig,
+    CompressionStrategy,
     ContentRouter,
     ContentRouterConfig,
     TransformPipeline,
@@ -302,6 +309,7 @@ class HeadroomProxy(
     OPENAI_API_URL = DEFAULT_OPENAI_API_URL
     GEMINI_API_URL = DEFAULT_GEMINI_API_URL
     CLOUDCODE_API_URL = DEFAULT_CLOUDCODE_API_URL
+    VERTEX_API_URL = DEFAULT_VERTEX_API_URL
 
     def __init__(self, config: ProxyConfig):
         self.config = config
@@ -321,6 +329,7 @@ class HeadroomProxy(
         HeadroomProxy.OPENAI_API_URL = api_targets.openai
         HeadroomProxy.GEMINI_API_URL = api_targets.gemini
         HeadroomProxy.CLOUDCODE_API_URL = api_targets.cloudcode
+        HeadroomProxy.VERTEX_API_URL = api_targets.vertex
         self.anthropic_provider = self.provider_runtime.pipeline_provider("anthropic")
         self.openai_provider = self.provider_runtime.pipeline_provider("openai")
 
@@ -356,7 +365,11 @@ class HeadroomProxy(
             enable_code_aware=config.code_aware_enabled,
             tool_profiles=config.tool_profiles,
             read_lifecycle=ReadLifecycleConfig(enabled=config.read_lifecycle),
+            ccr_inject_marker=config.ccr_inject_marker,
         )
+        if config.disable_kompress:
+            router_config.enable_kompress = False
+            router_config.fallback_strategy = CompressionStrategy.PASSTHROUGH
         # A non-None exclude_tools replaces DEFAULT_EXCLUDE_TOOLS in
         # ContentRouter, so merge rather than assign.
         if config.exclude_tools:
@@ -1678,6 +1691,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "optimize": config.optimize,
                 "cache": config.cache_enabled,
                 "rate_limit": config.rate_limit_enabled,
+                "disable_kompress": config.disable_kompress,
                 "memory": config.memory_enabled,
                 "learn": config.traffic_learning_enabled,
                 "code_graph": config.code_graph_watcher,
@@ -1706,10 +1720,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def _record_headroom_stack(request, call_next):
         started = time.perf_counter()
         inbound_id = f"inbound-{time.time_ns()}"
+        # Project attribution: an explicit X-Headroom-Project header wins
+        # (claude/codex wraps); otherwise a /p/<name> base-URL prefix (aider,
+        # Copilot BYOK, Cursor — clients that cannot send custom headers).
+        # The prefix strip mutates the scope, so it must happen before
+        # request.url is first accessed (Starlette caches the URL).
+        prefix_project = strip_project_path_prefix(request.scope)
         path = request.url.path
         method = request.method
         query = request.url.query
         headers = dict(request.headers.items())
+        set_current_project(classify_project(headers) or prefix_project)
         client = getattr(request, "client", None)
         client_addr = ""
         if client is not None:
@@ -2021,6 +2042,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "summary": summary,
             "savings": {
                 "total_tokens": total_tokens_all_layers,
+                "per_project": persistent_savings.get("projects", {}),
                 "by_layer": {
                     "cli_filtering": {
                         "tool": cli_filtering_tool,
@@ -2484,11 +2506,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         store = get_compression_store()
 
+        entry_status = store.get_entry_status(hash_key, clean_expired=True)
+        if entry_status["status"] != "available":
+            raise HTTPException(
+                status_code=404,
+                detail=format_retrieval_miss_detail(entry_status),
+            )
+
         if query:
-            if not store.exists(hash_key, clean_expired=True):
-                raise HTTPException(
-                    status_code=404, detail="Entry not found or expired (TTL: 5 minutes)"
-                )
             # Search within cached content
             results = store.search(hash_key, query)
             return {
@@ -2511,7 +2536,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "retrieval_count": entry.retrieval_count,
                 }
             raise HTTPException(
-                status_code=404, detail="Entry not found or expired (TTL: 5 minutes)"
+                status_code=404,
+                detail=format_retrieval_miss_detail(
+                    store.get_entry_status(hash_key, clean_expired=True)
+                ),
             )
 
     @app.get("/v1/retrieve/stats")
@@ -2797,10 +2825,15 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def ccr_retrieve_get(hash_key: str, query: str | None = None):
         """GET version of CCR retrieve for easier testing."""
         store = get_compression_store()
+        entry_status = store.get_entry_status(hash_key, clean_expired=True)
+
+        if entry_status["status"] != "available":
+            raise HTTPException(
+                status_code=404,
+                detail=format_retrieval_miss_detail(entry_status),
+            )
 
         if query:
-            if not store.exists(hash_key, clean_expired=True):
-                raise HTTPException(status_code=404, detail="Entry not found or expired")
             results = store.search(hash_key, query)
             return {
                 "hash": hash_key,
@@ -2820,7 +2853,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "tool_name": entry.tool_name,
                     "retrieval_count": entry.retrieval_count,
                 }
-            raise HTTPException(status_code=404, detail="Entry not found or expired")
+            raise HTTPException(
+                status_code=404,
+                detail=format_retrieval_miss_detail(
+                    store.get_entry_status(hash_key, clean_expired=True)
+                ),
+            )
 
     # CCR Tool Call Handler - for agent frameworks to call when LLM uses headroom_retrieve
     @app.post("/v1/retrieve/tool_call")
@@ -2874,8 +2912,16 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
         # Perform retrieval
         store = get_compression_store()
+        entry_status = store.get_entry_status(hash_key, clean_expired=True)
 
-        if query:
+        if entry_status["status"] != "available":
+            retrieval_data = {
+                "error": format_retrieval_miss_detail(entry_status),
+                "hash": hash_key,
+                "status": entry_status["status"],
+                "ttl_seconds": entry_status.get("ttl_seconds", entry_status["default_ttl_seconds"]),
+            }
+        elif query:
             results = store.search(hash_key, query)
             retrieval_data = {
                 "hash": hash_key,
@@ -2893,9 +2939,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "compressed_item_count": entry.compressed_item_count,
                 }
             else:
+                miss_status = store.get_entry_status(hash_key, clean_expired=True)
                 retrieval_data = {
-                    "error": "Entry not found or expired (TTL: 5 minutes)",
+                    "error": format_retrieval_miss_detail(miss_status),
                     "hash": hash_key,
+                    "status": miss_status["status"],
+                    "ttl_seconds": miss_status.get(
+                        "ttl_seconds", miss_status["default_ttl_seconds"]
+                    ),
                 }
 
         # Format tool result for provider
@@ -2973,10 +3024,12 @@ def _proxy_config_from_env() -> ProxyConfig:
         port=_get_env_int("HEADROOM_PORT", 8787),
         openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
         anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
+        vertex_api_url=os.environ.get("VERTEX_TARGET_API_URL"),
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
         anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", "openai"),
+        disable_kompress=_get_env_bool("HEADROOM_DISABLE_KOMPRESS", False),
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", 500),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", 100),
         http2=_get_env_bool("HEADROOM_HTTP2", True),
@@ -3054,6 +3107,7 @@ def run_server(
 ║    OpenAI:     {api_targets.openai:<57}║
 ║    Gemini:     {api_targets.gemini:<57}║
 ║    Cloud Code: {api_targets.cloudcode:<57}║
+║    Vertex AI:  {api_targets.vertex:<57}║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  FEATURES:                                                           ║
 ║    Optimization:    {"ENABLED " if config.optimize else "DISABLED"}                                       ║
@@ -3240,6 +3294,10 @@ if __name__ == "__main__":
         "--anthropic-api-url",
         help=f"Custom Anthropic API URL (default: {DEFAULT_ANTHROPIC_API_URL})",
     )
+    parser.add_argument(
+        "--vertex-api-url",
+        help=f"Custom Vertex AI regional API URL (default: {DEFAULT_VERTEX_API_URL})",
+    )
 
     # Backend (anthropic direct, bedrock, openrouter, anyllm, or litellm-<provider>)
     parser.add_argument(
@@ -3321,6 +3379,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--disable-kompress",
+        action="store_true",
+        help=(
+            "Disable Kompress ML compression while keeping structural compression enabled. "
+            "Also settable via HEADROOM_DISABLE_KOMPRESS=1."
+        ),
+    )
+    parser.add_argument(
         "--exclude-tools",
         default=None,
         help="Comma-separated tool names whose output is never compressed, "
@@ -3376,6 +3442,7 @@ if __name__ == "__main__":
     optimize = env_optimize if not args.no_optimize else False
     cache_enabled = env_cache if not args.no_cache else False
     rate_limit_enabled = env_rate_limit if not args.no_rate_limit else False
+    disable_kompress = args.disable_kompress or _get_env_bool("HEADROOM_DISABLE_KOMPRESS", False)
 
     # Set OpenRouter API key from CLI if provided
     if hasattr(args, "openrouter_api_key") and args.openrouter_api_key:
@@ -3391,6 +3458,7 @@ if __name__ == "__main__":
         port=_get_env_int("HEADROOM_PORT", args.port),
         openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
         anthropic_api_url=_get_env_str("ANTHROPIC_TARGET_API_URL", args.anthropic_api_url),
+        vertex_api_url=_get_env_str("VERTEX_TARGET_API_URL", args.vertex_api_url),
         # Backend settings
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),
@@ -3411,6 +3479,7 @@ if __name__ == "__main__":
         else os.environ.get("HEADROOM_LOG_FILE"),
         log_full_messages=args.log_messages or _get_env_bool("HEADROOM_LOG_MESSAGES", False),
         code_aware_enabled=code_aware_enabled,
+        disable_kompress=disable_kompress,
         # Connection pool settings
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", args.max_connections),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),

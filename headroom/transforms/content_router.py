@@ -1481,7 +1481,7 @@ class ContentRouter(Transform):
         compressed: str | None = None
         compressed_tokens: int | None = None
 
-        # Primary: Kompress — downloads from chopratejas/kompress-base on first use
+        # Primary: Kompress — downloads from chopratejas/kompress-v2-base on first use
         if self.config.enable_kompress:
             compressor = self._get_kompress()
             if compressor:
@@ -1717,7 +1717,7 @@ class ContentRouter(Transform):
         """Get KompressCompressor (lazy load). Downloads from HuggingFace on first use.
 
         Respects runtime kompress_model kwarg:
-        - None: use default (chopratejas/kompress-base) — cached on self
+        - None: use default (chopratejas/kompress-v2-base) — cached on self
         - "disabled": return None (skip ML compression entirely)
         - any model ID string: create compressor with that model
           (model weights are cached at module level in kompress_compressor.py,
