@@ -619,11 +619,11 @@ def test_is_copilot_api_token_returns_false_for_empty_string() -> None:
 
 
 def test_token_kind_returns_known_prefixes() -> None:
-    assert copilot_auth._token_kind("tid_x") == "tid_***"
-    assert copilot_auth._token_kind("gho_x") == "gho_***"
-    assert copilot_auth._token_kind("ghs_x") == "ghs_***"
-    assert copilot_auth._token_kind("ghp_x") == "ghp_***"
-    assert copilot_auth._token_kind("github_pat_x") == "github_pat_***"
+    assert copilot_auth._token_kind("tid_x") == "tid_***"  # noqa: S105
+    assert copilot_auth._token_kind("gho_x") == "gho_***"  # noqa: S105
+    assert copilot_auth._token_kind("ghs_x") == "ghs_***"  # noqa: S105
+    assert copilot_auth._token_kind("ghp_x") == "ghp_***"  # noqa: S105
+    assert copilot_auth._token_kind("github_pat_x") == "github_pat_***"  # noqa: S105
 
 
 def test_token_kind_returns_unknown_for_unrecognised_token() -> None:
@@ -655,7 +655,7 @@ def test_exchange_token_sync_returns_payload_on_success(monkeypatch: pytest.Monk
     )
 
     result = copilot_auth.CopilotTokenProvider._exchange_token_sync(
-        {"Authorization": "Bearer gho_test"}
+        {"Authorization": "Bearer gho_test"}  # noqa: S105
     )
 
     assert result == payload
