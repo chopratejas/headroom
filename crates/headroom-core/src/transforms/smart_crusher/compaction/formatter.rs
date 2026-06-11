@@ -368,6 +368,181 @@ fn csv_quote(s: &str) -> String {
     out
 }
 
+// ─────────────────────────── Markdown-KV formatter ───────────────────────────
+
+/// Renders a `Compaction` as a `[N]{cols}` declaration followed by one
+/// Markdown list item per row, each cell on its own `key: value` line.
+///
+/// Token-heavier than [`CsvSchemaFormatter`] (field names repeat per
+/// row), but format-comprehension benchmarks show models retrieve
+/// values from Markdown-KV substantially more reliably than from CSV.
+/// Offered as an opt-in trade of tokens for read accuracy.
+///
+/// Rendering rules:
+/// - Missing cells are omitted entirely (no `key:` line) — sparse rows
+///   cost nothing, unlike CSV's positional empty cells.
+/// - Strings that would be ambiguous on a line (contain newlines,
+///   leading/trailing whitespace, or are empty) render JSON-quoted;
+///   everything else renders raw.
+/// - Nested cells render as compact inline JSON, matching
+///   [`CsvSchemaFormatter`].
+/// - Opaque cells keep the fixed `<<ccr:HASH,KIND,SIZE>>` marker
+///   contract shared by all formatters.
+#[derive(Debug, Clone, Default)]
+pub struct MarkdownKvFormatter {
+    /// If true, emit a `__dropped:N` note on the declaration line when
+    /// rows were dropped under budget. Mirrors
+    /// [`CsvSchemaFormatter::include_drop_summary`].
+    pub include_drop_summary: bool,
+}
+
+impl MarkdownKvFormatter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_drop_summary(mut self) -> Self {
+        self.include_drop_summary = true;
+        self
+    }
+}
+
+impl Formatter for MarkdownKvFormatter {
+    fn name(&self) -> &str {
+        "markdown-kv"
+    }
+
+    fn format(&self, c: &Compaction) -> String {
+        let mut out = String::new();
+        write_compaction_kv(&mut out, c, self);
+        out
+    }
+}
+
+fn write_compaction_kv(out: &mut String, c: &Compaction, fmt: &MarkdownKvFormatter) {
+    match c {
+        Compaction::Table {
+            schema,
+            rows,
+            original_count,
+        } => {
+            write_kv_table(out, schema, rows, *original_count, fmt);
+        }
+        Compaction::Buckets {
+            discriminator,
+            buckets,
+            original_count,
+        } => {
+            out.push_str("__buckets:");
+            out.push_str(discriminator);
+            if fmt.include_drop_summary {
+                let kept: usize = buckets.iter().map(|b| b.rows.len()).sum();
+                if kept < *original_count {
+                    out.push_str(&format!(" __dropped:{}", original_count - kept));
+                }
+            }
+            out.push('\n');
+            for b in buckets {
+                out.push_str(&format!("__key:{}\n", kv_scalar(&b.key)));
+                write_kv_table(out, &b.schema, &b.rows, b.rows.len(), fmt);
+            }
+        }
+        Compaction::OpaqueRef {
+            ccr_hash,
+            byte_size,
+            kind,
+        } => {
+            out.push_str(&format_ccr_marker(ccr_hash, *byte_size, kind));
+        }
+        Compaction::Untouched(v) => {
+            out.push_str(&serde_json::to_string(v).unwrap_or_default());
+        }
+    }
+}
+
+fn write_kv_table(
+    out: &mut String,
+    schema: &Schema,
+    rows: &[Row],
+    original_count: usize,
+    fmt: &MarkdownKvFormatter,
+) {
+    // Same declaration line as the CSV formatter: keeps row count and
+    // typed shape up front where the model (and telemetry) expect it.
+    out.push('[');
+    out.push_str(&rows.len().to_string());
+    out.push_str("]{");
+    let col_decl: Vec<String> = schema
+        .fields
+        .iter()
+        .map(|f| {
+            if f.nullable {
+                format!("{}:{}?", f.name, f.type_tag)
+            } else {
+                format!("{}:{}", f.name, f.type_tag)
+            }
+        })
+        .collect();
+    out.push_str(&col_decl.join(","));
+    out.push('}');
+    if fmt.include_drop_summary && rows.len() < original_count {
+        out.push_str(&format!(" __dropped:{}", original_count - rows.len()));
+    }
+    out.push('\n');
+
+    for row in rows {
+        let mut wrote_first = false;
+        for (field, cell) in schema.fields.iter().zip(row.0.iter()) {
+            let rendered = match cell {
+                CellValue::Missing => continue,
+                CellValue::Scalar(v) => kv_scalar(v),
+                CellValue::Nested(sub) => JsonFormatter::new().format(sub),
+                CellValue::OpaqueRef {
+                    ccr_hash,
+                    byte_size,
+                    kind,
+                } => format_ccr_marker(ccr_hash, *byte_size, kind),
+            };
+            out.push_str(if wrote_first { "  " } else { "- " });
+            out.push_str(&field.name);
+            out.push_str(": ");
+            out.push_str(&rendered);
+            out.push('\n');
+            wrote_first = true;
+        }
+        // All-missing row: keep a bare list item so the rendered row
+        // count still matches the declaration.
+        if !wrote_first {
+            out.push_str("-\n");
+        }
+    }
+}
+
+fn kv_scalar(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => {
+            if needs_kv_quote(s) {
+                serde_json::to_string(s).unwrap_or_default()
+            } else {
+                s.clone()
+            }
+        }
+        // Object/array fall back to compact JSON (rare — usually
+        // already promoted to Nested by the compactor).
+        _ => serde_json::to_string(v).unwrap_or_default(),
+    }
+}
+
+fn needs_kv_quote(s: &str) -> bool {
+    s.is_empty()
+        || s.contains('\n')
+        || s.contains('\r')
+        || s.starts_with(char::is_whitespace)
+        || s.ends_with(char::is_whitespace)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +763,157 @@ mod tests {
             csv_out.len() * 10 < raw_json.len() * 7,
             "csv {} bytes vs raw json {} bytes — expected >30% reduction",
             csv_out.len(),
+            raw_json.len()
+        );
+    }
+
+    // ── MarkdownKvFormatter ──
+
+    #[test]
+    fn markdown_kv_renders_table() {
+        let items = vec![
+            json!({"id": 1, "name": "alice"}),
+            json!({"id": 2, "name": "bob"}),
+        ];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        let lines: Vec<&str> = out.trim_end().lines().collect();
+        assert!(lines[0].starts_with("[2]{"), "got line[0]: {}", lines[0]);
+        assert!(lines[0].contains("id:int"));
+        assert!(out.contains("- id: 1\n  name: alice\n"), "got: {out}");
+        assert!(out.contains("- id: 2\n  name: bob\n"), "got: {out}");
+    }
+
+    #[test]
+    fn markdown_kv_omits_missing_cells() {
+        let items = vec![json!({"id": 1, "note": "has note"}), json!({"id": 2})];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        assert!(out.contains("note: has note"), "got: {out}");
+        // Row 2 has no `note:` line at all.
+        let row2 = out.split("- id: 2").nth(1).expect("row 2 present");
+        assert!(!row2.contains("note:"), "got row2 tail: {row2}");
+    }
+
+    #[test]
+    fn markdown_kv_quotes_ambiguous_strings() {
+        let items = vec![
+            json!({"id": 1, "msg": "line one\nline two"}),
+            json!({"id": 2, "msg": "plain"}),
+        ];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        assert!(
+            out.contains(r#"msg: "line one\nline two""#),
+            "multiline must be JSON-quoted, got: {out}"
+        );
+        assert!(out.contains("msg: plain\n"), "got: {out}");
+    }
+
+    #[test]
+    fn markdown_kv_plain_strings_unquoted() {
+        let items = vec![
+            json!({"id": 1, "name": "alice, the \"great\""}),
+            json!({"id": 2, "name": "bob"}),
+        ];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        // Commas and quotes are fine on a KV line — no CSV-style quoting.
+        assert!(out.contains(r#"name: alice, the "great""#), "got: {out}");
+    }
+
+    #[test]
+    fn markdown_kv_emits_ccr_marker() {
+        let big = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=".repeat(8);
+        let items = vec![
+            json!({"id": 1, "blob": big.clone()}),
+            json!({"id": 2, "blob": big.clone()}),
+        ];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        assert!(out.contains("<<ccr:"), "got: {out}");
+        assert!(out.contains(",base64,"));
+    }
+
+    #[test]
+    fn markdown_kv_renders_buckets() {
+        let items = vec![
+            json!({"type": "user", "id": 1, "name": "alice"}),
+            json!({"type": "user", "id": 2, "name": "bob"}),
+            json!({"type": "order", "id": 99, "total": 50}),
+            json!({"type": "order", "id": 100, "total": 75}),
+        ];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        assert!(out.starts_with("__buckets:type"), "got: {out}");
+        assert!(out.contains("__key:order"));
+        assert!(out.contains("__key:user"));
+        assert!(out.contains("- id:"), "got: {out}");
+    }
+
+    #[test]
+    fn markdown_kv_drop_summary_opt_in() {
+        let rows = vec![
+            Row::new(vec![CellValue::Scalar(json!(1))]),
+            Row::new(vec![CellValue::Scalar(json!(2))]),
+        ];
+        let c = Compaction::Table {
+            schema: Schema {
+                fields: vec![super::super::ir::FieldSpec {
+                    name: "x".into(),
+                    type_tag: "int".into(),
+                    nullable: false,
+                }],
+            },
+            rows,
+            original_count: 5, // 3 dropped
+        };
+        let with_summary = MarkdownKvFormatter::new().with_drop_summary().format(&c);
+        assert!(with_summary.contains("__dropped:3"));
+        let without = MarkdownKvFormatter::new().format(&c);
+        assert!(!without.contains("__dropped"));
+    }
+
+    #[test]
+    fn markdown_kv_nested_cell_inline_json() {
+        let items = vec![
+            json!({"event": "batch", "payload": r#"[{"x":1},{"x":2},{"x":3}]"#}),
+            json!({"event": "batch", "payload": r#"[{"x":4},{"x":5}]"#}),
+        ];
+        let c = compact(&items, &cfg());
+        let out = MarkdownKvFormatter::new().format(&c);
+        assert!(out.contains("_compaction"), "got: {out}");
+    }
+
+    #[test]
+    fn markdown_kv_estimate_matches_format_len() {
+        let items = vec![json!({"a": 1}), json!({"a": 2})];
+        let c = compact(&items, &cfg());
+        let f = MarkdownKvFormatter::new();
+        assert_eq!(f.estimate_bytes(&c), f.format(&c).len());
+    }
+
+    #[test]
+    fn markdown_kv_smaller_than_raw_json() {
+        // KV repeats field names per row, so it loses to CSV on bytes —
+        // but it should still beat naïve JSON (quotes + braces + commas).
+        let items: Vec<Value> = (0..50)
+            .map(|i| {
+                json!({
+                    "id": i,
+                    "name": format!("user_{i}"),
+                    "email": format!("user_{i}@example.com"),
+                    "status": if i % 3 == 0 { "ok" } else { "pending" },
+                })
+            })
+            .collect();
+        let c = compact(&items, &cfg());
+        let kv_out = MarkdownKvFormatter::new().format(&c);
+        let raw_json = serde_json::to_string(&Value::Array(items.clone())).unwrap();
+        assert!(
+            kv_out.len() < raw_json.len(),
+            "kv {} bytes vs raw json {} bytes",
+            kv_out.len(),
             raw_json.len()
         );
     }
