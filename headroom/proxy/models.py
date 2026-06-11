@@ -6,6 +6,7 @@ Extracted from server.py to keep the codebase maintainable.
 
 from __future__ import annotations
 
+import os
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from typing import Any, Literal
@@ -85,6 +86,46 @@ class RateLimitState:
     last_update: float
 
 
+def _env_int(name: str, default: int) -> int:
+    """Return *name* parsed as int, or *default* when unset/empty/invalid."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def _env_min_tokens_to_crush() -> int:
+    """Return ``HEADROOM_MIN_TOKENS`` or the ``500`` default."""
+    return _env_int("HEADROOM_MIN_TOKENS", 500)
+
+
+def _env_max_items_after_crush() -> int:
+    """Return ``HEADROOM_MAX_ITEMS`` or the ``50`` default."""
+    return _env_int("HEADROOM_MAX_ITEMS", 50)
+
+
+def _env_exclude_tools() -> set[str] | None:
+    """Return tool names from ``HEADROOM_EXCLUDE_TOOLS``, or ``None`` if unset.
+
+    Comma-separated. Each name is added in both original and lowercase form
+    for case-insensitive matching, mirroring ``_parse_exclude_tools`` in the
+    legacy server entrypoint.
+    """
+    raw = os.environ.get("HEADROOM_EXCLUDE_TOOLS")
+    if not raw:
+        return None
+    names: set[str] = set()
+    for entry in raw.split(","):
+        name = entry.strip()
+        if name:
+            names.add(name)
+            names.add(name.lower())
+    return names or None
+
+
 @dataclass
 class ProxyConfig:
     """Proxy configuration."""
@@ -111,8 +152,10 @@ class ProxyConfig:
     # Optimization
     optimize: bool = True
     image_optimize: bool = True
-    min_tokens_to_crush: int = 500
-    max_items_after_crush: int = 50
+    # Resolved from HEADROOM_MIN_TOKENS / HEADROOM_MAX_ITEMS when the caller
+    # does not pass an explicit value (same pattern as memory_qdrant_* below).
+    min_tokens_to_crush: int = field(default_factory=_env_min_tokens_to_crush)
+    max_items_after_crush: int = field(default_factory=_env_max_items_after_crush)
     keep_last_turns: int = 4
 
     # CCR Tool Injection
@@ -157,7 +200,7 @@ class ProxyConfig:
     # Extra tool names whose outputs are never compressed, merged with the
     # built-in DEFAULT_EXCLUDE_TOOLS. None means built-in defaults only.
     # CLI: --exclude-tools <name1,name2>; env: HEADROOM_EXCLUDE_TOOLS=<name1,name2>
-    exclude_tools: set[str] | None = None
+    exclude_tools: set[str] | None = field(default_factory=_env_exclude_tools)
 
     # Read lifecycle management
     read_lifecycle: bool = True
