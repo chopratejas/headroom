@@ -4,7 +4,7 @@ A full-featured LLM proxy with optimization, caching, rate limiting,
 and observability.
 
 Features:
-- Context optimization (SmartCrusher, CacheAligner — live-zone-only after Phase B)
+- Context optimization (SmartCrusher, CacheAligner - live-zone-only after Phase B)
 - Semantic caching (save costs on repeated queries)
 - Rate limiting (token bucket)
 - Retry with exponential backoff
@@ -198,7 +198,7 @@ _MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
 
 # Env var that opts out of the Rust core deployment smoke test (Hotfix-A0).
 # Default behavior: hard-fail at startup if `headroom._core` is unimportable
-# (Finding #2 in HEADROOM_PROXY_LOG_FINDINGS_2026_05_03.md — production
+# (Finding #2 in HEADROOM_PROXY_LOG_FINDINGS_2026_05_03.md - production
 # deployment was silently running without the Rust extension and degrading
 # every compressed request to a Python-only path or a no-op).
 #
@@ -207,7 +207,7 @@ _MULTI_WORKER_CONFIG_ENV = "HEADROOM_PROXY_CONFIG_JSON"
 # fail-loud behavior.
 _RUST_CORE_REQUIRED_ENV = "HEADROOM_REQUIRE_RUST_CORE"
 
-# sysexits.h(3) — EX_CONFIG. Process supervisors (systemd, k8s, docker)
+# sysexits.h(3) - EX_CONFIG. Process supervisors (systemd, k8s, docker)
 # treat this as a deliberate configuration failure rather than a crash, so
 # they won't restart-loop on a broken deployment.
 _EXIT_CONFIG = 78
@@ -217,12 +217,12 @@ def _check_rust_core() -> tuple[str, str | None]:
     """Verify the Rust extension `headroom._core` is loadable at startup.
 
     Returns a `(status, error)` tuple:
-      - ``("loaded", None)``     — `headroom._core.hello()` returned the
+      - ``("loaded", None)``     - `headroom._core.hello()` returned the
         expected sentinel.
-      - ``("disabled", reason)`` — opt-out env var was set; proxy starts
+      - ``("disabled", reason)`` - opt-out env var was set; proxy starts
         in Python-only degraded mode. `reason` carries the underlying
         import error (or ``None`` if the import actually succeeded).
-      - ``("missing", reason)``  — never returned: this branch calls
+      - ``("missing", reason)``  - never returned: this branch calls
         ``sys.exit(78)`` so the proxy refuses to start. The branch exists
         only as a typed sentinel for callers that want to reason about
         all three states (e.g. health endpoints).
@@ -353,7 +353,7 @@ class HeadroomProxy(
         #
         # Phase B PR-B1 retired the IntelligentContextManager / RollingWindow
         # message-dropping branch. Live-zone-only compression (PR-B2..B7) does
-        # not drop messages — it operates on content blocks within messages —
+        # not drop messages - it operates on content blocks within messages -
         # so the proxy no longer needs a "context manager" transform stage.
         # Reported via metrics as `_context_manager_status = "passthrough"`.
         self._context_manager_status = "passthrough"
@@ -380,7 +380,7 @@ class HeadroomProxy(
         # `--compress-user-messages` flips the router's default skip rule.
         # Off by default for prefix-cache safety; enabled for workloads where
         # user-message content dominates input (OpenAI/Azure chat with pasted
-        # code/RAG context — see issue #454).
+        # code/RAG context - see issue #454).
         if config.compress_user_messages:
             router_config.skip_user_messages = False
         transforms = [
@@ -495,15 +495,15 @@ class HeadroomProxy(
         else:
             self.anthropic_pre_upstream_sem = None
 
-        # Dedicated compression executor — see C3 in the audit followup.
+        # Dedicated compression executor - see C3 in the audit followup.
         # Replaces ``asyncio.to_thread(...)`` for ``pipeline.apply()`` calls
         # so that:
-        #   1. Compression work is bounded — CPU-bound Rust runs here, and
+        #   1. Compression work is bounded - CPU-bound Rust runs here, and
         #      bursts cannot starve other ``asyncio.to_thread`` callers
         #      sharing the loop's default executor (file IO, etc.).
         #   2. Tasks that exceed ``COMPRESSION_TIMEOUT_SECONDS`` and complete
         #      *after* the asyncio future was cancelled are counted in the
-        #      ``compression_leaked_threads`` gauge — Python cannot preempt
+        #      ``compression_leaked_threads`` gauge - Python cannot preempt
         #      the worker, so this is the only signal that some pool slots
         #      are sitting on stuck work.
         _compression_max_cfg = config.compression_max_workers
@@ -724,7 +724,7 @@ class HeadroomProxy(
 
     async def _run_compression_in_executor(
         self,
-        fn,  # noqa: ANN001 — caller-supplied no-arg sync callable
+        fn,  # noqa: ANN001 - caller-supplied no-arg sync callable
         *,
         timeout: float,
     ):
@@ -743,7 +743,7 @@ class HeadroomProxy(
         Why "cancel-aware metrics": when ``asyncio.wait_for`` times out, it
         cancels the *asyncio future*. The underlying
         ``concurrent.futures.Future`` from ``run_in_executor`` cannot
-        actually cancel a thread that has started — Python has no way to
+        actually cancel a thread that has started - Python has no way to
         preempt running CPython bytecode or in-flight Rust calls. The
         worker keeps running to completion, ignored. We detect this by
         marking the call timed out on the asyncio side and incrementing
@@ -760,7 +760,7 @@ class HeadroomProxy(
                 counter may double-count.
             timeout: Wall-clock timeout for the asyncio side. The
                 executor worker keeps running past this (Python limitation
-                — see above), but at least the awaiter unblocks.
+                - see above), but at least the awaiter unblocks.
 
         Returns:
             Whatever ``fn()`` returns.
@@ -974,7 +974,7 @@ class HeadroomProxy(
                     if not isinstance(transform_status, dict):
                         continue
                     # Merge: later writers win only if the key wasn't set.
-                    # Preload a transform ONCE — if another pipeline also has
+                    # Preload a transform ONCE - if another pipeline also has
                     # ``eager_load_compressors`` it contributes only new keys.
                     for key, value in transform_status.items():
                         eager_status.setdefault(key, value)
@@ -1014,7 +1014,7 @@ class HeadroomProxy(
                 and not self.config.memory_neo4j_password
             ):
                 logger.warning(
-                    "NEO4J password is not set — using default credentials is insecure in production"
+                    "NEO4J password is not set - using default credentials is insecure in production"
                 )
             self.warmup.memory_backend.mark_loading()
             try:
@@ -1029,14 +1029,14 @@ class HeadroomProxy(
                     backend=memory_status.get("backend"),
                 )
                 # Force one embed call so the ONNX graph is compiled now,
-                # not lazily during the first request. Best-effort — any
+                # not lazily during the first request. Best-effort - any
                 # failure is swallowed inside warmup_embedder.
                 self.warmup.memory_embedder.mark_loading()
                 warmed = await self.memory_handler.warmup_embedder()
                 if warmed:
                     self.warmup.memory_embedder.mark_loaded()
                 else:
-                    # Not an error — e.g. qdrant-neo4j has no embedder slot
+                    # Not an error - e.g. qdrant-neo4j has no embedder slot
                     # we can reach, or the backend simply exposes no handle.
                     self.warmup.memory_embedder.mark_null()
             else:
@@ -1102,7 +1102,7 @@ class HeadroomProxy(
         # Log anonymous telemetry status so operators can see it in the log stream
         if is_telemetry_enabled():
             logger.info(
-                "Anonymous telemetry: ENABLED (aggregate stats only — no prompts or content). "
+                "Anonymous telemetry: ENABLED (aggregate stats only - no prompts or content). "
                 "Opt out: HEADROOM_TELEMETRY=off or --no-telemetry"
             )
         else:
@@ -1159,7 +1159,7 @@ class HeadroomProxy(
         # *attempted* to compress (extracted units + tool schema),
         # NOT the whole request. The full-request denominator is
         # dominated by frozen prefix bytes (instructions, user msgs,
-        # prior turns) that we never touch — including them collapses
+        # prior turns) that we never touch - including them collapses
         # the headline number even on sessions where every attempted
         # compression succeeded.
         attempted = getattr(m, "attempted_input_tokens_total", 0)
@@ -1403,7 +1403,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     # Telemetry beacon (anonymous aggregate stats).
     # With uvicorn workers > 1, each worker runs the lifespan independently.
-    # We must ensure only ONE beacon runs across all workers — otherwise each
+    # We must ensure only ONE beacon runs across all workers - otherwise each
     # worker creates its own beacon, spamming the telemetry table with N rows
     # per cycle instead of 1 (all reading the same /stats from the same port).
     #
@@ -1467,7 +1467,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # explicitly opted out with HEADROOM_REQUIRE_RUST_CORE=false. See
         # Finding #2 in HEADROOM_PROXY_LOG_FINDINGS_2026_05_03.md.
         # `_check_rust_core` either returns ("loaded"|"disabled", _) or
-        # calls `sys.exit(78)` — execution past this line implies the
+        # calls `sys.exit(78)` - execution past this line implies the
         # rust_core_status is recorded.
         _rust_core_status, _rust_core_error = _check_rust_core()
         app.state.rust_core_status = _rust_core_status
@@ -1532,7 +1532,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     app.state.ready = False
     app.state.startup_error = None
     # Set by the lifespan startup smoke test (`_check_rust_core`). Default
-    # "missing" means lifespan hasn't run yet — anything reading /health
+    # "missing" means lifespan hasn't run yet - anything reading /health
     # before startup completes (rare; lifespan runs before the first
     # request) sees an honest "missing" rather than a stale "loaded".
     app.state.rust_core_status = "missing"
@@ -1703,13 +1703,26 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             }
         return payload
 
-    # CORS
+    # CORS - scoped to localhost by default. A wildcard origin let any web page
+    # the user had open read the proxy's content endpoints (e.g. /v1/retrieve
+    # returns raw, uncompressed tool outputs) via a cross-origin fetch to
+    # 127.0.0.1. Override HEADROOM_CORS_ORIGINS (comma-separated) for Docker or
+    # remote dashboard setups; "*" restores the old wildcard if you accept the risk.
+    _port = _get_env_int("HEADROOM_PORT", 8787)
+    _cors_origins = [
+        o.strip()
+        for o in _get_env_str(
+            "HEADROOM_CORS_ORIGINS",
+            f"http://127.0.0.1:{_port},http://localhost:{_port}",
+        ).split(",")
+        if o.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=_cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "Authorization"],
     )
 
     # X-Headroom-Stack: SDK adapters (TS openai/anthropic/etc.) tag their
@@ -1722,7 +1735,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         inbound_id = f"inbound-{time.time_ns()}"
         # Project attribution: an explicit X-Headroom-Project header wins
         # (claude/codex wraps); otherwise a /p/<name> base-URL prefix (aider,
-        # Copilot BYOK, Cursor — clients that cannot send custom headers).
+        # Copilot BYOK, Cursor - clients that cannot send custom headers).
         # The prefix strip mutates the scope, so it must happen before
         # request.url is first accessed (Starlette caches the URL).
         prefix_project = strip_project_path_prefix(request.scope)
@@ -1846,7 +1859,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         payload = _health_payload(include_config=True)
         return JSONResponse(status_code=200, content=payload)
 
-    # Loopback-only debug introspection (Unit 5). A remote IP gets 404 —
+    # Loopback-only debug introspection (Unit 5). A remote IP gets 404 -
     # debug endpoints are invisible to external scanners.
     from headroom.proxy.debug_introspection import (
         collect_tasks as _collect_tasks,
@@ -1857,7 +1870,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     async def debug_tasks(stack: bool = False):
         """Enumerate running asyncio tasks.
 
-        Default is cheap — ``stack_depth`` is ``null`` in every entry so
+        Default is cheap - ``stack_depth`` is ``null`` in every entry so
         a storm snapshot does not walk 50+ coroutine frames synchronously.
         Pass ``?stack=true`` to compute ``stack_depth`` for each task
         (useful for single-shot human debugging).
@@ -1981,14 +1994,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # (extracted units + tool schema). The "active compression"
         # ratio is what fraction of the tokens we *tried* to compress
         # actually got compressed. Excludes prefix-frozen content
-        # (user/system messages, prior turns) we never touched —
+        # (user/system messages, prior turns) we never touched -
         # otherwise the ratio is dominated by content we deliberately
         # avoided changing for prefix-cache safety.
         # `attempted_input_tokens_total` is already pre-compression: it
         # accumulates `unit.tokens_before` for each eligible unit that
         # reached the router, plus the original (pre-compaction) tool
         # schema size. So the savings rate is plain `saved / attempted`
-        # — adding `saved` again would double-count.
+        # - adding `saved` again would double-count.
         attempted_input_tokens = getattr(m, "attempted_input_tokens_total", 0)
 
         # Build human-readable summary
@@ -2120,11 +2133,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 # candidates + tool-schema tokens we compacted. Excludes
                 # frozen-prefix content (user msgs, system prompt, prior
                 # turns) that we deliberately don't touch. Already
-                # pre-compression — do NOT add `tokens_saved` again.
+                # pre-compression - do NOT add `tokens_saved` again.
                 "proxy_attempted_tokens": attempted_input_tokens,
                 # Active compression: savings as a fraction of what we
                 # *tried* to compress. The number the dashboard headline
-                # should show — it answers "are we doing well *when we
+                # should show - it answers "are we doing well *when we
                 # have something to compress?*" rather than diluting the
                 # win by frozen-prefix bytes we never touched.
                 "active_savings_percent": round(
@@ -2246,7 +2259,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             # ContentRouter protection categories aggregated across the
             # session. Lets operators see, e.g., that 80% of messages
             # were `user_msg` (protected) and only 5% reached the
-            # compressor — explains why compression rate is low and
+            # compressor - explains why compression rate is low and
             # whether `--compress-user-messages` would help (#454).
             "router": {
                 "route_counts": dict(m.router_route_counts) if m.router_route_counts else {},
@@ -3068,7 +3081,7 @@ def run_server(
         limit_concurrency: Max concurrent connections before 503 response
         print_banner: When False, skip the legacy ASCII banner. The
             Click CLI (`headroom proxy`) prints its own startup banner
-            before calling this — printing a second banner here is the
+            before calling this - printing a second banner here is the
             "dual banner" UX issue. Direct `python -m headroom.proxy.server`
             still gets the banner since it has no other startup output.
     """
@@ -3151,7 +3164,7 @@ def run_server(
         # per-process. Round-robin across workers fragments these caches
         # and produces silent retrieval failures for `Retrieve original:
         # hash=X` markers and avoidable cache busts on the upstream
-        # provider. See the "Multi-worker deployment — CCR fragmentation"
+        # provider. See the "Multi-worker deployment - CCR fragmentation"
         # section in RUST_DEV.md for the full failure modes and the
         # sticky-session workaround.
         logger.warning(
@@ -3162,7 +3175,7 @@ def run_server(
             "hero tile (each /stats poll hits a different worker's partial total) when "
             "sessions land on different workers. Run --workers 1 (or place a "
             "sticky-session load balancer in front of multiple --workers 1 processes). "
-            "See RUST_DEV.md → 'Multi-worker deployment — CCR fragmentation'.",
+            "See RUST_DEV.md → 'Multi-worker deployment - CCR fragmentation'.",
             workers,
         )
         os.environ[_MULTI_WORKER_CONFIG_ENV] = json.dumps(_proxy_config_payload(config))
