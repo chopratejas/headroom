@@ -50,6 +50,7 @@ from ..tokenizer import Tokenizer
 from .base import Transform
 from .content_detector import ContentType, DetectionResult
 from .content_detector import detect_content_type as _regex_detect_content_type
+from .error_detection import content_has_error_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +457,14 @@ class ContentRouterConfig:
     skip_user_messages: bool = True  # User messages contain what they want analyzed
     protect_recent_code: int = 4  # Don't compress CODE in last N messages (0 = disabled)
     protect_analysis_context: bool = True  # Detect "analyze/review" intent, protect code
+
+    # Protection: failed tool calls / error outputs stay verbatim (issue #847).
+    # The model needs exact tracebacks and error text to recover; compressing
+    # them measurably hurts agent recovery. Outputs above the size cap still
+    # compress — LogCompressor preserves error lines in big logs, so the two
+    # features stay complementary.
+    protect_error_outputs: bool = True
+    error_protection_max_chars: int = 8000  # ~2K tokens; larger errors compress
 
     # Cache safety: assistant text-block compression.
     # Default OFF. Assistant content is echoed back by the client in
@@ -2098,6 +2107,22 @@ class ContentRouter(Transform):
                 route_counts["small"] += 1
                 continue
 
+            # Protection: failed tool calls / error outputs stay verbatim
+            # (issue #847). The model needs exact tracebacks to recover.
+            # Above the size cap, fall through — LogCompressor preserves
+            # error lines in big logs.
+            if (
+                self.config.protect_error_outputs
+                and role == "tool"
+                and len(content) <= self.config.error_protection_max_chars
+                and content_has_error_indicators(content)
+            ):
+                result_slots[i] = message
+                transforms_applied.append("router:protected:error_output")
+                route_counts.setdefault("error_protected", 0)
+                route_counts["error_protected"] += 1
+                continue
+
             # Detect content type for protection decisions
             detection = _detect_content(content)
             is_code = detection.content_type == ContentType.SOURCE_CODE
@@ -2250,6 +2275,8 @@ class ContentRouter(Transform):
             parts.append(f"{route_counts['analysis_ctx']} protected (analysis ctx)")
         if route_counts.get("already_compressed"):
             parts.append(f"{route_counts['already_compressed']} pinned (already compressed)")
+        if route_counts.get("error_protected"):
+            parts.append(f"{route_counts['error_protected']} protected (error output)")
         if route_counts["ratio_too_high"]:
             parts.append(f"{route_counts['ratio_too_high']} unchanged (ratio>={min_ratio:.2f})")
         if route_counts["content_blocks"]:
@@ -2432,6 +2459,26 @@ class ContentRouter(Transform):
                 bias = self._get_tool_bias(tool_name) if tool_name else 1.0
 
                 tool_content = block.get("content", "")
+
+                # Protection: failed tool calls / error outputs stay verbatim
+                # (issue #847). `is_error` is Anthropic's explicit failure
+                # flag; the indicator scan catches error text without the
+                # flag. Above the size cap, fall through — LogCompressor
+                # preserves error lines in big logs.
+                if (
+                    self.config.protect_error_outputs
+                    and isinstance(tool_content, str)
+                    and len(tool_content) <= self.config.error_protection_max_chars
+                    and (
+                        block.get("is_error") is True or content_has_error_indicators(tool_content)
+                    )
+                ):
+                    new_blocks.append(block)
+                    transforms_applied.append("router:protected:error_output")
+                    if route_counts is not None:
+                        route_counts.setdefault("error_protected", 0)
+                        route_counts["error_protected"] += 1
+                    continue
 
                 # Only process string content
                 if isinstance(tool_content, str) and len(tool_content) > min_chars:
