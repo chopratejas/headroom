@@ -53,6 +53,96 @@ class TestRegexFallback:
         assert all(result.mask.mask[i] for i in range(len("import os")))
 
 
+class TestLanguageDetection:
+    @pytest.fixture
+    def handler(self):
+        return CodeStructureHandler()
+
+    def test_detects_python(self, handler):
+        code = "import os\n\nclass Foo:\n    def method(self):\n        pass\n"
+        assert handler._detect_language(code) == "python"
+
+    def test_detects_go(self, handler):
+        code = 'package main\n\nimport (\n\t"fmt"\n)\n\nfunc main() {\n}\n'
+        assert handler._detect_language(code) == "go"
+
+    def test_detects_rust(self, handler):
+        code = "use std::io;\n\npub fn main() {\n    let mut x = 1;\n}\n"
+        assert handler._detect_language(code) == "rust"
+
+    def test_falls_back_to_default(self):
+        handler = CodeStructureHandler(default_language="javascript")
+        assert handler._detect_language("plain words only here") == "javascript"
+
+
+class TestRegexFallbackLanguages:
+    """Signature/import preservation on the regex path across languages."""
+
+    @pytest.fixture
+    def handler(self):
+        return CodeStructureHandler(use_tree_sitter=False)
+
+    def test_go_func_signature_preserved(self, handler):
+        code = "func Add(a int, b int) int {\n\treturn a + b\n}\n"
+        result = handler.get_mask(code, language="go")
+        sig = "func Add(a int, b int)"
+        start = code.index(sig)
+        assert all(result.mask.mask[i] for i in range(start, start + len(sig)))
+
+    def test_rust_fn_signature_preserved(self, handler):
+        code = "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n"
+        result = handler.get_mask(code, language="rust")
+        sig = "pub fn add(a: i32, b: i32)"
+        start = code.index(sig)
+        assert all(result.mask.mask[i] for i in range(start, start + len(sig)))
+
+    def test_typescript_interface_preserved(self, handler):
+        code = "interface Shape {\n  area(): number;\n}\n\nconst x = 1;\n"
+        result = handler.get_mask(code, language="typescript")
+        sig = "interface Shape"
+        start = code.index(sig)
+        assert all(result.mask.mask[i] for i in range(start, start + len(sig)))
+
+    def test_javascript_arrow_function_preserved(self, handler):
+        code = "const add = (a, b) => {\n  return a + b;\n};\n"
+        result = handler.get_mask(code, language="javascript")
+        sig = "const add = (a, b) =>"
+        start = code.index(sig)
+        assert all(result.mask.mask[i] for i in range(start, start + len(sig)))
+
+    def test_regex_confidence_lower_than_tree_sitter(self, handler):
+        result = handler.get_mask("def f():\n    pass\n", language="python")
+        assert result.confidence == 0.7
+
+
+class TestEdgeCases:
+    @pytest.fixture
+    def handler(self):
+        return CodeStructureHandler()
+
+    def test_empty_content(self, handler):
+        result = handler.get_mask("")
+        assert result.confidence == 0.0
+        assert result.metadata.get("empty") is True
+
+    def test_whitespace_only_content(self, handler):
+        result = handler.get_mask("   \n\n  ")
+        assert result.metadata.get("empty") is True
+
+    def test_unknown_language_regex_no_patterns(self):
+        """A language with no regex patterns yields an all-compressible
+        mask rather than raising."""
+        handler = CodeStructureHandler(use_tree_sitter=False)
+        code = "BEGIN\n  WRITELN('hello')\nEND.\n"
+        result = handler.get_mask(code, language="pascal")
+        assert not any(result.mask.mask)
+
+    def test_mask_length_matches_content(self, handler):
+        code = "def f():\n    return 1\n"
+        result = handler.get_mask(code, language="python")
+        assert len(result.mask.mask) == len(code)
+
+
 @requires_tree_sitter
 class TestTreeSitterContainers:
     """Container bodies must stay compressible (signature-only spans).
