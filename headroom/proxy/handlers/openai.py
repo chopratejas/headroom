@@ -3692,6 +3692,17 @@ class OpenAIHandlerMixin:
 
                     with contextlib.suppress(Exception):
                         get_codex_rate_limit_state().update_from_headers(dict(_codex_handshake))
+
+            # Current Codex no longer ships x-codex-* on the handshake, so the
+            # block above is usually a no-op. Pull the live subscription window
+            # from the dedicated usage endpoint instead (throttled, scoped to
+            # ChatGPT-session traffic, fire-and-forget so accept isn't blocked).
+            with contextlib.suppress(Exception):
+                from headroom.subscription.codex_rate_limits import (
+                    maybe_schedule_usage_poll,
+                )
+
+                maybe_schedule_usage_poll(ws_headers)
             async with stage_timer.measure("accept"):
                 await websocket.accept(
                     subprotocol=client_subprotocols[0] if client_subprotocols else None,
