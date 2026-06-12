@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
+from click.testing import CliRunner
+
+import headroom.evals.adversarial_grid as grid_module
+from headroom.cli.main import main
 from headroom.evals.adversarial_grid import (
     PAYLOADS,
     POSITIONS,
@@ -141,3 +147,23 @@ class TestRenderReport:
         data = cell.to_dict()
         assert data["suppression"] == 0.2
         assert data["compression_suppressed"] is True
+
+
+class TestCliCommand:
+    def test_adversarial_command_renders_and_writes_json(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        report = AdversarialReport(carriers=1)
+        report.summaries["benign_control"] = ClassSummary(
+            "benign_control", cells=3, survived=3, benign_survival_sum=3.0
+        )
+        monkeypatch.setattr(grid_module, "run_adversarial_grid", lambda: report)
+
+        json_path = tmp_path / "adv" / "report.json"
+        result = CliRunner().invoke(main, ["evals", "adversarial", "--json-output", str(json_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "Adversarial compression robustness grid" in result.output
+        written = json.loads(json_path.read_text(encoding="utf-8"))
+        assert written["carriers"] == 1
+        assert written["summaries"][0]["payload_class"] == "benign_control"
