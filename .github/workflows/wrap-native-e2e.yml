@@ -24,6 +24,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   wrap-native:
     runs-on: ${{ matrix.os }}
