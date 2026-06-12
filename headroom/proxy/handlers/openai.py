@@ -25,6 +25,7 @@ from headroom.providers.codex.runtime import (
     decode_openai_bearer_payload,
     resolve_codex_routing_headers,
 )
+from headroom.providers.registry import stream_usage_provider
 from headroom.proxy.helpers import (
     COMPRESSION_TIMEOUT_SECONDS,
     _headroom_bypass_enabled,
@@ -412,10 +413,10 @@ def _extract_codex_handshake_headers(upstream: Any) -> list[tuple[str, str]]:
         return []
     out: list[tuple[str, str]] = []
     for name, value in items:
-        name_str = name.decode("latin-1") if isinstance(name, (bytes, bytearray)) else str(name)
+        name_str = name.decode("latin-1") if isinstance(name, bytes | bytearray) else str(name)
         if name_str.lower().startswith("x-codex-"):
             value_str = (
-                value.decode("latin-1") if isinstance(value, (bytes, bytearray)) else str(value)
+                value.decode("latin-1") if isinstance(value, bytes | bytearray) else str(value)
             )
             out.append((name_str, value_str))
     return out
@@ -5985,7 +5986,7 @@ class OpenAIHandlerMixin:
         body = await request.body()
         headers = await apply_copilot_api_auth(headers, url=url)
         request_id = await self._next_request_id()
-        stream_provider = "gemini" if provider == "vertex:google" else "anthropic"
+        stream_provider = stream_usage_provider(provider)
         stream_state: dict[str, Any] = {
             "input_tokens": None,
             "output_tokens": None,

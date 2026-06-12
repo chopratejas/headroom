@@ -126,6 +126,11 @@ def resolve_api_targets(overrides: ProviderApiOverrides) -> ProviderApiTargets:
     )
 
 
+def stream_usage_provider(provider: str) -> str:
+    """Resolve provider name used by streaming usage parsers."""
+    return {"vertex:google": "gemini"}.get(provider, provider)
+
+
 def build_proxy_provider_runtime(config: Any) -> ProxyProviderRuntime:
     """Build provider runtime objects and resolved targets for the proxy."""
     from headroom.providers.anthropic import AnthropicProvider
