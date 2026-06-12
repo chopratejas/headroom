@@ -15,5 +15,6 @@ ignore:
   - "scripts/tests/**"
   - ".github/**"
   - ".claude-plugin/**"
+  - "headroom/dashboard/templates/**"
   - "plugins/headroom-agent-hooks/.claude-plugin/**"
   - "plugins/headroom-agent-hooks/.github/**"

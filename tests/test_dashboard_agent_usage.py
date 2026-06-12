@@ -1,4 +1,5 @@
 from headroom.proxy.server import (
+    _agent_label,
     _build_agent_usage_summary,
     _classify_agent_from_log,
     _normalize_agent_key,
@@ -181,3 +182,95 @@ def test_agent_key_normalizes_wrapped_underscore_clients() -> None:
 
 def test_agent_key_normalizes_claude_code_cli_alias() -> None:
     assert _normalize_agent_key("claude-code-cli") == "claude-code"
+
+
+def test_agent_label_title_cases_unknown_agent_key() -> None:
+    assert _agent_label("custom-agent") == "Custom Agent"
+
+
+def test_agent_classifier_uses_stack_tag_before_model() -> None:
+    agent, label, source = _classify_agent_from_log(
+        {
+            "provider": "openai",
+            "model": "gpt-5.2-codex",
+            "tags": {"headroom-stack": "openclaw"},
+        }
+    )
+
+    assert (agent, label, source) == ("openclaw", "OpenClaw", "stack")
+
+
+def test_agent_classifier_falls_back_to_unknown() -> None:
+    agent, label, source = _classify_agent_from_log(
+        {
+            "provider": "",
+            "model": "",
+            "tags": [],
+        }
+    )
+
+    assert (agent, label, source) == ("unknown", "Unidentified", "unknown")
+
+
+def test_agent_usage_recovers_before_tokens_from_after_and_saved() -> None:
+    summary = _build_agent_usage_summary(
+        [
+            {
+                "provider": "openai",
+                "model": "custom-model",
+                "tags": {"client": "custom-agent"},
+                "input_tokens_original": 0,
+                "input_tokens_optimized": 70,
+                "output_tokens": 5,
+                "tokens_saved": 30,
+            }
+        ],
+        requests_by_provider={},
+        requests_by_model={},
+        global_before_tokens=100,
+        global_after_tokens=70,
+        global_tokens_saved=0,
+        global_output_tokens=5,
+    )
+
+    row = summary["agents"][0]
+
+    assert row["agent"] == "custom-agent"
+    assert row["label"] == "Custom Agent"
+    assert row["before_tokens"] == 100
+    assert row["savings_percent"] == 30.0
+    assert row["after_percent"] == 70.0
+    assert row["share_of_saved_percent"] == 0.0
+    assert summary["totals"]["savings_percent"] == 0.0
+
+
+def test_agent_usage_clamps_negative_token_values() -> None:
+    summary = _build_agent_usage_summary(
+        [
+            {
+                "provider": None,
+                "model": None,
+                "tags": {},
+                "input_tokens_original": -100,
+                "input_tokens_optimized": -50,
+                "output_tokens": -5,
+                "tokens_saved": -25,
+            }
+        ],
+        requests_by_provider={},
+        requests_by_model={},
+        global_before_tokens=0,
+        global_after_tokens=0,
+        global_tokens_saved=0,
+        global_output_tokens=0,
+    )
+
+    row = summary["agents"][0]
+
+    assert row["agent"] == "unknown"
+    assert row["requests"] == 1
+    assert row["before_tokens"] == 0
+    assert row["after_tokens"] == 0
+    assert row["tokens_saved"] == 0
+    assert row["output_tokens"] == 0
+    assert row["has_exact_tokens"] is False

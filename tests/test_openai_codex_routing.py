@@ -11,6 +11,7 @@ from fastapi import Request
 
 from headroom.proxy.handlers.openai import (
     OpenAIHandlerMixin,
+    _openai_responses_unit_cache_key,
     _resolve_codex_routing_headers,
 )
 
@@ -99,6 +100,38 @@ def test_resolve_codex_routing_ignores_invalid_jwt_payloads():
 
     assert is_chatgpt is False
     assert headers["authorization"] == f"Bearer {token}"
+
+
+def test_openai_responses_unit_cache_key_includes_target_ratio() -> None:
+    unit = SimpleNamespace(
+        text="large tool output",
+        provider="openai",
+        endpoint="responses",
+        role="tool",
+        item_type="function_call_output",
+        cache_zone="live",
+        mutable=True,
+        min_bytes=100,
+        context=None,
+        question=None,
+        bias=None,
+        metadata={},
+    )
+
+    default_key = _openai_responses_unit_cache_key(unit, model="gpt-5.4")
+    aggressive_key = _openai_responses_unit_cache_key(
+        unit,
+        model="gpt-5.4",
+        target_ratio=0.10,
+    )
+    balanced_key = _openai_responses_unit_cache_key(
+        unit,
+        model="gpt-5.4",
+        target_ratio=0.50,
+    )
+
+    assert aggressive_key != default_key
+    assert aggressive_key != balanced_key
 
 
 class _DummyMetrics:
