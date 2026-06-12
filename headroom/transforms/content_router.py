@@ -1935,7 +1935,7 @@ class ContentRouter(Transform):
             p_alive = float(os.environ.get("HEADROOM_NET_COST_P_ALIVE", "") or 1.0)
         except ValueError:
             logger.warning("HEADROOM_NET_COST_P_ALIVE malformed; using 1.0")
-        gain = policy.net_mutation_gain(delta_t, suffix, reads, p_alive)
+        gain = float(policy.net_mutation_gain(delta_t, suffix, reads, p_alive))
         allowed = gain > 0.0
         logger.info(
             "NetCostPolicy slot=%d delta_t=%d suffix=%d reads=%.1f p_alive=%.2f gain=%.0f -> %s",
