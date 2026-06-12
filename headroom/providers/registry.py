@@ -131,6 +131,33 @@ def stream_usage_provider(provider: str) -> str:
     return {"vertex:google": "gemini"}.get(provider, provider)
 
 
+def supports_sticky_memory_tools(provider: str) -> bool:
+    """Return whether session-sticky memory tools support this provider."""
+    return provider in {"anthropic", "openai"}
+
+
+def supports_sticky_ccr_tools(provider: str) -> bool:
+    """Return whether session-sticky CCR tools support this provider."""
+    return provider in {"anthropic", "openai", "google"}
+
+
+def model_matches_provider(provider: str, model_name: str) -> bool:
+    """Return whether a model identifier belongs to a provider pricing bucket."""
+    normalized = model_name.lower()
+    openai_prefixes = ("gpt", "o1", "o3", "o4")
+    return (
+        (provider == "anthropic" and "claude" in normalized)
+        or (provider == "openai" and normalized.startswith(openai_prefixes))
+        or (provider == "gemini" and "gemini" in normalized)
+        or (provider == "bedrock" and "claude" in normalized)
+    )
+
+
+def tracks_prefix_cache_busts(provider: str) -> bool:
+    """Return whether provider metrics should record prefix-cache busts."""
+    return provider == "anthropic"
+
+
 def build_proxy_provider_runtime(config: Any) -> ProxyProviderRuntime:
     """Build provider runtime objects and resolved targets for the proxy."""
     from headroom.providers.anthropic import AnthropicProvider

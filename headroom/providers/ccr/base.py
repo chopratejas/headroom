@@ -58,6 +58,10 @@ class ProviderCcrAdapter(Protocol):
         """Build provider-native tool-result message data."""
         ...
 
+    def retrieval_tool_result(self, tool_call_id: str, content: str) -> dict[str, Any]:
+        """Build provider-native single retrieval tool-result data."""
+        ...
+
     def assistant_message(self, response: dict[str, Any]) -> dict[str, Any]:
         """Extract the assistant/model message for continuation."""
         ...
@@ -154,6 +158,12 @@ class GenericCcrAdapter:
             "content": json.dumps(
                 [{"tool_call_id": r.tool_call_id, "result": r.content} for r in results]
             ),
+        }
+
+    def retrieval_tool_result(self, tool_call_id: str, content: str) -> dict[str, Any]:
+        return {
+            "tool_call_id": tool_call_id,
+            "content": content,
         }
 
     def assistant_message(self, response: dict[str, Any]) -> dict[str, Any]:

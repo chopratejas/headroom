@@ -14,6 +14,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from headroom.providers.registry import model_matches_provider
 from headroom.proxy.modes import PROXY_MODE_CACHE
 
 if TYPE_CHECKING:
@@ -143,15 +144,7 @@ def build_prefix_cache_stats(
         input_price_per_token = None
         if cost_tracker:
             for model_name in cost_tracker._tokens_sent_by_model:
-                # Match model to provider
-                _openai_prefixes = ("gpt", "o1", "o3", "o4")
-                is_match = (
-                    (provider == "anthropic" and "claude" in model_name)
-                    or (provider == "openai" and any(p in model_name for p in _openai_prefixes))
-                    or (provider == "gemini" and "gemini" in model_name)
-                    or (provider == "bedrock" and "claude" in model_name)
-                )
-                if is_match:
+                if model_matches_provider(provider, model_name):
                     price_per_1m = cost_tracker._get_list_price(model_name)
                     if price_per_1m:
                         input_price_per_token = price_per_1m / 1_000_000

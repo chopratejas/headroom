@@ -52,6 +52,13 @@ class OpenAICcrAdapter(GenericCcrAdapter):
             ]
         }
 
+    def retrieval_tool_result(self, tool_call_id: str, content: str) -> dict[str, Any]:
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        }
+
     def append_tool_result_messages(
         self,
         messages: list[dict[str, Any]],

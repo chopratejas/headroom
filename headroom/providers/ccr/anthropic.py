@@ -58,6 +58,13 @@ class AnthropicCcrAdapter(GenericCcrAdapter):
             ],
         }
 
+    def retrieval_tool_result(self, tool_call_id: str, content: str) -> dict[str, Any]:
+        return {
+            "type": "tool_result",
+            "tool_use_id": tool_call_id,
+            "content": content,
+        }
+
     def assistant_message(self, response: dict[str, Any]) -> dict[str, Any]:
         return {"role": "assistant", "content": response.get("content", [])}
 
