@@ -15,6 +15,10 @@ npm install headroom-ai
 </Tab>
 <Tab value="Python">
 ```bash
+# CLI/proxy/wrap on your machine
+uv tool install --python 3.13 "headroom-ai[all]"
+
+# Python project or virtualenv
 pip install "headroom-ai[all]"
 ```
 </Tab>
@@ -24,7 +28,8 @@ pip install "headroom-ai[all]"
 The TypeScript SDK sends messages to a local Headroom proxy for compression. Start the proxy before using the TS SDK:
 
 ```bash
-pip install "headroom-ai[proxy]"
+uv tool install --python 3.13 "headroom-ai[proxy]"
+# or, inside a Python project: pip install "headroom-ai[proxy]"
 headroom proxy --port 8787
 ```
 

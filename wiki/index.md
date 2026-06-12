@@ -64,7 +64,7 @@ Headroom works as a **transparent proxy** (zero code changes), a **Python functi
 === "Proxy (Zero Code Changes)"
 
     ```bash
-    pip install "headroom-ai[all]"
+    uv tool install --python 3.13 "headroom-ai[all]"
     headroom proxy
     ```
 
@@ -392,6 +392,7 @@ Or via LiteLLM for 100+ providers (Together, Groq, Fireworks, Ollama, vLLM, etc.
 ## Installation
 
 ```bash
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS/Linux
 pip install headroom-ai                # Core library (Python)
 pip install "headroom-ai[all]"         # Everything (recommended)
 npm install headroom-ai                # TypeScript / Node.js
@@ -402,7 +403,8 @@ pip install "headroom-ai[agno]"        # Agno integration
 pip install "headroom-ai[evals]"       # Evaluation framework
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. On macOS, use Python 3.13 for the uv/pipx CLI path if
+your default `python3` is newer than the current wheel set.
 
 ---
 

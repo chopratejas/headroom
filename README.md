@@ -88,8 +88,9 @@ Headroom compresses everything your AI agent reads — tool outputs, logs, RAG c
 
 ```bash
 # 1 — Install
-pip install "headroom-ai[all]"          # Python
-npm install headroom-ai                 # Node / TypeScript
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS/Linux
+pip install "headroom-ai[all]"                   # Python project env
+npm install headroom-ai                          # Node / TypeScript
 
 # 2 — Pick your mode
 headroom wrap claude                    # wrap a coding agent
@@ -300,12 +301,22 @@ Provider and tool-specific behavior lives under `headroom/providers/` so core or
 ## Install
 
 ```bash
-pip install "headroom-ai[all]"          # Python, everything
-npm install headroom-ai                 # TypeScript / Node
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI, isolated app env
+pip install "headroom-ai[all]"                   # Python project env
+npm install headroom-ai                          # TypeScript / Node
 docker pull ghcr.io/chopratejas/headroom:latest
 ```
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress-base), `[code]`, `[memory]`, `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`, `[pytorch-mps]` (Apple-GPU memory-embedder offload — set `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
+
+Using `uv` for the `headroom` CLI? Prefer `uv tool install` so the command lives in an isolated app environment. On macOS, pass `--python 3.13` if your default `python3` is newer than the current wheel set:
+
+```bash
+brew install python@3.13  # if Python 3.13 is not already available
+uv tool install --python 3.13 "headroom-ai[all]"
+uv tool update-shell      # if ~/.local/bin is not already on PATH
+headroom --version
+```
 
 Using `pipx`? Choose a supported interpreter explicitly:
 

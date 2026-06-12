@@ -6,7 +6,17 @@ Get Headroom running in 5 minutes with these copy-paste examples.
 
 ## Installation
 
-**Python:**
+**CLI on macOS/Linux with uv:**
+
+```bash
+uv tool install --python 3.13 "headroom-ai[all]"
+headroom --version
+```
+
+Use `uv tool update-shell` if the install succeeds but `headroom` is not on
+`PATH`.
+
+**Python project / virtualenv:**
 
 ```bash
 # Core only (minimal dependencies)
