@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from dataclasses import dataclass
 
 import pytest
@@ -311,6 +313,47 @@ class TestDoctorCommand:
         assert payload["port"] == 8787
         assert {c["name"] for c in payload["checks"]} >= {"proxy", "version", "budget"}
         assert all(c["status"] in ("pass", "warn", "fail", "skip") for c in payload["checks"])
+        assert {"runtime", "native", "capabilities", "capability_summary"} <= payload.keys()
+
+    def test_json_reports_missing_capability_with_install_hint(
+        self, runner, isolated, monkeypatch
+    ):
+        monkeypatch.setattr(doctor_mod, "probe_json", self._probe(LIVEZ_OK, STATS_OK))
+        original_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name: str, *args, **kwargs):
+            if name == "fastapi":
+                return None
+            return original_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        result = runner.invoke(main, ["doctor", "--json"])
+        payload = json.loads(result.output)
+        proxy = next(cap for cap in payload["capabilities"] if cap["feature"] == "proxy")
+        assert proxy["available"] is False
+        assert proxy["install"] == "pip install 'headroom-ai[proxy]'"
+
+    def test_human_report_shows_full_install_command(self, runner, isolated, monkeypatch):
+        monkeypatch.setattr(doctor_mod, "probe_json", self._probe(LIVEZ_OK, STATS_OK))
+        original_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name: str, *args, **kwargs):
+            if name == "fastapi":
+                return None
+            return original_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        result = runner.invoke(main, ["doctor"])
+        assert "pip install 'headroom-ai[proxy]'" in result.output
+
+    def test_doctor_does_not_import_heavy_optional_modules(self, runner, isolated, monkeypatch):
+        monkeypatch.setattr(doctor_mod, "probe_json", self._probe(LIVEZ_OK, STATS_OK))
+        monkeypatch.delitem(sys.modules, "fastapi", raising=False)
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        result = runner.invoke(main, ["doctor", "--json"])
+        assert result.output
+        assert "fastapi" not in sys.modules
+        assert "torch" not in sys.modules
 
     def test_port_option_changes_probe_url(self, runner, isolated, monkeypatch):
         seen: list[str] = []
