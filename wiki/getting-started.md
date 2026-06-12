@@ -4,7 +4,7 @@ This guide will help you get up and running with Headroom in under 5 minutes.
 
 ## Installation
 
-**CLI on macOS/Linux with uv:**
+**CLI on macOS Apple Silicon/Linux with uv:**
 
 ```bash
 uv tool install --python 3.13 "headroom-ai[all]"

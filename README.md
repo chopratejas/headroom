@@ -88,7 +88,7 @@ Headroom compresses everything your AI agent reads — tool outputs, logs, RAG c
 
 ```bash
 # 1 — Install
-uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS/Linux
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS Apple Silicon/Linux
 pip install "headroom-ai[all]"                   # Python project env
 npm install headroom-ai                          # Node / TypeScript
 
@@ -317,6 +317,16 @@ uv tool install --python 3.13 "headroom-ai[all]"
 uv tool update-shell      # if ~/.local/bin is not already on PATH
 headroom --version
 ```
+
+For MCP clients such as Codex that do not inherit your interactive shell `PATH`, configure the absolute executable path returned by `command -v headroom`:
+
+```toml
+[mcp_servers.headroom]
+command = "/Users/you/.local/bin/headroom"
+args = ["mcp", "serve"]
+```
+
+Current native wheels cover macOS Apple Silicon and Linux. On Intel macOS, use Docker-native install until native wheel support lands.
 
 Using `pipx`? Choose a supported interpreter explicitly:
 

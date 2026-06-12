@@ -24,9 +24,9 @@ using a newer Python, force a supported interpreter.
 
 ### CLI install with uv
 
-For a host-level `headroom` command on macOS or Linux, prefer `uv tool install`.
-It keeps Headroom in a dedicated app environment instead of tying it to the
-current project or shell Python.
+For a host-level `headroom` command on macOS Apple Silicon or Linux, prefer
+`uv tool install`. It keeps Headroom in a dedicated app environment instead of
+tying it to the current project or shell Python.
 
 ```bash
 uv tool install --python 3.13 "headroom-ai[all]"
@@ -49,6 +49,21 @@ directory to `PATH`:
 ```bash
 uv tool update-shell
 ```
+
+For MCP clients such as Codex that do not inherit your interactive shell
+`PATH`, configure the absolute executable path returned by `command -v
+headroom`:
+
+```toml
+[mcp_servers.headroom]
+command = "/Users/you/.local/bin/headroom"
+args = ["mcp", "serve"]
+```
+
+Native Intel macOS installs are currently tracked in
+[chopratejas/headroom#525](https://github.com/chopratejas/headroom/issues/525).
+Use [Docker-Native Install](/docs/docker-install) on Intel Macs until native
+wheel support lands.
 
 ### Core package
 

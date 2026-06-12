@@ -392,7 +392,7 @@ Or via LiteLLM for 100+ providers (Together, Groq, Fireworks, Ollama, vLLM, etc.
 ## Installation
 
 ```bash
-uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS/Linux
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS Apple Silicon/Linux
 pip install headroom-ai                # Core library (Python)
 pip install "headroom-ai[all]"         # Everything (recommended)
 npm install headroom-ai                # TypeScript / Node.js
