@@ -203,7 +203,15 @@ def _token_exchange_url() -> str:
 
 
 def _user_info_url() -> str:
-    return os.environ.get("GITHUB_COPILOT_USER_INFO_URL", DEFAULT_USER_INFO_URL).strip()
+    override = os.environ.get("GITHUB_COPILOT_USER_INFO_URL", "").strip()
+    if override:
+        return override
+
+    enterprise_domain = _configured_enterprise_domain()
+    if enterprise_domain:
+        return f"https://api.{enterprise_domain}/copilot_internal/user"
+
+    return DEFAULT_USER_INFO_URL
 
 
 def _should_exchange_oauth_token() -> bool:
@@ -720,6 +728,15 @@ def _copilot_chat_header_defaults() -> dict[str, str]:
     }
 
 
+def _set_header_default(headers: dict[str, str], name: str, value: str) -> None:
+    """Set a header default without duplicating case-insensitive equivalents."""
+
+    name_lower = name.lower()
+    if any(existing.lower() == name_lower for existing in headers):
+        return
+    headers[name] = value
+
+
 def _copilot_token_exchange_headers(oauth_token: str) -> dict[str, str]:
     return {
         "Accept": "application/json",
@@ -1084,7 +1101,7 @@ async def apply_copilot_api_auth(headers: dict[str, str], *, url: str) -> dict[s
         return resolved
 
     for name, value in _copilot_chat_header_defaults().items():
-        resolved.setdefault(name, value)
+        _set_header_default(resolved, name, value)
 
     incoming_auth = next((v for k, v in resolved.items() if k.lower() == "authorization"), None)
     if incoming_auth:

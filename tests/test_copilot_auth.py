@@ -218,6 +218,33 @@ def test_resolve_subscription_exchange_uses_cloud_enterprise_advertised_api(
     assert copilot_auth._token_exchange_url() == "https://api.github.com/copilot_internal/v2/token"
 
 
+def test_enterprise_domain_routes_token_exchange_and_user_info_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_COPILOT_TOKEN_EXCHANGE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_USER_INFO_URL", raising=False)
+    monkeypatch.delenv("GITHUB_COPILOT_ENTERPRISE_URL", raising=False)
+    monkeypatch.setenv("GITHUB_COPILOT_ENTERPRISE_DOMAIN", "ghe.example.com")
+
+    assert (
+        copilot_auth._token_exchange_url()
+        == "https://api.ghe.example.com/copilot_internal/v2/token"
+    )
+    assert copilot_auth._user_info_url() == "https://api.ghe.example.com/copilot_internal/user"
+
+
+def test_user_info_url_override_wins_over_enterprise_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_COPILOT_ENTERPRISE_DOMAIN", "ghe.example.com")
+    monkeypatch.setenv(
+        "GITHUB_COPILOT_USER_INFO_URL",
+        "https://custom.example.com/copilot_internal/user",
+    )
+
+    assert copilot_auth._user_info_url() == "https://custom.example.com/copilot_internal/user"
+
+
 def test_copilot_api_url_from_enterprise_url_supports_enterprise_server_domain() -> None:
     assert (
         copilot_auth.copilot_api_url_from_enterprise_url("https://ghe.example.com/")
@@ -681,6 +708,47 @@ def test_apply_copilot_api_auth_preserves_existing_copilot_headers(
     assert headers["Copilot-Integration-Id"] == "custom-integration"
     assert headers["Editor-Version"] == "custom-editor"
     assert headers["Authorization"] == "Bearer copilot-session"
+
+
+def test_apply_copilot_api_auth_preserves_existing_headers_case_insensitively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_api_token() -> copilot_auth.CopilotAPIToken:
+        return copilot_auth.CopilotAPIToken(
+            token="copilot-session",
+            expires_at=time.time() + 3600,
+            api_url=copilot_auth.DEFAULT_API_URL,
+        )
+
+    monkeypatch.setattr(
+        copilot_auth.get_copilot_token_provider(),
+        "get_api_token",
+        fake_get_api_token,
+    )
+
+    headers = asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {
+                "authorization": "Bearer downstream-token",
+                "user-agent": "custom-agent",
+                "editor-version": "custom-editor",
+                "editor-plugin-version": "custom-plugin",
+                "copilot-integration-id": "custom-integration",
+            },
+            url="https://api.githubcopilot.com/v1/chat/completions",
+        )
+    )
+
+    assert headers["Authorization"] == "Bearer copilot-session"
+    assert "authorization" not in headers
+    assert headers["user-agent"] == "custom-agent"
+    assert headers["editor-version"] == "custom-editor"
+    assert headers["editor-plugin-version"] == "custom-plugin"
+    assert headers["copilot-integration-id"] == "custom-integration"
+    assert "User-Agent" not in headers
+    assert "Editor-Version" not in headers
+    assert "Editor-Plugin-Version" not in headers
+    assert "Copilot-Integration-Id" not in headers
 
 
 def test_token_provider_reuses_oauth_token_without_exchange(
