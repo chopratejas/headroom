@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import base64
+import math
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+
+OPENAI_LOW_DETAIL_IMAGE_TOKENS = 85
+OPENAI_TILE_TOKENS = 170
+OPENAI_TILE_SIZE = 512
+OPENAI_MAX_DIMENSION = 2048
+OPENAI_SHORT_SIDE_LIMIT = 768
+OPENAI_MIN_PIXEL_RETENTION = 0.4
+
+ANTHROPIC_PIXELS_PER_TOKEN = 750
+ANTHROPIC_MAX_EDGE = 1568
+ANTHROPIC_MAX_PIXELS = 1_150_000
 
 
 @dataclass(frozen=True)
@@ -154,9 +165,88 @@ def estimate_low_detail_tokens(item: dict[str, Any]) -> int | None:
     if item.get("type") == "image_url":
         detail = item.get("image_url", {}).get("detail", "high")
         if detail == "low":
-            return 85
+            return OPENAI_LOW_DETAIL_IMAGE_TOKENS
 
     return None
+
+
+def _scale_openai_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Apply OpenAI's documented pre-tokenization image scaling."""
+    max_dim = max(width, height)
+    if max_dim > OPENAI_MAX_DIMENSION:
+        scale = OPENAI_MAX_DIMENSION / max_dim
+        width = int(width * scale)
+        height = int(height * scale)
+
+    min_dim = min(width, height)
+    if min_dim > OPENAI_SHORT_SIDE_LIMIT:
+        scale = OPENAI_SHORT_SIDE_LIMIT / min_dim
+        width = int(width * scale)
+        height = int(height * scale)
+
+    return width, height
+
+
+def estimate_openai_tokens(width: int, height: int, detail: str = "high") -> int:
+    """Return OpenAI GPT-4o-style vision token estimate."""
+    if detail == "low":
+        return OPENAI_LOW_DETAIL_IMAGE_TOKENS
+
+    width, height = _scale_openai_dimensions(width, height)
+    tiles = math.ceil(width / OPENAI_TILE_SIZE) * math.ceil(height / OPENAI_TILE_SIZE)
+    return OPENAI_LOW_DETAIL_IMAGE_TOKENS + OPENAI_TILE_TOKENS * tiles
+
+
+def estimate_anthropic_tokens(width: int, height: int) -> int:
+    """Return Anthropic Claude vision token estimate."""
+    width, height = find_optimal_anthropic_dimensions(width, height)
+    return max(1, (width * height) // ANTHROPIC_PIXELS_PER_TOKEN)
+
+
+def find_optimal_openai_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Find dimensions that minimize OpenAI tile count while preserving quality."""
+    width, height = _scale_openai_dimensions(width, height)
+    current_tiles = math.ceil(width / OPENAI_TILE_SIZE) * math.ceil(height / OPENAI_TILE_SIZE)
+    best_w, best_h = width, height
+    best_tiles = current_tiles
+
+    for target_cols in range(1, math.ceil(width / OPENAI_TILE_SIZE) + 1):
+        for target_rows in range(1, math.ceil(height / OPENAI_TILE_SIZE) + 1):
+            tiles = target_cols * target_rows
+            if tiles >= current_tiles:
+                continue
+
+            target_width = target_cols * OPENAI_TILE_SIZE
+            target_height = target_rows * OPENAI_TILE_SIZE
+            scale = min(target_width / width, target_height / height)
+            optimized_width = int(width * scale)
+            optimized_height = int(height * scale)
+
+            if (
+                optimized_width * optimized_height >= width * height * OPENAI_MIN_PIXEL_RETENTION
+                and tiles < best_tiles
+            ):
+                best_w, best_h = optimized_width, optimized_height
+                best_tiles = tiles
+
+    return best_w, best_h
+
+
+def find_optimal_anthropic_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Pre-resize to Anthropic image limits."""
+    max_edge = max(width, height)
+    if max_edge > ANTHROPIC_MAX_EDGE:
+        scale = ANTHROPIC_MAX_EDGE / max_edge
+        width = int(width * scale)
+        height = int(height * scale)
+
+    total = width * height
+    if total > ANTHROPIC_MAX_PIXELS:
+        scale = math.sqrt(ANTHROPIC_MAX_PIXELS / total)
+        width = int(width * scale)
+        height = int(height * scale)
+
+    return width, height
 
 
 def tile_optimization_plan(
@@ -165,10 +255,6 @@ def tile_optimization_plan(
     requested_provider: str,
     width: int,
     height: int,
-    estimate_openai_tokens: Callable[[int, int, str], int],
-    estimate_anthropic_tokens: Callable[[int, int], int],
-    find_optimal_openai_dimensions: Callable[[int, int], tuple[int, int]],
-    find_optimal_anthropic_dimensions: Callable[[int, int], tuple[int, int]],
 ) -> ProviderImageTilePlan | None:
     """Return provider-specific tile optimization math for an image block."""
     if block_provider == "openai":
