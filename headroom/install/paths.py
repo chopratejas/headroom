@@ -114,6 +114,12 @@ def codex_config_path() -> Path:
     return Path.home() / ".codex" / "config.toml"
 
 
+def qodercli_config_path() -> Path:
+    """Return the Qoder CLI settings path."""
+
+    return Path.home() / ".qoder" / "settings.json"
+
+
 def openclaw_config_path() -> Path:
     """Return the OpenClaw config path."""
 

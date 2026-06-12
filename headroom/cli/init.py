@@ -53,9 +53,10 @@ _CODEX_PROVIDER_MARKER_START = "# --- Headroom init provider ---"
 _CODEX_PROVIDER_MARKER_END = "# --- end Headroom init provider ---"
 _CODEX_FEATURE_MARKER_START = "# --- Headroom init features ---"
 _CODEX_FEATURE_MARKER_END = "# --- end Headroom init features ---"
-_SUPPORTED_TARGETS = ("claude", "copilot", "codex", "openclaw")
+_QODERCLI_HOOK_MARKER = "headroom-init-qodercli"
+_SUPPORTED_TARGETS = ("claude", "copilot", "codex", "openclaw", "qodercli")
 _LOCAL_TARGETS = {"claude", "codex"}
-_GLOBAL_TARGETS = {"claude", "copilot", "codex", "openclaw"}
+_GLOBAL_TARGETS = {"claude", "copilot", "codex", "openclaw", "qodercli"}
 _STARTUP_READY_TIMEOUT_SECONDS = 15
 _TOML_TABLE_HEADER_RE = re.compile(r"^[ \t]*(?:\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\])[ \t]*(?:#.*)?$")
 _TOML_FEATURES_NAME_RE = r"(?:features|\"features\"|'features')"
@@ -139,6 +140,16 @@ def _codex_scope_path(global_scope: bool) -> Path:
     return Path.cwd() / ".codex" / "config.toml"
 
 
+def _qodercli_scope_path(global_scope: bool) -> Path:
+    from headroom.install.paths import qodercli_config_path
+
+    if global_scope:
+        return qodercli_config_path()
+    raise click.ClickException(
+        "Qoder CLI durable init currently requires -g (current-user scope)."
+    )
+
+
 def _json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -218,6 +229,50 @@ def _ensure_copilot_hooks(path: Path, profile: str) -> None:
             )
         ]
         retained.append({"type": "command", "command": command, "cwd": ".", "timeout": 15})
+        hooks[event] = retained
+    payload["hooks"] = hooks
+    _write_json(path, payload)
+
+
+def _ensure_qodercli_hooks(path: Path, profile: str, port: int) -> None:
+    logger.debug("ensure qodercli hooks: %s (profile=%s, port=%s)", path, profile, port)
+    payload = _json_file(path)
+    hooks = dict(payload.get("hooks") or {}) if isinstance(payload.get("hooks"), dict) else {}
+    command = _hook_command("--profile", profile)
+    for event, matcher in (
+        ("SessionStart", "startup|resume"),
+        ("PreToolUse", _powershell_matcher()),
+    ):
+        entries = list(hooks.get(event) or []) if isinstance(hooks.get(event), list) else []
+        retained: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                retained.append(entry)
+                continue
+            hook_items = entry.get("hooks")
+            if not isinstance(hook_items, list):
+                retained.append(entry)
+                continue
+            has_headroom = any(
+                isinstance(item, dict)
+                and item.get("command")
+                and _QODERCLI_HOOK_MARKER in str(item.get("command"))
+                for item in hook_items
+            )
+            if not has_headroom:
+                retained.append(entry)
+        retained.append(
+            {
+                "matcher": matcher,
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"{command} --marker {_QODERCLI_HOOK_MARKER}",
+                        "timeout": 15,
+                    }
+                ],
+            }
+        )
         hooks[event] = retained
     payload["hooks"] = hooks
     _write_json(path, payload)
@@ -808,6 +863,16 @@ def _init_openclaw(*, global_scope: bool, port: int) -> None:
         raise SystemExit(result.returncode)
 
 
+def _init_qodercli(*, global_scope: bool, profile: str) -> None:
+    if not global_scope:
+        raise click.ClickException(
+            "Qoder CLI durable init currently requires -g (current-user scope)."
+        )
+    _ensure_qodercli_hooks(_qodercli_scope_path(global_scope), profile, port=8787)
+    click.echo("Configured Qoder CLI (user scope).")
+    click.echo("Restart Qoder CLI to activate Headroom hooks.")
+
+
 def _run_init_targets(
     *,
     targets: list[str],
@@ -847,6 +912,8 @@ def _run_init_targets(
             _init_codex(global_scope=global_scope, profile=profile, port=port)
         elif target == "openclaw":
             _init_openclaw(global_scope=global_scope, port=port)
+        elif target == "qodercli":
+            _init_qodercli(global_scope=global_scope, profile=profile)
 
     # Register the headroom MCP server with every targeted agent that has
     # a registrar implemented. Wave 1 covers Claude Code; subsequent waves
@@ -997,6 +1064,21 @@ def init_openclaw(ctx: click.Context) -> None:
     """Install the durable OpenClaw Headroom plugin."""
     _run_init_targets(
         targets=["openclaw"],
+        global_scope=bool(_ctx_value(ctx, "global_scope")),
+        port=int(_ctx_value(ctx, "port") or 8787),
+        backend=str(_ctx_value(ctx, "backend") or "anthropic"),
+        anyllm_provider=_ctx_value(ctx, "anyllm_provider"),
+        region=_ctx_value(ctx, "region"),
+        memory=bool(_ctx_value(ctx, "memory")),
+    )
+
+
+@init.command("qodercli")
+@click.pass_context
+def init_qodercli(ctx: click.Context) -> None:
+    """Install Qoder CLI durable hooks."""
+    _run_init_targets(
+        targets=["qodercli"],
         global_scope=bool(_ctx_value(ctx, "global_scope")),
         port=int(_ctx_value(ctx, "port") or 8787),
         backend=str(_ctx_value(ctx, "backend") or "anthropic"),

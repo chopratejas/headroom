@@ -69,7 +69,7 @@ def test_init_fails_when_auto_detection_empty(monkeypatch) -> None:
     assert "No supported user-scope agents were found on PATH" in result.output
     assert "probed the following agents" in result.output
     # Every in-scope target is listed with its lookup status.
-    for target in ("claude", "codex", "copilot", "openclaw"):
+    for target in ("claude", "codex", "copilot", "openclaw", "qodercli"):
         assert target in result.output
     # The user is told that -g is still valid and given a concrete next step.
     assert "-g" in result.output
@@ -138,7 +138,7 @@ def test_init_verbose_enables_debug_logging_on_stderr(monkeypatch) -> None:
     assert "[headroom init]" in stderr
     assert "detect_init_targets" in stderr
     assert "global_scope=True" in stderr
-    for target in ("claude", "codex", "copilot", "openclaw"):
+    for target in ("claude", "codex", "copilot", "openclaw", "qodercli"):
         assert target in stderr
 
 
@@ -311,16 +311,41 @@ def test_init_openclaw_delegates_to_wrap(monkeypatch) -> None:
     assert calls == [["headroom", "wrap", "openclaw", "--proxy-port", "9999"]]
 
 
+def test_init_qodercli_requires_global(monkeypatch) -> None:
+    _, fake_main = _load_init_module(monkeypatch)
+    runner = CliRunner()
+
+    result = runner.invoke(fake_main, ["init", "qodercli"])
+
+    assert result.exit_code != 0
+    assert "requires -g" in result.output
+
+
+def test_init_qodercli_writes_hooks(monkeypatch, tmp_path: Path) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    monkeypatch.setattr(
+        init_cli, "_qodercli_scope_path", lambda global_scope: tmp_path / "qoder" / "settings.json"
+    )
+
+    init_cli._init_qodercli(global_scope=True, profile="init-user")
+
+    payload = json.loads((tmp_path / "qoder" / "settings.json").read_text(encoding="utf-8"))
+    assert "SessionStart" in payload["hooks"]
+    assert "PreToolUse" in payload["hooks"]
+    assert "--profile init-user" in payload["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "headroom-init-qodercli" in payload["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+
+
 def test_detect_init_targets_respects_scope(monkeypatch) -> None:
     init_cli, _ = _load_init_module(monkeypatch)
     monkeypatch.setattr(
         init_cli.shutil,
         "which",
-        lambda name: name if name in {"claude", "copilot", "codex", "openclaw"} else None,
+        lambda name: name if name in {"claude", "copilot", "codex", "openclaw", "qodercli"} else None,
     )
 
     assert init_cli.detect_init_targets(False) == ["claude", "codex"]
-    assert init_cli.detect_init_targets(True) == ["claude", "copilot", "codex", "openclaw"]
+    assert init_cli.detect_init_targets(True) == ["claude", "copilot", "codex", "openclaw", "qodercli"]
 
 
 def test_marketplace_source_prefers_env_override(monkeypatch) -> None:
@@ -1264,9 +1289,14 @@ def test_run_init_targets_dispatches_supported_targets(monkeypatch) -> None:
         "_init_openclaw",
         lambda **kwargs: calls.append(("openclaw", (kwargs["global_scope"], kwargs["port"]))),
     )
+    monkeypatch.setattr(
+        init_cli,
+        "_init_qodercli",
+        lambda **kwargs: calls.append(("qodercli", (kwargs["global_scope"], kwargs["profile"]))),
+    )
 
     init_cli._run_init_targets(
-        targets=["claude", "copilot", "codex", "openclaw"],
+        targets=["claude", "copilot", "codex", "openclaw", "qodercli"],
         global_scope=True,
         port=9000,
         backend="openai",
@@ -1280,6 +1310,7 @@ def test_run_init_targets_dispatches_supported_targets(monkeypatch) -> None:
         ("copilot", (True, "init-profile", 9000)),
         ("codex", (True, "init-profile", 9000)),
         ("openclaw", (True, 9000)),
+        ("qodercli", (True, "init-profile")),
     ]
 
 

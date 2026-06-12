@@ -27,6 +27,7 @@ SUPPORTED_TARGETS = [
     ToolTarget.AIDER,
     ToolTarget.CURSOR,
     ToolTarget.OPENCLAW,
+    ToolTarget.QODERCLI,
 ]
 PROVIDER_SCOPE_TARGETS = [
     ToolTarget.CLAUDE,
