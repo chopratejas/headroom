@@ -83,11 +83,28 @@ _DEFAULT_CONTEXT_LIMITS: dict[str, int] = {
     "qwen2-7b": 32768,
     "qwen2-72b": 32768,
     "qwen2.5": 131072,
-    # DeepSeek
+    # DeepSeek V1 / Coder (legacy)
     "deepseek": 32768,
     "deepseek-coder": 16384,
+    "deepseek-coder-v2": 128000,
+    "deepseek-coder-v2-lite": 128000,
+    # DeepSeek V2/V3 family
     "deepseek-v2": 128000,
+    "deepseek-v2-lite": 128000,
     "deepseek-v3": 128000,
+    "deepseek-v3-0324": 128000,
+    "deepseek-v3.2": 128000,
+    # DeepSeek R1 reasoning family
+    "deepseek-r1": 131072,
+    "deepseek-r1-0528": 131072,
+    "deepseek-reasoner": 131072,
+    # DeepSeek V4 family
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    # DeepSeek API aliases
+    "deepseek-chat": 131072,
+    "deepseek-r1-distill-qwen": 131072,
+    "deepseek-r1-distill-llama": 131072,
     # Yi
     "yi": 32768,
     "yi-34b": 32768,

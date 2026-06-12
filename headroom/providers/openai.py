@@ -99,9 +99,16 @@ _CONTEXT_LIMITS: dict[str, int] = {
     # these are the manual fallback when LiteLLM doesn't know the model.
     "deepseek-v4-flash": 1_000_000,
     "deepseek-v4-pro": 1_000_000,
+    "deepseek-v3.2": 128_000,
+    "deepseek-v3-0324": 128_000,
+    "deepseek-v3": 128_000,
+    "deepseek-v2": 128_000,
     "deepseek-chat": 131_072,
     "deepseek-reasoner": 131_072,
+    "deepseek-r1": 131_072,
+    "deepseek-r1-0528": 131_072,
     "deepseek-coder": 16384,
+    "deepseek-coder-v2": 128_000,
 }
 
 # Fallback pricing - LiteLLM is preferred source
