@@ -139,6 +139,33 @@ class TestTreeSitterContainers:
             result.mask.mask[i] for i in range(start, start + len("let body_line = 5;"))
         ), "impl method body must be compressible"
 
+    def test_non_ascii_content_mask_alignment(self, handler):
+        """Byte offsets must be converted to char offsets.
+
+        Regression: tree-sitter reports byte offsets into the UTF-8
+        encoding, but the mask is char-indexed. Multi-byte characters
+        (here: accents + an emoji, 9 extra bytes) shifted every later
+        span, preserving the wrong characters.
+        """
+        code = (
+            "# café münü 🎉 comment\n"
+            "def target(x: int) -> int:\n"
+            "    body_value = 9\n"
+            "    return body_value\n"
+        )
+        result = handler.get_mask(code, language="python")
+
+        sig = "def target(x: int) -> int:"
+        start = code.index(sig)
+        assert all(result.mask.mask[i] for i in range(start, start + len(sig))), (
+            "signature after non-ASCII content must be exactly preserved"
+        )
+
+        bstart = code.index("body_value = 9")
+        assert not any(
+            result.mask.mask[i] for i in range(bstart, bstart + len("body_value = 9"))
+        ), "body after non-ASCII content must stay compressible"
+
     def test_preservation_ratio_sane_for_class_code(self, handler):
         """A class with substantial method bodies should NOT preserve
         everything — the whole point of the handler."""

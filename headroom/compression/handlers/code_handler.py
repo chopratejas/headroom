@@ -477,6 +477,13 @@ class CodeStructureHandler(BaseStructureHandler):
 
         visit_node(_ts_root(tree))
 
+        # tree-sitter spans are BYTE offsets into the UTF-8 encoding;
+        # the mask is indexed by CHARACTER. Any non-ASCII character
+        # (docstrings, comments, string literals) shifts every later
+        # span, so convert before masking. Skipped for pure-ASCII
+        # content where the offsets coincide.
+        spans = self._byte_spans_to_char_spans(spans, content)
+
         # Build mask from spans
         mask = self._spans_to_mask(spans, len(content))
 
@@ -552,6 +559,40 @@ class CodeStructureHandler(BaseStructureHandler):
                 "structural_spans": len(spans),
             },
         )
+
+    @staticmethod
+    def _byte_spans_to_char_spans(spans: list[CodeSpan], content: str) -> list[CodeSpan]:
+        """Convert byte-offset spans to character-offset spans.
+
+        tree-sitter reports node positions as byte offsets in the UTF-8
+        encoding. For pure-ASCII content byte == char and the spans are
+        returned unchanged. Otherwise a byte->char table is built once
+        and every span endpoint is remapped.
+        """
+        n_bytes = len(content.encode("utf-8"))
+        if n_bytes == len(content):
+            return spans
+
+        # byte_to_char[b] = index of the character containing byte b;
+        # byte_to_char[n_bytes] = len(content) so exclusive ends map.
+        byte_to_char = [0] * (n_bytes + 1)
+        byte_pos = 0
+        for char_idx, ch in enumerate(content):
+            ch_width = len(ch.encode("utf-8"))
+            for b in range(byte_pos, byte_pos + ch_width):
+                byte_to_char[b] = char_idx
+            byte_pos += ch_width
+        byte_to_char[n_bytes] = len(content)
+
+        return [
+            CodeSpan(
+                start=byte_to_char[min(span.start, n_bytes)],
+                end=byte_to_char[min(span.end, n_bytes)],
+                role=span.role,
+                is_structural=span.is_structural,
+            )
+            for span in spans
+        ]
 
     def _spans_to_mask(self, spans: list[CodeSpan], length: int) -> list[bool]:
         """Convert spans to character-level mask.
