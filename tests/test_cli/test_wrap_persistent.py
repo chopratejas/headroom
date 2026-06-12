@@ -178,6 +178,41 @@ def test_ensure_proxy_leaves_active_stale_persistent_deployment_running(monkeypa
     assert result is None
 
 
+def test_ensure_proxy_defers_persistent_restart_when_http_wrapper_attached(
+    monkeypatch,
+) -> None:
+    """A stale persistent proxy is left running while marker-tracked HTTP
+    wrappers are attached, even when WebSocket session count is zero."""
+    health = {
+        "version": "0.0.1",
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {"pid": 12345},
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(wrap_cli, "_live_proxy_clients", lambda *a, **kw: [999])
+    monkeypatch.setattr(
+        wrap_cli,
+        "_restart_persistent_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("attached persistent proxy should not restart")
+        ),
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("replacement proxy should not start")
+        ),
+    )
+
+    result = wrap_cli._ensure_proxy(8787, False)
+
+    assert result is None
+
+
 def test_find_persistent_manifest_prefers_default_profile(monkeypatch) -> None:
     class DefaultManifest:
         profile = "default"

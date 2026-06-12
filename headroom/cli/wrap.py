@@ -1831,13 +1831,19 @@ def _ensure_proxy(
                 if helpers._proxy_needs_version_restart(health_payload):
                     running_version = helpers._proxy_version(health_payload) or "unknown"
                     active_sessions = helpers._proxy_active_session_count(health_payload)
-                    if active_sessions > 0:
+                    other_wrappers = helpers._live_proxy_clients(port, exclude_self=True)
+                    if active_sessions > 0 or other_wrappers:
+                        detail = (
+                            f"{active_sessions} active session(s)"
+                            if active_sessions > 0
+                            else f"{len(other_wrappers)} attached wrapper(s)"
+                        )
                         click.echo(
                             f"  Proxy on port {port} is running Headroom {running_version}; "
                             f"current CLI is {_HEADROOM_VERSION}."
                         )
                         click.echo(
-                            f"  Leaving it running because {active_sessions} active session(s) "
+                            f"  Leaving it running because {detail} "
                             "are still attached; it will be restarted when idle."
                         )
                         return None
