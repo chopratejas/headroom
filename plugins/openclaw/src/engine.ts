@@ -13,10 +13,15 @@ import { agentToOpenAI, normalizeAgentMessages, openAIToAgent } from "./convert.
 
 /** Race a promise against a timeout. Rejects with a descriptive error on expiry. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  const timer = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`headroom compress() timed out after ${ms}ms`)), ms),
-  );
-  return Promise.race([promise, timer]);
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise<never>((_, reject) => {
+    timerId = setTimeout(() => reject(new Error(`headroom compress() timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timer]).finally(() => {
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+    }
+  });
 }
 
 export interface HeadroomEngineConfig extends ProxyManagerConfig {
