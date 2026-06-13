@@ -205,6 +205,10 @@ def _run_ast_grep(
                     ],
                     capture_output=True,
                     text=True,
+                    # ast-grep emits UTF-8 (it matches arbitrary source text);
+                    # without this, Windows decodes with cp1252 and raises.
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                     check=False,
                 )

@@ -1834,7 +1834,12 @@ class OpenAIHandlerMixin:
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
-                logger.warning(f"Optimization failed: {e}")
+                # Include type so TimeoutError vs other failures is distinguishable
+                # in bug reports — str(asyncio.TimeoutError()) is empty otherwise.
+                logger.warning(
+                    f"[{request_id}] Optimization failed: {type(e).__name__}: {e} "
+                    f"(request forwarded unoptimized)"
+                )
                 # Flag compression failure for observability
                 _compression_failed = True
 

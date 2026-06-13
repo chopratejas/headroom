@@ -3,8 +3,47 @@
 from __future__ import annotations
 
 import ctypes
+import logging
+import os
 import sys
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Override for the CPU memory-arena default below: "1"/"true" forces the
+# arena ON, "0"/"false" forces it OFF, unset/"auto" uses the platform default.
+ONNX_CPU_ARENA_ENV = "HEADROOM_ONNX_CPU_ARENA"
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag(name: str) -> bool | None:
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in _TRUTHY:
+        return True
+    if raw in _FALSY:
+        return False
+    if raw and raw != "auto":
+        logger.warning("%s must be a boolean or 'auto', got %r; using auto", name, raw)
+    return None
+
+
+def cpu_arena_enabled() -> bool:
+    """Whether ONNX Runtime's CPU memory arena should stay enabled.
+
+    Disabling the arena trades peak throughput for lower retained RSS, which
+    is the right call on the small Linux VMs Headroom commonly runs on. On
+    Windows the same setting is catastrophic: without the arena every
+    ``Run()`` falls back to per-node VirtualAlloc/free, slowing transformer
+    inference by 2-3 orders of magnitude (onnxruntime#11627). That turned
+    every compression into a >30s timeout for Windows proxy users, so the
+    arena stays at ORT's default (enabled) there.
+    """
+    override = _env_flag(ONNX_CPU_ARENA_ENV)
+    if override is not None:
+        return override
+    return sys.platform == "win32"
 
 
 def hf_hub_download_local_first(repo_id: str, filename: str, *, allow_network: bool = True) -> str:
@@ -53,6 +92,9 @@ def create_cpu_session_options(
     memory usage over peak ONNX throughput. Disabling ORT's CPU arena and memory
     pattern caches reduces retained anonymous RSS after variable-size inference
     workloads, which is especially important on small VMs.
+
+    The arena is left at ORT's default on Windows (see ``cpu_arena_enabled``),
+    where disabling it degrades inference latency by orders of magnitude.
     """
     sess_options = ort.SessionOptions()
 
@@ -61,10 +103,11 @@ def create_cpu_session_options(
     if inter_op_num_threads is not None:
         sess_options.inter_op_num_threads = inter_op_num_threads
 
-    if hasattr(sess_options, "enable_cpu_mem_arena"):
-        sess_options.enable_cpu_mem_arena = False
-    if hasattr(sess_options, "enable_mem_pattern"):
-        sess_options.enable_mem_pattern = False
+    if not cpu_arena_enabled():
+        if hasattr(sess_options, "enable_cpu_mem_arena"):
+            sess_options.enable_cpu_mem_arena = False
+        if hasattr(sess_options, "enable_mem_pattern"):
+            sess_options.enable_mem_pattern = False
 
     return sess_options
 

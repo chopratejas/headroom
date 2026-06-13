@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 from ..config import TransformResult
 from ..onnx_runtime import (
+    ONNX_CPU_ARENA_ENV,
     create_cpu_session_options,
     hf_hub_download_local_first,
     trim_process_heap,
@@ -63,6 +64,18 @@ KOMPRESS_ONNX_INTER_THREADS_ENV = "HEADROOM_KOMPRESS_ONNX_INTER_THREADS"
 KOMPRESS_COREML_CACHE_DIR_ENV = "HEADROOM_KOMPRESS_COREML_CACHE_DIR"
 KOMPRESS_MAX_CONCURRENT_ENV = "HEADROOM_KOMPRESS_MAX_CONCURRENT"
 KOMPRESS_BATCH_SIZE_ENV = "HEADROOM_KOMPRESS_BATCH_SIZE"
+KOMPRESS_ACQUIRE_TIMEOUT_ENV = "HEADROOM_KOMPRESS_ACQUIRE_TIMEOUT_SECONDS"
+KOMPRESS_TIME_BUDGET_ENV = "HEADROOM_KOMPRESS_TIME_BUDGET_SECONDS"
+KOMPRESS_CANARY_THRESHOLD_ENV = "HEADROOM_KOMPRESS_CANARY_SECONDS"
+
+# Both defaults sit well under the proxy's 30s compression-stage timeout so a
+# slow model gives up (passthrough) before the request is abandoned. A thread
+# abandoned by asyncio.wait_for cannot be killed; before these bounds existed,
+# one pathologically slow inference would hold the execution semaphore forever
+# and wedge every subsequent compression in the process.
+_DEFAULT_ACQUIRE_TIMEOUT_SECONDS = 5.0
+_DEFAULT_TIME_BUDGET_SECONDS = 20.0
+_DEFAULT_CANARY_THRESHOLD_SECONDS = 5.0
 
 KompressBackend = Literal["auto", "onnx", "onnx_cpu", "onnx_coreml", "pytorch", "pytorch_mps"]
 
@@ -140,6 +153,80 @@ def _env_int(name: str) -> int | None:
     return value
 
 
+def _env_float(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s must be a number, got %r; ignoring", name, raw)
+        return None
+
+
+def _acquire_timeout_seconds() -> float | None:
+    """Max seconds to wait for the execution semaphore. <=0 disables the bound."""
+    raw = _env_float(KOMPRESS_ACQUIRE_TIMEOUT_ENV)
+    if raw is None:
+        return _DEFAULT_ACQUIRE_TIMEOUT_SECONDS
+    return raw if raw > 0 else None
+
+
+def _time_budget_seconds() -> float | None:
+    """Wall-clock budget for one compress/compress_batch call. <=0 disables."""
+    raw = _env_float(KOMPRESS_TIME_BUDGET_ENV)
+    if raw is None:
+        return _DEFAULT_TIME_BUDGET_SECONDS
+    return raw if raw > 0 else None
+
+
+def _canary_threshold_seconds() -> float | None:
+    """Startup canary threshold; inference slower than this disables Kompress.
+
+    <=0 disables the canary entirely.
+    """
+    raw = _env_float(KOMPRESS_CANARY_THRESHOLD_ENV)
+    if raw is None:
+        return _DEFAULT_CANARY_THRESHOLD_SECONDS
+    return raw if raw > 0 else None
+
+
+_CANARY_SENTENCE = (
+    "Headroom probes model latency at startup so a degraded runtime is "
+    "detected before live traffic depends on it."
+)
+
+
+def _canary_words(target_words: int = 120) -> list[str]:
+    """Deterministic probe input sized like a small real compression chunk."""
+    words = _CANARY_SENTENCE.split()
+    reps = (target_words // len(words)) + 1
+    return (words * reps)[:target_words]
+
+
+# First give-up is a WARNING with remediation hints; repeats drop to DEBUG so a
+# persistently slow machine doesn't emit one warning per compressible message.
+_giveup_warned = False
+
+
+def _log_giveup(reason: str, *, backend: str, device_type: str, n_words: int) -> None:
+    global _giveup_warned
+    level = logging.DEBUG if _giveup_warned else logging.WARNING
+    _giveup_warned = True
+    logger.log(
+        level,
+        "Kompress giving up (%s) backend=%s device=%s words=%d — content passes "
+        "through uncompressed. If this persists, ML inference on this machine is "
+        "too slow for inline compression; tune %s / %s or disable Kompress.",
+        reason,
+        backend,
+        device_type,
+        n_words,
+        KOMPRESS_TIME_BUDGET_ENV,
+        KOMPRESS_ACQUIRE_TIMEOUT_ENV,
+    )
+
+
 def _onnx_session_options(ort: Any) -> Any:
     return create_cpu_session_options(
         ort,
@@ -184,6 +271,25 @@ def _execution_semaphore(backend: str, device_type: str) -> threading.BoundedSem
             semaphore = threading.BoundedSemaphore(limit)
             _execution_semaphores[key] = semaphore
         return semaphore
+
+
+def _acquire_bounded(
+    semaphore: threading.BoundedSemaphore,
+    acquire_timeout: float | None,
+    remaining_budget: float | None,
+) -> bool:
+    """Acquire ``semaphore``, waiting at most the tighter of the two bounds.
+
+    Returns False on timeout. An unbounded wait here is how one stuck
+    inference (e.g. degraded ONNX on Windows) used to wedge every other
+    compression in the process: abandoned executor threads queued forever
+    on the semaphore. With both bounds disabled (<=0) this degrades to the
+    legacy blocking acquire.
+    """
+    bounds = [b for b in (acquire_timeout, remaining_budget) if b is not None]
+    if not bounds:
+        return semaphore.acquire()
+    return semaphore.acquire(timeout=max(0.0, min(bounds)))
 
 
 def _batch_size() -> int:
@@ -739,6 +845,10 @@ class KompressCompressor(Transform):
 
     def __init__(self, config: KompressConfig | None = None):
         self.config = config or KompressConfig()
+        # Set by the preload canary when inference is too slow to be useful;
+        # compress()/compress_batch() then pass content through untouched.
+        self._degraded_reason: str | None = None
+        self._canary_thread: threading.Thread | None = None
 
     def preload(self, *, allow_download: bool = True) -> str:
         """Load the backing model/tokenizer and return the selected backend.
@@ -748,12 +858,86 @@ class KompressCompressor(Transform):
         raised so the caller can defer the download to first use. Startup eager
         preload uses this so a cold cache cannot block the proxy from binding
         its port.
+
+        On a successful load this also kicks off a timed canary inference on a
+        background thread: a machine where one small forward pass takes
+        multiple seconds (seen with degraded ONNX runtimes on Windows) can
+        never finish real compression inside the proxy's stage timeout, so
+        Kompress fail-safes to passthrough once the probe verdict lands. The
+        probe must NOT run inline — preload blocks proxy startup (the HTTP
+        server binds after it), and on slow hardware the probe itself takes
+        tens of seconds. Until the verdict, the per-call acquire/budget bounds
+        keep any slow inference from wedging requests.
         """
 
-        _model, _tokenizer, backend = _load_kompress(
+        model, tokenizer, backend = _load_kompress(
             self.config.model_id, self.config.device, allow_download=allow_download
         )
+
+        threshold = _canary_threshold_seconds()
+        if threshold is not None:
+            self._canary_thread = threading.Thread(
+                target=self._run_canary,
+                args=(model, tokenizer, backend, threshold),
+                name="kompress-canary",
+                daemon=True,
+            )
+            self._canary_thread.start()
         return backend
+
+    def _run_canary(self, model: Any, tokenizer: Any, backend: str, threshold: float) -> None:
+        try:
+            elapsed = self._timed_canary(model, tokenizer, backend)
+            if elapsed > threshold:
+                # One retry: the first Run pays one-off kernel/allocator
+                # warmup that shouldn't condemn a healthy machine.
+                elapsed = self._timed_canary(model, tokenizer, backend)
+        except Exception as e:
+            # The canary must never poison the compressor — compress() has
+            # its own error handling for whatever is wrong with the model.
+            logger.debug("Kompress canary probe skipped: %s", e)
+            return
+
+        if elapsed > threshold:
+            self._degraded_reason = (
+                f"canary inference took {elapsed:.1f}s (threshold {threshold:.1f}s)"
+            )
+            logger.warning(
+                "Kompress canary inference took %.1fs (threshold %.1fs, %d-word probe) — "
+                "ML compression DISABLED for this run; content passes through "
+                "uncompressed instead of timing out every request. On Windows ensure "
+                "the ONNX CPU arena is enabled (%s=1); tune or disable this check "
+                "via %s.",
+                elapsed,
+                threshold,
+                len(_canary_words()),
+                ONNX_CPU_ARENA_ENV,
+                KOMPRESS_CANARY_THRESHOLD_ENV,
+            )
+        else:
+            logger.debug("Kompress canary inference: %.0fms", elapsed * 1000)
+
+    def _timed_canary(self, model: Any, tokenizer: Any, backend: str) -> float:
+        """Run one small inference and return its wall-clock seconds."""
+        words = _canary_words()
+        is_onnx = backend == "onnx"
+        encoding = tokenizer(
+            words,
+            is_split_into_words=True,
+            truncation=True,
+            max_length=512,
+            padding=True,
+            return_tensors="np" if is_onnx else "pt",
+        )
+        input_ids = encoding["input_ids"]
+        attention_mask = encoding["attention_mask"]
+        if not is_onnx:
+            device = next(model.parameters()).device
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+        started = time.perf_counter()
+        model.get_keep_mask(input_ids, attention_mask)
+        return time.perf_counter() - started
 
     def compress(
         self,
@@ -780,7 +964,7 @@ class KompressCompressor(Transform):
         words = content.split()
         n_words = len(words)
 
-        if n_words < 10:
+        if n_words < 10 or self._degraded_reason is not None:
             return self._passthrough(content, n_words)
 
         try:
@@ -805,7 +989,24 @@ class KompressCompressor(Transform):
             inference_ms = 0.0
             chunk_count = 0
 
+            semaphore = _execution_semaphore(backend, device_type)
+            acquire_timeout = _acquire_timeout_seconds()
+            budget = _time_budget_seconds()
+            deadline = time.monotonic() + budget if budget is not None else None
+
             for chunk_start in range(0, n_words, max_chunk_words):
+                remaining: float | None = None
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _log_giveup(
+                            "time budget exhausted",
+                            backend=backend,
+                            device_type=device_type,
+                            n_words=n_words,
+                        )
+                        return self._passthrough(content, n_words)
+
                 chunk_count += 1
                 chunk_words = words[chunk_start : chunk_start + max_chunk_words]
 
@@ -829,7 +1030,15 @@ class KompressCompressor(Transform):
                     input_ids = input_ids.to(device)
                     attention_mask = attention_mask.to(device)
 
-                with _execution_semaphore(backend, device_type):
+                if not _acquire_bounded(semaphore, acquire_timeout, remaining):
+                    _log_giveup(
+                        "model busy (semaphore acquire timed out)",
+                        backend=backend,
+                        device_type=device_type,
+                        n_words=n_words,
+                    )
+                    return self._passthrough(content, n_words)
+                try:
                     inference_started = time.perf_counter()
                     if target_ratio is not None:
                         scores = model.get_scores(input_ids, attention_mask)
@@ -844,6 +1053,8 @@ class KompressCompressor(Transform):
                         else:
                             mask_list = keep_mask[0].cpu()
                     inference_ms += (time.perf_counter() - inference_started) * 1000
+                finally:
+                    semaphore.release()
 
                 if target_ratio is not None:
                     word_scores: dict[int, float] = {}
@@ -992,6 +1203,9 @@ class KompressCompressor(Transform):
         if n == 0:
             return []
 
+        if self._degraded_reason is not None:
+            return [self._passthrough(c, len(c.split())) for c in contents]
+
         # Normalize target_ratio to a per-text list
         if isinstance(target_ratio, list):
             if len(target_ratio) != n:
@@ -1053,7 +1267,36 @@ class KompressCompressor(Transform):
         kept_ids_per_text: dict[int, set[int]] = {i: set() for i in range(n) if results[i] is None}
         inference_ms = 0.0
 
+        semaphore = _execution_semaphore(backend, device_type)
+        acquire_timeout = _acquire_timeout_seconds()
+        budget = _time_budget_seconds()
+        deadline = time.monotonic() + budget if budget is not None else None
+
+        def _bail_remaining(reason: str, batch_start: int) -> None:
+            # A text with ANY unprocessed chunk must pass through whole —
+            # compressing from partial chunk coverage would silently drop the
+            # words of the chunks that never ran.
+            _log_giveup(
+                reason,
+                backend=backend,
+                device_type=device_type,
+                n_words=sum(len(c[2]) for c in chunk_queue[batch_start:]),
+            )
+            for text_idx, _, _, _ in chunk_queue[batch_start:]:
+                if results[text_idx] is None:
+                    results[text_idx] = self._passthrough(
+                        contents[text_idx], len(word_lists[text_idx])
+                    )
+                    kept_ids_per_text.pop(text_idx, None)
+
         for batch_start in range(0, len(chunk_queue), batch_size):
+            remaining: float | None = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _bail_remaining("time budget exhausted", batch_start)
+                    break
+
             batch = chunk_queue[batch_start : batch_start + batch_size]
             batch_word_lists = [c[2] for c in batch]
 
@@ -1077,10 +1320,15 @@ class KompressCompressor(Transform):
                     attention_mask = attention_mask.to(device)
 
                 # Single forward pass for all chunks in this batch.
-                with _execution_semaphore(backend, device_type):
+                if not _acquire_bounded(semaphore, acquire_timeout, remaining):
+                    _bail_remaining("model busy (semaphore acquire timed out)", batch_start)
+                    break
+                try:
                     inference_started = time.perf_counter()
                     scores = model.get_scores(input_ids, attention_mask)
                     inference_ms += (time.perf_counter() - inference_started) * 1000
+                finally:
+                    semaphore.release()
 
                 for batch_idx, (text_idx, chunk_start, _chunk_words, ratio) in enumerate(batch):
                     word_ids = encoding.word_ids(batch_index=batch_idx)
