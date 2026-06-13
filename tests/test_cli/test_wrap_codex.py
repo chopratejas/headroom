@@ -350,6 +350,30 @@ class TestSubscriptionRouting:
         content = (tmp_path / ".codex" / "config.toml").read_text()
         assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in content
 
+    def test_inject_emits_requires_openai_auth_for_chatgpt(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        (config_dir / "auth.json").write_text('{"auth_mode": "chatgpt"}', encoding="utf-8")
+
+        wrap_mod._inject_codex_provider_config(8787)
+
+        assert "requires_openai_auth = true" in (config_dir / "config.toml").read_text()
+
+    def test_inject_omits_requires_openai_auth_for_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        (config_dir / "auth.json").write_text('{"auth_mode": "apikey"}', encoding="utf-8")
+
+        wrap_mod._inject_codex_provider_config(8787)
+
+        assert "requires_openai_auth" not in (config_dir / "config.toml").read_text()
+
     def test_openai_base_url_port_updates_on_rewrap(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -515,6 +539,67 @@ def test_start_proxy_uses_separate_session_for_signal_isolation(
 
     assert isinstance(proc, FakeProc)
     assert popen_kwargs["start_new_session"] == (wrap_mod.os.name == "posix")
+
+
+@pytest.mark.parametrize("agent_type", ["claude", "codex", "cursor"])
+def test_start_proxy_applies_agent_90_defaults(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, agent_type: str
+) -> None:
+    """Wrapped coding agents should start the proxy with high-savings defaults."""
+    popen_kwargs: dict[str, object] = {}
+
+    class FakeProc:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeProc:
+        popen_kwargs.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+    monkeypatch.setattr(wrap_mod, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_mod.subprocess, "Popen", fake_popen)
+
+    wrap_mod._start_proxy(8787, agent_type=agent_type)
+
+    env = popen_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["HEADROOM_SAVINGS_PROFILE"] == "agent-90"
+    assert env["HEADROOM_TARGET_RATIO"] == "0.10"
+    assert env["HEADROOM_MAX_ITEMS"] == "8"
+    assert env["HEADROOM_SMART_CRUSHER_COMPACTION"] == "0"
+
+
+def test_start_proxy_preserves_explicit_savings_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """User-provided savings env vars should override wrapper defaults."""
+    popen_kwargs: dict[str, object] = {}
+
+    class FakeProc:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeProc:
+        popen_kwargs.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setenv("HEADROOM_TARGET_RATIO", "0.20")
+    monkeypatch.setenv("HEADROOM_MAX_ITEMS", "12")
+    monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+    monkeypatch.setattr(wrap_mod, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_mod.subprocess, "Popen", fake_popen)
+
+    wrap_mod._start_proxy(8787, agent_type="codex")
+
+    env = popen_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["HEADROOM_TARGET_RATIO"] == "0.20"
+    assert env["HEADROOM_MAX_ITEMS"] == "12"
 
 
 def test_launch_tool_ignores_sigint_in_wrapper(
@@ -741,3 +826,64 @@ def test_unwrap_codex_preserves_unrelated_sections(
     assert result.exit_code == 0, result.output
     restored = config_file.read_text()
     assert restored == original
+
+
+# ---------------------------------------------------------------------------
+# Per-project savings: env_http_headers in the injected provider block
+# ---------------------------------------------------------------------------
+
+
+class TestCodexProjectHeaderConfig:
+    """The injected provider maps X-Headroom-Project to HEADROOM_PROJECT.
+
+    Codex's ``env_http_headers`` sends a header only when the mapped env var
+    is set at Codex runtime, so `headroom wrap codex` exports
+    ``HEADROOM_PROJECT`` and the proxy attributes savings per project.
+    """
+
+    def test_inject_writes_env_http_headers_mapping(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _set_test_home(monkeypatch, tmp_path)
+
+        wrap_mod._inject_codex_provider_config(8787)
+
+        content = (tmp_path / ".codex" / "config.toml").read_text()
+        assert 'env_http_headers = { "X-Headroom-Project" = "HEADROOM_PROJECT" }' in content
+
+    def test_env_http_headers_inside_provider_section(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The mapping must live inside [model_providers.headroom], before
+        the closing marker, so it applies to the Headroom provider."""
+        _set_test_home(monkeypatch, tmp_path)
+
+        wrap_mod._inject_codex_provider_config(8787)
+
+        content = (tmp_path / ".codex" / "config.toml").read_text()
+        section_start = content.index("[model_providers.headroom]")
+        mapping_pos = content.index("env_http_headers")
+        end_marker_pos = content.index(wrap_mod._CODEX_END_MARKER, section_start)
+        assert section_start < mapping_pos < end_marker_pos
+
+    def test_strip_removes_block_with_env_http_headers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """_strip_codex_headroom_blocks removes the whole injected block,
+        including the new env_http_headers line, leaving user content."""
+        _set_test_home(monkeypatch, tmp_path)
+        config_dir = tmp_path / ".codex"
+        config_dir.mkdir()
+        config_file = config_dir / "config.toml"
+        original = '[profiles.default]\nmodel = "gpt-4o"\n'
+        config_file.write_text(original)
+
+        wrap_mod._inject_codex_provider_config(8787)
+        wrapped = config_file.read_text()
+        assert "env_http_headers" in wrapped
+
+        cleaned = wrap_mod._strip_codex_headroom_blocks(wrapped)
+        assert "env_http_headers" not in cleaned
+        assert "X-Headroom-Project" not in cleaned
+        assert "[model_providers.headroom]" not in cleaned
+        assert 'model = "gpt-4o"' in cleaned
