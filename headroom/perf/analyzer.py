@@ -11,11 +11,13 @@ Anthropic), not the full input price.  This prevents overstating dollar savings.
 from __future__ import annotations
 
 import logging
+import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 
 from headroom import paths as _paths
+from headroom.pricing.litellm_pricing import resolve_litellm_model
 
 log = logging.getLogger(__name__)
 
@@ -62,38 +64,6 @@ try:
 except ImportError:
     _LITELLM_AVAILABLE = False
 
-# Cache resolved model names (e.g. "claude-opus-4-6" → "anthropic/claude-opus-4-6")
-_resolved_model_cache: dict[str, str] = {}
-
-
-def _resolve_model(model: str) -> str:
-    """Resolve to a model name LiteLLM recognises, adding provider prefix if needed.
-
-    TODO: Duplicated with CostTracker._resolve_litellm_model in proxy/server.py.
-    Extract to shared utility.
-    """
-    if model in _resolved_model_cache:
-        return _resolved_model_cache[model]
-
-    if not _LITELLM_AVAILABLE:
-        _resolved_model_cache[model] = model
-        return model
-
-    # Try as-is
-    if model in _litellm.model_cost:
-        _resolved_model_cache[model] = model
-        return model
-
-    # Try provider prefixes
-    for prefix in ("anthropic/", "openai/", "google/", "mistral/", "deepseek/"):
-        prefixed = f"{prefix}{model}"
-        if prefixed in _litellm.model_cost:
-            _resolved_model_cache[model] = prefixed
-            return prefixed
-
-    _resolved_model_cache[model] = model
-    return model
-
 
 def _litellm_cost(
     model: str,
@@ -107,7 +77,7 @@ def _litellm_cost(
     """
     if not _LITELLM_AVAILABLE:
         return None
-    resolved = _resolve_model(model)
+    resolved = resolve_litellm_model(model)
     try:
         input_cost, _ = _litellm.cost_per_token(
             model=resolved,
@@ -125,7 +95,7 @@ def _get_list_price(model: str) -> float | None:
     """Get list input price per 1M tokens."""
     if not _LITELLM_AVAILABLE:
         return None
-    resolved = _resolve_model(model)
+    resolved = resolve_litellm_model(model)
     info = _litellm.model_cost.get(resolved, {})
     cost_per_token = info.get("input_cost_per_token")
     return cost_per_token * 1_000_000 if cost_per_token else None
@@ -142,7 +112,14 @@ def _parse_kv(kv_str: str) -> dict[str, str]:
     # Handle transforms= specially since its value contains spaces
     if "transforms=" in kv_str:
         before, transforms_val = kv_str.split("transforms=", 1)
-        result["transforms"] = transforms_val.strip()
+        transform_parts: list[str] = []
+        for part in transforms_val.split():
+            if "=" in part:
+                k, v = part.split("=", 1)
+                result[k] = v
+            else:
+                transform_parts.append(part)
+        result["transforms"] = " ".join(transform_parts).strip()
         kv_str = before
     for part in kv_str.split():
         if "=" in part:
@@ -158,6 +135,7 @@ class PerfRecord:
     timestamp: str
     request_id: str
     model: str = ""
+    client: str = ""
     num_messages: int = 0
     tokens_before: int = 0
     tokens_after: int = 0
@@ -257,7 +235,8 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
     report = PerfReport()
     report.requested_hours = last_n_hours
 
-    if not LOG_DIR.exists():
+    log_dir = _paths.log_dir() if os.environ.get("HEADROOM_WORKSPACE_DIR") else LOG_DIR
+    if not log_dir.exists():
         return report
 
     cutoff = datetime.now() - timedelta(hours=last_n_hours) if last_n_hours > 0 else None
@@ -281,7 +260,7 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
             report.newest_kept_ts = ts_str
 
     # Collect log files: proxy.log, proxy.log.1, proxy.log.2, ...
-    log_files = sorted(LOG_DIR.glob("proxy.log*"), key=lambda p: p.stat().st_mtime)
+    log_files = sorted(log_dir.glob("proxy.log*"), key=lambda p: p.stat().st_mtime)
 
     for log_file in log_files:
         report.log_files_read += 1
@@ -321,6 +300,7 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                                 timestamp=ts,
                                 request_id=m.group("rid"),
                                 model=kv.get("model", ""),
+                                client=kv.get("client", ""),
                                 num_messages=int(kv.get("msgs", 0)),
                                 tokens_before=int(kv.get("tok_before", 0)),
                                 tokens_after=int(kv.get("tok_after", 0)),
@@ -620,9 +600,132 @@ def format_report(report: PerfReport) -> str:
     lines.append(
         f"Log files: {report.log_files_read} | Lines parsed: {report.total_lines_parsed:,}"
     )
-    lines.append(f"Log dir: {LOG_DIR}")
+    lines.append(f"Log dir: {_paths.log_dir()}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable views (JSON / CSV) — issue #595
+# ---------------------------------------------------------------------------
+#
+# `parse_log_files()` already returns a fully-structured `PerfReport`; these
+# helpers expose it without forcing CI pipelines, dashboards, or agent
+# harnesses to scrape the colored text report. The aggregate numbers mirror
+# `format_report()` exactly so a JSON consumer and a human reading the report
+# never disagree.
+
+# Column order for the per-record (`--raw`) machine output. Kept as a module
+# constant so the CLI's CSV writer and any external consumer share one source
+# of truth.
+PERF_RECORD_FIELDS = [
+    "timestamp",
+    "request_id",
+    "model",
+    "client",
+    "num_messages",
+    "tokens_before",
+    "tokens_after",
+    "tokens_saved",
+    "cache_read",
+    "cache_write",
+    "cache_hit_pct",
+    "optimization_ms",
+    "transforms",
+]
+
+
+def _pct(saved: int, before: int) -> float:
+    """Reduction percentage, rounded to 1dp, guarding divide-by-zero."""
+    return round(saved / before * 100, 1) if before > 0 else 0.0
+
+
+def build_perf_summary(report: PerfReport) -> dict:
+    """Aggregate a ``PerfReport`` into a JSON-serialisable summary dict.
+
+    The shape mirrors the human-readable ``format_report`` numbers so the same
+    data drives CI regression guards (``jq '.savings_pct < 70'``), dashboards,
+    and end-of-session savings summaries in agent wrappers.
+    """
+    records = report.perf_records
+
+    total_before = sum(r.tokens_before for r in records)
+    total_after = sum(r.tokens_after for r in records)
+    total_saved = sum(r.tokens_saved for r in records)
+
+    total_cr = sum(r.cache_read for r in records)
+    total_cw = sum(r.cache_write for r in records)
+    total_cache = total_cr + total_cw
+    cache_hit_pct = round(total_cr / total_cache * 100, 1) if total_cache > 0 else 0.0
+
+    by_model_groups: dict[str, list[PerfRecord]] = {}
+    for r in records:
+        by_model_groups.setdefault(r.model, []).append(r)
+    by_model = []
+    for model, recs in sorted(by_model_groups.items()):
+        m_before = sum(r.tokens_before for r in recs)
+        m_after = sum(r.tokens_after for r in recs)
+        m_saved = sum(r.tokens_saved for r in recs)
+        by_model.append(
+            {
+                "model": model,
+                "requests": len(recs),
+                "tokens_before": m_before,
+                "tokens_after": m_after,
+                "tokens_saved": m_saved,
+                "savings_pct": _pct(m_saved, m_before),
+                "list_price_per_mtok": _get_list_price(model),
+            }
+        )
+
+    by_transform_groups: dict[str, list[TransformRecord]] = {}
+    for tr in report.transform_records:
+        by_transform_groups.setdefault(tr.name, []).append(tr)
+    by_transform = []
+    for name, t_recs in sorted(
+        by_transform_groups.items(), key=lambda kv: -sum(r.tokens_saved for r in kv[1])
+    ):
+        t_before = sum(r.tokens_before for r in t_recs)
+        t_saved = sum(r.tokens_saved for r in t_recs)
+        by_transform.append(
+            {
+                "transform": name,
+                "uses": len(t_recs),
+                "tokens_before": t_before,
+                "tokens_saved": t_saved,
+                "savings_pct": _pct(t_saved, t_before),
+            }
+        )
+
+    return {
+        "window_hours": report.requested_hours,
+        "actual_window": {
+            "oldest": report.oldest_kept_ts,
+            "newest": report.newest_kept_ts,
+        },
+        "records_filtered_out": report.records_filtered_out,
+        "total_requests": len(records),
+        "total_tokens_before": total_before,
+        "total_tokens_after": total_after,
+        "tokens_saved": total_saved,
+        "savings_pct": _pct(total_saved, total_before),
+        "cache_read_tokens": total_cr,
+        "cache_write_tokens": total_cw,
+        "cache_hit_pct": cache_hit_pct,
+        "by_model": by_model,
+        "by_transform": by_transform,
+        "log_files_read": report.log_files_read,
+        "total_lines_parsed": report.total_lines_parsed,
+    }
+
+
+def perf_records_as_dicts(report: PerfReport) -> list[dict]:
+    """Per-record view of the parsed PERF entries (for ``--raw`` machine output).
+
+    ``transforms`` stays a list so JSON consumers keep structure; the CSV
+    writer flattens it to a comma-joined string at the edge.
+    """
+    return [asdict(r) for r in report.perf_records]
 
 
 def _format_toin_highlights() -> list[str]:

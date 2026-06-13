@@ -3,6 +3,14 @@ title: Installation
 description: Install Headroom via pip, npm, or Docker. Includes all Python extras, TypeScript setup, Docker image tags, and environment variables.
 ---
 
+---
+
+## Install options
+
+**pip** - you're writing Python, or you need the CLI (`headroom proxy`, `wrap`, `mcp`, `learn`, `perf`), regardless of what language your app is in.
+
+**npm** - you're writing TypeScript/Node and want inline `compress()`, SDK wrapping (`withHeadroom`), or Vercel AI SDK middleware.
+
 ## Python
 
 Headroom requires **Python 3.10+** and is published as `headroom-ai` on PyPI.
@@ -43,6 +51,7 @@ pip install "headroom-ai[all]"
 | `langchain` | LangChain `HeadroomChatModel` wrapper | `pip install "headroom-ai[langchain]"` |
 | `agno` | Agno `HeadroomAgnoModel` wrapper | `pip install "headroom-ai[agno]"` |
 | `evals` | Evaluation framework (GSM8K, SQuAD, BFCL benchmarks) | `pip install "headroom-ai[evals]"` |
+| `pytorch-mps` | Apple-GPU (MPS) memory-embedder offload — **macOS only**, not in `[all]` (torch + sentence-transformers); opt in with `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps` | `pip install "headroom-ai[pytorch-mps]"` |
 | `all` | Everything above | `pip install "headroom-ai[all]"` |
 
 You can combine extras:
@@ -226,6 +235,40 @@ These variables configure Headroom at runtime. Set them in your shell, `.env` fi
 |---|---|---|
 | `HEADROOM_BASE_URL` | `http://localhost:8787` | Proxy URL for the TypeScript SDK |
 | `HEADROOM_API_KEY` | _(none)_ | API key if the proxy requires auth |
+
+## Troubleshooting
+
+These are common issues faced during initial setup and how to resolve them.
+
+### Python version error
+
+This project requires **Python 3.10+**.
+
+Check your version:
+
+```bash
+python3 --version
+```
+
+If needed (Mac with Homebrew):
+
+```bash
+brew install python@3.11
+```
+
+### Editable install fails (`pip install -e`)
+
+Upgrade pip to the latest version:
+
+```bash
+python3 -m pip install --upgrade pip
+```
+
+### Missing `cargo` (Rust error)
+
+Some tests require Rust tooling.
+
+The recommended way to install rust is using `rustup`. You can find the official installation instructions [here](https://rust-lang.org/tools/install/).
 
 ## Next steps
 
