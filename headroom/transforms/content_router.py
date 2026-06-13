@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -187,6 +188,72 @@ def _create_content_signature(
         )
     except ImportError:
         return None
+
+
+def _gain_bucket(gain: float) -> str:
+    """Quantize a net-cost gain into a coarse magnitude band for markers.
+
+    The net-cost gate emits a ``netcost:skip:<band>`` transform marker. Using
+    the raw rounded gain would make every distinct value a unique marker and
+    blow up the cardinality of any ``transforms_applied`` aggregation. Bands
+    keep the signal (rough magnitude + sign) while bounding cardinality to a
+    handful of values. The exact gain is still logged at INFO for debugging.
+    """
+    if not math.isfinite(gain):
+        return "nan"
+    mag = abs(gain)
+    if mag < 100:
+        band = "lt100"
+    elif mag < 1000:
+        band = "lt1k"
+    elif mag < 10000:
+        band = "lt10k"
+    else:
+        band = "gte10k"
+    if gain == 0:
+        return "0"
+    return ("neg_" if gain < 0 else "") + band
+
+
+def _netcost_message_tokens(message: dict[str, Any], tokenizer: Tokenizer) -> int:
+    """Token count of a message for net-cost suffix (S) estimation.
+
+    String content is counted directly. Anthropic block-list content is
+    counted by summing the text-bearing fields (``text`` blocks and
+    ``tool_result`` content) rather than stringifying the whole list, which
+    would count Python ``repr`` punctuation and type names and badly
+    miscount S — the value that drives the break-even gate decision.
+    """
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return tokenizer.count_text(content)
+    if not isinstance(content, list):
+        return tokenizer.count_text(str(content))
+    total = 0
+    for block in content:
+        if not isinstance(block, dict):
+            total += tokenizer.count_text(str(block))
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            total += tokenizer.count_text(str(block.get("text", "")))
+        elif block_type == "tool_result":
+            tc = block.get("content", "")
+            if isinstance(tc, str):
+                total += tokenizer.count_text(tc)
+            elif isinstance(tc, list):
+                for sub in tc:
+                    if isinstance(sub, dict) and sub.get("type") == "text":
+                        total += tokenizer.count_text(str(sub.get("text", "")))
+                    else:
+                        total += tokenizer.count_text(str(sub))
+            else:
+                total += tokenizer.count_text(str(tc))
+        else:
+            # Other blocks (image, tool_use input, …) — repr is a rough proxy
+            # but bounded; these rarely dominate a suffix.
+            total += tokenizer.count_text(str(block))
+    return total
 
 
 class CompressionCache:
@@ -1926,13 +1993,23 @@ class ContentRouter(Transform):
         # Malformed env values fall back to defaults with a warning rather
         # than crashing the request path (same posture as the #851 breaker
         # env guard).
+        # ``float()`` parses "nan"/"inf" without raising, so a non-finite
+        # check is needed in addition to the ValueError guard — otherwise a
+        # malformed-but-parseable value would be logged verbatim (misleading
+        # telemetry) even though ``net_mutation_gain`` clamps it internally.
         reads, p_alive = 10.0, 1.0
         try:
-            reads = float(os.environ.get("HEADROOM_NET_COST_EXPECTED_READS", "") or 10.0)
+            _reads = float(os.environ.get("HEADROOM_NET_COST_EXPECTED_READS", "") or 10.0)
+            if not math.isfinite(_reads):
+                raise ValueError("non-finite")
+            reads = _reads
         except ValueError:
             logger.warning("HEADROOM_NET_COST_EXPECTED_READS malformed; using 10")
         try:
-            p_alive = float(os.environ.get("HEADROOM_NET_COST_P_ALIVE", "") or 1.0)
+            _p_alive = float(os.environ.get("HEADROOM_NET_COST_P_ALIVE", "") or 1.0)
+            if not math.isfinite(_p_alive):
+                raise ValueError("non-finite")
+            p_alive = _p_alive
         except ValueError:
             logger.warning("HEADROOM_NET_COST_P_ALIVE malformed; using 1.0")
         gain = float(policy.net_mutation_gain(delta_t, suffix, reads, p_alive))
@@ -1953,7 +2030,11 @@ class ContentRouter(Transform):
         else:
             route_counts.setdefault("netcost_skipped", 0)
             route_counts["netcost_skipped"] += 1
-            transforms_applied.append(f"netcost:skip:{gain:.0f}")
+            # Bucket the gain into a coarse magnitude band rather than emitting
+            # the raw value: a distinct numeric gain per skip would explode the
+            # cardinality of any ``transforms_applied`` aggregation. The exact
+            # value is still in the INFO log above for debugging.
+            transforms_applied.append(f"netcost:skip:{_gain_bucket(gain)}")
         return allowed
 
     def apply(
@@ -2137,8 +2218,8 @@ class ContentRouter(Transform):
         if netcost_enabled:
             netcost_suffix_tokens = [0] * (num_messages + 1)
             for j in range(num_messages - 1, -1, -1):
-                netcost_suffix_tokens[j] = netcost_suffix_tokens[j + 1] + tokenizer.count_text(
-                    str(messages[j].get("content", ""))
+                netcost_suffix_tokens[j] = netcost_suffix_tokens[j + 1] + _netcost_message_tokens(
+                    messages[j], tokenizer
                 )
 
         # Tasks: list of (slot_index, content, context, bias, content_key)
