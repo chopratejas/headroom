@@ -1359,9 +1359,7 @@ class ContentRouter(Transform):
                 # (e.g. CODE_AWARE's code-compressor-unavailable path at
                 # line 1249).  Prevents a duplicate strategy_chain entry
                 # and a wasted second _try_ml_compressor call.
-                already_tried_kompress = (
-                    CompressionStrategy.KOMPRESS.value in strategy_chain
-                )
+                already_tried_kompress = CompressionStrategy.KOMPRESS.value in strategy_chain
                 if not already_tried_kompress:
                     strategy_chain.append(CompressionStrategy.KOMPRESS.value)
                     fallback_compressed, fallback_tokens = self._try_ml_compressor(
