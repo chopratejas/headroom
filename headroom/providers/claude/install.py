@@ -14,7 +14,14 @@ from .runtime import proxy_base_url
 def build_install_env(*, port: int, backend: str) -> dict[str, str]:
     """Build the persistent install environment for Claude."""
     del backend
-    return {"ANTHROPIC_BASE_URL": proxy_base_url(port)}
+    # ENABLE_TOOL_SEARCH keeps Claude Code deferring MCP/system tool schemas
+    # behind the server-side Tool Search Tool when pointed at the proxy's custom
+    # ANTHROPIC_BASE_URL; without it Claude Code materializes every schema into
+    # its context window (GH #746) — breaking sub-agents and forcing compaction.
+    return {
+        "ANTHROPIC_BASE_URL": proxy_base_url(port),
+        "ENABLE_TOOL_SEARCH": "true",
+    }
 
 
 def apply_provider_scope(manifest: DeploymentManifest) -> ManagedMutation | None:
