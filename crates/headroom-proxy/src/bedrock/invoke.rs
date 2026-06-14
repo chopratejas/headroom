@@ -69,6 +69,11 @@ use headroom_core::auth_mode::AuthMode;
 /// (`anthropic.claude-3-haiku-...`). Literal-match per project rule
 /// "no regexes for parsing the model ID".
 const ANTHROPIC_VENDOR_PREFIX: &str = "anthropic.";
+const ANTHROPIC_VENDOR_SEGMENT: &str = ".anthropic.";
+
+fn is_anthropic_model_id(model_id: &str) -> bool {
+    model_id.starts_with(ANTHROPIC_VENDOR_PREFIX) || model_id.contains(ANTHROPIC_VENDOR_SEGMENT)
+}
 
 /// RAII guard that observes the `bedrock_invoke_latency_seconds`
 /// histogram on drop. Created at handler entry; observed when the
@@ -155,7 +160,7 @@ pub async fn handle_invoke(
         "bedrock invoke route received request"
     );
 
-    let is_anthropic = model_id.starts_with(ANTHROPIC_VENDOR_PREFIX);
+    let is_anthropic = is_anthropic_model_id(&model_id);
     let outbound_body: Bytes = if is_anthropic {
         run_anthropic_compression(&body, &state, auth_mode, &request_id)
     } else {
@@ -366,21 +371,21 @@ fn run_anthropic_compression(
     // Validate envelope shape. If the body isn't a valid Bedrock
     // envelope we still forward verbatim — the compressor would have
     // refused too — but log loudly.
-    if let Err(e) = BedrockEnvelope::parse(body) {
-        tracing::warn!(
-            event = "bedrock_envelope_parse_error",
+    let parsed_envelope = BedrockEnvelope::parse(body).is_ok();
+    if parsed_envelope {
+        tracing::info!(
+            event = "bedrock_envelope_parsed",
             request_id = %request_id,
-            error = %e,
-            "bedrock invoke: envelope parse failed; passing body through unchanged"
+            body_bytes = body.len(),
+            "bedrock invoke: envelope validated; dispatching to live-zone compressor"
         );
-        return body.clone();
+    } else {
+        tracing::info!(
+            event = "bedrock_envelope_parse_skipped",
+            request_id = %request_id,
+            "bedrock invoke: envelope parse skipped; attempting generic anthropic compression"
+        );
     }
-    tracing::info!(
-        event = "bedrock_envelope_parsed",
-        request_id = %request_id,
-        body_bytes = body.len(),
-        "bedrock invoke: envelope validated; dispatching to live-zone compressor"
-    );
 
     // PR-E3: Bedrock uses IAM-signed AWS SigV4 downstream. Inbound
     // requests to the proxy may or may not carry their own auth, but
@@ -410,20 +415,24 @@ fn run_anthropic_compression(
             body.clone()
         }
         AnthropicOutcome::Compressed { body: new_body, .. } => {
-            // Defence-in-depth: re-emit so anthropic_version is the
-            // first key. With preserve_order this is a no-op on the
-            // happy path.
-            match BedrockEnvelope::ensure_anthropic_version_first(&new_body) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(
-                        event = "bedrock_envelope_reemit_failed",
-                        request_id = %request_id,
-                        error = %e,
-                        "bedrock invoke: failed to re-emit envelope; falling back to original body"
-                    );
-                    body.clone()
+            if parsed_envelope {
+                // Defence-in-depth: re-emit so anthropic_version is the
+                // first key. With preserve_order this is a no-op on the
+                // happy path.
+                match BedrockEnvelope::ensure_anthropic_version_first(&new_body) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!(
+                            event = "bedrock_envelope_reemit_failed",
+                            request_id = %request_id,
+                            error = %e,
+                            "bedrock invoke: failed to re-emit envelope; falling back to original body"
+                        );
+                        body.clone()
+                    }
                 }
+            } else {
+                new_body
             }
         }
     }
@@ -544,6 +553,36 @@ mod tests {
         assert!("anthropic.claude-3-5-sonnet-20241022-v2:0".starts_with(ANTHROPIC_VENDOR_PREFIX));
         assert!(!"amazon.titan-text-express-v1".starts_with(ANTHROPIC_VENDOR_PREFIX));
         assert!(!"meta.llama3-70b-instruct-v1:0".starts_with(ANTHROPIC_VENDOR_PREFIX));
+    }
+
+    #[test]
+    fn anthropic_model_id_matches_cross_region_inference_profiles() {
+        // Bare vendor-prefixed IDs (direct InvokeModel).
+        assert!(is_anthropic_model_id(
+            "anthropic.claude-3-haiku-20240307-v1:0"
+        ));
+        // Cross-region inference-profile IDs carry a geo prefix before
+        // the vendor segment (`eu.`, `us.`, `apac.`, `global.`). These
+        // must still be detected as Anthropic so the live-zone
+        // compressor runs — otherwise EU/global profiles silently skip
+        // compression. Regression guard for the inference-profile gap.
+        assert!(is_anthropic_model_id(
+            "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+        ));
+        assert!(is_anthropic_model_id(
+            "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+        ));
+        assert!(is_anthropic_model_id(
+            "apac.anthropic.claude-3-5-sonnet-20240620-v1:0"
+        ));
+        assert!(is_anthropic_model_id(
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+        ));
+        // Non-Anthropic vendors (including geo-prefixed) stay false.
+        assert!(!is_anthropic_model_id("amazon.titan-text-express-v1"));
+        assert!(!is_anthropic_model_id("meta.llama3-70b-instruct-v1:0"));
+        assert!(!is_anthropic_model_id("eu.amazon.nova-lite-v1:0"));
+        assert!(!is_anthropic_model_id("mistral.voxtral-mini-3b-2507"));
     }
 
     #[test]
