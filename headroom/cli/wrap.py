@@ -498,12 +498,21 @@ def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
     return lean_ctx
 
 
-def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
-    """Remove Headroom/rtk-managed Claude hook entries from settings.json.
+# Hook-command markers Headroom manages in Claude settings.json. unwrap drops
+# any hook entry whose command contains one of these.
+_HEADROOM_HOOK_MARKERS = ("rtk-rewrite", "headroom-init-claude")
 
-    `rtk init --global --auto-patch` installs a Claude PreToolUse hook that
-    points at an ``rtk-rewrite`` script. Unwrap should remove that hook without
-    touching unrelated Claude settings or user-authored hooks.
+
+def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
+    """Remove Headroom-managed entries from Claude settings.json.
+
+    Reverses what ``headroom init claude`` and ``rtk init --auto-patch`` add:
+      * PreToolUse / SessionStart hooks whose command contains a Headroom marker
+        (``rtk-rewrite`` or ``headroom-init-claude``), and
+      * the ``ANTHROPIC_BASE_URL`` proxy-routing env var.
+    Unrelated settings and user-authored hooks are left untouched. (Previously
+    this only matched ``rtk-rewrite`` and returned early when no hooks existed,
+    so init's env + hooks survived unwrap.)
     """
 
     path = settings_path or (Path.home() / ".claude" / "settings.json")
@@ -517,51 +526,65 @@ def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
     if not isinstance(payload, dict):
         return False
 
-    hooks = payload.get("hooks")
-    if not isinstance(hooks, dict):
-        return False
-
     changed = False
-    for event, entries in list(hooks.items()):
-        if not isinstance(entries, list):
-            continue
-        retained_entries: list[Any] = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                retained_entries.append(entry)
+
+    hooks = payload.get("hooks")
+    if isinstance(hooks, dict):
+        for event, entries in list(hooks.items()):
+            if not isinstance(entries, list):
                 continue
-            hook_items = entry.get("hooks")
-            if not isinstance(hook_items, list):
-                retained_entries.append(entry)
-                continue
-            retained_hooks = [
-                item
-                for item in hook_items
-                if not (
-                    isinstance(item, dict) and "rtk-rewrite" in str(item.get("command", "")).lower()
-                )
-            ]
-            if len(retained_hooks) != len(hook_items):
-                changed = True
-            if retained_hooks:
-                retained_entries.append({**entry, "hooks": retained_hooks})
-            elif len(retained_hooks) == len(hook_items):
-                retained_entries.append(entry)
+            retained_entries: list[Any] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    retained_entries.append(entry)
+                    continue
+                hook_items = entry.get("hooks")
+                if not isinstance(hook_items, list):
+                    retained_entries.append(entry)
+                    continue
+                retained_hooks = [
+                    item
+                    for item in hook_items
+                    if not (
+                        isinstance(item, dict)
+                        and any(
+                            marker in str(item.get("command", "")).lower()
+                            for marker in _HEADROOM_HOOK_MARKERS
+                        )
+                    )
+                ]
+                if len(retained_hooks) != len(hook_items):
+                    changed = True
+                if retained_hooks:
+                    retained_entries.append({**entry, "hooks": retained_hooks})
+                elif len(retained_hooks) == len(hook_items):
+                    retained_entries.append(entry)
+                else:
+                    changed = True
+            if retained_entries:
+                hooks[event] = retained_entries
             else:
+                del hooks[event]
                 changed = True
-        if retained_entries:
-            hooks[event] = retained_entries
+
+        if hooks:
+            payload["hooks"] = hooks
         else:
-            del hooks[event]
-            changed = True
+            payload.pop("hooks", None)
+
+    # Remove the ANTHROPIC_BASE_URL proxy-routing env that init/wrap injected,
+    # even when no hooks remain (the early-return bug skipped this).
+    env = payload.get("env")
+    if isinstance(env, dict) and env.pop("ANTHROPIC_BASE_URL", None) is not None:
+        changed = True
+        if env:
+            payload["env"] = env
+        else:
+            payload.pop("env", None)
 
     if not changed:
         return False
 
-    if hooks:
-        payload["hooks"] = hooks
-    else:
-        payload.pop("hooks", None)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return True
 
