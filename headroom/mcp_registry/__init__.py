@@ -21,6 +21,7 @@ from .display import any_succeeded, format_result, format_results
 from .install import (
     DEFAULT_PROXY_URL,
     build_headroom_spec,
+    build_lean_ctx_spec,
     build_serena_spec,
     get_all_registrars,
     install_everywhere,
@@ -39,6 +40,7 @@ __all__ = [
     "ServerSpec",
     "any_succeeded",
     "build_headroom_spec",
+    "build_lean_ctx_spec",
     "build_serena_spec",
     "format_result",
     "format_results",

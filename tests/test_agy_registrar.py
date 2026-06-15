@@ -274,3 +274,27 @@ class TestUnregisterServer:
         reg.register_server(_SPEC)
         assert reg.unregister_server("headroom") is True
         assert reg.unregister_server("headroom") is False
+
+
+class TestBuildLeanCtxSpec:
+    """build_lean_ctx_spec yields an explicit 'lean-ctx mcp' entry, not a bare command."""
+
+    def test_spec_uses_mcp_subcommand_and_data_dir(self) -> None:
+        from headroom.mcp_registry.install import build_lean_ctx_spec
+
+        spec = build_lean_ctx_spec("/usr/bin/lean-ctx", "/home/u/.config/lean-ctx")
+        assert spec.name == "lean-ctx"
+        assert spec.command == "/usr/bin/lean-ctx"
+        assert spec.args == ("mcp",), "must serve via 'lean-ctx mcp', never a bare command"
+        assert spec.env == {"LEAN_CTX_DATA_DIR": "/home/u/.config/lean-ctx"}
+
+    def test_spec_roundtrips_through_registrar(self, tmp_path: Path) -> None:
+        from headroom.mcp_registry.install import build_lean_ctx_spec
+
+        reg = _make_reg(tmp_path)
+        spec = build_lean_ctx_spec("/usr/bin/lean-ctx", "/d")
+        reg.register_server(spec)
+        got = reg.get_server("lean-ctx")
+        assert got is not None
+        assert got.args == ("mcp",)
+        assert got.env == {"LEAN_CTX_DATA_DIR": "/d"}

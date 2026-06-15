@@ -814,3 +814,304 @@ class TestUnwrapAgySerena:
         survived = AgyRegistrar(home_dir=tmp_path).get_server("serena")
         assert survived is not None, "user-managed serena must not be removed"
         assert survived.command == "/opt/my-serena/bin/serena"
+
+
+# ---------------------------------------------------------------------------
+# WU-0: agy print-mode MCP hang fix + lean-ctx context-tool wiring
+# ---------------------------------------------------------------------------
+
+
+class TestAgyPrintModeDetection:
+    """_agy_print_mode flags single-shot non-interactive invocations."""
+
+    def _fn(self):
+        from headroom.cli.wrap import _agy_print_mode
+        return _agy_print_mode
+
+    def test_detects_print(self) -> None:
+        assert self._fn()(("--print", "hello")) is True
+
+    def test_detects_short_p(self) -> None:
+        assert self._fn()(("-p", "hello")) is True
+
+    def test_detects_prompt_alias(self) -> None:
+        assert self._fn()(("--prompt", "hello")) is True
+
+    def test_detects_print_equals_joined(self) -> None:
+        # agy accepts `--print=hi` (live-verified) — must be treated as print mode,
+        # else the interactive branch persists an MCP and the hang returns.
+        assert self._fn()(("--print=hi",)) is True
+
+    def test_detects_prompt_equals_joined(self) -> None:
+        assert self._fn()(("--prompt=hi",)) is True
+
+    def test_detects_short_p_equals_joined(self) -> None:
+        # agy accepts `-p=hi` (live-verified).
+        assert self._fn()(("-p=hi",)) is True
+
+    def test_attached_short_p_value_is_false(self) -> None:
+        # agy REJECTS `-pVALUE` (exit 2, "flags provided but not defined") — it
+        # never reaches MCP init, so it must NOT be treated as print mode.
+        assert self._fn()(("-pHI",)) is False
+
+    def test_interactive_is_false(self) -> None:
+        assert self._fn()(()) is False
+        assert self._fn()(("--model", "x")) is False
+        assert self._fn()(("--model=x",)) is False
+
+
+class TestAgyPrintModeSuppressesMcp:
+    """Print-mode wrap agy must activate NO MCP server (else agy hangs)."""
+
+    def test_print_mode_does_not_register_serena(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        reg = AgyRegistrar(home_dir=tmp_path)
+        assert reg.get_server("serena") is None, (
+            "print mode must not register a Serena MCP entry (it hangs agy)"
+        )
+
+    def test_print_mode_removes_prior_headroom_serena(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.install import build_serena_spec
+        from headroom.mcp_registry.ledger import record_install
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+
+        reg = AgyRegistrar(home_dir=tmp_path)
+        serena_spec = build_serena_spec("ide-assistant")
+        reg.register_server(serena_spec)
+        record_install("agy", serena_spec)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy", "--", "-p", "hi"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server("serena") is None, (
+            "print mode must remove a Headroom-installed Serena entry"
+        )
+
+    def test_print_mode_does_not_register_lean_ctx(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None, (
+            "print mode must not register a lean-ctx MCP entry"
+        )
+
+
+class TestAgyLeanCtxMcpWiring:
+    """Interactive lean-ctx context tool registers a correct, verified MCP entry."""
+
+    def test_registers_correct_spec_and_keeps_on_smoke_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headroom.cli.wrap as wrap_mod
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+        monkeypatch.setattr(
+            "headroom.lean_ctx.get_lean_ctx_path", lambda: Path("/usr/bin/lean-ctx")
+        )
+        # Smoke handshake passes.
+        monkeypatch.setattr(
+            wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: True
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        spec = AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx")
+        assert spec is not None, "interactive lean-ctx must register an MCP entry"
+        assert spec.command == "/usr/bin/lean-ctx"
+        assert spec.args == ("mcp",), "must register 'lean-ctx mcp', not a bare command"
+        assert "LEAN_CTX_DATA_DIR" in spec.env
+
+    def test_removes_entry_when_smoke_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headroom.cli.wrap as wrap_mod
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+        monkeypatch.setattr(
+            "headroom.lean_ctx.get_lean_ctx_path", lambda: Path("/usr/bin/lean-ctx")
+        )
+        # Smoke handshake FAILS -> entry must be removed (never persist a hanger).
+        monkeypatch.setattr(
+            wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: False
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None, (
+            "a lean-ctx entry that fails the handshake must be removed"
+        )
+
+    def test_skips_when_lean_ctx_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
+        monkeypatch.setattr("headroom.lean_ctx.get_lean_ctx_path", lambda: None)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None
+
+
+class TestAgyRtkGate:
+    """RTK GEMINI.md block is injected only when the rtk binary is present."""
+
+    def test_rtk_block_skipped_when_rtk_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        # Default context tool is rtk; _stub sets which() to resolve only agy/uvx,
+        # so shutil.which("rtk") is None.
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        gemini_md = tmp_path / ".gemini" / "GEMINI.md"
+        if gemini_md.exists():
+            assert "rtk-instructions" not in gemini_md.read_text(), (
+                "RTK block must not be injected when rtk is not installed"
+            )
+
+    def test_rtk_block_injected_when_rtk_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+
+        def which_with_rtk(name: str):
+            if name in ("agy", "rtk"):
+                return f"/usr/bin/{name}"
+            if name == "uvx":
+                return "/usr/bin/uvx"
+            return None
+
+        monkeypatch.setattr("shutil.which", which_with_rtk)
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        gemini_md = tmp_path / ".gemini" / "GEMINI.md"
+        assert gemini_md.exists()
+        assert "rtk-instructions" in gemini_md.read_text()
+
+
+class TestUnwrapAgyLeanCtx:
+    """unwrap agy removes the lean-ctx context-tool MCP entry it left behind."""
+
+    def test_unwrap_removes_lean_ctx_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.install import build_lean_ctx_spec
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        reg = AgyRegistrar(home_dir=tmp_path)
+        reg.register_server(
+            build_lean_ctx_spec("/usr/bin/lean-ctx", "/x/data")
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None, (
+            "unwrap agy must remove the lean-ctx MCP entry"
+        )
+
+    def test_unwrap_preserves_unrelated_user_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        reg = AgyRegistrar(home_dir=tmp_path)
+        reg.register_server(
+            ServerSpec(name="my-tool", command="/opt/my-tool", args=(), env={})
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0
+        survived = AgyRegistrar(home_dir=tmp_path).get_server("my-tool")
+        assert survived is not None, "unrelated user MCP entries must survive unwrap"
+
+
+class TestSmokeVerifyMcpHandshake:
+    """_smoke_verify_mcp_handshake: pass on a real responder, fail on a broken one."""
+
+    def test_returns_true_for_responding_server(self, tmp_path: Path) -> None:
+        from headroom.cli.wrap import _smoke_verify_mcp_handshake
+
+        # A tiny stdio server that echoes a JSON-RPC initialize response.
+        server = tmp_path / "fake_mcp.py"
+        server.write_text(
+            "import sys, json\n"
+            "line = sys.stdin.readline()\n"
+            "req = json.loads(line)\n"
+            "print(json.dumps({'jsonrpc': '2.0', 'id': req['id'], 'result': {}}))\n"
+            "sys.stdout.flush()\n"
+        )
+        import sys as _sys
+
+        ok = _smoke_verify_mcp_handshake(_sys.executable, [str(server)], {}, timeout=10.0)
+        assert ok is True
+
+    def test_returns_false_for_nonexistent_command(self) -> None:
+        from headroom.cli.wrap import _smoke_verify_mcp_handshake
+
+        assert (
+            _smoke_verify_mcp_handshake("/nonexistent/mcp-bin", [], {}, timeout=5.0)
+            is False
+        )
+
+    def test_returns_false_when_no_response_in_time(self, tmp_path: Path) -> None:
+        from headroom.cli.wrap import _smoke_verify_mcp_handshake
+
+        # A server that reads but never replies — must time out -> False.
+        server = tmp_path / "silent_mcp.py"
+        server.write_text("import sys, time\nsys.stdin.readline()\ntime.sleep(30)\n")
+        import sys as _sys
+
+        ok = _smoke_verify_mcp_handshake(_sys.executable, [str(server)], {}, timeout=2.0)
+        assert ok is False

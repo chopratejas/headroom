@@ -557,6 +557,130 @@ def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
 # Hook-command markers Headroom manages in Claude settings.json. unwrap drops
 # any hook entry whose command contains one of these.
 _HEADROOM_HOOK_MARKERS = ("rtk-rewrite", "headroom-init-claude")
+#: agy flags that put it into single-shot, non-interactive output mode.
+#: In this mode agy hangs indefinitely whenever ANY mcpServers entry is present
+#: in ~/.gemini/antigravity-cli/mcp_config.json (verified live: lean-ctx of any
+#: tool profile, serena, and even a nonexistent command all hang; empty
+#: mcpServers answers in seconds).  So Headroom must NOT activate any MCP server
+#: for print-mode invocations.
+_AGY_PRINT_FLAGS = ("--print", "-p", "--prompt")
+
+
+def _agy_print_mode(agy_args: tuple[str, ...] | list[str]) -> bool:
+    """Return True if agy is being launched in non-interactive print mode.
+
+    agy treats ``--print`` / ``-p`` / ``--prompt`` as "run one prompt and exit".
+    A registered MCP server hangs agy in this mode, so callers use this to
+    suppress all MCP wiring for the run.
+
+    Matches both space-separated forms (``--print hi``) and ``=``-joined forms
+    (``--print=hi``, ``--prompt=hi``, ``-p=hi``) — all live-verified as valid
+    agy print invocations (2026-06-16).  The attached short form ``-pVALUE`` is
+    *not* matched because agy rejects it (``flags provided but not defined``,
+    exit 2) — it never reaches MCP init, so it cannot trigger the hang.
+    """
+    return any(arg.split("=", 1)[0] in _AGY_PRINT_FLAGS for arg in agy_args)
+
+
+def _smoke_verify_mcp_handshake(command: str, args: list[str], env: dict[str, str], *, timeout: float = 8.0) -> bool:
+    """Spawn an stdio MCP server and assert it answers an ``initialize`` request.
+
+    Sends a minimal JSON-RPC ``initialize`` over stdin and waits up to
+    ``timeout`` seconds for a JSON-RPC response on stdout.  Returns True iff a
+    well-formed response object (``"jsonrpc"`` + matching ``"id"``) is seen.
+    The process is always terminated before returning.  This is a *guard*: a
+    passing handshake does not by itself prove agy will be happy (an unrelated
+    agy print-mode bug hangs on any MCP), but a *failing* handshake proves the
+    entry is broken and must not be persisted.
+    """
+    request = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "headroom-smoke", "version": "1"},
+                },
+            }
+        )
+        + "\n"
+    )
+    full_env = {**os.environ, **env}
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            [command, *args],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=full_env,
+        )
+        try:
+            stdout, _ = proc.communicate(input=request, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        for line in (stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and payload.get("jsonrpc") == "2.0" and payload.get("id") == 1:
+                return True
+        return False
+    except (OSError, ValueError):
+        return False
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+def _setup_lean_ctx_mcp_agy(registrar: Any, *, verbose: bool = False) -> None:
+    """Register the lean-ctx context-tool MCP with agy, verify-then-remove.
+
+    Builds an explicit spec (``lean-ctx mcp`` + ``LEAN_CTX_DATA_DIR``), registers
+    it, then smoke-verifies the MCP ``initialize`` handshake.  If the handshake
+    fails the entry is unregistered again so a broken tool can never persist and
+    hang agy.  If lean-ctx is unavailable, wiring is skipped with a notice.
+    """
+    from headroom.lean_ctx import get_lean_ctx_path
+    from headroom.mcp_registry import build_lean_ctx_spec
+    from headroom.mcp_registry.base import RegisterStatus
+
+    lean_ctx = get_lean_ctx_path()
+    if lean_ctx is None:
+        click.echo("  Context tool: lean-ctx not found — skipping (agy still works transport-only).")
+        return
+
+    data_dir = str(Path.home() / ".config" / "lean-ctx")
+    spec = build_lean_ctx_spec(str(lean_ctx), data_dir)
+    result = registrar.register_server(spec, force=True)
+    if result.status not in (RegisterStatus.REGISTERED, RegisterStatus.ALREADY):
+        click.echo(f"  Context tool: could not register lean-ctx MCP — skipping ({result.message}).")
+        return
+
+    if _smoke_verify_mcp_handshake(spec.command, list(spec.args), dict(spec.env)):
+        if verbose:
+            click.echo("  Context tool: lean-ctx MCP registered and handshake-verified.")
+        else:
+            click.echo("  Context tool: lean-ctx MCP wired (handshake verified).")
+    else:
+        registrar.unregister_server("lean-ctx")
+        click.echo("  Context tool: lean-ctx MCP failed handshake — entry removed (agy left transport-only).")
+
+
 
 # Env vars Headroom's init/wrap inject into Claude settings.json; unwrap removes
 # them. ENABLE_TOOL_SEARCH keeps Claude Code's tool deferral on behind the proxy
@@ -5747,15 +5871,38 @@ def agy(
         click.echo()
 
         # ------------------------------------------------------------------
+        # Print-mode guard: agy's single-shot output mode (--print/-p/--prompt)
+        # HANGS indefinitely whenever ANY mcpServers entry is present (verified
+        # live: lean-ctx of any tool profile, serena, even a nonexistent
+        # command; empty mcpServers answers in seconds).  So for print-mode
+        # runs we activate NO MCP server — context-tool wiring is skipped and a
+        # previously-installed Headroom Serena entry is removed for the run.
+        # Interactive sessions keep the context tool + Serena ON (they work).
+        # ------------------------------------------------------------------
+        print_mode = _agy_print_mode(agy_args)
+
+        # ------------------------------------------------------------------
         # Context-tool and instruction-surface setup (idempotent, best-effort).
         # ------------------------------------------------------------------
         gemini_md = Path.home() / ".gemini" / "GEMINI.md"
-        if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
-            # lean-ctx supports agy via the 'antigravity-cli' agent alias.
-            _setup_lean_ctx_agent("antigravity-cli", verbose=False)
-        else:
-            # RTK path: inject context instructions into GEMINI.md.
+        if print_mode:
+            click.echo(
+                "  Context tool: skipped for --print mode "
+                "(agy hangs with any MCP server in print mode)."
+            )
+        elif _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
+            # lean-ctx context tool: register an explicit MCP entry and
+            # smoke-verify the handshake (verify-then-remove on failure).
+            _setup_lean_ctx_mcp_agy(AgyRegistrar(), verbose=False)
+        elif shutil.which("rtk") is not None:
+            # RTK path: only inject context instructions when rtk is installed —
+            # otherwise GEMINI.md would tell agy to use a missing tool.
             _inject_gemini_md_block(gemini_md, RTK_INSTRUCTIONS_BLOCK, verbose=False)
+        else:
+            click.echo(
+                "  Context tool: rtk not found — skipping context instructions "
+                "(agy still works transport-only)."
+            )
 
         # ------------------------------------------------------------------
         # Serena MCP — generic uvx stdio server with no proxy-URL/ephemeral-port
@@ -5763,8 +5910,11 @@ def agy(
         # Headroom retrieve tool).  context="ide-assistant": Antigravity is an
         # IDE agent and this is Serena's generic IDE profile.  force=True mirrors
         # codex (wrap.py:3382) so a Headroom-owned entry is refreshed.
+        # In print mode Serena (an MCP server) would hang agy, so it is removed.
         # ------------------------------------------------------------------
-        if not no_serena:
+        if print_mode:
+            _disable_serena_mcp(AgyRegistrar(), verbose=False)
+        elif not no_serena:
             _setup_serena_mcp(
                 AgyRegistrar(), context="ide-assistant", verbose=False, force=True
             )
@@ -5847,6 +5997,13 @@ def unwrap_agy() -> None:
         click.echo("  Serena MCP server matched Headroom ledger but could not be removed.")
     elif serena_status == "not_headroom_owned":
         click.echo("  Kept user-managed Serena MCP server (not Headroom-owned).")
+
+    # 4. Remove the lean-ctx context-tool MCP entry Headroom may have
+    #    registered (idempotent; preserves all unrelated user entries).
+    if agy_reg.unregister_server("lean-ctx"):
+        click.echo("  Removed lean-ctx context-tool MCP server from agy.")
+    else:
+        click.echo("  lean-ctx context-tool MCP server was not registered in agy.")
 
     click.echo()
     click.echo("✓ agy headroom configuration reverted.")
