@@ -76,7 +76,12 @@ def test_get_rtk_stats_memoizes_subprocess_calls(monkeypatch: pytest.MonkeyPatch
 
     def _fake_run(args, **kwargs):
         calls["run"] += 1
-        assert [str(args[0]).replace("\\", "/")] + args[1:] == ["/usr/bin/rtk", "gain", "--format", "json"]
+        assert [str(args[0]).replace("\\", "/")] + args[1:] == [
+            "/usr/bin/rtk",
+            "gain",
+            "--format",
+            "json",
+        ]
         summary = totals[min(calls["run"] - 1, len(totals) - 1)]
         return SimpleNamespace(
             returncode=0,
@@ -152,7 +157,13 @@ def test_get_rtk_stats_can_read_project_scoped_gain(monkeypatch: pytest.MonkeyPa
 
     def _fake_run(args, **kwargs):
         calls["run"] += 1
-        assert [str(args[0]).replace("\\", "/")] + args[1:] == ["/usr/bin/rtk", "gain", "--project", "--format", "json"]
+        assert [str(args[0]).replace("\\", "/")] + args[1:] == [
+            "/usr/bin/rtk",
+            "gain",
+            "--project",
+            "--format",
+            "json",
+        ]
         return SimpleNamespace(
             returncode=0,
             stdout=json.dumps(
@@ -187,7 +198,12 @@ def test_get_rtk_stats_invalid_scope_defaults_to_global(
 
     def _fake_run(args, **kwargs):
         calls["run"] += 1
-        assert [str(args[0]).replace("\\", "/")] + args[1:] == ["/usr/bin/rtk", "gain", "--format", "json"]
+        assert [str(args[0]).replace("\\", "/")] + args[1:] == [
+            "/usr/bin/rtk",
+            "gain",
+            "--format",
+            "json",
+        ]
         return SimpleNamespace(returncode=0, stdout=json.dumps({"summary": {}}))
 
     mock_warning = MagicMock()
@@ -228,7 +244,11 @@ def test_get_context_tool_stats_reads_lean_ctx_gain(monkeypatch: pytest.MonkeyPa
 
     def _fake_run(args, **kwargs):
         calls["run"] += 1
-        assert [str(args[0]).replace("\\", "/")] + args[1:] == ["/usr/bin/lean-ctx", "gain", "--json"]
+        assert [str(args[0]).replace("\\", "/")] + args[1:] == [
+            "/usr/bin/lean-ctx",
+            "gain",
+            "--json",
+        ]
         summary = totals[min(calls["run"] - 1, len(totals) - 1)]
         return SimpleNamespace(returncode=0, stdout=json.dumps({"summary": summary}))
 
@@ -614,5 +634,3 @@ def test_proxy_throughput_in_stats_endpoint(monkeypatch: pytest.MonkeyPatch) -> 
     payload = response.json()
     assert "throughput" in payload
     assert payload["throughput"] == {"input_wall_clock": 99.0}
-
-

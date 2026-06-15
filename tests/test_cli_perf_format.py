@@ -312,4 +312,3 @@ def test_throughput_empty_and_percentiles():
     # _calculate_throughput_stats with empty records
     stats = _calculate_throughput_stats([], 10.0)
     assert stats["input_wall_clock"] == 0.0
-
