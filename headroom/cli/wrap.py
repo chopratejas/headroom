@@ -5552,6 +5552,18 @@ def _start_agy_servers(
             error_holder.append(exc)
             ready_event.set()
         finally:
+            # Cancel and drain any stragglers (hypercorn per-connection tasks,
+            # the app lifespan's periodic stats task) before closing the loop —
+            # otherwise loop.close() with pending tasks spews "Task was destroyed
+            # but it is pending" / "Event loop is closed" on every agy exit.
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:  # noqa: BLE001
+                pass
             loop.close()
 
     current_thread = threading.Thread(target=_run_loop, daemon=True, name="headroom-agy-mitm")
