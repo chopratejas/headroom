@@ -12,7 +12,9 @@ final ``pip`` / ``npm`` step is printed at the end.
 
 from __future__ import annotations
 
+import json
 import shutil
+from pathlib import Path
 
 import click
 
@@ -33,16 +35,58 @@ def _codex_wrapped() -> bool:
 
 
 def _claude_wrapped() -> bool:
-    """Return True when Headroom is registered in Claude Code."""
+    """Return True when any Claude-side Headroom artifact is still present."""
+    if _claude_rtk_hook_present():
+        return True
+
     try:
         from headroom.mcp_registry import ClaudeRegistrar
+        from headroom.mcp_registry.ledger import headroom_installed_matching
     except Exception:
         return False
 
     registrar = ClaudeRegistrar()
     if not registrar.detect():
         return False
-    return registrar.get_server("headroom") is not None
+    if registrar.get_server("headroom") is not None:
+        return True
+    if registrar.get_server("codebase-memory-mcp") is not None:
+        return True
+    return headroom_installed_matching("claude", registrar.get_server("serena"))
+
+
+def _claude_rtk_hook_present(settings_path: Path | None = None) -> bool:
+    """Return True when Claude settings still contain the Headroom rtk hook."""
+    path = settings_path or (Path.home() / ".claude" / "settings.json")
+    if not path.exists():
+        return False
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            hook_items = entry.get("hooks")
+            if not isinstance(hook_items, list):
+                continue
+            for item in hook_items:
+                if not isinstance(item, dict):
+                    continue
+                if "rtk-rewrite" in str(item.get("command", "")).lower():
+                    return True
+    return False
 
 
 def _openclaw_wrapped() -> bool:
@@ -178,7 +222,12 @@ def uninstall(
 
     if purge_state:
         if workspace.exists():
-            shutil.rmtree(workspace, ignore_errors=True)
+            try:
+                shutil.rmtree(workspace)
+            except OSError as exc:
+                raise click.ClickException(
+                    f"could not delete workspace state at {workspace}: {exc}"
+                ) from exc
             click.echo(f"  Deleted workspace state at {workspace}.")
         else:
             click.echo("  No workspace state to delete.")
