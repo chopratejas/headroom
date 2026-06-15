@@ -176,6 +176,7 @@ from headroom.transforms import (
 
 AnyLLMBackend: Any = None
 LiteLLMBackend: Any = None
+DeepseekBackend: Any = None
 
 fcntl: Any = None
 try:
@@ -796,6 +797,7 @@ class HeadroomProxy(
             openai_api_url=config.openai_api_url,
             anyllm_backend_cls=AnyLLMBackend,
             litellm_backend_cls=LiteLLMBackend,
+            deepseek_backend_cls=DeepseekBackend,
         )
 
         # Request counter for IDs
