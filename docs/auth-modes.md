@@ -44,7 +44,7 @@ Both are byte-for-byte identical on every header set covered by the parity test 
 | Claude VS Code | `claude-vscode/` |
 | GitHub Copilot | `github-copilot/` |
 | Anthropic CLI | `anthropic-cli/` |
-| Antigravity | `antigravity/` |
+| Antigravity / agy | `antigravity/` |
 
 **Compression policy:** stealth. Provider rate-limits by request count; programmatic-fingerprint detection means Headroom MUST look like the upstream agent. Same compression policy as `OAuth` **plus**:
 
@@ -54,6 +54,13 @@ Both are byte-for-byte identical on every header set covered by the parity test 
 - Skip `X-Forwarded-*` headers on upstream-bound requests (see Phase F PR-F4).
 
 The Subscription UA wins over any bearer token shape — a Claude Code session that happens to carry a `sk-ant-oat-*` token is still a subscription client, never OAuth.
+
+**agy specifics:** `agy` (Google Antigravity CLI) is classified `Subscription` via the `antigravity/` UA prefix.
+Its auth credentials (`Authorization` bearer token issued by `antigravity`'s OAuth flow, and
+`x-goog-api-key` if present) are forwarded to `daily-cloudcode-pa.googleapis.com` unchanged.
+Because `agy` uses `HTTPS_PROXY` routing rather than a base-URL redirect, Headroom sees these
+headers only after TLS termination by its process-local CA; they are not injected by Headroom.
+Both headers are covered by the existing `redact_for_wire_debug` redactor and are not persisted.
 
 ## Detection signals — full decision order
 
