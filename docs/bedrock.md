@@ -104,7 +104,7 @@ headroom-proxy \
 
 ## Supported model IDs
 
-The proxy classifies model IDs by **literal vendor match** — no regexes. A model ID is treated as Anthropic-shape when it either starts with the `anthropic.` vendor prefix **or** contains the `.anthropic.` vendor segment (cross-region inference profiles carry a geo prefix before the vendor — `eu.anthropic.…`, `us.anthropic.…`, `apac.anthropic.…`, `global.anthropic.…`). For those, the live-zone compression dispatcher runs over the body, the envelope is re-emitted with `anthropic_version` preserved as the first key, and the request is signed with SigV4.
+The proxy classifies model IDs by **literal vendor match** — no regexes. It strips a known cross-region inference-profile geo prefix (`eu.`, `us.`, `apac.`, `global.`) if present, then takes the leading dot-segment as the vendor. A model is treated as Anthropic-shape when that canonical vendor is `anthropic` — so both the bare `anthropic.…` foundation models and the geo-prefixed inference profiles (`eu.anthropic.…`, `us.anthropic.…`, `apac.anthropic.…`, `global.anthropic.…`) qualify. For those, the live-zone compression dispatcher runs over the body, the envelope is re-emitted with `anthropic_version` preserved as the first key, and the request is signed with SigV4.
 
 Examples that hit the Anthropic compression path:
 

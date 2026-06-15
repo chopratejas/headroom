@@ -65,15 +65,7 @@ use crate::proxy::AppState;
 // would risk drift from the middleware's resolution + WARN log.
 use headroom_core::auth_mode::AuthMode;
 
-/// Anthropic vendor prefix as encoded in Bedrock model ids
-/// (`anthropic.claude-3-haiku-...`). Literal-match per project rule
-/// "no regexes for parsing the model ID".
-const ANTHROPIC_VENDOR_PREFIX: &str = "anthropic.";
-const ANTHROPIC_VENDOR_SEGMENT: &str = ".anthropic.";
-
-fn is_anthropic_model_id(model_id: &str) -> bool {
-    model_id.starts_with(ANTHROPIC_VENDOR_PREFIX) || model_id.contains(ANTHROPIC_VENDOR_SEGMENT)
-}
+use crate::bedrock::vendor::is_anthropic_model_id;
 
 /// RAII guard that observes the `bedrock_invoke_latency_seconds`
 /// histogram on drop. Created at handler entry; observed when the
@@ -547,43 +539,7 @@ fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
 mod tests {
     use super::*;
 
-    #[test]
-    fn anthropic_vendor_prefix_match() {
-        assert!("anthropic.claude-3-haiku-20240307-v1:0".starts_with(ANTHROPIC_VENDOR_PREFIX));
-        assert!("anthropic.claude-3-5-sonnet-20241022-v2:0".starts_with(ANTHROPIC_VENDOR_PREFIX));
-        assert!(!"amazon.titan-text-express-v1".starts_with(ANTHROPIC_VENDOR_PREFIX));
-        assert!(!"meta.llama3-70b-instruct-v1:0".starts_with(ANTHROPIC_VENDOR_PREFIX));
-    }
-
-    #[test]
-    fn anthropic_model_id_matches_cross_region_inference_profiles() {
-        // Bare vendor-prefixed IDs (direct InvokeModel).
-        assert!(is_anthropic_model_id(
-            "anthropic.claude-3-haiku-20240307-v1:0"
-        ));
-        // Cross-region inference-profile IDs carry a geo prefix before
-        // the vendor segment (`eu.`, `us.`, `apac.`, `global.`). These
-        // must still be detected as Anthropic so the live-zone
-        // compressor runs — otherwise EU/global profiles silently skip
-        // compression. Regression guard for the inference-profile gap.
-        assert!(is_anthropic_model_id(
-            "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-        ));
-        assert!(is_anthropic_model_id(
-            "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-        ));
-        assert!(is_anthropic_model_id(
-            "apac.anthropic.claude-3-5-sonnet-20240620-v1:0"
-        ));
-        assert!(is_anthropic_model_id(
-            "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-        ));
-        // Non-Anthropic vendors (including geo-prefixed) stay false.
-        assert!(!is_anthropic_model_id("amazon.titan-text-express-v1"));
-        assert!(!is_anthropic_model_id("meta.llama3-70b-instruct-v1:0"));
-        assert!(!is_anthropic_model_id("eu.amazon.nova-lite-v1:0"));
-        assert!(!is_anthropic_model_id("mistral.voxtral-mini-3b-2507"));
-    }
+    // Vendor/model-id classification is tested in `bedrock::vendor`.
 
     #[test]
     fn build_upstream_uses_region_default() {

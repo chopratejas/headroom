@@ -74,13 +74,7 @@ use crate::proxy::AppState;
 // `Extension<AuthMode>` extractor.
 use headroom_core::auth_mode::AuthMode;
 
-/// Anthropic vendor prefix as encoded in Bedrock model ids.
-const ANTHROPIC_VENDOR_PREFIX: &str = "anthropic.";
-const ANTHROPIC_VENDOR_SEGMENT: &str = ".anthropic.";
-
-fn is_anthropic_model_id(model_id: &str) -> bool {
-    model_id.starts_with(ANTHROPIC_VENDOR_PREFIX) || model_id.contains(ANTHROPIC_VENDOR_SEGMENT)
-}
+use crate::bedrock::vendor::is_anthropic_model_id;
 
 /// AWS Bedrock Runtime DNS template.
 const BEDROCK_RUNTIME_HOST_TEMPLATE: &str = "bedrock-runtime.{region}.amazonaws.com";
