@@ -3523,7 +3523,7 @@ def opencode(
         click.echo("Install OpenCode: npm install -g @opencode-ai/opencode")
         raise SystemExit(1)
 
-    env, env_vars_display = _build_opencode_launch_env(port, os.environ)
+    env, env_vars_display = _build_opencode_launch_env(port, dict(os.environ))
 
     # Per-project savings attribution
     _opencode_project = _project_name_from_cwd()

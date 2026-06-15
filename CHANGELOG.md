@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+* **proxy:** native Deepseek backend that bypasses LiteLLM, using Deepseek's Anthropic-compatible and OpenAI-compatible APIs directly. Supports thinking mode, tool calls, JSON mode, stream_options, and model mapping (Claude models → Deepseek equivalents). Falls back to LiteLLM if SDKs are unavailable.
+* **cli:** add `headroom wrap opencode` and `headroom unwrap opencode` commands to configure OpenCode to use the Headroom proxy. Overrides the built-in Deepseek provider's baseURL, registers headroom MCP server, and supports optional memory MCP.
+
+### Features
+
 * **proxy:** per-project savings breakdown on the dashboard for all wrapped agents — Claude Code, Codex, aider, Copilot, and Cursor ([#802](https://github.com/chopratejas/headroom/issues/802)). `headroom wrap claude`/`codex` tag requests with an `X-Headroom-Project` header (launch-directory name); `wrap aider`/`copilot`/`cursor` — whose clients cannot send custom headers — use a `/p/<name>` base-URL prefix the proxy strips. Savings are aggregated per project (persisted, schema v3 with transparent v2 migration), exposed as `savings.per_project` in `/stats` and `projects` in `/stats-history`, and shown in a Per-Project Savings dashboard table.
 
 ### Features

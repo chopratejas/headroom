@@ -337,10 +337,10 @@ class DeepseekProvider(Provider):
                 return limit
         inferred = _infer_model_family(model)
         if inferred is not None:
-            limit = inferred["context_limit"]
+            limit = int(inferred["context_limit"])
             self._context_limits[model_lower] = limit
             return limit
-        limit = _UNKNOWN_DEEPSEEK_DEFAULT["context_limit"]
+        limit = int(_UNKNOWN_DEEPSEEK_DEFAULT["context_limit"])
         self._warn_unknown_model(model, limit, "using default limit")
         self._context_limits[model_lower] = limit
         return limit
@@ -408,15 +408,15 @@ class DeepseekProvider(Provider):
         inferred = _infer_model_family(model)
         if inferred is not None:
             non_cached = input_tokens - cached_tokens
-            input_cost = (non_cached / 1_000_000) * inferred["input_price"]
-            cached_cost = (cached_tokens / 1_000_000) * inferred["input_price"] * 0.5
-            output_cost = (output_tokens / 1_000_000) * inferred["output_price"]
-            return input_cost + cached_cost + output_cost
+            input_cost = (non_cached / 1_000_000) * float(inferred["input_price"])
+            cached_cost = (cached_tokens / 1_000_000) * float(inferred["input_price"]) * 0.5
+            output_cost = (output_tokens / 1_000_000) * float(inferred["output_price"])
+            return float(input_cost + cached_cost + output_cost)
         non_cached = input_tokens - cached_tokens
-        input_cost = (non_cached / 1_000_000) * _UNKNOWN_DEEPSEEK_DEFAULT["input_price"]
-        cached_cost = (cached_tokens / 1_000_000) * _UNKNOWN_DEEPSEEK_DEFAULT["input_price"] * 0.5
-        output_cost = (output_tokens / 1_000_000) * _UNKNOWN_DEEPSEEK_DEFAULT["output_price"]
-        return input_cost + cached_cost + output_cost
+        input_cost = (non_cached / 1_000_000) * float(_UNKNOWN_DEEPSEEK_DEFAULT["input_price"])
+        cached_cost = (cached_tokens / 1_000_000) * float(_UNKNOWN_DEEPSEEK_DEFAULT["input_price"]) * 0.5
+        output_cost = (output_tokens / 1_000_000) * float(_UNKNOWN_DEEPSEEK_DEFAULT["output_price"])
+        return float(input_cost + cached_cost + output_cost)
 
     def get_output_buffer(self, model: str, default: int = 4000) -> int:
         model_lower = model.lower()
@@ -424,5 +424,5 @@ class DeepseekProvider(Provider):
             return self._max_output[model_lower]
         inferred = _infer_model_family(model)
         if inferred is not None:
-            return inferred["max_output"]
+            return int(inferred["max_output"])
         return default
