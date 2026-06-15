@@ -48,7 +48,13 @@ from headroom.copilot_auth import (
     resolve_subscription_bearer_token_details,
 )
 from headroom.providers.aider import build_launch_env as _build_aider_launch_env
-from headroom.providers.claude import proxy_base_url as _claude_proxy_base_url
+from headroom.providers.claude import (
+    TOOL_SEARCH_DEFAULT,
+    TOOL_SEARCH_ENV,
+)
+from headroom.providers.claude import (
+    proxy_base_url as _claude_proxy_base_url,
+)
 from headroom.providers.codex import build_launch_env as _build_codex_launch_env
 from headroom.providers.codex.install import codex_uses_chatgpt_auth
 from headroom.providers.copilot import (
@@ -111,9 +117,10 @@ _WRAP_PROXY_TIMEOUT_ML_MODULES = ("torch", "sentence_transformers", "spacy")
 # when we launch Claude Code keeps deferral on. Default to "true" — defer the
 # MCP/system tools for maximum context savings, matching native first-party
 # behaviour (core built-ins like Read/Edit/Bash are never deferred by Claude
-# Code, so the agent loop is unaffected).
-_TOOL_SEARCH_ENV = "ENABLE_TOOL_SEARCH"
-_TOOL_SEARCH_DEFAULT = "true"
+# Code, so the agent loop is unaffected). The key/default are shared with
+# `init` and `install` via the Claude provider package to prevent drift.
+_TOOL_SEARCH_ENV = TOOL_SEARCH_ENV
+_TOOL_SEARCH_DEFAULT = TOOL_SEARCH_DEFAULT
 _AGENT_SAVINGS_WRAP_AGENTS = {"claude", "codex", "cursor"}
 _DEFAULT_AGENT_SAVINGS_PROFILE = "agent-90"
 
@@ -2360,7 +2367,7 @@ def _marker_pid_reused(marker: Path, pid: int) -> bool:
         return False
     src = rec.get("start_src")
     recorded = rec.get("start_time")
-    if not isinstance(src, str) or not isinstance(recorded, (int, float)):
+    if not isinstance(src, str) or not isinstance(recorded, int | float):
         return False  # legacy / identity-less marker — can't tell
     ident = _proc_identity(pid)
     if ident is None or ident[0] != src:
