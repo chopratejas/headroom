@@ -13,6 +13,7 @@ mismatch is reported exactly as before.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -69,8 +70,18 @@ class _FakeRegistrar:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / ".headroom"))
+    # These tests drive ``_setup_serena_mcp`` with a fake registrar, so the real
+    # PATH is irrelevant — but the function bails early when ``uvx`` is absent.
+    # CI test shards run on runners without uvx, which would skip every code
+    # path under test. Stub uvx discovery so behaviour is PATH-independent.
+    real_which = shutil.which
+    monkeypatch.setattr(
+        wrap_cli.shutil,
+        "which",
+        lambda name, *a, **k: "/usr/bin/uvx" if name == "uvx" else real_which(name, *a, **k),
+    )
 
 
 def test_rewrap_migrates_stale_headroom_serena(
