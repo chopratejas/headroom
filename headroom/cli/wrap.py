@@ -5570,8 +5570,8 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
     """Best-effort stop of agy servers (called from finally block).
 
     Accepts the _AgyServers handle returned by _start_agy_servers.
-    The second argument is unused and exists only so tests can patch both
-    old (terminator, dispatch) positional args without error.
+    Idempotent and None-safe so it can run from both the normal exit path
+    and the SIGTERM handler without double-teardown errors.
     """
     if servers is None:
         return
@@ -5614,10 +5614,10 @@ def agy(
 
     \b
     agy has no base-URL override knob, so Headroom intercepts its traffic via
-    an in-process HTTP CONNECT terminator that TLS-terminates only:
-        daily-cloudcode-pa.googleapis.com
-    All other connections are byte-spliced unchanged (and chained through any
-    pre-existing corporate HTTPS_PROXY).
+    an in-process HTTP CONNECT terminator that TLS-terminates only the Cloud
+    Code backend hosts in the terminator allowlist (daily-cloudcode-pa and
+    cloudcode-pa googleapis.com). All other connections are byte-spliced
+    unchanged (and chained through any pre-existing corporate HTTPS_PROXY).
 
     \b
     The process-local CA (headroom.proxy.agy_ca) is used to mint leaf
@@ -5700,6 +5700,7 @@ def agy(
             f"HTTP_PROXY={terminator_url}",
             "NO_PROXY=127.0.0.1,localhost",
             f"SSL_CERT_FILE={bundle_path}",
+            f"CACERT_PATH={bundle_path}",
             f"NODE_EXTRA_CA_CERTS={bundle_path}",
         ]
         if corp_proxy:
