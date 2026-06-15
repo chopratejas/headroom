@@ -34,8 +34,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use magika::Session;
-use tracing;
 use thiserror::Error;
+use tracing;
 
 use crate::transforms::content_detector::ContentType;
 
