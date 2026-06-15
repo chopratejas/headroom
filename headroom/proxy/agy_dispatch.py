@@ -1,0 +1,266 @@
+"""In-process hypercorn HTTPS dispatch server for agy MITM transport.
+
+Serves the existing headroom FastAPI app on a loopback HTTPS port so that
+the agy CONNECT terminator can byte-splice accepted client connections straight
+to this server — no second upstream TLS dial, no logic duplication.
+
+Architecture (ADR 0001 §"Dispatch via hypercorn"):
+  agy → CONNECT terminator (T8) → byte-splice → this server (TLS) → FastAPI app
+                                                  ↑ mints leaf per SNI via _LeafCache
+
+Security invariants:
+  - Binds 127.0.0.1 only (loopback guard).
+  - Leaf private keys never written to disk (in-memory SSLContext via SNI callback).
+  - ALPN offers ["h2", "http/1.1"] matching the terminator leaf context.
+
+Header handling: the Gemini handler strips the inbound ``accept-encoding``
+header so the upstream returns a compressible (plain) body; agy UA and other
+client headers are forwarded unchanged. The handler recompresses for the
+upstream connection where applicable.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import socket
+import ssl
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from cryptography.x509 import Certificate
+
+from headroom.proxy.agy_ca import ensure_root_ca
+from headroom.proxy.agy_terminator import _LeafCache
+
+logger = logging.getLogger("headroom.proxy.agy_dispatch")
+
+_BIND_HOST = "127.0.0.1"
+
+# ---------------------------------------------------------------------------
+# SNI-capable SSL context builder
+# ---------------------------------------------------------------------------
+
+
+def _build_sni_ssl_context(leaf_cache: _LeafCache, ca_key: RSAPrivateKey, ca_cert: Certificate) -> ssl.SSLContext:
+    """Return a server SSLContext whose SNI callback mints leaf certs on demand.
+
+    The initial certfile/keyfile uses a wildcard placeholder cert so that
+    ssl.SSLContext accepts the load_cert_chain call; the SNI callback replaces
+    it per-connection before the handshake completes.
+
+    ALPN: ["h2", "http/1.1"] — required for HTTP/2 negotiation.
+    """
+    # Mint a placeholder leaf for the initial load_cert_chain (SNI callback
+    # overwrites it before the handshake completes, so the hostname doesn't
+    # matter — we use a stable sentinel that won't reach the wire).
+    _PLACEHOLDER_HOST = "headroom.internal"
+    init_cert_pem, init_key_pem = leaf_cache.get_or_mint(_PLACEHOLDER_HOST, ca_key, ca_cert)
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.set_alpn_protocols(["h2", "http/1.1"])
+
+    # Load the placeholder cert chain (required before SNI callback fires).
+    with (
+        tempfile.NamedTemporaryFile(prefix="hr_disp_cert_", suffix=".pem", delete=True, mode="wb") as cf,
+        tempfile.NamedTemporaryFile(prefix="hr_disp_key_", suffix=".pem", delete=True, mode="wb") as kf,
+    ):
+        cf.write(init_cert_pem)
+        cf.flush()
+        kf.write(init_key_pem)
+        kf.flush()
+        ctx.load_cert_chain(cf.name, kf.name)
+
+    def _sni_callback(
+        ssl_obj: ssl.SSLObject,
+        server_name: str | None,
+        ctx_in: ssl.SSLContext,  # noqa: ARG001
+    ) -> None:
+        """Mint or reuse a leaf cert for *server_name* and swap it in-place."""
+        hostname = server_name or _PLACEHOLDER_HOST
+        cert_pem, key_pem = leaf_cache.get_or_mint(hostname, ca_key, ca_cert)
+
+        new_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        new_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        new_ctx.set_alpn_protocols(["h2", "http/1.1"])
+
+        with (
+            tempfile.NamedTemporaryFile(prefix="hr_sni_cert_", suffix=".pem", delete=True, mode="wb") as cf,
+            tempfile.NamedTemporaryFile(prefix="hr_sni_key_", suffix=".pem", delete=True, mode="wb") as kf,
+        ):
+            cf.write(cert_pem)
+            cf.flush()
+            kf.write(key_pem)
+            kf.flush()
+            new_ctx.load_cert_chain(cf.name, kf.name)
+
+        new_ctx.set_alpn_protocols(["h2", "http/1.1"])
+        ssl_obj.context = new_ctx  # type: ignore[assignment]
+
+    ctx.set_servername_callback(_sni_callback)  # type: ignore[arg-type]
+    return ctx
+
+
+# ---------------------------------------------------------------------------
+# AgyDispatchServer
+# ---------------------------------------------------------------------------
+
+
+class AgyDispatchServer:
+    """In-process hypercorn HTTPS server serving the headroom FastAPI app.
+
+    Binds on loopback only; TLS via SNI callback (mints leaf per hostname
+    from the headroom root CA).  Hypercorn handles h2/http1.1 + lifespan.
+
+    Usage::
+
+        server = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
+        await server.start()
+        # server.address → ("127.0.0.1", <ephemeral-port>)
+        await server.stop()
+
+    Or as an async context manager::
+
+        async with AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert) as srv:
+            host, port = srv.address
+    """
+
+    def __init__(
+        self,
+        ca_key: RSAPrivateKey | None = None,
+        ca_cert: Certificate | None = None,
+        base_dir: Path | None = None,
+        port: int = 0,
+    ) -> None:
+        self._ca_key_init = ca_key
+        self._ca_cert_init = ca_cert
+        self._base_dir = base_dir
+        self._port = port
+
+        self._server: asyncio.Server | None = None
+        self._lifespan_task: asyncio.Task[None] | None = None
+        self._lifespan: Any | None = None  # hypercorn.asyncio.run.Lifespan
+        self._context: Any | None = None   # hypercorn.asyncio.run.WorkerContext
+        self._app_wrapper: Any | None = None
+        self._config: Any | None = None
+        self._lifespan_state: dict[str, Any] = {}
+        self._leaf_cache: _LeafCache | None = None
+
+    async def start(self) -> None:
+        """Start the hypercorn server; binds loopback HTTPS on an ephemeral port."""
+        from hypercorn.asyncio import wrap_app
+        from hypercorn.asyncio.run import Lifespan, TCPServer, WorkerContext
+        from hypercorn.config import Config
+
+        # Resolve CA.
+        if self._ca_key_init is not None and self._ca_cert_init is not None:
+            ca_key = self._ca_key_init
+            ca_cert = self._ca_cert_init
+        else:
+            ca_key, ca_cert, _, _ = ensure_root_ca(base_dir=self._base_dir)
+
+        self._leaf_cache = _LeafCache(max_size=32)
+        ssl_ctx = _build_sni_ssl_context(self._leaf_cache, ca_key, ca_cert)
+
+        # Build minimal hypercorn Config (no certfile/keyfile — we supply ssl directly).
+        config = Config()
+        config.bind = [f"{_BIND_HOST}:{self._port}"]
+        config.accesslog = "-"   # suppress hypercorn access log noise in tests
+        config.errorlog = "-"
+        config.loglevel = "WARNING"
+        self._config = config
+
+        # Import and build the FastAPI app.
+        from headroom.proxy.server import create_app
+
+        app = create_app()
+        # wrap_app accepts the ASGI callable directly; ignore the narrow stub type.
+        app_wrapper = wrap_app(app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]
+        self._app_wrapper = app_wrapper
+
+        # Run hypercorn lifespan (startup/shutdown events).
+        loop = asyncio.get_event_loop()
+        lifespan_state: dict[str, Any] = {}
+        self._lifespan_state = lifespan_state
+        lifespan = Lifespan(app_wrapper, config, loop, lifespan_state)
+        self._lifespan = lifespan
+        self._lifespan_task = loop.create_task(lifespan.handle_lifespan())
+        await lifespan.wait_for_startup()
+        if self._lifespan_task.done():
+            exc = self._lifespan_task.exception()
+            if exc is not None:
+                raise exc
+
+        worker_context = WorkerContext(max_requests=None)
+        self._context = worker_context
+
+        # Bind a plain TCP socket on loopback then wrap with our SSL context.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((_BIND_HOST, self._port))
+
+        async def _connection_handler(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            await TCPServer(
+                app_wrapper,
+                loop,
+                config,
+                worker_context,
+                lifespan_state,
+                reader,
+                writer,
+            )
+
+        self._server = await asyncio.start_server(
+            _connection_handler,
+            sock=sock,
+            ssl=ssl_ctx,
+            ssl_handshake_timeout=config.ssl_handshake_timeout,
+        )
+        addr = self._server.sockets[0].getsockname()
+        logger.info("event=dispatch_started address=%s:%d", addr[0], addr[1])
+
+    async def stop(self) -> None:
+        """Gracefully shut down the server and hypercorn lifespan."""
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
+
+        if self._lifespan is not None:
+            try:
+                await self._lifespan.wait_for_shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            self._lifespan = None
+
+        if self._lifespan_task is not None:
+            self._lifespan_task.cancel()
+            try:
+                await self._lifespan_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._lifespan_task = None
+
+        logger.info("event=dispatch_stopped")
+
+    @property
+    def address(self) -> tuple[str, int]:
+        """Return ``(host, port)`` the server is bound to. Requires :meth:`start`."""
+        if self._server is None:
+            raise RuntimeError("AgyDispatchServer not started")
+        sock = self._server.sockets[0]
+        host, port = sock.getsockname()[:2]
+        return host, port
+
+    async def __aenter__(self) -> AgyDispatchServer:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.stop()

@@ -1,9 +1,12 @@
 """Selective TLS-MITM forward-proxy listener for the agy MITM transport.
 
 Binds to 127.0.0.1 ONLY. Accepts HTTP CONNECT:
-- Allowlisted hosts: TLS-terminate with a minted leaf cert signed by the
-  headroom root CA, offer ALPN ["h2","http/1.1"], hand decrypted streams to
-  caller-supplied async dispatch callback.
+- Allowlisted hosts: when a ``dispatch_port`` is configured, ACK the CONNECT
+  and byte-splice the raw connection to the in-process hypercorn HTTPS server
+  at that loopback port (AgyDispatchServer).  The hypercorn server owns TLS
+  termination and ASGI routing.  When no ``dispatch_port`` is set (legacy /
+  test path), self-terminate TLS and hand decrypted streams to the caller-
+  supplied async ``dispatch`` callback.
 - Non-allowlisted hosts: raw bidirectional byte-splice (blind tunnel).
   If HTTPS_PROXY is set, forward CONNECT through that upstream proxy.
   NEVER chain to a loopback address (self-loop guard).
@@ -356,6 +359,7 @@ async def _handle_connect(
     ca_key: RSAPrivateKey,
     ca_cert: Certificate,
     dispatch: DispatchCallback,
+    dispatch_port: int | None = None,
 ) -> None:
     """Handle one incoming TCP connection carrying an HTTP CONNECT request."""
     peer = client_writer.get_extra_info("peername", ("?", 0))
@@ -411,6 +415,7 @@ async def _handle_connect(
             ca_key,
             ca_cert,
             dispatch,
+            dispatch_port=dispatch_port,
         )
     else:
         await _handle_blind_tunnel(
@@ -431,8 +436,41 @@ async def _handle_mitm(
     ca_key: RSAPrivateKey,
     ca_cert: Certificate,
     dispatch: DispatchCallback,
+    dispatch_port: int | None = None,
 ) -> None:
-    """TLS-terminate the client side and hand decrypted streams to dispatch."""
+    """Handle an allowlisted CONNECT: tunnel to hypercorn or TLS-terminate.
+
+    When *dispatch_port* is set (production path with AgyDispatchServer),
+    ACK the CONNECT and byte-splice the raw connection to the loopback
+    hypercorn HTTPS port — the hypercorn server owns TLS termination, ALPN
+    negotiation, and ASGI routing.
+
+    When *dispatch_port* is None (legacy / test path), TLS is terminated
+    here and decrypted streams are forwarded to the *dispatch* callback.
+    """
+    # --- Production path: byte-splice to hypercorn loopback HTTPS port ---
+    if dispatch_port is not None:
+        # ACK the CONNECT so the client believes the tunnel is up.
+        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        await client_writer.drain()
+        try:
+            dispatch_reader, dispatch_writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", dispatch_port),
+                timeout=_CONNECT_TIMEOUT,
+            )
+        except (OSError, asyncio.TimeoutError) as exc:
+            logger.error(
+                "event=dispatch_connect_failed port=%d err=%s", dispatch_port, exc
+            )
+            try:
+                client_writer.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        await _blind_splice(client_reader, client_writer, dispatch_reader, dispatch_writer)
+        return
+
+    # --- Legacy path: self-terminate TLS + dispatch callback ---
     # Acknowledge the CONNECT.
     client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
     await client_writer.drain()
@@ -582,9 +620,14 @@ class AgyCONNECTTerminator:
     allowlist:
         Set of hostnames to TLS-terminate. Defaults to ``DEFAULT_ALLOWLIST``.
     dispatch:
-        Async callback invoked for each terminated connection.
+        Async callback invoked for each terminated connection (legacy path,
+        used when *dispatch_port* is None).
         Signature: ``async (reader, writer, host, port) -> None``.
         Default: no-op.
+    dispatch_port:
+        When set, allowlisted CONNECT connections are ACK-ed and byte-spliced
+        raw to ``127.0.0.1:<dispatch_port>`` (the in-process AgyDispatchServer).
+        When None, the old TLS-terminate + dispatch-callback path is used.
     base_dir:
         Headroom state directory (for CA; defaults to ~/.headroom).
         Inject a ``tmp_path``-derived path in tests.
@@ -606,9 +649,11 @@ class AgyCONNECTTerminator:
         ca_key: RSAPrivateKey | None = None,
         ca_cert: Certificate | None = None,
         port: int = 0,
+        dispatch_port: int | None = None,
     ) -> None:
         self._allowlist = allowlist if allowlist is not None else DEFAULT_ALLOWLIST
         self._dispatch: DispatchCallback = dispatch or _noop_dispatch
+        self._dispatch_port = dispatch_port
         self._base_dir = base_dir
         self._ca_key_init = ca_key
         self._ca_cert_init = ca_cert
@@ -654,6 +699,7 @@ class AgyCONNECTTerminator:
             self._ca_key,
             self._ca_cert,
             self._dispatch,
+            dispatch_port=self._dispatch_port,
         )
 
     @property
