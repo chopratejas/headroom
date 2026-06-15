@@ -1289,3 +1289,236 @@ class TestSmokeVerifyMcpHandshake:
 
         ok = _smoke_verify_mcp_handshake(_sys.executable, [str(server)], {}, timeout=2.0)
         assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# WU-B: build_codegraph_spec shape
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCodegraphSpec:
+    """build_codegraph_spec produces a correctly-shaped ServerSpec."""
+
+    def test_name_matches_cbm_server_name_constant(self) -> None:
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.install import build_codegraph_spec
+
+        spec = build_codegraph_spec("/usr/local/bin/cbm")
+        assert spec.name == _CBM_MCP_SERVER_NAME
+
+    def test_command_is_cbm_bin(self) -> None:
+        from headroom.mcp_registry.install import build_codegraph_spec
+
+        spec = build_codegraph_spec("/usr/local/bin/cbm")
+        assert spec.command == "/usr/local/bin/cbm"
+
+    def test_no_extra_args(self) -> None:
+        from headroom.mcp_registry.install import build_codegraph_spec
+
+        spec = build_codegraph_spec("/usr/local/bin/cbm")
+        assert spec.args == ()
+
+    def test_no_env(self) -> None:
+        from headroom.mcp_registry.install import build_codegraph_spec
+
+        spec = build_codegraph_spec("/usr/local/bin/cbm")
+        assert spec.env == {}
+
+    def test_exported_from_mcp_registry(self) -> None:
+        from headroom.mcp_registry import build_codegraph_spec  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# WU-B: --code-graph flag on wrap agy (interactive + print mode + default off)
+# ---------------------------------------------------------------------------
+
+
+def _stub_agy_with_cbm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cbm_bin: str = "/usr/local/bin/cbm",
+    cbm_exists: bool = True,
+    smoke_passes: bool = True,
+) -> None:
+    """Extend _stub_agy_mitm_run with cbm binary stubs."""
+    import headroom.cli.wrap as wrap_mod
+
+    _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+
+    # Stub cbm binary resolution so no network download occurs.
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(
+        "headroom.graph.installer.get_cbm_path",
+        lambda: _Path(cbm_bin) if cbm_exists else None,
+    )
+    monkeypatch.setattr(
+        "headroom.graph.installer.ensure_cbm",
+        lambda: _Path(cbm_bin) if cbm_exists else None,
+    )
+    # Stub _setup_code_graph so no real indexing runs.
+    monkeypatch.setattr(wrap_mod, "_setup_code_graph", lambda verbose=False: True)
+    # Override smoke verify for code-graph tests.
+    monkeypatch.setattr(
+        wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: smoke_passes
+    )
+
+
+class TestAgyCodeGraphFlag:
+    """--code-graph flag wiring: interactive registers cbm MCP; print-mode skips it."""
+
+    def test_code_graph_interactive_registers_cbm_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Interactive --code-graph: cbm entry registered via AgyRegistrar."""
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy", "--code-graph"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        spec = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
+        assert spec is not None, "interactive --code-graph must register the cbm MCP entry"
+        assert spec.command == "/usr/local/bin/cbm"
+
+    def test_code_graph_interactive_calls_smoke_verify(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Interactive --code-graph: _smoke_verify_mcp_handshake is called."""
+        import headroom.cli.wrap as wrap_mod
+
+        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
+        smoke_calls: list[tuple] = []
+
+        def _spy(*a, **kw):
+            smoke_calls.append(a)
+            return True
+
+        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", _spy)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy", "--code-graph"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        # Smoke was called at least once (for cbm).
+        assert len(smoke_calls) >= 1
+
+    def test_code_graph_print_mode_skips_registration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--code-graph + print mode: cbm entry must NOT be registered."""
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(),
+            ["wrap", "agy", "--code-graph", "--", "--print", "hi"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
+            "--code-graph + print mode must NOT register cbm (agy hangs with MCP in print mode)"
+        )
+
+    def test_no_code_graph_flag_does_not_register_cbm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without --code-graph, no cbm entry registered (default off)."""
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
+            "omitting --code-graph must NOT register cbm (default off)"
+        )
+
+    def test_failed_smoke_removes_cbm_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Interactive --code-graph: if smoke fails, cbm entry must be removed."""
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=False)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            _get_main(), ["wrap", "agy", "--code-graph"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
+            "a cbm entry that fails the handshake must be removed"
+        )
+
+
+# ---------------------------------------------------------------------------
+# WU-B: unwrap agy removes ledger-owned cbm entry; preserves user-managed one
+# ---------------------------------------------------------------------------
+
+
+class TestUnwrapAgyCbm:
+    """unwrap agy removes only Headroom-installed cbm; preserves user entries."""
+
+    def test_unwrap_removes_headroom_installed_cbm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.install import build_codegraph_spec
+        from headroom.mcp_registry.ledger import record_install
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        reg = AgyRegistrar(home_dir=tmp_path)
+        cbm_spec = build_codegraph_spec("/usr/local/bin/cbm")
+        reg.register_server(cbm_spec)
+        record_install("agy", cbm_spec)
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
+            "unwrap agy must remove a Headroom-installed cbm MCP entry"
+        )
+
+    def test_unwrap_preserves_user_managed_cbm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user-managed cbm entry (absent from ledger) must survive unwrap."""
+        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        reg = AgyRegistrar(home_dir=tmp_path)
+        # User-managed entry: different command, NOT recorded in ledger.
+        user_spec = ServerSpec(
+            name=_CBM_MCP_SERVER_NAME,
+            command="/opt/my-cbm/bin/cbm",
+            args=(),
+            env={},
+        )
+        reg.register_server(user_spec)
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0
+        survived = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
+        assert survived is not None, "user-managed cbm entry must not be removed by unwrap"
+        assert survived.command == "/opt/my-cbm/bin/cbm"

@@ -1052,6 +1052,19 @@ def _remove_headroom_installed_serena_mcp(registrar: Any) -> str:
     return "failed"
 
 
+def _remove_headroom_installed_cbm_mcp(registrar: Any) -> str:
+    """Remove codebase-memory-mcp only if the ledger proves Headroom installed it."""
+    from headroom.mcp_registry.ledger import clear_install, headroom_installed_matching
+
+    current = registrar.get_server(_CBM_MCP_SERVER_NAME)
+    if not headroom_installed_matching(registrar.name, current):
+        return "not_headroom_owned"
+    if registrar.unregister_server(_CBM_MCP_SERVER_NAME):
+        clear_install(registrar.name, _CBM_MCP_SERVER_NAME)
+        return "removed"
+    return "failed"
+
+
 def _disable_serena_mcp(registrar: Any, *, verbose: bool = False) -> None:
     """Make ``--no-serena`` actively disable Serena, not merely skip adding it.
 
@@ -5826,11 +5839,18 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
     help="API backend for the proxy (env: HEADROOM_BACKEND).  NOTE: only Python backend is supported for agy.",
 )
 @click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
+@click.option(
+    "--code-graph",
+    is_flag=True,
+    default=False,
+    help="Enable code graph indexing via codebase-memory-mcp (optional; interactive-only)",
+)
 @click.argument("agy_args", nargs=-1, type=click.UNPROCESSED)
 def agy(
     no_intercept: bool,
     backend: str | None,
     no_serena: bool,
+    code_graph: bool,
     agy_args: tuple,
 ) -> None:
     """Launch agy through Headroom's selective TLS-MITM transport.
@@ -6018,6 +6038,61 @@ def agy(
             _disable_serena_mcp(AgyRegistrar(), verbose=False)
 
         # ------------------------------------------------------------------
+        # Code graph MCP — OPT-IN, INTERACTIVE ONLY.
+        # codebase-memory-mcp is a persistent stdio MCP server that gives the
+        # agent query access to a code knowledge graph (call chains, symbol
+        # definitions, impact analysis).  Registered via AgyRegistrar behind a
+        # ``--code-graph`` flag (default OFF); skipped in print mode because
+        # any MCP server hangs agy in print mode (headroom-30y.18).
+        # On first use the cbm binary is resolved/ensured by _setup_code_graph;
+        # we re-use get_cbm_path() here for the registration-only path so we
+        # do NOT index the project a second time (that is already done by
+        # _setup_code_graph).
+        # ------------------------------------------------------------------
+        if code_graph and not print_mode:
+            from headroom.graph.installer import ensure_cbm, get_cbm_path
+            from headroom.mcp_registry import build_codegraph_spec
+            from headroom.mcp_registry.base import RegisterStatus
+            from headroom.mcp_registry.ledger import record_install as _record_install
+
+            cbm_path = get_cbm_path()
+            if not cbm_path:
+                click.echo("  Code graph: downloading codebase-memory-mcp...")
+                cbm_path = ensure_cbm()
+                if cbm_path:
+                    click.echo(f"  Code graph: installed at {cbm_path}")
+                else:
+                    click.echo("  Code graph: download failed — skipping code-graph MCP for agy")
+
+            if cbm_path:
+                cbm_bin = str(cbm_path)
+                cbm_spec = build_codegraph_spec(cbm_bin)
+                cbm_result = AgyRegistrar().register_server(cbm_spec, force=True)
+                if cbm_result.status in (RegisterStatus.REGISTERED, RegisterStatus.ALREADY):
+                    if _smoke_verify_mcp_handshake(cbm_spec.command, list(cbm_spec.args), dict(cbm_spec.env)):
+                        if cbm_result.status == RegisterStatus.REGISTERED:
+                            _record_install(AgyRegistrar().name, cbm_spec)
+                        click.echo("  Code graph: codebase-memory-mcp MCP wired (handshake verified).")
+                        # Also index the project (idempotent).
+                        _setup_code_graph(verbose=False)
+                    else:
+                        AgyRegistrar().unregister_server(_CBM_MCP_SERVER_NAME)
+                        click.echo(
+                            "  Code graph: codebase-memory-mcp MCP failed handshake — "
+                            "entry removed (agy left without code graph)."
+                        )
+                else:
+                    click.echo(
+                        f"  Code graph: could not register codebase-memory-mcp MCP — "
+                        f"skipping ({cbm_result.detail})."
+                    )
+        elif code_graph and print_mode:
+            click.echo(
+                "  Code graph: skipped for --print mode "
+                "(agy hangs with any MCP server in print mode)."
+            )
+
+        # ------------------------------------------------------------------
         # Headroom retrieve MCP — INTERACTIVE ONLY.  The retrieve tool is an
         # ``headroom mcp serve`` stdio child that resolves ``[Retrieve more:
         # hash=…]`` markers by calling the proxy's retrieve HTTP endpoint.  It
@@ -6042,6 +6117,7 @@ def agy(
         def _agy_sigterm(_signum: int | None = None, _frame: Any = None) -> None:
             if retrieve_registered:
                 _revert_headroom_retrieve_mcp_agy(AgyRegistrar())
+            # code_graph_registered: persistent entry (like Serena), NOT reverted on exit.
             _stop_agy_servers(servers)
             raise SystemExit(143)
 
@@ -6124,6 +6200,16 @@ def unwrap_agy() -> None:
         click.echo("  Removed lean-ctx context-tool MCP server from agy.")
     else:
         click.echo("  lean-ctx context-tool MCP server was not registered in agy.")
+
+    # 5. Remove codebase-memory-mcp only if the ledger proves Headroom
+    #    installed it via --code-graph (user-managed entries are left untouched).
+    cbm_status = _remove_headroom_installed_cbm_mcp(agy_reg)
+    if cbm_status == "removed":
+        click.echo("  Removed Headroom-installed codebase-memory-mcp MCP server from agy.")
+    elif cbm_status == "failed":
+        click.echo("  codebase-memory-mcp matched Headroom ledger but could not be removed.")
+    elif cbm_status == "not_headroom_owned":
+        click.echo("  codebase-memory-mcp: not Headroom-owned — left in place.")
 
     click.echo()
     click.echo("✓ agy headroom configuration reverted.")
