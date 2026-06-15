@@ -725,7 +725,13 @@ def _percentile(data: list[float], pct: float) -> float:
 
 def calculate_throughput(report: PerfReport) -> dict:
     records = report.perf_records
-    if not records or not report.oldest_kept_ts or not report.newest_kept_ts:
+    parsed_records = []
+    for r in records:
+        ts = _parse_log_ts(r.timestamp)
+        if ts:
+            parsed_records.append((r, ts))
+
+    if not parsed_records:
         empty = {
             "input_wall_clock": 0.0,
             "input_active_p50": 0.0,
@@ -737,29 +743,25 @@ def calculate_throughput(report: PerfReport) -> dict:
             "generation_p50": 0.0,
             "generation_p95": 0.0,
         }
-        return {"rolling": empty, "current": empty}
+        return {"rolling": empty.copy(), "current": empty.copy()}
 
-    oldest = _parse_log_ts(report.oldest_kept_ts)
-    newest = _parse_log_ts(report.newest_kept_ts)
-    window_seconds = max(1.0, (newest - oldest).total_seconds()) if oldest and newest else 0.0
+    # Calculate window from PERF timestamps to prevent dilution from other log lines
+    perf_timestamps = [pair[1] for pair in parsed_records]
+    oldest = min(perf_timestamps)
+    newest = max(perf_timestamps)
+    window_seconds = max(1.0, (newest - oldest).total_seconds())
 
     rolling = _calculate_throughput_stats(records, window_seconds)
 
+    # 5-minute window calculations
     current_records = []
     current_window_seconds = 0.0
-    if newest:
-        cutoff_5m = newest - timedelta(minutes=5)
-        parsed_records = []
-        for r in records:
-            ts = _parse_log_ts(r.timestamp)
-            if ts:
-                parsed_records.append((r, ts))
-
-        current_pairs = [pair for pair in parsed_records if pair[1] >= cutoff_5m]
-        if current_pairs:
-            current_records = [pair[0] for pair in current_pairs]
-            cur_oldest = min(pair[1] for pair in current_pairs)
-            current_window_seconds = max(1.0, (newest - cur_oldest).total_seconds())
+    cutoff_5m = newest - timedelta(minutes=5)
+    current_pairs = [pair for pair in parsed_records if pair[1] >= cutoff_5m]
+    if current_pairs:
+        current_records = [pair[0] for pair in current_pairs]
+        cur_oldest = min(pair[1] for pair in current_pairs)
+        current_window_seconds = max(1.0, (newest - cur_oldest).total_seconds())
 
     current = _calculate_throughput_stats(current_records, current_window_seconds)
 

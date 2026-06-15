@@ -2267,6 +2267,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     _stats_snapshot_lock = asyncio.Lock()
     _stats_snapshot: dict[str, Any] = {"expires_at": 0.0, "value": None}
 
+    THROUGHPUT_CACHE_TTL_SECONDS = 10.0
+    _throughput_cache_lock = asyncio.Lock()
+    _throughput_cache: dict[str, Any] = {"expires_at": 0.0, "value": None}
+
     RECENT_REQUEST_LOG_WINDOW = 100
 
     def _build_recent_request_payload(limit: int = RECENT_REQUEST_LOG_WINDOW) -> dict[str, Any]:
@@ -2310,14 +2314,24 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         """
         m = proxy.metrics
 
-        from headroom.perf.analyzer import build_perf_summary, parse_log_files
+        import time
+        async with _throughput_cache_lock:
+            now = time.time()
+            if _throughput_cache["expires_at"] < now or _throughput_cache["value"] is None:
+                def _compute_throughput():
+                    from headroom.perf.analyzer import build_perf_summary, parse_log_files
+                    perf_report = parse_log_files(last_n_hours=1.0)
+                    return build_perf_summary(perf_report).get("throughput")
 
-        try:
-            perf_report = parse_log_files(last_n_hours=1.0)
-            throughput = build_perf_summary(perf_report).get("throughput")
-        except Exception as e:
-            logger.warning("Failed to calculate throughput for stats: %s", e)
-            throughput = None
+                try:
+                    throughput = await asyncio.to_thread(_compute_throughput)
+                    _throughput_cache["value"] = throughput
+                    _throughput_cache["expires_at"] = now + THROUGHPUT_CACHE_TTL_SECONDS
+                except Exception as e:
+                    logger.warning("Failed to calculate throughput for stats: %s", e, exc_info=True)
+                    if _throughput_cache["value"] is None:
+                        _throughput_cache["value"] = None
+            throughput = _throughput_cache["value"]
 
         # Calculate average latency
         avg_latency_ms = round(m.latency_sum_ms / m.latency_count, 2) if m.latency_count > 0 else 0
