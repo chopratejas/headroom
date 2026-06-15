@@ -190,3 +190,75 @@ class TestNetCostHelpers:
         assert _netcost_message_tokens({"role": "user", "content": s}, tokenizer) == (
             tokenizer.count_text(s)
         )
+
+
+def _frozen_messages(tool_content: str, suffix_filler_words: int) -> list[dict]:
+    """A short conversation whose compressible tool dump sits *inside* the
+    frozen prefix (index 1, with frozen_message_count=2)."""
+    suffix = "analysis context word " * suffix_filler_words
+    return [
+        {"role": "user", "content": "fetch the records"},
+        {"role": "tool", "content": tool_content},
+        {"role": "user", "content": suffix},
+        {"role": "user", "content": "summarize"},
+    ]
+
+
+class TestNetCostFrozenUnlock:
+    """#856 P2b: let formula-positive deep edits through the frozen floor."""
+
+    def test_flag_off_frozen_stays_frozen(self, router, tokenizer, monkeypatch):
+        # Default (flag off): a message in the prefix cache is never mutated,
+        # however compressible it is — the binary floor wins.
+        monkeypatch.delenv("HEADROOM_NET_COST_POLICY", raising=False)
+        messages = _frozen_messages(_tool_json(2000), suffix_filler_words=5)
+        result = router.apply([dict(m) for m in messages], tokenizer, frozen_message_count=2)
+        assert not _tool_slot_compressed(result, messages)
+        assert "router:netcost_frozen_unlock" not in result.transforms_applied
+
+    def test_flag_on_unlocks_when_shave_dominates(self, router, tokenizer, monkeypatch):
+        # Huge shave deep in the frozen zone, tiny suffix after -> the
+        # break-even gate clears the deep edit and it proceeds (the "50K
+        # stale dump, 10K suffix" user story).
+        monkeypatch.setenv("HEADROOM_NET_COST_POLICY", "1")
+        messages = _frozen_messages(_tool_json(2000), suffix_filler_words=5)
+        result = router.apply([dict(m) for m in messages], tokenizer, frozen_message_count=2)
+        assert _tool_slot_compressed(result, messages)
+        assert "router:netcost_frozen_unlock" in result.transforms_applied
+
+    def test_flag_on_keeps_frozen_when_suffix_dominates(self, router, tokenizer, monkeypatch):
+        # Modest shave, big cached suffix -> gate runs on the unlocked slot
+        # but rejects it. The frozen message is left byte-identical and no
+        # unlock marker is emitted, proving the floor opened yet the formula
+        # still protected the cache.
+        monkeypatch.setenv("HEADROOM_NET_COST_POLICY", "1")
+        messages = _frozen_messages(_tool_json(300), suffix_filler_words=40000)
+        result = router.apply([dict(m) for m in messages], tokenizer, frozen_message_count=2)
+        assert not _tool_slot_compressed(result, messages)
+        assert "router:netcost_frozen_unlock" not in result.transforms_applied
+        assert any(t.startswith("netcost:skip:") for t in result.transforms_applied)
+
+    def test_flag_on_block_content_frozen_stays_frozen(self, router, tokenizer, monkeypatch):
+        # The gate is wired into the string and parallel-merge paths only;
+        # block-list frozen content (whose per-block cache_control contract
+        # is not net-cost aware) stays frozen even with a tiny suffix.
+        monkeypatch.setenv("HEADROOM_NET_COST_POLICY", "1")
+        big = "log line of output " * 400
+        messages = [
+            {"role": "user", "content": "fetch"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": big}],
+                    }
+                ],
+            },
+            {"role": "user", "content": "summarize"},
+        ]
+        original = [dict(m) for m in messages]
+        result = router.apply([dict(m) for m in messages], tokenizer, frozen_message_count=2)
+        assert result.messages[1]["content"] == original[1]["content"]
+        assert "router:netcost_frozen_unlock" not in result.transforms_applied

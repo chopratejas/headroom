@@ -2226,13 +2226,34 @@ class ContentRouter(Transform):
         _PendingTask = tuple[int, str, str, float, int]
         pending_tasks: list[_PendingTask] = []
 
+        # #856 P2b (flag-gated, default off): net-cost frozen-floor unlock.
+        # Without the flag, every message in the provider's prefix cache
+        # (index < frozen_message_count) is unconditionally skipped — mutating
+        # one trades a 90% read discount for a 25% write penalty (Anthropic).
+        # That binary floor leaves money on the table: a 50K-token stale tool
+        # dump with only a 10K cached suffix after it pays for itself many
+        # times over. With HEADROOM_NET_COST_POLICY=1 a *string-content*
+        # frozen message instead falls through to the normal candidate
+        # pipeline, where the P2 break-even gate (_net_cost_allows) decides
+        # per candidate: its S is the full invalidated suffix after the slot,
+        # so the deep edit proceeds only when ΔT·(w+r(R-1)) still beats the
+        # cache-bust penalty. Block-list and non-string frozen content stay
+        # frozen — the gate is wired into the string and parallel-merge paths
+        # only, and the per-block cache_control contract in
+        # _process_content_blocks is not net-cost aware, so opening them here
+        # would mutate cached blocks ungated.
+        frozen_unlock_slots: set[int] = set()
         for i, message in enumerate(messages):
-            # Skip frozen messages (in provider's prefix cache).
-            # Modifying these would invalidate the cache, replacing a 90%
-            # read discount with a 25% write penalty (Anthropic).
             if i < frozen_message_count:
-                result_slots[i] = message
-                continue
+                if netcost_enabled and isinstance(message.get("content", ""), str):
+                    # Defer to the break-even gate below instead of skipping.
+                    frozen_unlock_slots.add(i)
+                    route_counts.setdefault("netcost_frozen_considered", 0)
+                    route_counts["netcost_frozen_considered"] += 1
+                else:
+                    # Frozen — byte-identical to preserve the prefix cache.
+                    result_slots[i] = message
+                    continue
 
             role = message.get("role", "")
             content = message.get("content", "")
@@ -2398,6 +2419,10 @@ class ContentRouter(Transform):
                         result_slots[i] = {**message, "content": cached_compressed}
                         transforms_applied.append(f"router:{cached_strategy}:{cached_ratio:.2f}")
                         compressed_details.append(f"{cached_strategy}:{cached_ratio:.2f}")
+                        if i in frozen_unlock_slots:
+                            transforms_applied.append("router:netcost_frozen_unlock")
+                            route_counts.setdefault("netcost_frozen_unlocked", 0)
+                            route_counts["netcost_frozen_unlocked"] += 1
                 else:
                     # Threshold tightened — no longer qualifies. Move to skip.
                     self._cache.move_to_skip(content_key)
@@ -2477,6 +2502,10 @@ class ContentRouter(Transform):
                     compressed_details.append(
                         f"{result.strategy_used.value}:{result.compression_ratio:.2f}"
                     )
+                    if slot_idx in frozen_unlock_slots:
+                        transforms_applied.append("router:netcost_frozen_unlock")
+                        route_counts.setdefault("netcost_frozen_unlocked", 0)
+                        route_counts["netcost_frozen_unlocked"] += 1
                 else:
                     # Didn't compress — add to skip set
                     self._cache.mark_skip(content_key)
