@@ -249,7 +249,7 @@ When running as a proxy, Headroom maintains a per-session union of `anthropic-be
 
 **Why:** clients such as Claude Code and Codex CLI may drop a beta token between consecutive turns. Because `anthropic-beta` is part of the request bytes that determine the upstream prefix-cache key, a dropped token would bust the cache mid-conversation. The tracker re-injects any token seen earlier in the session so the cache key stays stable.
 
-**Trade-off:** the tracker re-echoes any token it has ever seen in a session without an entitlement or validity filter. If the client sends a beta token that your account cannot use (e.g. a feature-flag token outside your plan), it continues to be re-sent for the rest of the session even after the client stops including it, and stopping it on the client side is not enough — the proxy will re-inject it. Set `HEADROOM_BETA_HEADER_STICKY=disabled` to pass the client's `anthropic-beta` value verbatim and bypass this accumulation.
+**Trade-off:** once the proxy has seen a beta token in a session it will continue re-sending it for the rest of that session, even if the client stops including it. Stopping the token on the client side alone is not sufficient — the proxy re-injects it. Set `HEADROOM_BETA_HEADER_STICKY=disabled` to pass the client's `anthropic-beta` value verbatim and bypass this accumulation.
 
 ```bash
 # Disable sticky beta re-echo
