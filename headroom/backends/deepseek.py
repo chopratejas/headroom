@@ -117,9 +117,7 @@ class DeepseekBackend(Backend):
     def supports_model(self, model: str) -> bool:
         return model.startswith("claude-") or model.startswith("deepseek-")
 
-    async def send_message(
-        self, body: dict[str, Any], headers: dict[str, str]
-    ) -> BackendResponse:
+    async def send_message(self, body: dict[str, Any], headers: dict[str, str]) -> BackendResponse:
         api_key = self._resolve_api_key(headers)
         client = self._get_anthropic_client(api_key)
         model = self.map_model_id(body.get("model", "deepseek-chat"))

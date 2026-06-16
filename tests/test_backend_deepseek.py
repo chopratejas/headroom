@@ -122,9 +122,7 @@ class TestDeepseekBackendAnthropic:
     @pytest.mark.asyncio
     async def test_send_message_error(self):
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(
-            side_effect=Exception("Authentication failed")
-        )
+        mock_client.messages.create = AsyncMock(side_effect=Exception("Authentication failed"))
 
         backend = DeepseekBackend(anthropic_client=mock_client)
         response = await backend.send_message(
@@ -139,9 +137,7 @@ class TestDeepseekBackendAnthropic:
     @pytest.mark.asyncio
     async def test_send_message_generic_error(self):
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(
-            side_effect=Exception("Something went wrong")
-        )
+        mock_client.messages.create = AsyncMock(side_effect=Exception("Something went wrong"))
 
         backend = DeepseekBackend(anthropic_client=mock_client)
         response = await backend.send_message(
@@ -212,9 +208,7 @@ class TestDeepseekBackendStreaming:
     @pytest.mark.asyncio
     async def test_stream_message_error(self):
         mock_client = AsyncMock()
-        mock_client.messages.stream = MagicMock(
-            side_effect=Exception("Rate limited")
-        )
+        mock_client.messages.stream = MagicMock(side_effect=Exception("Rate limited"))
 
         backend = DeepseekBackend(anthropic_client=mock_client)
         events = []
@@ -287,9 +281,7 @@ class TestDeepseekBackendOpenAI:
     @pytest.mark.asyncio
     async def test_send_openai_message_error(self):
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=Exception("Rate limited")
-        )
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Rate limited"))
 
         backend = DeepseekBackend(openai_client=mock_client)
         response = await backend.send_openai_message(
@@ -302,9 +294,7 @@ class TestDeepseekBackendOpenAI:
     @pytest.mark.asyncio
     async def test_send_openai_message_generic_error(self):
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=Exception("Server error")
-        )
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Server error"))
 
         backend = DeepseekBackend(openai_client=mock_client)
         response = await backend.send_openai_message(
@@ -319,13 +309,9 @@ class TestDeepseekBackendOpenAIStreaming:
     @pytest.mark.asyncio
     async def test_stream_openai_message(self):
         mock_chunk1 = MagicMock()
-        mock_chunk1.model_dump.return_value = {
-            "choices": [{"delta": {"content": "Hello"}}]
-        }
+        mock_chunk1.model_dump.return_value = {"choices": [{"delta": {"content": "Hello"}}]}
         mock_chunk2 = MagicMock()
-        mock_chunk2.model_dump.return_value = {
-            "choices": [{"delta": {"content": "!"}}]
-        }
+        mock_chunk2.model_dump.return_value = {"choices": [{"delta": {"content": "!"}}]}
 
         async def mock_aiter():
             for chunk in [mock_chunk1, mock_chunk2]:
@@ -354,9 +340,7 @@ class TestDeepseekBackendOpenAIStreaming:
     @pytest.mark.asyncio
     async def test_stream_openai_message_error(self):
         mock_client = AsyncMock()
-        mock_client.chat.completions.create = AsyncMock(
-            side_effect=Exception("Connection failed")
-        )
+        mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Connection failed"))
 
         backend = DeepseekBackend(openai_client=mock_client)
         chunks = []
@@ -376,9 +360,7 @@ class TestDeepseekBackendClose:
         mock_anthropic = AsyncMock()
         mock_openai = AsyncMock()
 
-        backend = DeepseekBackend(
-            anthropic_client=mock_anthropic, openai_client=mock_openai
-        )
+        backend = DeepseekBackend(anthropic_client=mock_anthropic, openai_client=mock_openai)
         await backend.close()
 
         mock_anthropic.close.assert_called_once()

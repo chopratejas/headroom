@@ -3,16 +3,13 @@
 import warnings
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from headroom.providers.deepseek import (
-    DeepseekProvider,
-    DeepseekTokenCounter,
     _CONTEXT_LIMITS,
-    _PATTERN_DEFAULTS,
     _PRICING,
     _UNKNOWN_DEEPSEEK_DEFAULT,
     _UNKNOWN_MODEL_WARNINGS,
+    DeepseekProvider,
+    DeepseekTokenCounter,
     _check_pricing_staleness,
     _infer_model_family,
 )
@@ -224,9 +221,7 @@ class TestDeepseekTokenCounter:
     def _make_counter(self):
         mock_tokenizer = MagicMock()
         mock_tokenizer.count_text = MagicMock(side_effect=lambda t: len(t.split()))
-        with patch(
-            "headroom.providers.deepseek.get_tokenizer", return_value=mock_tokenizer
-        ):
+        with patch("headroom.providers.deepseek.get_tokenizer", return_value=mock_tokenizer):
             return DeepseekTokenCounter("deepseek-chat")
 
     def test_count_text(self):
@@ -339,7 +334,7 @@ class TestPricingStaleness:
 
         monkeypatch.setattr(ds_mod, "_PRICING_WARNING_SHOWN", False)
         monkeypatch.setattr(ds_mod, "_PRICING_STALE_DAYS", 0)
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             result = _check_pricing_staleness()
             assert result is not None
