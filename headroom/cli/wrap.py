@@ -64,6 +64,9 @@ from headroom.providers.copilot import (
     detect_running_proxy_backend as _copilot_detect_running_proxy_backend,
 )
 from headroom.providers.copilot import (
+    is_auto_model as _is_auto_model,
+)
+from headroom.providers.copilot import (
     model_configured as _copilot_model_configured_impl,
 )
 from headroom.providers.copilot import (
@@ -74,6 +77,9 @@ from headroom.providers.copilot import (
 )
 from headroom.providers.copilot import (
     resolve_provider_type as _copilot_resolve_provider_type,
+)
+from headroom.providers.copilot import (
+    strip_auto_model_args as _strip_auto_model_args,
 )
 from headroom.providers.copilot import (
     validate_configuration as _validate_copilot_configuration,
@@ -2143,9 +2149,9 @@ def _proc_identity(pid: int) -> tuple[str, float] | None:
     different units; we only compare like-for-like.
     """
     try:
-        import psutil  # optional dependency; portable when present
+        import psutil  # type: ignore[import-untyped]  # optional dependency; portable when present
 
-        return ("psutil", float(psutil.Process(pid).create_time()))
+        return ("psutil", psutil.Process(pid).create_time())
     except Exception:
         pass
     # Linux fallback: field 22 of /proc/<pid>/stat is starttime in clock ticks
@@ -3049,6 +3055,22 @@ def copilot(
             )
 
         selected_model = _copilot_model_from_args(copilot_args, env)
+
+        # ``--model auto`` is a Copilot-internal routing token that the BYOK
+        # API rejects with ``400 The requested model is not supported``.  In
+        # subscription/OAuth mode we route to the real Copilot hosted API, so
+        # Copilot's own native auto-selection works fine — we just need to
+        # strip the ``--model auto`` flag before launch so Copilot doesn't
+        # forward it to the provider endpoint.
+        if _is_auto_model(selected_model):
+            copilot_args = _strip_auto_model_args(copilot_args)
+            selected_model = None
+            click.echo(
+                "  Note: '--model auto' is not forwarded to the Copilot API "
+                "(it would cause a 400). Removed it; Copilot will use its own "
+                "automatic model selection."
+            )
+
         effective_wire_api = wire_api or (
             _copilot_default_wire_api_for_model(selected_model) if subscription else "completions"
         )
@@ -3117,10 +3139,25 @@ def copilot(
             raise SystemExit(1)
 
     if not subscription and not _copilot_model_configured(copilot_args, env):
-        click.echo(
-            "  Note: Copilot BYOK requires a model. Pass `--model <name>` "
-            "or set `COPILOT_MODEL` / `COPILOT_PROVIDER_MODEL_ID`."
-        )
+        # Distinguish between "--model auto" (wrong model for BYOK) and
+        # genuinely missing model (no --model flag at all).
+        raw_model = _copilot_model_from_args(copilot_args, env)
+        if _is_auto_model(raw_model):
+            click.echo(
+                "  Note: '--model auto' is not supported in Copilot BYOK mode.\n"
+                "  BYOK routes to an external provider (Anthropic/OpenAI) which\n"
+                "  does not recognise 'auto' as a model name — the request will\n"
+                "  fail with a 400 error.\n"
+                "  Options:\n"
+                "    • Use a concrete model: --model gpt-4o\n"
+                "    • Use subscription mode for native auto-routing:\n"
+                "      headroom wrap copilot --subscription -- --model auto"
+            )
+        else:
+            click.echo(
+                "  Note: Copilot BYOK requires a model. Pass `--model <name>` "
+                "or set `COPILOT_MODEL` / `COPILOT_PROVIDER_MODEL_ID`."
+            )
 
     _launch_tool(
         binary=copilot_bin,
