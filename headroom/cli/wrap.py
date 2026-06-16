@@ -51,6 +51,7 @@ from headroom.providers.aider import build_launch_env as _build_aider_launch_env
 from headroom.providers.claude import proxy_base_url as _claude_proxy_base_url
 from headroom.providers.codex import build_launch_env as _build_codex_launch_env
 from headroom.providers.codex.install import codex_uses_chatgpt_auth
+from headroom.providers.codex.threads import retag_to_headroom, retag_to_native
 from headroom.providers.copilot import (
     build_launch_env as _build_copilot_launch_env,
 )
@@ -1241,6 +1242,9 @@ def _inject_codex_provider_config(port: int) -> None:
 
         config_file.write_text(content)
         click.echo(f"  Codex config: injected Headroom provider (WS + HTTP) into {config_file}")
+        # Pull existing native threads into the headroom-provider menu so Codex's
+        # history list stays whole once it routes through Headroom. Best-effort.
+        retag_to_headroom(_codex_home_dir())
     except Exception as e:
         click.echo(f"  Warning: could not update Codex config: {e}")
 
@@ -4566,6 +4570,11 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
             click.echo("  Removed Headroom-installed Serena MCP server from Codex.")
         elif serena_status == "failed":
             click.echo("  Serena MCP server matched Headroom ledger but could not be removed.")
+
+    if status in {"restored", "cleaned", "removed"}:
+        # Hand the threads back to the native-provider menu so the full history
+        # stays visible once Codex no longer routes through Headroom. Best-effort.
+        retag_to_native(_codex_home_dir())
 
     click.echo()
     click.echo("✓ Codex is no longer routed through the Headroom proxy.")
