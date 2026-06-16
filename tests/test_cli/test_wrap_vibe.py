@@ -48,7 +48,6 @@ def test_wrap_vibe_launch(
     assert captured["args"] == ("--prompt", "test")
 
 
-
 def test_wrap_vibe_with_project_name(
     runner: CliRunner,
     tmp_path: Path,
@@ -243,9 +242,7 @@ def test_wrap_vibe_providers_json_structure(
     assert providers[0]["backend"] == "mistral"
     assert "api_base" in providers[0]
     assert providers[0]["browser_auth_base_url"] == "https://console.mistral.ai"
-    assert (
-        providers[0]["browser_auth_api_base_url"] == "https://console.mistral.ai/api"
-    )
+    assert providers[0]["browser_auth_api_base_url"] == "https://console.mistral.ai/api"
 
 
 def test_wrap_vibe_no_context_tool(
