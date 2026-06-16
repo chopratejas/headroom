@@ -690,7 +690,10 @@ def verify_cursor_wrap(base_env: dict[str, str], project_dir: Path) -> None:
         errors="replace",
     )
     try:
-        output = wait_for_output(proc, "Press Ctrl+C to stop the proxy.", timeout=30)
+        # _start_proxy waits up to 45s before surfacing proxy log context. Keep
+        # this parent-process wait longer so slow container startup is not
+        # mistaken for a Cursor wrap failure.
+        output = wait_for_output(proc, "Press Ctrl+C to stop the proxy.", timeout=75)
         # Cursor setup lines embed the /p/<name> per-project prefix.
         cursor_prefix = f"/p/{quote(project_dir.name, safe='')}"
         assert_true(
@@ -701,7 +704,7 @@ def verify_cursor_wrap(base_env: dict[str, str], project_dir: Path) -> None:
             f"http://127.0.0.1:{port}" in output,
             "Cursor wrap should print the Anthropic base URL override",
         )
-        wait_for_http(f"http://127.0.0.1:{port}/health", timeout=15)
+        wait_for_http(f"http://127.0.0.1:{port}/health", timeout=30)
         cursorrules = project_dir / ".cursorrules"
         assert_true(cursorrules.exists(), "Cursor wrap should create .cursorrules")
         assert_true(

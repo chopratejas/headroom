@@ -1177,6 +1177,8 @@ def _read_rtk_lifetime_stats() -> dict[str, Any] | None:
         result = subprocess.run(
             _rtk_gain_command(rtk_path, scope),
             capture_output=True,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=5,
         )
@@ -1236,8 +1238,10 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
 
     try:
         result = subprocess.run(
-            [str(lean_ctx_path), "gain", "--json"],
+            [lean_ctx_path.as_posix(), "gain", "--json"],
             capture_output=True,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=5,
         )
