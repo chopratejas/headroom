@@ -76,6 +76,20 @@ def test_switching_provider_recaptures(tmp_path):
     assert json.loads(sf.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-k"
 
 
+def test_same_float_mtime_provider_switch_recaptures(tmp_path):
+    r, sf, captured = _make(tmp_path)
+    base_ns = 1_700_000_000_000_000_000
+    _write(sf, {"env": {"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"}})
+    os.utime(sf, ns=(base_ns, base_ns))
+    assert r.tick() is True
+
+    _write(sf, {"env": {"ANTHROPIC_BASE_URL": "https://api.kimi.com/anthropic"}})
+    os.utime(sf, ns=(base_ns + 1, base_ns + 1))
+    assert sf.stat().st_mtime == float(base_ns / 1_000_000_000)
+    assert r.tick() is True
+    assert captured[-1] == "https://api.kimi.com/anthropic"
+
+
 def test_official_left_direct_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("HEADROOM_CC_SWITCH_ROUTE_OFFICIAL", raising=False)
     r, sf, _ = _make(tmp_path)

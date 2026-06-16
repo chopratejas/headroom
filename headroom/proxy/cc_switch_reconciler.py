@@ -96,7 +96,7 @@ class CCSwitchReconciler:
         self.path = path or _settings_path()
         self.current_upstream: str | None = None
         self._task: asyncio.Task | None = None
-        self._last_mtime: float | None = None
+        self._last_mtime_ns: int | None = None
 
     async def start(self) -> None:
         if self._task is not None:
@@ -126,12 +126,12 @@ class CCSwitchReconciler:
     def tick(self) -> bool:
         """One reconcile pass. Returns True if it rewrote settings.json."""
         try:
-            mtime = self.path.stat().st_mtime
+            mtime_ns = self.path.stat().st_mtime_ns
         except FileNotFoundError:
             return False
-        if mtime == self._last_mtime:
+        if mtime_ns == self._last_mtime_ns:
             return False
-        self._last_mtime = mtime
+        self._last_mtime_ns = mtime_ns
 
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -174,6 +174,6 @@ class CCSwitchReconciler:
         os.replace(tmp, self.path)
         # Skip the mtime bump caused by our own write so we don't re-process it.
         try:
-            self._last_mtime = self.path.stat().st_mtime
+            self._last_mtime_ns = self.path.stat().st_mtime_ns
         except OSError:
             pass
