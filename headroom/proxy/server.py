@@ -425,6 +425,11 @@ def _build_agent_usage_summary(
     }
 
 
+# Suppress "[transformers] PyTorch was not found" warning emitted when
+# transformers is imported for availability checks (e.g. kompress ONNX probe).
+# PyTorch is optional in headroom; the warning is not actionable for operators.
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
