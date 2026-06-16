@@ -259,6 +259,8 @@ dev = [
     "sentence-transformers>=2.2.0,<6.0",
     "numpy>=1.24.0",
     "openpyxl>=3.1.0",  # exercises spreadsheet_ingest (.xlsx) in the test suite
+    "cryptography>=42.0.0",       # agy TLS-MITM CA/leaf minting (tests: test_agy_ca/dispatch/terminator)
+    "hypercorn>=0.16",            # agy in-process HTTPS dispatch server (tests: test_agy_dispatch)
 ]
 # All optional dependencies (everything you need)
 all = [
