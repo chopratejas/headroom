@@ -549,3 +549,14 @@ def test_dashboard_uses_cached_stats_and_lazy_history_feed_polling() -> None:
     assert "Lean-ctx" in html
     assert "Context Tool" in html
     assert "cliFilteringLabel + ' Filtered'" in html
+
+
+def test_dashboard_session_proxy_cost_card_uses_session_cost_scope() -> None:
+    html = get_dashboard_html()
+    card_start = html.index("Session Proxy $ Saved")
+    card_end = html.index("<!-- Token Savings (%) -->", card_start)
+    card_html = html[card_start:card_end]
+
+    assert "stats.cost?.compression_savings_usd" in card_html
+    assert "stats.tokens?.proxy_compression_saved" in card_html
+    assert "persistent_savings?.lifetime?.compression_savings_usd" not in card_html
