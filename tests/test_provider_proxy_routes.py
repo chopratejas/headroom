@@ -511,23 +511,33 @@ def test_v1_models_fetches_codex_registry_under_chatgpt_auth(monkeypatch) -> Non
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload == {
-        "object": "list",
-        "data": [
-            {
-                "id": "gpt-5.5",
-                "object": "model",
-                "created": 0,
-                "owned_by": "openai",
-            },
-            {
-                "id": "gpt-5.3-codex-spark",
-                "object": "model",
-                "created": 0,
-                "owned_by": "openai",
-            },
-        ],
-    }
+    assert payload["object"] == "list"
+    assert payload["data"] == [
+        {
+            "id": "gpt-5.5",
+            "object": "model",
+            "created": 0,
+            "owned_by": "openai",
+        },
+        {
+            "id": "gpt-5.3-codex-spark",
+            "object": "model",
+            "created": 0,
+            "owned_by": "openai",
+        },
+    ]
+    assert [entry["slug"] for entry in payload["models"]] == [
+        "gpt-5.5",
+        "gpt-5.3-codex-spark",
+    ]
+    assert [entry["display_name"] for entry in payload["models"]] == [
+        "GPT-5.5",
+        "GPT-5.3-Codex-Spark",
+    ]
+    for entry in payload["models"]:
+        assert entry["default_reasoning_level"] == "medium"
+        assert entry["context_window"] == 272000
+        assert entry["supports_parallel_tool_calls"] is True
     assert len(fake_http_client.calls) == 1
     method, url, headers = fake_http_client.calls[0]
     assert method == "GET"
@@ -578,8 +588,14 @@ def test_v1_models_falls_back_to_synthetic_list_under_chatgpt_auth(monkeypatch) 
     assert isinstance(payload["data"], list)
     assert len(payload["data"]) > 0
     model_ids = {entry["id"] for entry in payload["data"]}
+    model_slugs = {entry["slug"] for entry in payload["models"]}
     # Spot-check: the model from issue #478's repro log must be present.
     assert "gpt-5.5" in model_ids
+    assert "gpt-5.5" in model_slugs
+    gpt_55 = next(entry for entry in payload["models"] if entry["slug"] == "gpt-5.5")
+    assert gpt_55["display_name"] == "GPT-5.5"
+    assert gpt_55["supported_in_api"] is True
+    assert gpt_55["default_reasoning_level"] == "medium"
     for entry in payload["data"]:
         assert entry["object"] == "model"
         assert entry["owned_by"] == "openai"
