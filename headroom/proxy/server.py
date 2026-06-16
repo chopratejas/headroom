@@ -103,6 +103,7 @@ from headroom.providers.registry import (
     format_backend_status,
     resolve_api_targets,
 )
+from headroom.proxy.auth_mode import should_stamp_codex_client
 
 # =============================================================================
 # Extracted modules (re-exported for backward compatibility)
@@ -2107,6 +2108,15 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         query = request.url.query
         headers = dict(request.headers.items())
         set_current_project(classify_project(headers) or prefix_project)
+        # Path-based Codex identification: stamp X-Client: codex on the
+        # Responses endpoint for callers that don't otherwise classify (e.g.
+        # Codex Desktop, whose User-Agent isn't a known codex UA). Without it
+        # the backend refuses oversized
+        # requests with a 413 on a compression timeout, which Codex treats as a
+        # hard connection failure. Mutating scope["headers"] before call_next
+        # makes every downstream classify_client(headers) read "codex".
+        if should_stamp_codex_client(path, headers):
+            request.scope["headers"].append((b"x-client", b"codex"))
         client = getattr(request, "client", None)
         client_addr = ""
         if client is not None:
