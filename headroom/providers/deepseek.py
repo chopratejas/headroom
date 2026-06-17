@@ -402,6 +402,7 @@ class DeepseekProvider(Provider):
         Returns:
             Estimated cost in USD, or None if pricing unknown.
         """
+        cached_tokens = max(0, min(cached_tokens, input_tokens))
         # Try LiteLLM first
         if LITELLM_AVAILABLE:
             for model_variant in [f"deepseek/{model}", model]:

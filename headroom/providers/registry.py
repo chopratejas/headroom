@@ -263,6 +263,16 @@ def _load_litellm_backend() -> Any:
 def _load_deepseek_backend() -> Any:
     global DeepseekBackendType
     if DeepseekBackendType is None:
+        try:
+            import anthropic  # noqa: F401
+        except ImportError:
+            try:
+                import openai  # noqa: F401
+            except ImportError as err:
+                raise ImportError(
+                    "Either 'anthropic' or 'openai' SDK is required for the native Deepseek backend. "
+                    "Install with: pip install anthropic openai"
+                ) from err
         from headroom.backends.deepseek import DeepseekBackend
 
         DeepseekBackendType = DeepseekBackend

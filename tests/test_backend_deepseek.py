@@ -62,7 +62,7 @@ class TestDeepseekBackendAnthropic:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-        backend = DeepseekBackend(anthropic_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", anthropic_client=mock_client)
         response = await backend.send_message(
             body={
                 "model": "claude-3-5-sonnet-20241022",
@@ -93,7 +93,7 @@ class TestDeepseekBackendAnthropic:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
-        backend = DeepseekBackend(anthropic_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", anthropic_client=mock_client)
         await backend.send_message(
             body={
                 "model": "deepseek-chat",
@@ -124,7 +124,7 @@ class TestDeepseekBackendAnthropic:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(side_effect=Exception("Authentication failed"))
 
-        backend = DeepseekBackend(anthropic_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", anthropic_client=mock_client)
         response = await backend.send_message(
             body={"model": "deepseek-chat", "messages": []},
             headers={},
@@ -139,7 +139,7 @@ class TestDeepseekBackendAnthropic:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(side_effect=Exception("Something went wrong"))
 
-        backend = DeepseekBackend(anthropic_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", anthropic_client=mock_client)
         response = await backend.send_message(
             body={"model": "deepseek-chat", "messages": []},
             headers={},
@@ -183,7 +183,7 @@ class TestDeepseekBackendStreaming:
 
         mock_client.messages.stream = MagicMock(return_value=mock_stream_ctx)
 
-        backend = DeepseekBackend(anthropic_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", anthropic_client=mock_client)
         events = []
         async for event in backend.stream_message(
             body={
@@ -210,7 +210,7 @@ class TestDeepseekBackendStreaming:
         mock_client = AsyncMock()
         mock_client.messages.stream = MagicMock(side_effect=Exception("Rate limited"))
 
-        backend = DeepseekBackend(anthropic_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", anthropic_client=mock_client)
         events = []
         async for event in backend.stream_message(
             body={"model": "deepseek-chat", "messages": []},
@@ -237,7 +237,7 @@ class TestDeepseekBackendOpenAI:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-        backend = DeepseekBackend(openai_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", openai_client=mock_client)
         response = await backend.send_openai_message(
             body={
                 "model": "deepseek-chat",
@@ -257,7 +257,7 @@ class TestDeepseekBackendOpenAI:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
 
-        backend = DeepseekBackend(openai_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", openai_client=mock_client)
         await backend.send_openai_message(
             body={
                 "model": "deepseek-chat",
@@ -283,7 +283,7 @@ class TestDeepseekBackendOpenAI:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Rate limited"))
 
-        backend = DeepseekBackend(openai_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", openai_client=mock_client)
         response = await backend.send_openai_message(
             body={"model": "deepseek-chat", "messages": []},
             headers={},
@@ -296,7 +296,7 @@ class TestDeepseekBackendOpenAI:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Server error"))
 
-        backend = DeepseekBackend(openai_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", openai_client=mock_client)
         response = await backend.send_openai_message(
             body={"model": "deepseek-chat", "messages": []},
             headers={},
@@ -322,7 +322,7 @@ class TestDeepseekBackendOpenAIStreaming:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(return_value=mock_stream)
 
-        backend = DeepseekBackend(openai_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", openai_client=mock_client)
         chunks = []
         async for chunk in backend.stream_openai_message(
             body={
@@ -342,7 +342,7 @@ class TestDeepseekBackendOpenAIStreaming:
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(side_effect=Exception("Connection failed"))
 
-        backend = DeepseekBackend(openai_client=mock_client)
+        backend = DeepseekBackend(api_key="test-key", openai_client=mock_client)
         chunks = []
         async for chunk in backend.stream_openai_message(
             body={"model": "deepseek-chat", "messages": []},
@@ -384,3 +384,83 @@ class TestDeepseekBackendClientCreation:
             backend = DeepseekBackend(api_key="test-key")
             with pytest.raises(RuntimeError, match="openai SDK is required"):
                 backend._get_openai_client()
+
+
+class TestDeepseekBackendApiKeyResolution:
+    def test_resolve_api_key_from_constructor(self):
+        backend = DeepseekBackend(api_key="constructor-key")
+        assert backend._resolve_api_key({}) == "constructor-key"
+
+    def test_resolve_api_key_from_x_api_key_header(self):
+        backend = DeepseekBackend()
+        assert backend._resolve_api_key({"x-api-key": "header-key"}) == "header-key"
+
+    def test_resolve_api_key_from_authorization_bearer(self):
+        backend = DeepseekBackend()
+        assert backend._resolve_api_key({"Authorization": "Bearer bearer-key"}) == "bearer-key"
+
+    def test_resolve_api_key_from_authorization_bearer_lowercase(self):
+        backend = DeepseekBackend()
+        assert backend._resolve_api_key({"authorization": "Bearer bearer-key-lc"}) == "bearer-key-lc"
+
+    def test_resolve_api_key_from_env(self):
+        backend = DeepseekBackend()
+        with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "env-key"}):
+            assert backend._resolve_api_key({}) == "env-key"
+
+    def test_resolve_api_key_returns_none_when_missing(self):
+        backend = DeepseekBackend()
+        with patch.dict("os.environ", {}, clear=True):
+            assert backend._resolve_api_key({}) is None
+
+
+class TestDeepseekBackendNoApiKey:
+    @pytest.mark.asyncio
+    async def test_send_message_no_api_key_returns_401(self):
+        backend = DeepseekBackend()
+        with patch.dict("os.environ", {}, clear=True):
+            response = await backend.send_message(
+                body={"model": "deepseek-chat", "messages": []},
+                headers={},
+            )
+        assert response.status_code == 401
+        assert "No API key" in response.error
+
+    @pytest.mark.asyncio
+    async def test_stream_message_no_api_key_yields_error(self):
+        backend = DeepseekBackend()
+        with patch.dict("os.environ", {}, clear=True):
+            events = []
+            async for event in backend.stream_message(
+                body={"model": "deepseek-chat", "messages": []},
+                headers={},
+            ):
+                events.append(event)
+        assert len(events) == 1
+        assert events[0].event_type == "error"
+        assert "authentication_error" in events[0].data["error"]["type"]
+
+    @pytest.mark.asyncio
+    async def test_send_openai_message_no_api_key_returns_401(self):
+        backend = DeepseekBackend()
+        with patch.dict("os.environ", {}, clear=True):
+            response = await backend.send_openai_message(
+                body={"model": "deepseek-chat", "messages": []},
+                headers={},
+            )
+        assert response.status_code == 401
+        assert "No API key" in response.error
+
+    @pytest.mark.asyncio
+    async def test_stream_openai_message_no_api_key_yields_error(self):
+        backend = DeepseekBackend()
+        with patch.dict("os.environ", {}, clear=True):
+            chunks = []
+            async for chunk in backend.stream_openai_message(
+                body={"model": "deepseek-chat", "messages": []},
+                headers={},
+            ):
+                chunks.append(chunk)
+        assert len(chunks) == 2
+        assert "[DONE]" in chunks[-1]
+        assert "authentication_error" in chunks[0]

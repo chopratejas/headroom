@@ -423,3 +423,51 @@ class TestUnknownDefault:
         # Should return a cost using _UNKNOWN_DEEPSEEK_DEFAULT pricing
         assert cost is not None
         assert cost > 0
+
+
+class TestEstimateCostClamping:
+    """Tests for cached_tokens clamping in estimate_cost."""
+
+    def test_cached_tokens_exceeding_input_tokens(self):
+        provider = DeepseekProvider()
+        cost = provider.estimate_cost(
+            input_tokens=100,
+            output_tokens=50,
+            model="deepseek-chat",
+            cached_tokens=200,
+        )
+        assert cost is not None
+        assert cost > 0
+
+    def test_cached_tokens_equals_input_tokens(self):
+        provider = DeepseekProvider()
+        cost = provider.estimate_cost(
+            input_tokens=100,
+            output_tokens=50,
+            model="deepseek-chat",
+            cached_tokens=100,
+        )
+        assert cost is not None
+        assert cost > 0
+
+    def test_negative_cached_tokens(self):
+        provider = DeepseekProvider()
+        cost = provider.estimate_cost(
+            input_tokens=100,
+            output_tokens=50,
+            model="deepseek-chat",
+            cached_tokens=-10,
+        )
+        assert cost is not None
+        assert cost > 0
+
+    def test_zero_input_tokens_zero_cached(self):
+        provider = DeepseekProvider()
+        cost = provider.estimate_cost(
+            input_tokens=0,
+            output_tokens=50,
+            model="deepseek-chat",
+            cached_tokens=0,
+        )
+        assert cost is not None
+        assert cost >= 0

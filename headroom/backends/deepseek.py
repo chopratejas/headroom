@@ -75,6 +75,9 @@ class DeepseekBackend(Backend):
         header_key = headers.get("x-api-key") or headers.get("X-Api-Key")
         if header_key:
             return header_key
+        auth_header = headers.get("authorization") or headers.get("Authorization") or ""
+        if auth_header.startswith("Bearer "):
+            return auth_header[7:]
         return os.environ.get("DEEPSEEK_API_KEY")
 
     def _get_anthropic_client(self, api_key: str | None = None) -> Any:
@@ -119,6 +122,12 @@ class DeepseekBackend(Backend):
 
     async def send_message(self, body: dict[str, Any], headers: dict[str, str]) -> BackendResponse:
         api_key = self._resolve_api_key(headers)
+        if not api_key:
+            return BackendResponse(
+                body={"type": "error", "error": {"type": "authentication_error", "message": "No API key provided. Set DEEPSEEK_API_KEY or pass via x-api-key / Authorization header."}},
+                status_code=401,
+                error="No API key provided",
+            )
         client = self._get_anthropic_client(api_key)
         model = self.map_model_id(body.get("model", "deepseek-chat"))
 
@@ -155,6 +164,18 @@ class DeepseekBackend(Backend):
         self, body: dict[str, Any], headers: dict[str, str]
     ) -> AsyncIterator[StreamEvent]:
         api_key = self._resolve_api_key(headers)
+        if not api_key:
+            yield StreamEvent(
+                event_type="error",
+                data={
+                    "type": "error",
+                    "error": {
+                        "type": "authentication_error",
+                        "message": "No API key provided. Set DEEPSEEK_API_KEY or pass via x-api-key / Authorization header.",
+                    },
+                },
+            )
+            return
         client = self._get_anthropic_client(api_key)
         model = self.map_model_id(body.get("model", "deepseek-chat"))
 
@@ -277,6 +298,12 @@ class DeepseekBackend(Backend):
         self, body: dict[str, Any], headers: dict[str, str]
     ) -> BackendResponse:
         api_key = self._resolve_api_key(headers)
+        if not api_key:
+            return BackendResponse(
+                body={"error": {"message": "No API key provided. Set DEEPSEEK_API_KEY or pass via x-api-key / Authorization header.", "type": "authentication_error"}},
+                status_code=401,
+                error="No API key provided",
+            )
         client = self._get_openai_client(api_key)
         model = body.get("model", "deepseek-chat")
 
@@ -318,6 +345,10 @@ class DeepseekBackend(Backend):
         self, body: dict[str, Any], headers: dict[str, str]
     ) -> AsyncIterator[str]:
         api_key = self._resolve_api_key(headers)
+        if not api_key:
+            yield f"data: {json.dumps({'error': {'message': 'No API key provided. Set DEEPSEEK_API_KEY or pass via x-api-key / Authorization header.', 'type': 'authentication_error'}})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         client = self._get_openai_client(api_key)
         model = body.get("model", "deepseek-chat")
 
