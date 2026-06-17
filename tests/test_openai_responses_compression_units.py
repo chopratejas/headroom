@@ -452,6 +452,59 @@ def test_openai_responses_adapter_preserves_excluded_tool_outputs():
     assert strategy_chain == []
 
 
+def test_openai_responses_adapter_excludes_tool_case_insensitively_with_debug(monkeypatch):
+    """Excluded match is case-insensitive, and the debug path stays exercised.
+
+    The configured name is lowercase only; the call advertises a mixed-case
+    name, so the protection must hit via the lowercased fallback. Debug logging
+    is enabled so the protected-extraction debug record is also covered.
+    """
+    monkeypatch.setattr(
+        openai_handler, "_log_codex_compression_debug", lambda *_a, **_k: None
+    )
+    router = ContentRouter()
+    router.config.exclude_tools = {"serena.find_symbol"}
+
+    def compress(self, content: str, **_kwargs):
+        return RouterCompressionResult(
+            compressed="should not be used",
+            original=content,
+            strategy_used=CompressionStrategy.KOMPRESS,
+        )
+
+    router.compress = MethodType(compress, router)
+    handler = _handler_with_router(router)
+    output = " ".join(f"sym{i}" for i in range(180))
+    payload = {
+        "model": "gpt-5",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "Serena.Find_Symbol",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": output,
+            },
+        ],
+    }
+
+    new_payload, modified, saved, *_ = (
+        handler._compress_openai_responses_live_text_units_with_router(
+            payload,
+            model="gpt-5",
+            request_id="req_test",
+        )
+    )
+
+    assert modified is False
+    assert saved == 0
+    assert new_payload == payload
+
+
 def test_openai_responses_adapter_compresses_non_excluded_tool_outputs():
     """Only excluded tools are protected; other tool outputs still compress."""
     router = ContentRouter()
