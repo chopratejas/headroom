@@ -305,6 +305,23 @@ pipx install --python python3.13 "headroom-ai[all]"
 
 → [Installation guide](https://headroom-docs.vercel.app/docs/installation) — Docker tags, persistent service, PowerShell, devcontainers.
 
+### Updating
+
+```bash
+headroom update          # detects pip / pipx / uv tool and upgrades in place
+headroom update --check  # report the latest release without upgrading
+headroom update --pre    # include pre-releases
+```
+
+`headroom update` figures out how Headroom was installed (pip/venv, `pip --user`,
+pipx, uv tool) and runs the matching upgrade across macOS, Linux, and Windows.
+For git checkouts, editable installs, Docker images, and externally-managed
+system Pythons (PEP 668) it prints the correct manual step instead of guessing.
+
+The proxy also shows a one-line "update available" notice on startup. It checks
+PyPI at most once a day, in the background, and never blocks. Opt out with
+`HEADROOM_UPDATE_CHECK=off` (also skipped in `--stateless` mode and CI).
+
 ### Corporate / SSL-inspection environments
 
 If `pip install "headroom-ai[all]"` fails with `CERTIFICATE_VERIFY_FAILED`
