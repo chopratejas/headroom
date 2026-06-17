@@ -9,6 +9,7 @@ and per-repo breakdowns. Durable across restarts; aggregated on read.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import click
 
@@ -33,7 +34,7 @@ def _tokens(value: int) -> str:
     return f"{value:,}"
 
 
-def _window_line(label: str, window: dict[str, object]) -> str:
+def _window_line(label: str, window: dict[str, Any]) -> str:
     pct = float(window.get("savings_percent", 0.0) or 0.0)
     saved = int(window.get("tokens_saved", 0) or 0)
     before = int(window.get("tokens_before", 0) or 0)
