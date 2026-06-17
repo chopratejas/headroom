@@ -1789,7 +1789,13 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 else:
                     logger.debug("Beacon: skipping (another worker owns the lock)")
 
-                if _cc_reconciler is not None:
+                # Only the beacon-lock owner runs the reconciler. With
+                # uvicorn workers > 1 each worker runs this lifespan; without
+                # this guard every worker would watch + rewrite settings.json
+                # concurrently and each process would hold its own
+                # HeadroomProxy.ANTHROPIC_API_URL, so workers could disagree on
+                # the upstream. Single-owner mirrors the beacon's reasoning.
+                if _cc_reconciler is not None and _beacon_is_owner[0]:
                     await _cc_reconciler.start()
 
                 app.state.ready = True
@@ -2264,27 +2270,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     @app.get("/admin/upstream", dependencies=[Depends(_require_loopback)])
     async def get_upstream():
-        """Current Anthropic upstream + cc-switch reconciler state (loopback-only)."""
+        """Current Anthropic upstream + cc-switch reconciler state (loopback-only).
+
+        Read-only. The upstream is mutated only via the in-process cc-switch
+        reconciler (driven by ~/.claude/settings.json) — there is deliberately
+        no HTTP write route, so a local process cannot redirect credential-
+        bearing traffic to an arbitrary URL through this surface.
+        """
         return {
             "anthropic": HeadroomProxy.ANTHROPIC_API_URL,
             "cc_switch_reconcile": _cc_reconciler is not None,
             "captured_upstream": getattr(_cc_reconciler, "current_upstream", None),
         }
-
-    @app.put("/admin/upstream", dependencies=[Depends(_require_loopback)])
-    async def put_upstream(body: dict):
-        """Set the Anthropic upstream at runtime (loopback-only, no restart)."""
-        from headroom.providers.registry import _normalize_api_url
-
-        url = body.get("anthropic") or body.get("url")
-        if not url:
-            return JSONResponse(
-                status_code=400, content={"error": "missing 'anthropic' or 'url'"}
-            )
-        HeadroomProxy.ANTHROPIC_API_URL = _normalize_api_url(
-            url, default=DEFAULT_ANTHROPIC_API_URL
-        )
-        return {"ok": True, "anthropic": HeadroomProxy.ANTHROPIC_API_URL}
 
     @app.get("/debug/tasks", dependencies=[Depends(_require_loopback)])
     async def debug_tasks(stack: bool = False):

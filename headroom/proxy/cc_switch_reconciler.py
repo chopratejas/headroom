@@ -131,17 +131,26 @@ class CCSwitchReconciler:
             return False
         if mtime_ns == self._last_mtime_ns:
             return False
-        self._last_mtime_ns = mtime_ns
 
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
+            # Transient read/parse failure (e.g. caught mid atomic-replace, or
+            # cc-switch wrote partial JSON). Do NOT consume this mtime — leave
+            # _last_mtime_ns untouched so the next tick retries instead of
+            # treating the broken state as already-processed.
             return False
+        # Read succeeded: now it is safe to mark this mtime processed.
+        self._last_mtime_ns = mtime_ns
         if not isinstance(data, dict):
             return False
         env = data.get("env")
         env = dict(env) if isinstance(env, dict) else {}
         url = env.get("ANTHROPIC_BASE_URL")
+        # A non-string base_url (number/list from a hand-edited file) would
+        # raise on .rstrip() below and spam the watcher loop; treat as empty.
+        if not isinstance(url, str):
+            url = ""
 
         # Empty / official: cc-switch wrote {"env": {}} (Claude Official, OAuth).
         if not url:
@@ -169,7 +178,9 @@ class CCSwitchReconciler:
         return True
 
     def _atomic_write(self, data: dict) -> None:
-        tmp = self.path.with_name(self.path.name + ".hrtmp")
+        # Per-process temp name: multiple Headroom processes reconciling the
+        # same settings.json must not clobber each other's temp file.
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.hrtmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, self.path)
         # Skip the mtime bump caused by our own write so we don't re-process it.

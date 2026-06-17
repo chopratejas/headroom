@@ -113,6 +113,30 @@ def test_missing_file_is_noop(tmp_path):
     assert r.tick() is False
 
 
+def test_non_string_base_url_does_not_crash(tmp_path):
+    r, sf, captured = _make(tmp_path)
+    # A hand-edited / malformed file with a non-string base_url must not raise
+    # (would otherwise blow up on .rstrip() and spam the watcher loop).
+    _write(sf, {"env": {"ANTHROPIC_BASE_URL": 1234}})
+    assert r.tick() is False  # treated as empty -> left direct
+    assert captured == []
+
+
+def test_transient_invalid_json_retries_next_tick(tmp_path):
+    r, sf, captured = _make(tmp_path)
+    # Mid-write garbage: read/parse fails, mtime must NOT be consumed.
+    sf.write_text("{not valid json")
+    os.utime(sf, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    assert r.tick() is False
+    assert r._last_mtime_ns is None  # broken state not marked processed
+
+    # File repaired at the SAME mtime: next tick must still process it.
+    sf.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"}}))
+    os.utime(sf, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    assert r.tick() is True
+    assert captured[-1] == "https://api.deepseek.com/anthropic"
+
+
 @pytest.mark.parametrize(
     "val,expected",
     [("1", True), ("true", True), ("on", True), ("0", False), ("", False)],
