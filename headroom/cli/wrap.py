@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import os
 import shutil
 import signal
@@ -26,7 +27,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from collections.abc import Callable
+from hashlib import sha1
 from pathlib import Path
 from typing import Any, cast
 
@@ -1108,12 +1111,24 @@ _PROJECT_HEADER_NAME = "X-Headroom-Project"
 def _project_name_from_cwd() -> str | None:
     """Project label for X-Headroom-Project: basename of the launch directory.
 
-    The proxy sanitizes and caps the value server-side
-    (headroom.proxy.savings_tracker.sanitize_project_name), so the raw
-    directory name is safe to send as-is.
+    The proxy sanitizes and caps the value server-side, but the client still
+    needs an ASCII-safe header value so Windows / non-ASCII cwd names do not
+    trip HTTP header validation before the request leaves the process.
     """
     name = Path.cwd().name.strip()
-    return name or None
+    if not name:
+        return None
+
+    normalized = unicodedata.normalize("NFKD", name)
+    ascii_name = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"-+", "-", "".join(ch if ch.isalnum() else "-" for ch in ascii_name.lower())).strip(
+        "-"
+    )
+    if slug:
+        return slug[:64]
+
+    digest = sha1(name.encode("utf-8")).hexdigest()[:8]
+    return f"project-{digest}"
 
 
 def _apply_project_header_env(env: dict[str, str]) -> None:

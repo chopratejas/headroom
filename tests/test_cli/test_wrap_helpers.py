@@ -522,6 +522,27 @@ class TestApplyProjectHeaderEnv:
 
         assert wrap_mod._project_name_from_cwd() == "vibe-headroom"
 
+    def test_project_name_from_cwd_slugifies_spaces(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        project_dir = tmp_path / "Vibe Headroom"
+        project_dir.mkdir()
+        monkeypatch.chdir(project_dir)
+
+        assert wrap_mod._project_name_from_cwd() == "vibe-headroom"
+
+    def test_project_name_from_cwd_falls_back_for_non_ascii(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        project_dir = tmp_path / "第二大脑共享"
+        project_dir.mkdir()
+        monkeypatch.chdir(project_dir)
+
+        project = wrap_mod._project_name_from_cwd()
+        assert project is not None
+        assert project.startswith("project-")
+        assert project.isascii()
+
 
 # ---------------------------------------------------------------------------
 # Proxy-client reference counting
