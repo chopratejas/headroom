@@ -1,0 +1,105 @@
+# Azure Container Apps deployment for headroom-proxy
+#
+# Session history (proxy_savings.json, memory.db, session_stats.jsonl, toin.json)
+# lives in HEADROOM_WORKSPACE_DIR=/data/headroom inside the container.
+# Mounting an Azure Files share at /data makes that directory survive new
+# revisions (`:latest` re-pulls) without adding any new Azure resource:
+# every ACA Environment already has a Storage Account for its own management
+# plane — you only need to add a file share to that existing account.
+#
+# QUICK SETUP (run once, then deploy as many revisions as you like):
+#
+#   # 1. Find the Storage Account auto-created with your ACA Environment
+#   SA=$(az containerapp env show \
+#         --name <YOUR_ENV> --resource-group <YOUR_RG> \
+#         --query "properties.infrastructureResourceGroup" -o tsv \
+#       | xargs -I{} az storage account list -g {} --query "[0].name" -o tsv)
+#
+#   # 2. Create a 5 GiB file share in that account
+#   az storage share-rm create \
+#     --resource-group <YOUR_RG> \
+#     --storage-account "$SA" \
+#     --name headroom-workspace \
+#     --quota 5
+#
+#   # 3. Retrieve the account key
+#   SA_KEY=$(az storage account keys list \
+#     --resource-group <YOUR_RG> \
+#     --account-name "$SA" \
+#     --query "[0].value" -o tsv)
+#
+#   # 4. Register the share with the ACA Environment as "headroom-storage"
+#   az containerapp env storage set \
+#     --name <YOUR_ENV> --resource-group <YOUR_RG> \
+#     --storage-name headroom-storage \
+#     --azure-file-account-name "$SA" \
+#     --azure-file-account-key "$SA_KEY" \
+#     --azure-file-share-name headroom-workspace \
+#     --access-mode ReadWrite
+#
+#   # 5. Deploy (first time) or update (subsequent revisions)
+#   az containerapp create \        # or `update` for subsequent revisions
+#     --name headroom-proxy \
+#     --resource-group <YOUR_RG> \
+#     --environment <YOUR_ENV> \
+#     --yaml docker/aca-containerapp.yaml
+#
+# From step 5 onwards every new revision mounts the same file share, so
+# proxy savings, memory databases, and session statistics carry over.
+#
+# LOCAL DOCKER (any OS) — no Azure needed:
+#   docker compose up          # uses the named volume in docker-compose.yml
+#   docker compose pull && docker compose up   # re-pull :latest, keep state
+
+location: <YOUR_AZURE_REGION>        # e.g. eastus
+type: Microsoft.App/containerApps
+name: headroom-proxy
+
+properties:
+  managedEnvironmentId: /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/<YOUR_RG>/providers/Microsoft.App/managedEnvironments/<YOUR_ENV>
+
+  configuration:
+    ingress:
+      external: true
+      targetPort: 8787
+      transport: http
+      # Keep a single active revision so traffic never splits across
+      # instances with diverged on-disk state.
+    activeRevisionsMode: Single
+
+    secrets:
+      # Add any secrets your deployment needs here, e.g.:
+      # - name: license-key
+      #   value: <YOUR_HEADROOM_LICENSE_KEY>
+
+  template:
+    revisionSuffix: ""       # leave empty → ACA generates a suffix on each deploy
+
+    containers:
+      - name: headroom-proxy
+        image: ghcr.io/chopratejas/headroom:latest
+        resources:
+          cpu: 0.5
+          memory: 1.0Gi
+        env:
+          - name: HEADROOM_HOST
+            value: "0.0.0.0"
+          # HEADROOM_WORKSPACE_DIR and HEADROOM_CONFIG_DIR are already baked
+          # into the image (/data/headroom and /data/headroom/config).
+          # Override here only if you need a different path.
+          #
+          # - name: HEADROOM_LICENSE_KEY
+          #   secretRef: license-key
+        volumeMounts:
+          - mountPath: /data
+            volumeName: headroom-workspace
+
+    volumes:
+      # "headroom-storage" must match the --storage-name used in step 4 above.
+      - name: headroom-workspace
+        storageType: AzureFile
+        storageName: headroom-storage
+
+    scale:
+      minReplicas: 0    # scale to zero when idle (cost saving)
+      maxReplicas: 1    # single replica keeps SQLite writes conflict-free

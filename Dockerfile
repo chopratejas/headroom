@@ -88,7 +88,14 @@ WORKDIR /home/nonroot
 
 ENV HEADROOM_HOST=0.0.0.0 \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HEADROOM_WORKSPACE_DIR=/data/headroom \
+    HEADROOM_CONFIG_DIR=/data/headroom/config
+
+# Declare /data as the persistent-data mount point.  Docker (and ACA) will
+# attach a named volume here; bare `docker run` gets an anonymous volume so
+# state is never silently written to the read-only container layer.
+VOLUME ["/data"]
 
 EXPOSE 8787
 
