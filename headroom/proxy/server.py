@@ -167,7 +167,6 @@ from headroom.transforms import (
     CacheAligner,
     CodeAwareCompressor,
     CodeCompressorConfig,
-    CompressionStrategy,
     ContentRouter,
     ContentRouterConfig,
     TransformPipeline,
@@ -425,6 +424,11 @@ def _build_agent_usage_summary(
     }
 
 
+# Suppress "[transformers] PyTorch was not found" warning emitted when
+# transformers is imported for availability checks (e.g. kompress ONNX probe).
+# PyTorch is optional in headroom; the warning is not actionable for operators.
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -526,6 +530,7 @@ def _check_rust_core() -> tuple[str, str | None]:
 from headroom.proxy.handlers import (  # noqa: E402
     AnthropicHandlerMixin,
     BatchHandlerMixin,
+    BedrockHandlerMixin,
     GeminiHandlerMixin,
     OpenAIHandlerMixin,
     StreamingMixin,
@@ -538,6 +543,7 @@ class HeadroomProxy(
     OpenAIHandlerMixin,
     GeminiHandlerMixin,
     BatchHandlerMixin,
+    BedrockHandlerMixin,
 ):
     """Production-ready Headroom optimization proxy."""
 
@@ -618,14 +624,16 @@ class HeadroomProxy(
         )
         if config.disable_kompress:
             router_config.enable_kompress = False
-            router_config.fallback_strategy = CompressionStrategy.PASSTHROUGH
         # A non-None exclude_tools replaces DEFAULT_EXCLUDE_TOOLS in
         # ContentRouter, so merge rather than assign.
         if config.exclude_tools:
             router_config.exclude_tools = set(DEFAULT_EXCLUDE_TOOLS) | config.exclude_tools
-        # Token mode: allow compression of older excluded-tool results.
+        # Token mode: allow compression of older excluded-tool results,
+        # and emit search results grouped by file (path once per file
+        # instead of repeated on every match line).
         if is_token_mode(config.mode):
             router_config.protect_recent_reads_fraction = 0.3
+            router_config.search_group_by_file = True
         # `--compress-user-messages` flips the router's default skip rule.
         # Off by default for prefix-cache safety; enabled for workloads where
         # user-message content dominates input (OpenAI/Azure chat with pasted
@@ -2482,6 +2490,30 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             global_output_tokens=m.tokens_output_total,
         )
 
+        # Output-side reduction (counterfactual estimate from the shaper's
+        # ledger). Distinct from input compression above: these are OUTPUT
+        # tokens the model didn't emit because we steered verbosity / routed
+        # effort down. Always labelled estimated-vs-measured + a CI so it's
+        # never mistaken for an exact count. Best-effort — never break /stats.
+        output_reduction: dict[str, Any] = {"available": False}
+        try:
+            from headroom.proxy.output_savings import get_recorder
+
+            _oest = get_recorder().estimate()
+            if _oest.n_requests > 0:
+                output_reduction = {
+                    "available": True,
+                    "method": _oest.kind,  # "measured" | "estimated"
+                    "tokens_saved": round(_oest.tokens_saved),
+                    "baseline_tokens": round(_oest.baseline_tokens),
+                    "reduction_percent": round(_oest.pct, 1),
+                    "ci_low_percent": round(_oest.ci_low_pct, 1),
+                    "ci_high_percent": round(_oest.ci_high_pct, 1),
+                    "requests": _oest.n_requests,
+                }
+        except Exception:  # pragma: no cover - defensive
+            pass
+
         return {
             "summary": summary,
             "agent_usage": agent_usage,
@@ -2538,6 +2570,15 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                             "baseline caching is provider-native."
                         ),
                     },
+                    "output_shaping": {
+                        **output_reduction,
+                        "description": (
+                            "OUTPUT tokens the model didn't emit because the shaper "
+                            "steered verbosity / routed effort down. Counterfactual — "
+                            "shown as an estimate (vs a learned baseline) or measured "
+                            "(A/B holdout), always with a confidence band."
+                        ),
+                    },
                 },
             },
             "requests": {
@@ -2552,6 +2593,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "tokens": {
                 "input": m.tokens_input_total,
                 "output": m.tokens_output_total,
+                "output_saved": output_reduction.get("tokens_saved", 0),
+                "output_reduction_percent": output_reduction.get("reduction_percent", 0),
+                "output_reduction": output_reduction,
                 "saved": all_layers_tokens_saved,
                 "proxy_compression_saved": proxy_compression_tokens,
                 "cli_filtering_saved": cli_tokens_avoided,
@@ -2759,7 +2803,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         profile_kwargs = proxy_pipeline_kwargs(config)
         target_ratio = profile_kwargs.get("target_ratio", config.target_ratio)
         target_savings_percent = None
-        if isinstance(target_ratio, (int, float)):
+        if isinstance(target_ratio, int | float):
             target_savings_percent = round(max(0.0, min(1.0, 1.0 - float(target_ratio))) * 100, 1)
         return {
             "savings_profile": config.savings_profile,
@@ -2998,7 +3042,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             )
 
         if query:
-            # Search within cached content
+            # Search within cached content. The get_entry_status check above
+            # (clean_expired=True) already guaranteed availability or raised
+            # 404, so no second exists()/status backend read is needed here.
             results = store.search(hash_key, query)
             return {
                 "hash": hash_key,
@@ -3512,6 +3558,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
         bedrock_profile=os.environ.get("AWS_PROFILE"),
+        bedrock_api_url=os.environ.get("BEDROCK_TARGET_API_URL"),
         anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", "openai"),
         disable_kompress=_get_env_bool("HEADROOM_DISABLE_KOMPRESS", False),
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", 500),
@@ -3814,6 +3861,14 @@ if __name__ == "__main__":
         help="AWS profile for Bedrock backend (default: use default credentials)",
     )
     parser.add_argument(
+        "--bedrock-api-url",
+        help=(
+            "Custom Bedrock InvokeModel upstream for the /model/{id}/invoke "
+            "passthrough routes — point at a re-signing gateway, not raw AWS "
+            "(env: BEDROCK_TARGET_API_URL)"
+        ),
+    )
+    parser.add_argument(
         "--openrouter-api-key",
         help="OpenRouter API key (or set OPENROUTER_API_KEY env var)",
     )
@@ -3959,6 +4014,7 @@ if __name__ == "__main__":
         backend=_get_env_str("HEADROOM_BACKEND", args.backend),  # type: ignore[arg-type]
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", args.bedrock_region),
         bedrock_profile=args.bedrock_profile or os.environ.get("AWS_PROFILE"),
+        bedrock_api_url=_get_env_str("BEDROCK_TARGET_API_URL", args.bedrock_api_url),
         anyllm_provider=_get_env_str("HEADROOM_ANYLLM_PROVIDER", args.anyllm_provider),
         optimize=optimize,
         min_tokens_to_crush=_get_env_int("HEADROOM_MIN_TOKENS", args.min_tokens),
