@@ -707,3 +707,39 @@ class TestProxyClientRefCounting:
 
         # Second unregister is a no-op, not an error.
         wrap_mod._unregister_proxy_client(self.PORT)
+
+
+# ---------------------------------------------------------------------------
+# _serena_disabled — persistent HEADROOM_NO_SERENA opt-out (issues #568/#716)
+# ---------------------------------------------------------------------------
+
+
+class TestSerenaDisabled:
+    """_serena_disabled() honours --no-serena flag and HEADROOM_NO_SERENA env var."""
+
+    def test_flag_true_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("HEADROOM_NO_SERENA", raising=False)
+        assert wrap_mod._serena_disabled(True) is True
+
+    def test_flag_false_env_unset_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("HEADROOM_NO_SERENA", raising=False)
+        assert wrap_mod._serena_disabled(False) is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "YES", "Yes"])
+    def test_env_truthy_disables(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv("HEADROOM_NO_SERENA", value)
+        assert wrap_mod._serena_disabled(False) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "  "])
+    def test_env_falsy_enables(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv("HEADROOM_NO_SERENA", value)
+        assert wrap_mod._serena_disabled(False) is False
+
+    def test_flag_wins_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--no-serena flag disables even when env var is not set."""
+        monkeypatch.delenv("HEADROOM_NO_SERENA", raising=False)
+        assert wrap_mod._serena_disabled(True) is True
+
+    def test_env_with_whitespace_is_stripped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HEADROOM_NO_SERENA", "  1  ")
+        assert wrap_mod._serena_disabled(False) is True

@@ -1104,6 +1104,22 @@ def _prepare_wrap_rtk(verbose: bool = False, *, label: str | None = None) -> Pat
 # case-insensitively by headroom.proxy.project_context.PROJECT_HEADER).
 _PROJECT_HEADER_NAME = "X-Headroom-Project"
 
+# Persistent Serena opt-out: set HEADROOM_NO_SERENA=1 (or "true"/"yes") in
+# your shell profile to skip Serena MCP registration on every wrap without
+# passing --no-serena each time.  Closes #568 / #716.
+_SERENA_DISABLED_ENV = "HEADROOM_NO_SERENA"
+
+
+def _serena_disabled(no_serena_flag: bool) -> bool:
+    """Return True if Serena MCP should be skipped for this wrap session.
+
+    Checks the --no-serena CLI flag first, then the HEADROOM_NO_SERENA env
+    var so users can persist the preference in their shell profile or .env.
+    """
+    if no_serena_flag:
+        return True
+    return os.environ.get(_SERENA_DISABLED_ENV, "").strip().lower() in {"1", "true", "yes"}
+
 
 def _project_name_from_cwd() -> str | None:
     """Project label for X-Headroom-Project: basename of the launch directory.
@@ -2790,7 +2806,11 @@ def unwrap() -> None:
     is_flag=True,
     help="Skip headroom MCP server registration (compression markers will be unactionable)",
 )
-@click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
+@click.option(
+    "--no-serena",
+    is_flag=True,
+    help="Skip Serena MCP server registration (persistent: set HEADROOM_NO_SERENA=1)",
+)
 @click.option(
     "--code-graph",
     is_flag=True,
@@ -2955,7 +2975,7 @@ def claude(
         elif verbose:
             click.echo("  Skipping MCP retrieve tool (--no-mcp)")
 
-        if not no_serena:
+        if not _serena_disabled(no_serena):
             from headroom.mcp_registry import ClaudeRegistrar
 
             _setup_serena_mcp(ClaudeRegistrar(), context="claude-code", verbose=verbose)
@@ -3384,7 +3404,11 @@ def copilot(
     is_flag=True,
     help="Skip headroom MCP server registration (compression markers will be unactionable)",
 )
-@click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
+@click.option(
+    "--no-serena",
+    is_flag=True,
+    help="Skip Serena MCP server registration (persistent: set HEADROOM_NO_SERENA=1)",
+)
 @click.option(
     "--code-graph",
     is_flag=True,
@@ -3484,7 +3508,7 @@ def codex(
     elif verbose:
         click.echo("  Skipping MCP retrieve tool (--no-mcp)")
 
-    if not no_serena:
+    if not _serena_disabled(no_serena):
         from headroom.mcp_registry import CodexRegistrar
 
         _setup_serena_mcp(CodexRegistrar(), context="codex", verbose=verbose, force=True)
