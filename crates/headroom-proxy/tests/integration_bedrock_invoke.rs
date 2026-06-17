@@ -561,3 +561,43 @@ async fn tool_use_input_byte_equal_preserves_key_order() {
     );
     proxy.shutdown().await;
 }
+
+#[tokio::test]
+async fn bedrock_invoke_recorded_in_stats() {
+    // A Bedrock invoke must be recorded into the unified savings store and
+    // attributed to the `bedrock` backend, the same way the Anthropic/OpenAI
+    // lanes are via `forward_http`.
+    let upstream = MockServer::start().await;
+    let _captured = mount_capture_invoke(&upstream, r#"{"id":"msg_x","content":[]}"#).await;
+    let proxy = bedrock_proxy(&upstream, |c| {
+        c.compression = true;
+    })
+    .await;
+
+    let body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/model/{TEST_MODEL}/invoke", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("POST bedrock invoke");
+    assert_eq!(resp.status(), 200);
+
+    let stats: Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
+    assert_eq!(stats["requests"]["total"], 1);
+    assert_eq!(stats["requests"]["by_provider"]["bedrock"], 1);
+
+    proxy.shutdown().await;
+}

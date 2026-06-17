@@ -469,6 +469,20 @@ pub struct CliArgs {
         default_value = "https://www.googleapis.com/auth/cloud-platform"
     )]
     pub vertex_adc_scope: String,
+
+    /// Phase H: path to the JSON file that persists dashboard savings stats
+    /// (lifetime totals, history, per-provider/model) across restarts. When
+    /// unset, stats are kept in memory only and reset on restart.
+    #[arg(long = "savings-path", env = "HEADROOM_PROXY_SAVINGS_PATH")]
+    pub savings_path: Option<std::path::PathBuf>,
+
+    /// Transitional: URL of the still-running Python proxy's `/stats`. When set,
+    /// dashboard blocks not yet produced by Rust (provider quota / subscription
+    /// / rate-limit panels) are folded into this proxy's `/stats`, so the Rust
+    /// dashboard is the single source of truth during migration. Fail-open: an
+    /// unreachable Python proxy just omits those blocks.
+    #[arg(long = "upstream-stats-url", env = "HEADROOM_PROXY_UPSTREAM_STATS_URL")]
+    pub upstream_stats_url: Option<String>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -551,6 +565,11 @@ pub struct Config {
     /// PR-D4: GCP ADC OAuth scope used when fetching the bearer
     /// token. Default `https://www.googleapis.com/auth/cloud-platform`.
     pub vertex_adc_scope: String,
+    /// Phase H: persistent savings file path (see `CliArgs::savings_path`).
+    pub savings_path: Option<std::path::PathBuf>,
+    /// Transitional Python `/stats` URL for supplemental blocks (see
+    /// `CliArgs::upstream_stats_url`).
+    pub upstream_stats_url: Option<String>,
 }
 
 impl Config {
@@ -587,6 +606,8 @@ impl Config {
             bedrock_validate_eventstream_crc: args.bedrock_validate_eventstream_crc,
             vertex_region: args.vertex_region,
             vertex_adc_scope: args.vertex_adc_scope,
+            savings_path: args.savings_path,
+            upstream_stats_url: args.upstream_stats_url,
         }
     }
 
@@ -641,6 +662,8 @@ impl Config {
             // only; the upstream URL is `upstream`).
             vertex_region: "us-central1".to_string(),
             vertex_adc_scope: "https://www.googleapis.com/auth/cloud-platform".to_string(),
+            savings_path: None,
+            upstream_stats_url: None,
         }
     }
 }

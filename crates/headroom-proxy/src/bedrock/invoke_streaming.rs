@@ -153,7 +153,7 @@ pub async fn handle_invoke_streaming(
 
     // 1. Live-zone compression for Anthropic-shape bodies (same as D1).
     let is_anthropic = is_anthropic_model_id(&model_id);
-    let outbound_body: Bytes = if is_anthropic {
+    let (outbound_body, rec_tokens_before, rec_tokens_after): (Bytes, u64, u64) = if is_anthropic {
         run_anthropic_compression(&body, &state, auth_mode, &request_id)
     } else {
         tracing::info!(
@@ -163,8 +163,24 @@ pub async fn handle_invoke_streaming(
             reason = "non_anthropic_vendor",
             "bedrock invoke-streaming: skipping compression for non-anthropic vendor"
         );
-        body.clone()
+        (body.clone(), 0, 0)
     };
+
+    // Phase H: record this Bedrock streaming request into the savings store.
+    let rec_price = state.price_book.lookup(&model_id).unwrap_or_default();
+    state.savings.record(
+        &crate::observability::stats::RequestOutcome {
+            provider: "bedrock".to_string(),
+            model: model_id.clone(),
+            tokens_before: rec_tokens_before,
+            tokens_after: rec_tokens_after,
+            input_cost_per_token: rec_price.input,
+            cache_read_cost_per_token: rec_price.cache_read,
+            cache_write_cost_per_token: rec_price.cache_write,
+            ..Default::default()
+        },
+        std::time::SystemTime::now(),
+    );
 
     // 2. Resolve the Bedrock streaming action from the inbound path and
     // build the upstream URL.
@@ -846,12 +862,15 @@ fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
 /// flow (no body buffering required at the caller, the handler always
 /// owns the bytes). When PR-D3 merges, both arms can converge into a
 /// single helper.
+/// Run the live-zone compressor and return the outbound body plus the
+/// pre/post-compression input token counts (`(0, 0)` when nothing compressed),
+/// so the caller can attribute Bedrock streaming savings into the stats store.
 fn run_anthropic_compression(
     body: &Bytes,
     state: &AppState,
     _auth_mode: AuthMode,
     request_id: &str,
-) -> Bytes {
+) -> (Bytes, u64, u64) {
     use crate::bedrock::envelope::BedrockEnvelope;
 
     let parsed_envelope = BedrockEnvelope::parse(body).is_ok();
@@ -872,7 +891,15 @@ fn run_anthropic_compression(
         headroom_core::auth_mode::AuthMode::OAuth,
         request_id,
     );
-    match outcome {
+    let (tokens_before, tokens_after) = match &outcome {
+        AnthropicOutcome::Compressed {
+            tokens_before,
+            tokens_after,
+            ..
+        } => (*tokens_before as u64, *tokens_after as u64),
+        _ => (0, 0),
+    };
+    let out_body = match outcome {
         AnthropicOutcome::NoCompression => body.clone(),
         AnthropicOutcome::Passthrough { reason } => {
             tracing::info!(
@@ -902,7 +929,8 @@ fn run_anthropic_compression(
                 new_body
             }
         }
-    }
+    };
+    (out_body, tokens_before, tokens_after)
 }
 
 fn build_bedrock_streaming_upstream(
@@ -1020,6 +1048,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke-with-response-stream"
             .parse()
@@ -1059,6 +1089,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/converse-stream"
             .parse()

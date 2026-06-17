@@ -133,6 +133,8 @@ pub(crate) async fn forward_vertex_request(
     // The dispatcher uses RawValue-based surgery so `anthropic_version`
     // (and any other non-`messages` top-level field) round-trips
     // byte-equal. Compression off → buffered bytes used unchanged.
+    // Phase H: captured for the savings store; set in the Compressed arm below.
+    let (mut rec_tokens_before, mut rec_tokens_after) = (0u64, 0u64);
     let body_to_send = if state.config.compression {
         // PR-E3: Vertex uses GCP ADC bearer-token auth downstream, not
         // Anthropic credentials, so the PAYG/OAuth/subscription
@@ -177,6 +179,8 @@ pub(crate) async fn forward_vertex_request(
                     markers = markers_inserted.len(),
                     "vertex live-zone compression applied"
                 );
+                rec_tokens_before = tokens_before as u64;
+                rec_tokens_after = tokens_after as u64;
                 body
             }
             compression::Outcome::Passthrough { reason } => {
@@ -200,6 +204,23 @@ pub(crate) async fn forward_vertex_request(
         );
         buffered
     };
+
+    // Phase H: record this Vertex request so `/stats` and the dashboard cover
+    // the Vertex backend too, unified with the other lanes.
+    let rec_price = state.price_book.lookup(&ctx.model_id).unwrap_or_default();
+    state.savings.record(
+        &crate::observability::stats::RequestOutcome {
+            provider: "vertex".to_string(),
+            model: ctx.model_id.clone(),
+            tokens_before: rec_tokens_before,
+            tokens_after: rec_tokens_after,
+            input_cost_per_token: rec_price.input,
+            cache_read_cost_per_token: rec_price.cache_read,
+            cache_write_cost_per_token: rec_price.cache_write,
+            ..Default::default()
+        },
+        std::time::SystemTime::now(),
+    );
 
     // ─── 4. RESOLVE BEARER TOKEN ───────────────────────────────────────
     let bearer = match state.vertex_token_source.bearer().await {

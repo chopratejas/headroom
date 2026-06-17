@@ -7,6 +7,16 @@ license.workspace = true
 repository.workspace = true
 description = "Headroom transparent reverse proxy (Rust, axum). Phase 1: drop-in passthrough in front of the Python proxy."
 
+# `cargo llvm-cov` sets `--cfg coverage` (and `--cfg coverage_nightly` on
+# nightly). Register them so the `unexpected_cfgs` lint stays clean under
+# `clippy -D warnings`; they gate the `#[coverage(off)]` exclusion of
+# genuinely-unreachable error edges (see observability::stats::serialize_state).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage)',
+    'cfg(coverage_nightly)',
+] }
+
 [[bin]]
 name = "headroom-proxy"
 path = "src/main.rs"

@@ -37,7 +37,7 @@ Delete the Python FastAPI server, all handlers, the responses converter (already
 - `headroom/proxy/memory_handler.py` (1756 LOC)
 - `headroom/proxy/memory_tool_adapter.py` (1273 LOC)
 - `headroom/proxy/semantic_cache.py` (142 LOC)
-- `headroom/proxy/savings_tracker.py` (934 LOC) — re-implemented in Rust as part of `observability/`.
+- `headroom/proxy/savings_tracker.py` (934 LOC) — re-implemented in Rust as `observability/stats.rs` (the persistent savings aggregate: lifetime, rolling display-session, bounded history, per-provider / per-model breakdowns). Distinct from `observability/prometheus.rs` (ephemeral scrape counters) — see the "Observability surfaces & the dashboard" note below.
 - `headroom/proxy/loopback_guard.py` (92 LOC) — Rust equivalent in `crates/headroom-proxy/src/handlers/debug.rs`.
 - `headroom/proxy/ws_session_registry.py` (226 LOC) — Rust equivalent.
 - `headroom/proxy/interceptors/` — all of this directory.
@@ -90,6 +90,46 @@ PR-H2.
 
 - This is the largest single PR in the realignment. Coordinate with operations team.
 - Do NOT delete in one giant commit; split into a series of smaller commits within the PR (one per module deletion) for git-blame friendliness.
+
+---
+
+## Observability surfaces & the dashboard (gap fill)
+
+Deleting `server.py` removes the two HTTP surfaces it served that are **not**
+the Prometheus scrape: the rich `/stats` JSON and the `/dashboard` HTML. The
+earlier draft of this phase listed `server.py` only under *Delete* and named no
+Rust replacement for those two routes, which left a gap — the observability spec
+(`docs/spec/016-observability.md`) still promises a dashboard at `/dashboard`
+served by the proxy process. This note closes that gap.
+
+There are **two independent observability surfaces**, and they stay separate in
+Rust exactly as they were two files in Python:
+
+| Surface | Python today | Rust | Purpose |
+|---|---|---|---|
+| `/metrics` | `prometheus_metrics.py` | `observability/prometheus.rs` (+ Phase G additions) | Ephemeral scrape counters/histograms for Grafana / alerting. Reset on restart. |
+| `/stats` (JSON) + `/dashboard` (HTML) | `savings_tracker.py` + the `/stats` builder in `server.py` | `observability/stats.rs` + two axum routes | Durable savings aggregate (lifetime, rolling display-session, history, per-provider / per-model) the dashboard renders. Persisted across restarts. |
+
+A persistent store is required (not "derive `/stats` from the Prometheus
+counters") because Prometheus counters reset on restart and cannot model the
+display-session window, history checkpoints, or per-project rollups the
+dashboard needs — the same reason `savings_tracker.py` and
+`prometheus_metrics.py` were separate modules.
+
+The Rust proxy therefore serves, served by default:
+
+- `GET /stats` — backend-agnostic savings JSON. The Rust proxy fronts every
+  backend (Anthropic, OpenAI, Bedrock, Vertex) in one process, so this is
+  already unified across all of them — there is no cross-process "federation".
+- `GET /dashboard` — the existing dashboard template, embedded in the binary
+  (`include_str!`) so no separate file ships.
+
+**Transitional source-of-truth.** Until the remaining Python-only stat sources
+(`copilot_quota`, `subscription_window`, `codex_rate_limits`, `context_tool`)
+are ported, `observability/stats.rs` exposes an optional *supplemental sources*
+seam that fetches those blocks from the still-running Python integration and
+folds them into `/stats`, so the Rust dashboard is the single source of truth
+from day one. Each block's seam is removed as that source is ported to Rust.
 
 ---
 

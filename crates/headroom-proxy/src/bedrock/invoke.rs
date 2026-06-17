@@ -174,7 +174,7 @@ pub async fn handle_invoke(
     );
 
     let is_anthropic = is_anthropic_model_id(&model_id);
-    let outbound_body: Bytes = if is_anthropic {
+    let (outbound_body, rec_tokens_before, rec_tokens_after): (Bytes, u64, u64) = if is_anthropic {
         run_anthropic_compression(&body, &state, auth_mode, &request_id)
     } else {
         tracing::info!(
@@ -184,8 +184,26 @@ pub async fn handle_invoke(
             reason = "non_anthropic_vendor",
             "bedrock invoke: skipping live-zone compression for non-anthropic vendor"
         );
-        body.clone()
+        (body.clone(), 0, 0)
     };
+
+    // Phase H: record every Bedrock request into the savings store so `/stats`
+    // and the dashboard cover this backend too — unified with the Anthropic /
+    // OpenAI lanes that flow through `forward_http`.
+    let rec_price = state.price_book.lookup(&model_id).unwrap_or_default();
+    state.savings.record(
+        &crate::observability::stats::RequestOutcome {
+            provider: "bedrock".to_string(),
+            model: model_id.clone(),
+            tokens_before: rec_tokens_before,
+            tokens_after: rec_tokens_after,
+            input_cost_per_token: rec_price.input,
+            cache_read_cost_per_token: rec_price.cache_read,
+            cache_write_cost_per_token: rec_price.cache_write,
+            ..Default::default()
+        },
+        std::time::SystemTime::now(),
+    );
 
     // Resolve the Bedrock action from the inbound path so `/converse`
     // forwards to the upstream Converse endpoint instead of `/invoke`.
@@ -396,12 +414,15 @@ pub async fn handle_invoke(
 /// re-emission step (`ensure_anthropic_version_first`) almost always
 /// no-ops. We still call it as a defence-in-depth assertion that
 /// the byte order is correct before signing.
+/// Run the live-zone compressor and return the outbound body plus the
+/// pre/post-compression input token counts (`(0, 0)` when nothing compressed),
+/// so the caller can attribute Bedrock savings into the stats store.
 fn run_anthropic_compression(
     body: &Bytes,
     state: &AppState,
     _auth_mode: AuthMode,
     request_id: &str,
-) -> Bytes {
+) -> (Bytes, u64, u64) {
     // Detect envelope shape. A parseable InvokeModel envelope takes the
     // re-emit path below (anthropic_version pinned first); a non-envelope
     // body (e.g. a Converse-shaped payload) still runs through the
@@ -436,7 +457,15 @@ fn run_anthropic_compression(
         headroom_core::auth_mode::AuthMode::OAuth,
         request_id,
     );
-    match outcome {
+    let (tokens_before, tokens_after) = match &outcome {
+        AnthropicOutcome::Compressed {
+            tokens_before,
+            tokens_after,
+            ..
+        } => (*tokens_before as u64, *tokens_after as u64),
+        _ => (0, 0),
+    };
+    let out_body = match outcome {
         AnthropicOutcome::NoCompression => body.clone(),
         AnthropicOutcome::Passthrough { reason } => {
             tracing::info!(
@@ -471,7 +500,8 @@ fn run_anthropic_compression(
                 new_body
             }
         }
-    }
+    };
+    (out_body, tokens_before, tokens_after)
 }
 
 /// Build the upstream URL for the Bedrock route. Honours the
@@ -618,6 +648,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/converse"
             .parse()
@@ -655,6 +687,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke"
             .parse()
@@ -690,6 +724,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke"
             .parse()

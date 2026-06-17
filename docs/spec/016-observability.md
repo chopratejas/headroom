@@ -107,6 +107,49 @@ logging:
 
 **Requires:** the proxy process to be running. The dashboard is served by default at `/dashboard`.
 
+### Stats are already unified across backends
+
+The Rust proxy fronts every backend (Anthropic, OpenAI, Bedrock, Vertex) in a
+**single process**, and the savings store
+(`crates/headroom-proxy/src/observability/stats.rs`) attributes each request to
+its provider and model. So `/stats` is already one unified view across every
+backend in use — there is no separate "combine" or "federation" step, and
+nothing to opt into. The dashboard at `/dashboard` is the canonical source of
+truth for savings.
+
+```json
+{
+  "requests": { "total": 184, "by_provider": { "anthropic": 120, "bedrock": 64 } },
+  "tokens":   { "saved": 79000, "savings_percent": 41.2 },
+  "cost":     { "compression_savings_usd": 2.81, "per_model": { "claude-haiku-4-5": { "tokens_saved": 51000 } } },
+  "persistent_savings": {
+    "lifetime":        { "requests": 184, "tokens_saved": 79000 },
+    "display_session": { "requests": 12,  "tokens_saved": 9000 }
+  }
+}
+```
+
+**Properties:**
+
+- **On by default.** `/stats` and `/dashboard` are always served; no flag.
+- **Backend-agnostic.** Every provider the single process serves is attributed
+  and aggregated together.
+- **Durable.** Lifetime totals, the rolling display-session, history, and
+  per-provider / per-model breakdowns persist across restarts
+  (`--savings-path`), independent of the ephemeral Prometheus `/metrics`
+  counters.
+- **Single source of truth during migration.** Set `--upstream-stats-url` to a
+  still-running Python proxy's `/stats` and the Rust `/stats` folds in the
+  blocks not yet ported to Rust (provider quota / subscription / rate-limit
+  panels). Fail-open; each block drops out as it is reimplemented in Rust.
+
+### Surfaces
+
+| Endpoint | Source | Resets on restart | Use |
+|---|---|---|---|
+| `/metrics` | `observability/prometheus.rs` | yes | Prometheus scrape → Grafana / alerting |
+| `/stats` (JSON), `/dashboard` (HTML) | `observability/stats.rs` | no (persisted) | Dashboard savings view |
+
 ---
 
 ## Alerting

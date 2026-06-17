@@ -72,6 +72,28 @@ pub struct AppState {
     /// route hits `bearer()`. Tests override via
     /// [`AppState::with_token_source`].
     pub vertex_token_source: Arc<dyn crate::vertex::TokenSource>,
+    /// Phase H: Rust-native savings store backing the `/stats` JSON and the
+    /// `/dashboard`. Fed by the compression dispatch for every backend the
+    /// proxy serves, so the dashboard is unified across all of them. Defaults
+    /// to in-memory; a persistent path is wired from config when set.
+    pub savings: Arc<crate::observability::stats::SavingsStore>,
+    /// Phase H: per-model price book used to value token savings in USD. Loaded
+    /// from a models.dev JSON file (`HEADROOM_PRICEBOOK`) when present; empty
+    /// otherwise, in which case savings are reported in tokens with USD at zero.
+    pub price_book: Arc<crate::observability::pricing::PriceBook>,
+}
+
+/// Load the per-model price book from the `HEADROOM_PRICEBOOK` env var (a path
+/// to a models.dev JSON file). Returns an empty book when unset or unreadable —
+/// savings still report in tokens, just with USD at zero.
+fn load_price_book() -> crate::observability::pricing::PriceBook {
+    match std::env::var("HEADROOM_PRICEBOOK") {
+        Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path) {
+            Ok(json) => crate::observability::pricing::PriceBook::from_models_dev_json(&json),
+            Err(_) => crate::observability::pricing::PriceBook::empty(),
+        },
+        _ => crate::observability::pricing::PriceBook::empty(),
+    }
 }
 
 /// PR-E6: maximum number of sessions tracked by the drift detector
@@ -101,12 +123,26 @@ impl AppState {
         let vertex_token_source: Arc<dyn crate::vertex::TokenSource> =
             Arc::new(crate::vertex::adc::GcpAdcTokenSource::new());
 
+        // Phase H: savings store backing `/stats` + `/dashboard`. Persisted to
+        // `config.savings_path` when set (lifetime/history survive restarts);
+        // in-memory otherwise.
+        let savings = Arc::new(match config.savings_path.clone() {
+            Some(path) => crate::observability::stats::SavingsStore::with_path(
+                path,
+                crate::observability::stats::StoreConfig::default(),
+            ),
+            None => crate::observability::stats::SavingsStore::in_memory(),
+        });
+        let price_book = Arc::new(load_price_book());
+
         Ok(Self {
             config: Arc::new(config),
             client,
             bedrock_credentials: None,
             drift_state: DriftState::new(DRIFT_DETECTOR_CAPACITY),
             vertex_token_source,
+            savings,
+            price_book,
         })
     }
 
@@ -149,6 +185,13 @@ pub fn build_app(state: AppState) -> Router {
         // any feature flag; an operator who doesn't want it scraped
         // simply firewalls the path.
         .route("/metrics", get(crate::observability::handle_metrics))
+        // Phase H: Rust-native savings JSON for the dashboard. Unified across
+        // every backend the proxy serves (one process → one store). Served by
+        // default; reads the in-process savings aggregate.
+        .route("/stats", get(handle_stats))
+        // Phase H: the dashboard UI, embedded into the binary so it ships
+        // self-contained (no template file at runtime). Reads `/stats`.
+        .route("/dashboard", get(handle_dashboard))
         // PR-C2: explicit POST route for /v1/chat/completions. The
         // handler buffers the body and re-injects it into
         // `forward_http`, which runs the OpenAI live-zone gate
@@ -291,6 +334,80 @@ pub fn build_app(state: AppState) -> Router {
     }
 
     router.fallback(any(catch_all)).with_state(state)
+}
+
+/// `GET /stats` — the Rust-native savings JSON the dashboard consumes.
+///
+/// Backend-agnostic and unified by construction: the proxy fronts every backend
+/// in one process, so the in-process savings store already aggregates them all.
+/// Served by default with no flag.
+async fn handle_stats(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    let mut stats = state.savings.stats_json(std::time::SystemTime::now());
+    // Transitional: fold in blocks still produced only by the Python proxy so
+    // the Rust dashboard is the single source of truth during migration.
+    // Fail-open — an unreachable Python proxy just omits those blocks.
+    if let Some(url) = state.config.upstream_stats_url.as_deref() {
+        if let Some(python) = fetch_upstream_stats(&state.client, url).await {
+            stats = crate::observability::supplemental::merge_supplemental(stats, &python);
+        }
+    }
+    axum::Json(stats)
+}
+
+/// Per-fetch budget for the transitional supplemental `/stats` pull. Short — it
+/// is a dashboard convenience, never on a request hot path.
+const SUPPLEMENTAL_STATS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// Fetch the transitional Python proxy's `/stats` JSON, or `None` on any error
+/// (unreachable, non-2xx, unparseable) — the caller treats `None` as "no
+/// supplemental blocks this poll".
+async fn fetch_upstream_stats(client: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
+    let resp = client
+        .get(url)
+        .timeout(SUPPLEMENTAL_STATS_TIMEOUT)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    // Parse via `serde_json` rather than `Response::json` so we don't need
+    // reqwest's `json` feature enabled.
+    let bytes = resp.bytes().await.ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+}
+
+/// The dashboard HTML, embedded at compile time. During the Python-retirement
+/// transition the template still lives in the Python tree; `include_str!` bakes
+/// it into the Rust binary so the running proxy needs no template file. The
+/// page fetches `/stats` and renders the unified savings view; cards backed by
+/// stat sources still living in Python stay empty until those are ported.
+const DASHBOARD_HTML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../headroom/dashboard/templates/dashboard.html"
+));
+
+/// `GET /dashboard` — serve the embedded dashboard UI.
+async fn handle_dashboard() -> axum::response::Html<&'static str> {
+    axum::response::Html(DASHBOARD_HTML)
+}
+
+/// Provider label for the savings store, derived from the compressible endpoint.
+fn provider_for_endpoint(endpoint: compression::CompressibleEndpoint) -> &'static str {
+    match endpoint {
+        compression::CompressibleEndpoint::AnthropicMessages => "anthropic",
+        compression::CompressibleEndpoint::OpenAiChatCompletions
+        | compression::CompressibleEndpoint::OpenAiResponses => "openai",
+    }
+}
+
+/// Best-effort `model` id from a request body; `"unknown"` when absent or the
+/// body does not parse. Never fails — savings recording is fire-and-forget.
+fn extract_model_id(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Catch-all handler. If the request is a WebSocket upgrade, hand off to the
@@ -748,6 +865,22 @@ pub(crate) async fn forward_http(
             outcome,
             compression::Outcome::NoCompression | compression::Outcome::Passthrough { .. }
         );
+
+        // Phase H: capture savings attribution before `outcome` is consumed by
+        // the match below. Provider comes from the route, model from the body,
+        // and token counts from a `Compressed` outcome (zero otherwise — the
+        // request still counts, with no savings).
+        let rec_provider = provider_for_endpoint(endpoint);
+        let rec_model = extract_model_id(&buffered);
+        let (rec_tokens_before, rec_tokens_after) = match &outcome {
+            compression::Outcome::Compressed {
+                tokens_before,
+                tokens_after,
+                ..
+            } => (*tokens_before as u64, *tokens_after as u64),
+            _ => (0, 0),
+        };
+
         let body_to_send = match outcome {
             compression::Outcome::NoCompression => {
                 // PR-B2: forward the *original* buffered bytes. The
@@ -836,6 +969,27 @@ pub(crate) async fn forward_http(
                 buffered
             }
         };
+
+        // Phase H: record this LLM request into the savings store so `/stats`
+        // and the dashboard reflect every backend the proxy serves. Output and
+        // cache tokens (response-side) are wired in a follow-up; they default
+        // to zero here, so compression savings are exact and request counts
+        // accurate from day one. USD is valued via the price book when the model
+        // is priced; otherwise savings stay token-only with USD at zero.
+        let rec_price = state.price_book.lookup(&rec_model).unwrap_or_default();
+        state.savings.record(
+            &crate::observability::stats::RequestOutcome {
+                provider: rec_provider.to_string(),
+                model: rec_model,
+                tokens_before: rec_tokens_before,
+                tokens_after: rec_tokens_after,
+                input_cost_per_token: rec_price.input,
+                cache_read_cost_per_token: rec_price.cache_read,
+                cache_write_cost_per_token: rec_price.cache_write,
+                ..Default::default()
+            },
+            std::time::SystemTime::now(),
+        );
 
         // C2 fix: cache-safety alarm. When the dispatcher returned
         // `NoCompression` or `Passthrough`, the post-dispatcher body
