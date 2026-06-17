@@ -20,8 +20,10 @@ class TokenCounter:
 class Router:
     def __init__(self, compressed: str):
         self.compressed = compressed
+        self.calls = []
 
     def compress(self, content: str, **_kwargs):
+        self.calls.append(_kwargs)
         return RouterCompressionResult(
             compressed=self.compressed,
             original=content,
@@ -47,6 +49,28 @@ def test_compression_unit_accepts_token_shrinking_replacement():
     assert result.tokens_saved == 3
     assert result.compressed == "alpha beta"
     assert "router:openai:responses:local_shell_call_output:kompress" in result.transforms_applied
+
+
+def test_compression_unit_target_ratio_is_request_local_only():
+    router = Router("alpha beta")
+
+    result = compress_unit_with_router(
+        CompressionUnit(
+            text="alpha beta gamma delta epsilon",
+            provider="openai",
+            endpoint="responses",
+            role="tool",
+            item_type="local_shell_call_output",
+            min_bytes=1,
+        ),
+        router=router,
+        tokenizer=TokenCounter(),
+        target_ratio=0.25,
+    )
+
+    assert result.modified is True
+    assert not hasattr(router, "_runtime_target_ratio")
+    assert router.calls[0]["request_options"].target_ratio == 0.25
 
 
 def test_compression_unit_rejects_non_shrinking_replacement():

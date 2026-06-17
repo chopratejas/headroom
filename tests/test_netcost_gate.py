@@ -48,6 +48,24 @@ def _tool_slot_compressed(result, messages) -> bool:
     return result.messages[1]["content"] != messages[1]["content"]
 
 
+class RecordingPolicy:
+    toin_read_only = False
+    cache_aligner_enabled = True
+    live_zone_only = False
+    volatile_token_threshold = 128
+    max_lossy_ratio = 0.5
+
+    def __init__(self, gain: float):
+        self.gain = gain
+        self.calls: list[tuple[int, int, float, float]] = []
+
+    def net_mutation_gain(
+        self, delta_t: int, suffix_tokens: int, expected_reads: float, p_alive: float
+    ) -> float:
+        self.calls.append((delta_t, suffix_tokens, expected_reads, p_alive))
+        return self.gain
+
+
 class TestNetCostGate:
     def test_flag_off_compresses_as_before(self, router, tokenizer, monkeypatch):
         monkeypatch.delenv("HEADROOM_NET_COST_POLICY", raising=False)
@@ -72,6 +90,32 @@ class TestNetCostGate:
         result = router.apply([dict(m) for m in messages], tokenizer)
         assert _tool_slot_compressed(result, messages)
         assert not any(t.startswith("netcost:skip:") for t in result.transforms_applied)
+
+    def test_flag_on_uses_request_policy_for_fresh_result(self, router, tokenizer, monkeypatch):
+        monkeypatch.setenv("HEADROOM_NET_COST_POLICY", "1")
+        policy = RecordingPolicy(gain=-1.0)
+        messages = _messages(_tool_json(2000), suffix_filler_words=5)
+
+        result = router.apply([dict(m) for m in messages], tokenizer, compression_policy=policy)
+
+        assert policy.calls
+        assert not _tool_slot_compressed(result, messages)
+        assert any(t.startswith("netcost:skip:") for t in result.transforms_applied)
+
+    def test_flag_on_uses_request_policy_for_cached_result(self, router, tokenizer, monkeypatch):
+        policy = RecordingPolicy(gain=-1.0)
+        messages = _messages(_tool_json(2000), suffix_filler_words=5)
+        monkeypatch.delenv("HEADROOM_NET_COST_POLICY", raising=False)
+        warm = router.apply([dict(m) for m in messages], tokenizer, compression_policy=policy)
+        assert _tool_slot_compressed(warm, messages)
+
+        policy.calls.clear()
+        monkeypatch.setenv("HEADROOM_NET_COST_POLICY", "1")
+        gated = router.apply([dict(m) for m in messages], tokenizer, compression_policy=policy)
+
+        assert policy.calls
+        assert not _tool_slot_compressed(gated, messages)
+        assert any(t.startswith("netcost:skip:") for t in gated.transforms_applied)
 
     def test_flag_on_gates_cached_results_too(self, router, tokenizer, monkeypatch):
         # First apply warms the result cache with the flag off; second apply

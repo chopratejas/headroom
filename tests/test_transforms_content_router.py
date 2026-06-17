@@ -12,7 +12,9 @@ from headroom.transforms.content_router import (
     ContentRouter,
     ContentRouterConfig,
     RouterCompressionResult,
+    RouterRequestOptions,
     RoutingDecision,
+    _compression_cache_key,
     _create_content_signature,
     _detect_content,
     _extract_json_block,
@@ -423,6 +425,53 @@ def test_log_strategy_does_not_fallback_to_kompress_when_log_is_noop(
     assert strategy_chain == ["log"]
 
 
+def test_no_savings_fallback_passes_request_options_to_kompress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = ContentRouter()
+    content = "alpha beta gamma delta"
+    options = RouterRequestOptions(target_ratio=0.33, kompress_model="custom-kompress")
+    seen_options: list[RouterRequestOptions | None] = []
+
+    class NoSavingsSmartCrusher:
+        def crush(
+            self,
+            text: str,
+            query: str = "",
+            bias: float = 1.0,
+        ) -> SimpleNamespace:
+            del query, bias
+            return SimpleNamespace(compressed=text, compressed_tokens=len(text.split()))
+
+    monkeypatch.setattr(router, "_get_smart_crusher", lambda: NoSavingsSmartCrusher())
+
+    def fake_kompress(
+        text: str,
+        context: str,
+        question: str | None = None,
+        *,
+        request_options: RouterRequestOptions | None = None,
+    ) -> tuple[str, int]:
+        del text, context, question
+        seen_options.append(request_options)
+        return "small", 1
+
+    monkeypatch.setattr(router, "_try_ml_compressor", fake_kompress)
+    monkeypatch.setattr(router, "_record_to_toin", lambda **_kwargs: None)
+
+    compressed, compressed_tokens, strategy_chain = router._apply_strategy_to_content(
+        content,
+        CompressionStrategy.SMART_CRUSHER,
+        context="ctx",
+        request_options=options,
+    )
+
+    assert compressed == "small"
+    assert compressed_tokens == 1
+    assert strategy_chain == ["smart_crusher", "kompress"]
+    assert seen_options == [options]
+
+
 # ---------------------------------------------------------------------------
 # Cache-safety tests for _process_content_blocks. These pin down the
 # block-level invariants that protect upstream prefix caches:
@@ -718,3 +767,111 @@ def test_detect_content_python_backend_skips_native(
 
     result = _detect_content('[{"id": 1}, {"id": 2}]')
     assert result.content_type is ContentType.JSON_ARRAY
+
+
+def test_compression_cache_key_is_stable_and_request_aware() -> None:
+    config = ContentRouterConfig()
+    opts = RouterRequestOptions(target_ratio=0.25, kompress_model="model-a")
+
+    first = _compression_cache_key(
+        content="same content",
+        strategy_hint="tool_result",
+        context="ctx",
+        question=None,
+        bias=1.0,
+        request_options=opts,
+        router_config=config,
+    )
+    second = _compression_cache_key(
+        content="same content",
+        strategy_hint="tool_result",
+        context="ctx",
+        question=None,
+        bias=1.0,
+        request_options=opts,
+        router_config=config,
+    )
+    changed_target = _compression_cache_key(
+        content="same content",
+        strategy_hint="tool_result",
+        context="ctx",
+        question=None,
+        bias=1.0,
+        request_options=RouterRequestOptions(target_ratio=0.5, kompress_model="model-a"),
+        router_config=config,
+    )
+    changed_model = _compression_cache_key(
+        content="same content",
+        strategy_hint="tool_result",
+        context="ctx",
+        question=None,
+        bias=1.0,
+        request_options=RouterRequestOptions(target_ratio=0.25, kompress_model="model-b"),
+        router_config=config,
+    )
+
+    assert first == second
+    assert first != changed_target
+    assert first != changed_model
+
+
+def test_apply_string_cache_keys_include_request_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Tokenizer:
+        def count_text(self, text: str) -> int:
+            return len(str(text).split())
+
+    class FakeKompress:
+        def __init__(self, model_id: str | None) -> None:
+            self.model_id = model_id
+
+        def compress(
+            self,
+            content: str,
+            *,
+            context: str = "",
+            question: str | None = None,
+            target_ratio: float | None = None,
+        ) -> SimpleNamespace:
+            del question
+            calls.append((self.model_id, target_ratio, context))
+            return SimpleNamespace(
+                compressed=(
+                    f"model={self.model_id};target={target_ratio};"
+                    f"context={context};first={content.split()[0]}"
+                ),
+                compressed_tokens=1,
+            )
+
+    router = ContentRouter()
+    calls: list[tuple[str | None, float | None, str]] = []
+    monkeypatch.setattr(router, "_get_kompress", lambda model_id=None: FakeKompress(model_id))
+
+    def run(target_ratio: float, model_id: str) -> str:
+        result = router.apply(
+            [{"role": "tool", "content": "cache " + "payload " * 80}],
+            Tokenizer(),
+            force_kompress=True,
+            target_ratio=target_ratio,
+            kompress_model=model_id,
+            context="ctx",
+            min_tokens_to_compress=1,
+            read_protection_window=0,
+            protect_recent=0,
+        )
+        return result.messages[0]["content"]
+
+    first = run(0.5, "model-a")
+    second = run(0.5, "model-a")
+    target_changed = run(0.25, "model-a")
+    model_changed = run(0.25, "model-b")
+
+    assert second == first
+    assert "target=0.25" in target_changed
+    assert "model=model-b" in model_changed
+    assert calls == [
+        ("model-a", 0.5, "ctx"),
+        ("model-a", 0.25, "ctx"),
+        ("model-b", 0.25, "ctx"),
+    ]

@@ -22,7 +22,7 @@ Behaviour matrix:
 
 Direct callers (those that call ``crush()`` / ``crush_array_json()``
 without going through ``apply()``) don't set
-``self._runtime_compression_policy``, so they keep their pre-F2.2
+the old router-level policy field, so they keep their pre-F2.2
 write-enabled behaviour. That's a deliberate compatibility decision —
 non-proxy callers have no auth context.
 """
@@ -40,6 +40,22 @@ from headroom.telemetry.toin import TOINConfig, get_toin, reset_toin
 from headroom.tokenizer import Tokenizer
 from headroom.tokenizers import EstimatingTokenCounter
 from headroom.transforms.compression_policy import policy_for_mode
+
+
+def test_content_router_policy_fingerprint_uses_policy_fields():
+    from headroom.transforms.content_router import _policy_cache_fingerprint
+
+    policy = policy_for_mode(AuthMode.SUBSCRIPTION)
+    fingerprint = _policy_cache_fingerprint(policy)
+
+    assert fingerprint == {
+        "class": policy.__class__.__name__,
+        "toin_read_only": policy.toin_read_only,
+        "cache_aligner_enabled": policy.cache_aligner_enabled,
+        "live_zone_only": policy.live_zone_only,
+        "volatile_token_threshold": policy.volatile_token_threshold,
+        "max_lossy_ratio": policy.max_lossy_ratio,
+    }
 
 
 def _has_core() -> bool:
@@ -198,30 +214,69 @@ def test_smart_crusher_no_policy_keeps_legacy_write_behaviour(fresh_toin):
 # ─── ContentRouter: apply() captures the policy ─────────────────────────
 
 
-def test_content_router_apply_stores_runtime_policy():
-    """``ContentRouter.apply()`` must populate
-    ``self._runtime_compression_policy`` from kwargs so
-    ``_record_to_toin`` can read it.
-
-    We don't assert TOIN behaviour here (the router routes most JSON
-    arrays to SmartCrusher, which has its own gate already covered
-    above); the load-bearing thing for the parity guard is that the
-    field is wired through.
-    """
+def test_content_router_apply_keeps_policy_request_local():
+    """``ContentRouter.apply()`` must not persist request policy on router state."""
     from headroom.transforms.content_router import ContentRouter
 
     router = ContentRouter()
-    # Sanity: the field exists on a fresh instance and starts None.
-    assert router._runtime_compression_policy is None
-
     policy = policy_for_mode(AuthMode.SUBSCRIPTION)
-    # Empty-message apply is fine — the field assignment happens
-    # before the message walk, so we don't need a payload that
-    # actually compresses.
+
     router.apply([], _tokenizer(), compression_policy=policy)
-    assert router._runtime_compression_policy is policy, (
-        "ContentRouter.apply() must capture the policy onto self so _record_to_toin can read it"
+
+    assert not hasattr(router, "_" + "_".join(("runtime", "compression_policy")))
+
+
+def test_content_router_apply_passes_subscription_policy_to_toin(monkeypatch):
+    """``ContentRouter.apply()`` carries policy into TOIN recording."""
+    from headroom.transforms.content_router import (
+        CompressionStrategy,
+        ContentRouter,
+        RouterRequestOptions,
     )
+
+    class Tokenizer:
+        def count_text(self, text: str) -> int:
+            return len(str(text).split())
+
+    router = ContentRouter()
+    policy = policy_for_mode(AuthMode.SUBSCRIPTION)
+    seen_policies = []
+
+    monkeypatch.setattr(
+        router,
+        "_determine_strategy",
+        lambda _content: CompressionStrategy.KOMPRESS,
+    )
+
+    def fake_kompress(
+        _content,
+        _context,
+        _question=None,
+        *,
+        request_options: RouterRequestOptions | None = None,
+    ):
+        assert request_options is not None
+        assert request_options.compression_policy is policy
+        return "compressed", 1
+
+    monkeypatch.setattr(router, "_try_ml_compressor", fake_kompress)
+
+    def fake_record_to_toin(**kwargs):
+        seen_policies.append(kwargs.get("compression_policy"))
+
+    monkeypatch.setattr(router, "_record_to_toin", fake_record_to_toin)
+
+    router.apply(
+        [{"role": "tool", "content": "alpha beta gamma delta epsilon zeta"}],
+        Tokenizer(),
+        force_kompress=True,
+        compression_policy=policy,
+        min_tokens_to_compress=1,
+        read_protection_window=0,
+        protect_recent=0,
+    )
+
+    assert seen_policies == [policy]
 
 
 def test_content_router_subscription_skips_toin_record(fresh_toin):
@@ -239,7 +294,7 @@ def test_content_router_subscription_skips_toin_record(fresh_toin):
     )
 
     router = ContentRouter()
-    router._runtime_compression_policy = policy_for_mode(AuthMode.SUBSCRIPTION)
+    policy = policy_for_mode(AuthMode.SUBSCRIPTION)
 
     pre = sum(p.total_compressions for p in fresh_toin._patterns.values())
     # Pick TEXT strategy (not SMART_CRUSHER, which has its own
@@ -251,6 +306,7 @@ def test_content_router_subscription_skips_toin_record(fresh_toin):
         compressed="compressed",
         original_tokens=100,
         compressed_tokens=50,
+        compression_policy=policy,
     )
     post = sum(p.total_compressions for p in fresh_toin._patterns.values())
     assert post == pre, "Subscription policy must skip ContentRouter TOIN write"
@@ -267,7 +323,7 @@ def test_content_router_payg_records_to_toin(fresh_toin):
     )
 
     router = ContentRouter()
-    router._runtime_compression_policy = policy_for_mode(AuthMode.PAYG)
+    policy = policy_for_mode(AuthMode.PAYG)
 
     pre = sum(p.total_compressions for p in fresh_toin._patterns.values())
     router._record_to_toin(
@@ -276,6 +332,7 @@ def test_content_router_payg_records_to_toin(fresh_toin):
         compressed="compressed shorter",
         original_tokens=100,
         compressed_tokens=50,
+        compression_policy=policy,
     )
     post = sum(p.total_compressions for p in fresh_toin._patterns.values())
     # Real TOIN write should happen unless _create_content_signature
