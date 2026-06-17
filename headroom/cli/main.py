@@ -37,6 +37,7 @@ def _register_commands() -> None:
     """Register all subcommand groups."""
     from . import (
         agent_savings,  # noqa: F401
+        audit,  # noqa: F401
         capture,  # noqa: F401
         copilot_auth,  # noqa: F401
         evals,  # noqa: F401
@@ -44,6 +45,7 @@ def _register_commands() -> None:
         install,  # noqa: F401
         learn,  # noqa: F401
         mcp,  # noqa: F401
+        output_savings,  # noqa: F401
         perf,  # noqa: F401
         proxy,  # noqa: F401
         tools,  # noqa: F401
