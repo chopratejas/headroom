@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from headroom.observability import HeadroomOtelMetrics
     from headroom.proxy.cost import CostTracker
 
+from headroom import savings_ledger
 from headroom.observability import get_otel_metrics
 from headroom.proxy.savings_tracker import SavingsTracker
 
@@ -657,6 +658,19 @@ class PrometheusMetrics:
                 total_input_tokens=total_input_tokens,
                 total_input_cost_usd=total_input_cost_usd,
             )
+
+            # Also append to the durable, multi-process savings ledger so
+            # `headroom savings` reflects proxy traffic alongside MCP-tool usage.
+            # The real upstream model means litellm prices it accurately.
+            if tokens_saved > 0:
+                savings_ledger.record_savings_event(
+                    tokens_before=input_tokens,
+                    tokens_after=max(input_tokens - tokens_saved, 0),
+                    model=model,
+                    repo=project,
+                    client="proxy",
+                    source="proxy",
+                )
 
         self._get_otel_metrics().record_proxy_request(
             provider=provider,

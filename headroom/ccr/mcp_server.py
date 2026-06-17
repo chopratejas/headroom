@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
+from headroom import savings_ledger
 
 # fcntl is Unix-only; on Windows we skip file locking (stats are best-effort).
 # Keep the module typed as Any so Windows mypy runs don't try to resolve Unix-only attrs.
@@ -84,6 +85,26 @@ _READ_ENABLED = os.environ.get("HEADROOM_MCP_READ", "off").lower().strip() in (
 )
 
 DEFAULT_PROXY_URL = os.environ.get("HEADROOM_PROXY_URL", "http://127.0.0.1:8787")
+
+
+def _detect_repo() -> str:
+    """Best-effort repository name for savings attribution.
+
+    Prefers the ``HEADROOM_PROJECT`` override, then the nearest enclosing git
+    work tree's directory name, then the working-directory name.
+    """
+
+    override = os.environ.get("HEADROOM_PROJECT")
+    if override:
+        return override
+    try:
+        cwd = Path.cwd()
+    except Exception:
+        return "unknown"
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / ".git").exists():
+            return candidate.name or "unknown"
+    return cwd.name or "unknown"
 
 
 def _format_session_summary(summary: dict[str, Any], local_stats: dict[str, Any]) -> str:
@@ -645,7 +666,48 @@ class HeadroomMCPServer:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, self._compress_content, content)
 
+        # Record durably so `headroom savings` reflects this compression across
+        # restarts. Best-effort: never let savings bookkeeping break the tool.
+        try:
+            self._record_savings(result)
+        except Exception:
+            logger.debug("durable savings recording failed", exc_info=True)
+
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    def _record_savings(self, result: dict[str, Any]) -> None:
+        """Append a durable savings event for a completed compression."""
+        try:
+            before = int(result.get("original_tokens", 0) or 0)
+            after = int(result.get("compressed_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if before <= after:
+            return
+        savings_ledger.record_savings_event(
+            tokens_before=before,
+            tokens_after=after,
+            # The MCP tool doesn't know the agent's upstream model; an optional
+            # hint lets a host attribute it, otherwise it records as "unknown".
+            model=os.environ.get("HEADROOM_MCP_MODEL"),
+            repo=_detect_repo(),
+            client=self._current_client(),
+            source="mcp",
+        )
+
+    def _current_client(self) -> str:
+        """Name of the MCP client driving this session (best-effort)."""
+        override = os.environ.get("HEADROOM_MCP_CLIENT")
+        if override:
+            return override
+        try:
+            info = self.server.request_context.session.client_params.clientInfo
+            name = getattr(info, "name", None)
+            if name:
+                return str(name)
+        except Exception:
+            pass
+        return "unknown"
 
     async def _handle_retrieve(self, arguments: dict[str, Any]) -> list[TextContent]:
         """Handle headroom_retrieve tool call."""
