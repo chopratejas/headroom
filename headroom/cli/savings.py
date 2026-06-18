@@ -84,14 +84,6 @@ def savings(as_json: bool, days: int, reset: bool) -> None:
         click.echo(f"Ledger: {report.path}")
         return
 
-    saved = int(lifetime.get("tokens_saved", 0) or 0)
-    cost = float(lifetime.get("cost_usd", 0.0) or 0.0)
-
-    click.echo("")
-    click.echo(
-        f"  {_money(cost, 2)}  cost avoided   "
-        f"{report.top_model} · {calls:,} calls · {_tokens(saved)} tokens saved"
-    )
     click.echo("")
     click.echo(_window_line("Today", report.windows["today"]))
     click.echo(_window_line("Last 7 days", report.windows["last_7_days"]))

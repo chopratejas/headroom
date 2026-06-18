@@ -173,7 +173,8 @@ def test_cli_renders_sections_and_json(monkeypatch, tmp_path):
 
     result = runner.invoke(savings, [])
     assert result.exit_code == 0
-    assert "cost avoided" in result.output
+    # No redundant top-line headline; the windows lead the output.
+    assert "cost avoided" not in result.output
     assert "Today" in result.output and "All time" in result.output
     assert "Savings by client" in result.output and "claude-code" in result.output
     assert "Per-repo totals" not in result.output
