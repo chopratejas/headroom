@@ -1,19 +1,21 @@
 export {
-  createHeadroomProvider,
+  DEFAULT_MODEL,
+  DEFAULT_MODELS,
   buildOpencodeConfigContent,
   buildOpencodeConfigContentJson,
-  DEFAULT_MODELS,
-  DEFAULT_MODEL,
+  createHeadroomProvider,
 } from "./provider.js";
 export type {
-  HeadroomProviderOptions,
   HeadroomModelMapping,
   HeadroomProvider,
+  HeadroomProviderOptions,
 } from "./provider.js";
 export {
-  createHeadroomRetrieveTool,
   compressWithHeadroom,
-  setDefaultProxyUrl,
+  createHeadroomRetrieveTool,
   getDefaultProxyUrl,
+  setDefaultProxyUrl,
 } from "./retrieve.js";
 export type { RetrieveToolConfig } from "./retrieve.js";
+export { HeadroomPlugin, default } from "./plugin.js";
+export type { HeadroomOpenCodePluginOptions } from "./plugin.js";

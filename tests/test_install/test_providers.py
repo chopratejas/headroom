@@ -495,9 +495,9 @@ def test_revert_claude_provider_scope_ignores_missing_settings_file(tmp_path: Pa
 # ---------------------------------------------------------------------------
 
 
-def test_opencode_build_install_env_returns_proxy_base_url() -> None:
+def test_opencode_build_install_env_leaves_provider_env_unset() -> None:
     env = build_opencode_install_env(port=5566, backend="ignored")
-    assert env == {"OPENAI_BASE_URL": "http://127.0.0.1:5566/v1"}
+    assert env == {}
 
 
 def test_apply_and_revert_opencode_provider_scope(monkeypatch, tmp_path: Path) -> None:
@@ -818,7 +818,7 @@ def test_planner_build_tool_envs_includes_opencode() -> None:
 
     envs = build_tool_envs(port=8787, backend="anthropic", targets=["opencode"])
     assert "opencode" in envs
-    assert envs["opencode"] == {"OPENAI_BASE_URL": "http://127.0.0.1:8787/v1"}
+    assert envs["opencode"] == {}
 
 
 def test_planner_resolve_all_includes_opencode() -> None:

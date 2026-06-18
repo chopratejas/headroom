@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from headroom.providers.opencode.config import (
+    HEADROOM_OPENCODE_PLUGIN,
     _inject_key_into_json,
     _parse_json_loose,
+    append_headroom_plugin,
     inject_opencode_provider_config,
     opencode_config_paths,
     snapshot_opencode_config_if_unwrapped,
@@ -358,6 +360,26 @@ def test_inject_provider_config_preserves_unrelated_top_level_keys(
     assert "headroom" in config.get("provider", {})
 
 
+def test_append_headroom_plugin_adds_plugin_once() -> None:
+    config: dict[str, object] = {"plugin": ["some-plugin"]}
+
+    assert append_headroom_plugin(config) is True
+    assert append_headroom_plugin(config) is False
+
+    assert config["plugin"] == ["some-plugin", HEADROOM_OPENCODE_PLUGIN]
+
+
+def test_append_headroom_plugin_preserves_configured_tuple_entry() -> None:
+    config: dict[str, object] = {
+        "plugin": [[HEADROOM_OPENCODE_PLUGIN, {"proxyUrl": "http://127.0.0.1:8787"}]]
+    }
+
+    assert append_headroom_plugin(config) is False
+    assert config["plugin"] == [
+        [HEADROOM_OPENCODE_PLUGIN, {"proxyUrl": "http://127.0.0.1:8787"}]
+    ]
+
+
 def test_inject_provider_config_no_crash_on_unwriteable_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,8 +409,12 @@ def test_build_opencode_config_content_without_mcp() -> None:
     assert "model" not in config
 
 
-def test_build_launch_env_with_project() -> None:
+def test_build_launch_env_with_project(monkeypatch: pytest.MonkeyPatch) -> None:
     from headroom.providers.opencode.runtime import build_launch_env
+
+    monkeypatch.delenv("HEADROOM_PROJECT", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
 
     env, display = build_launch_env(
         port=8787,
@@ -396,21 +422,26 @@ def test_build_launch_env_with_project() -> None:
         include_mcp=False,
     )
     assert env["HEADROOM_PROJECT"] == "test-proj"
-    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:8787/v1"
-    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787"
+    assert "OPENAI_BASE_URL" not in env
+    assert "ANTHROPIC_BASE_URL" not in env
 
 
 def test_build_launch_env_with_custom_environ() -> None:
     from headroom.providers.opencode.runtime import build_launch_env
 
-    custom = {"EXISTING_VAR": "keep-me"}
+    custom = {
+        "EXISTING_VAR": "keep-me",
+        "OPENAI_BASE_URL": "https://deepseek.example/v1",
+        "ANTHROPIC_BASE_URL": "https://anthropic.example",
+    }
     env, display = build_launch_env(
         port=8787,
         environ=custom,
         include_mcp=False,
     )
     assert env["EXISTING_VAR"] == "keep-me"
-    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:8787/v1"
+    assert env["OPENAI_BASE_URL"] == "https://deepseek.example/v1"
+    assert env["ANTHROPIC_BASE_URL"] == "https://anthropic.example"
 
 
 def test_proxy_base_url() -> None:

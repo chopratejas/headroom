@@ -53,7 +53,8 @@ def build_launch_env(
     """Build environment variables for OpenCode through the local proxy.
 
     Sets ``OPENCODE_CONFIG_CONTENT`` with the headroom provider definition.
-    Also sets ``OPENAI_BASE_URL`` and ``ANTHROPIC_BASE_URL`` as fallbacks.
+    Existing provider/base URL environment variables are preserved, but
+    Headroom does not set or overwrite them for OpenCode.
     """
     env = dict(environ or os.environ)
     base_url = proxy_base_url(port)
@@ -64,14 +65,8 @@ def build_launch_env(
     )
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config_content, separators=(",", ":"))
 
-    # Fallback env vars for OpenCode versions that respect them.
-    env["OPENAI_BASE_URL"] = base_url
-    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
-
     env_vars_display = [
         "OPENCODE_CONFIG_CONTENT={provider: headroom}",
-        f"OPENAI_BASE_URL={base_url}",
-        f"ANTHROPIC_BASE_URL=http://127.0.0.1:{port}",
     ]
 
     # Per-project savings attribution (same pattern as codex).

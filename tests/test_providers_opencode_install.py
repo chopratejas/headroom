@@ -33,9 +33,9 @@ def _manifest(port: int = 8787) -> DeploymentManifest:
 
 
 def test_build_install_env() -> None:
-    """build_install_env returns OPENAI_BASE_URL pointing at the proxy."""
+    """build_install_env leaves OpenCode provider env vars untouched."""
     env = build_install_env(port=8787, backend="anthropic")
-    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:8787/v1"
+    assert env == {}
 
 
 def test_apply_provider_scope_creates_config(

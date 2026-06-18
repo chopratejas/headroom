@@ -966,14 +966,6 @@ def verify_opencode_wrap(
         config["provider"]["headroom"]["options"]["baseURL"] == f"http://127.0.0.1:{port}/v1",
         "Opencode wrap should inject headroom provider baseURL",
     )
-    assert_true(
-        env_vars.get("OPENAI_BASE_URL") == f"http://127.0.0.1:{port}/v1",
-        "Opencode wrap should set OPENAI_BASE_URL",
-    )
-    assert_true(
-        env_vars.get("ANTHROPIC_BASE_URL") == f"http://127.0.0.1:{port}",
-        "Opencode wrap should set ANTHROPIC_BASE_URL",
-    )
 
     run(["headroom", "unwrap", "opencode", "--port", str(port)], env=base_env, cwd=project_dir, timeout=120)
     config_path = Path(base_env["HOME"]) / ".config" / "opencode" / "opencode.json"

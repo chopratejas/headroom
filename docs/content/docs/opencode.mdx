@@ -25,7 +25,7 @@ headroom unwrap opencode
 |---|---|
 | Provider injection | Writes a `headroom` provider using `@ai-sdk/openai-compatible` into `opencode.json`, pointing at `http://127.0.0.1:<port>/v1` |
 | Runtime env | Sets `OPENCODE_CONFIG_CONTENT` with provider + model + MCP config so OpenCode picks up the proxy provider at launch |
-| Fallback env | Sets `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` as fallback base URLs |
+| Provider compatibility | Leaves `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` untouched so OpenCode `/connect` providers keep their own routing |
 | Context tool | Injects RTK (or `lean-ctx`) instructions into `~/.config/opencode/AGENTS.md` and project `AGENTS.md` |
 | MCP setup | Registers the Headroom MCP server (`headroom_compress`, `headroom_retrieve`, `headroom_stats`) |
 | Serena MCP | Optionally registers Serena code graph tools (`--no-serena` to skip) |
@@ -69,8 +69,7 @@ The default model is `headroom/claude-sonnet-4-6`. Change it in `opencode.json` 
 | Variable | Description |
 |---|---|
 | `OPENCODE_CONFIG_CONTENT` | JSON payload with provider, model, and MCP config injected by wrap |
-| `OPENAI_BASE_URL` | Fallback OpenAI-compatible base URL pointing at the proxy |
-| `ANTHROPIC_BASE_URL` | Fallback Anthropic base URL pointing at the proxy |
+| `HEADROOM_PROXY_URL` | Optional metadata used by the `headroom-opencode` plugin |
 | `HEADROOM_CONTEXT_TOOL` | Set to `lean-ctx` to use lean-ctx instead of RTK |
 
 ## Persistent installs
@@ -98,6 +97,16 @@ headroom install apply --preset persistent-service --scope provider --providers 
 3. **MCP tools** — Three Headroom MCP tools are registered: `headroom_compress` (compress context), `headroom_retrieve` (fetch original from CCR store), `headroom_stats` (compression statistics).
 
 4. **Unwrap** — Restores `opencode.json` from the pre-wrap backup. If no backup exists, strips Headroom marker blocks from the config. Also unregisters Headroom MCP servers.
+
+## Optional OpenCode plugin
+
+The `headroom-opencode` npm package also exports an OpenCode plugin. The plugin
+is additive: it exposes the `headroom_retrieve` tool and Headroom metadata such
+as `HEADROOM_PROXY_URL`, but it does not route provider traffic by itself.
+
+Provider traffic is still routed by the injected `headroom` provider in
+`OPENCODE_CONFIG_CONTENT` or `opencode.json`. This keeps providers configured
+through OpenCode `/connect` in charge of their own credentials and base URLs.
 
 ## Troubleshooting
 

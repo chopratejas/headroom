@@ -32,6 +32,7 @@ _MCP_BLOCK_RE = re.compile(
     + re.escape(_MCP_MARKER_END),
     re.DOTALL,
 )
+HEADROOM_OPENCODE_PLUGIN = "headroom-opencode"
 
 
 def _opencode_home_dir() -> Path:
@@ -149,6 +150,26 @@ def _inject_key_into_json(
     else:
         data[key] = value
     return data
+
+
+def append_headroom_plugin(config: dict[str, object]) -> bool:
+    """Append the optional OpenCode plugin entry if it is not already present."""
+    plugin = config.get("plugin")
+    if plugin is None:
+        config["plugin"] = [HEADROOM_OPENCODE_PLUGIN]
+        return True
+
+    if not isinstance(plugin, list):
+        return False
+
+    for entry in plugin:
+        if entry == HEADROOM_OPENCODE_PLUGIN:
+            return False
+        if isinstance(entry, list) and entry and entry[0] == HEADROOM_OPENCODE_PLUGIN:
+            return False
+
+    plugin.append(HEADROOM_OPENCODE_PLUGIN)
+    return True
 
 
 def inject_opencode_provider_config(port: int) -> None:

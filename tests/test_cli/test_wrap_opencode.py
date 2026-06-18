@@ -40,6 +40,8 @@ def test_wrap_opencode_sets_config_content_env(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
     _set_test_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://deepseek.example/v1")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anthropic.example")
 
     captured: dict[str, object] = {}
 
@@ -66,15 +68,17 @@ def test_wrap_opencode_sets_config_content_env(
     assert captured["args"] == ("--model", "gpt-4o")
 
 
-def test_wrap_opencode_sets_fallback_base_urls(
+def test_wrap_opencode_does_not_add_base_url_env_vars(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OPENAI_BASE_URL and ANTHROPIC_BASE_URL are set as fallbacks."""
+    """OPENAI_BASE_URL and ANTHROPIC_BASE_URL are left to OpenCode providers."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
     _set_test_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://deepseek.example/v1")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anthropic.example")
 
     captured: dict[str, object] = {}
 
@@ -89,8 +93,8 @@ def test_wrap_opencode_sets_fallback_base_urls(
     assert result.exit_code == 0, result.output
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:9000/v1"
-    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9000"
+    assert env["OPENAI_BASE_URL"] == "https://deepseek.example/v1"
+    assert env["ANTHROPIC_BASE_URL"] == "https://anthropic.example"
 
 
 def test_wrap_opencode_missing_binary_errors_clearly(
@@ -500,6 +504,7 @@ def test_wrap_opencode_headroom_project_from_cwd(
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
     monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    monkeypatch.delenv("HEADROOM_PROJECT", raising=False)
     _set_test_home(monkeypatch, tmp_path)
 
     captured: dict[str, object] = {}
