@@ -31,6 +31,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "headroom-proxy starting"
     );
 
+    // Surface a likely misconfiguration: the master compression switch is on but
+    // the mode is `off`, so nothing is actually compressed.
+    if config.compression_enabled_but_mode_off() {
+        tracing::warn!(
+            event = "compression_master_without_mode",
+            "compression is enabled but --compression-mode is `off`; requests pass \
+             through byte-equal with no savings. Set --compression-mode live_zone \
+             (or HEADROOM_PROXY_COMPRESSION_MODE=live_zone) to engage the compressor."
+        );
+    }
+
     let mut state = AppState::new(config.clone())?;
 
     // PR-D1: resolve AWS credentials at startup via the `aws-config`

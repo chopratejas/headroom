@@ -573,6 +573,14 @@ pub struct Config {
 }
 
 impl Config {
+    /// True when the compression master switch is on but the mode is still
+    /// `off` — a contradictory config that silently yields byte-faithful
+    /// passthrough (no savings). The two flags read as mutually exclusive, so
+    /// startup logs a WARN to surface the likely misconfiguration.
+    pub fn compression_enabled_but_mode_off(&self) -> bool {
+        self.compression && self.compression_mode == CompressionMode::Off
+    }
+
     pub fn from_cli(args: CliArgs) -> Self {
         let rewrite_host = if args.no_rewrite_host {
             false
@@ -665,5 +673,30 @@ impl Config {
             savings_path: None,
             upstream_stats_url: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config::for_test(Url::parse("http://127.0.0.1:0").unwrap())
+    }
+
+    #[test]
+    fn compression_misconfig_only_when_master_on_and_mode_off() {
+        let mut c = cfg();
+        // default for_test: compression=false, mode=Off
+        assert!(!c.compression_enabled_but_mode_off());
+
+        c.compression = true; // master on, mode still Off → contradictory
+        assert!(c.compression_enabled_but_mode_off());
+
+        c.compression_mode = CompressionMode::LiveZone; // both engaged → fine
+        assert!(!c.compression_enabled_but_mode_off());
+
+        c.compression = false; // master off, mode live_zone → not misconfigured
+        assert!(!c.compression_enabled_but_mode_off());
     }
 }
