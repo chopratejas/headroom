@@ -16,12 +16,13 @@ from __future__ import annotations
 import csv
 import io
 import json
-import logging
+import re
 from dataclasses import dataclass
 
 from .content_detector import ContentType, detect_content_type
 
-logger = logging.getLogger(__name__)
+# Mirrors content_detector's separator-cell pattern (e.g. ``| --- | :--: |``).
+_MD_SEP_CELL = re.compile(r"^:?-{2,}:?$")
 
 
 # ─── Public dataclasses (mirror SearchCompressor / LogCompressor surface) ────
@@ -72,23 +73,24 @@ def parse_csv(content: str, delimiter: str = ",") -> tuple[list[str], list[list[
 
 def parse_markdown_table(content: str) -> tuple[list[str], list[list[str]]]:
     """Parse a markdown table, dropping the ``|---|`` separator row."""
-    from .content_detector import _is_md_separator
 
     def split_row(row: str) -> list[str]:
         return [c.strip() for c in row.strip().strip("|").split("|")]
+
+    def is_separator(row: str) -> bool:
+        cells = [c for c in split_row(row) if c]
+        return len(cells) >= 2 and all(_MD_SEP_CELL.match(c) for c in cells)
 
     lines = [ln for ln in content.split("\n") if ln.strip() and "|" in ln]
     if len(lines) < 2:
         return [], []
     headers = split_row(lines[0])
-    rows = [split_row(ln) for ln in lines[1:] if not _is_md_separator(ln)]
+    rows = [split_row(ln) for ln in lines[1:] if not is_separator(ln)]
     return headers, rows
 
 
 def parse_fixed_width(content: str) -> tuple[list[str], list[list[str]]]:
     """Parse whitespace-aligned columns (best-effort, ≥ 2 spaces as a gap)."""
-    import re
-
     lines = [ln for ln in content.split("\n") if ln.strip()]
     if len(lines) < 2:
         return [], []
