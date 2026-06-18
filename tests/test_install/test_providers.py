@@ -835,3 +835,55 @@ def test_planner_provider_scope_unsupported_error_excludes_opencode() -> None:
 
     with pytest.raises(click.ClickException, match="unsupported targets"):
         resolve_targets("manual", ["cursor"], scope="provider")
+
+
+# ---------------------------------------------------------------------------
+# Opencode revert OSError fallback
+# ---------------------------------------------------------------------------
+
+
+def test_revert_opencode_provider_scope_fallback_on_oserror(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """revert_opencode_provider_scope falls back to strip when backup copy fails."""
+    config_path = tmp_path / "opencode.json"
+    backup_path = config_path.with_suffix(".json.headroom-backup")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from headroom.install.models import ManagedMutation
+    from headroom.providers.opencode.config import (
+        _PROVIDER_MARKER_START,
+        _PROVIDER_MARKER_END,
+    )
+    original = '{"model": "openai/gpt-4o"}'
+    backup_path.write_text(original)
+
+    provider_json = '{"headroom":{"npm":"@ai-sdk/openai-compatible","name":"Headroom Proxy","options":{"baseURL":"http://127.0.0.1:8787/v1"}}}'
+    config_path.write_text(
+        f'{_PROVIDER_MARKER_START}\n"provider": {provider_json},\n{_PROVIDER_MARKER_END}\n'
+    )
+
+    monkeypatch.setattr(
+        "headroom.providers.opencode.install.opencode_config_path",
+        lambda: config_path,
+    )
+
+    from headroom.providers.opencode.install import revert_provider_scope
+
+    manifest = _manifest(tmp_path)
+
+    def _fail_copy2(src, dst):
+        msg = "permission denied"
+        raise OSError(msg)
+
+    monkeypatch.setattr("shutil.copy2", _fail_copy2)
+
+    revert_provider_scope(
+        ManagedMutation(
+            target="opencode", kind="json-block", path=str(config_path)
+        ),
+        manifest,
+    )
+
+    assert backup_path.exists()  # backup preserved when copy fails
+    assert not config_path.exists() or "headroom" not in config_path.read_text()

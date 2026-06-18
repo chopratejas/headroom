@@ -350,3 +350,43 @@ def test_diff_specs_no_difference_returns_generic_message() -> None:
     b = ServerSpec(name="s", command="x")
     diff = _diff_specs(a, b)
     assert "unidentified field" in diff
+
+
+def test_register_server_returns_already_status(
+    tmp_path: Path,
+) -> None:
+    r = _registrar(tmp_path)
+    from headroom.mcp_registry.base import ServerSpec
+
+    spec = ServerSpec(name="already", command="cmd")
+    r.register_server(spec)
+    result = r.register_server(spec)
+    assert result.status == RegisterStatus.ALREADY
+
+
+def test_unregister_server_handles_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r = _registrar(tmp_path)
+    from headroom.mcp_registry.base import ServerSpec
+
+    spec = ServerSpec(name="bad-unregister", command="cmd")
+    r.register_server(spec)
+
+    def _fail_write(*args: Any, **kwargs: Any) -> None:
+        msg = "permission denied"
+        raise OSError(msg)
+
+    monkeypatch.setattr(
+        "headroom.mcp_registry.opencode._write_json", _fail_write
+    )
+    ok = r.unregister_server("bad-unregister")
+    assert ok is False
+
+
+def test_get_all_registrars_includes_opencode() -> None:
+    from headroom.mcp_registry.install import get_all_registrars
+
+    registrars = get_all_registrars()
+    names = [r.name for r in registrars]
+    assert "opencode" in names

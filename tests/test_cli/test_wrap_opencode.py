@@ -725,3 +725,111 @@ def test_wrap_opencode_no_arguments_is_valid(
     assert result.exit_code == 0, result.output
     assert captured["tool_label"] == "OPENCODE"
     assert captured["args"] == ()
+
+
+def test_wrap_opencode_with_memory_flag(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--memory flag is accepted and does not crash."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    _set_test_home(monkeypatch, tmp_path)
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                result = runner.invoke(
+                    main, ["wrap", "opencode", "--port", "9000", "--memory", "--no-mcp"]
+                )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_wrap_opencode_with_backend_and_anyllm_provider(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--backend and --anyllm-provider flags are accepted."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    _set_test_home(monkeypatch, tmp_path)
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                result = runner.invoke(
+                    main, [
+                        "wrap", "opencode", "--port", "9000",
+                        "--backend", "anyllm", "--anyllm-provider", "groq",
+                        "--no-mcp",
+                    ]
+                )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_wrap_opencode_with_no_proxy(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-proxy flag skips proxy startup but still configures the tool."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    _set_test_home(monkeypatch, tmp_path)
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                result = runner.invoke(
+                    main, ["wrap", "opencode", "--port", "9000", "--no-proxy", "--no-mcp"]
+                )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_wrap_opencode_with_verbose_flag(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--verbose flag does not crash."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    _set_test_home(monkeypatch, tmp_path)
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                result = runner.invoke(
+                    main, ["wrap", "opencode", "--port", "9000", "--verbose", "--no-mcp"]
+                )
+
+    assert result.exit_code == 0, result.output
+
+
+def test_wrap_opencode_respects_opencode_home_env(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OPENCODE_HOME env var controls where AGENTS.md is written."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
+    custom_home = str(tmp_path / "custom-opencode-home")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("OPENCODE_HOME", custom_home)
+
+    with patch.object(wrap_mod.shutil, "which", return_value="opencode"):
+        with patch.object(wrap_mod, "_launch_tool", side_effect=SystemExit(0)):
+            with patch.object(wrap_mod, "_ensure_rtk_binary", return_value=Path("/tmp/rtk")):
+                result = runner.invoke(
+                    main, ["wrap", "opencode", "--port", "9000", "--no-mcp"]
+                )
+
+    assert result.exit_code == 0, result.output
+    agents_md = Path(custom_home) / "AGENTS.md"
+    assert agents_md.exists()
