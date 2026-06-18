@@ -576,6 +576,20 @@ def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
     return True
 
 
+def _foundry_upstream_url(resource: str) -> str:
+    """Derive the Azure AI Foundry endpoint URL from a resource name.
+
+    When CLAUDE_CODE_USE_FOUNDRY=1 is set, Claude Code routes requests to the
+    Azure AI Services endpoint it constructs from ANTHROPIC_FOUNDRY_RESOURCE.
+    If ANTHROPIC_FOUNDRY_BASE_URL is not already set in the environment,
+    we derive it here so the proxy knows where to forward compressed requests.
+
+    Azure AI Foundry (AI Services) hosts Claude models at:
+      https://{resource}.services.ai.azure.com
+    """
+    return f"https://{resource.strip()}.services.ai.azure.com"
+
+
 def _write_claude_wrap_base_url(
     proxy_url: str,
     *,
@@ -3022,9 +3036,16 @@ def claude(
 
         # Detect Foundry mode: Claude Code uses ANTHROPIC_FOUNDRY_BASE_URL instead of
         # ANTHROPIC_BASE_URL when CLAUDE_CODE_USE_FOUNDRY=1 is set.
+        # Users typically set ANTHROPIC_FOUNDRY_RESOURCE (the resource name) rather
+        # than the full ANTHROPIC_FOUNDRY_BASE_URL.  When the URL is absent we derive
+        # it from the resource name so the proxy has an upstream to forward to.
         foundry_upstream = None
         if os.environ.get("CLAUDE_CODE_USE_FOUNDRY"):
             foundry_upstream = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")
+            if not foundry_upstream:
+                resource = os.environ.get("ANTHROPIC_FOUNDRY_RESOURCE", "").strip()
+                if resource:
+                    foundry_upstream = _foundry_upstream_url(resource)
 
         # Detect Vertex mode: with CLAUDE_CODE_USE_VERTEX=1, Claude Code IGNORES
         # ANTHROPIC_BASE_URL and authenticates to Google Vertex with GCP ADC. The
