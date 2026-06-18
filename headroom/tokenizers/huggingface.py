@@ -61,13 +61,30 @@ MODEL_TO_TOKENIZER: dict[str, str] = {
     "qwen2.5": "Qwen/Qwen2.5-7B",
     "qwen2.5-7b": "Qwen/Qwen2.5-7B",
     "qwen2.5-72b": "Qwen/Qwen2.5-72B",
-    # DeepSeek
+    # DeepSeek V1 / Coder (legacy, 2023-2024)
     "deepseek": "deepseek-ai/deepseek-llm-7b-base",
     "deepseek-7b": "deepseek-ai/deepseek-llm-7b-base",
     "deepseek-67b": "deepseek-ai/deepseek-llm-67b-base",
     "deepseek-coder": "deepseek-ai/deepseek-coder-6.7b-base",
+    "deepseek-coder-v2": "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
+    "deepseek-coder-v2-lite": "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
+    # DeepSeek V2/V3 family (2024)
     "deepseek-v2": "deepseek-ai/DeepSeek-V2",
+    "deepseek-v2-lite": "deepseek-ai/DeepSeek-V2-Lite",
     "deepseek-v3": "deepseek-ai/DeepSeek-V3",
+    "deepseek-v3-0324": "deepseek-ai/DeepSeek-V3-0324",
+    "deepseek-v3.2": "deepseek-ai/DeepSeek-V3.2",
+    # DeepSeek R1 reasoning family (2025)
+    "deepseek-r1": "deepseek-ai/DeepSeek-R1",
+    "deepseek-r1-0528": "deepseek-ai/DeepSeek-R1-0528",
+    "deepseek-reasoner": "deepseek-ai/DeepSeek-R1",
+    # DeepSeek V4 family (2025-2026)
+    "deepseek-v4-pro": "deepseek-ai/DeepSeek-V4-Pro",
+    "deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash",
+    # DeepSeek API aliases (routed through the proxy)
+    "deepseek-chat": "deepseek-ai/DeepSeek-V3",
+    "deepseek-r1-distill-qwen": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "deepseek-r1-distill-llama": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
     # Yi family
     "yi": "01-ai/Yi-6B",
     "yi-6b": "01-ai/Yi-6B",
