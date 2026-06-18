@@ -11,6 +11,7 @@ description: Durable, over-time compression savings — cost avoided plus Today 
 headroom savings            # human-readable summary
 headroom savings --json     # machine-readable report
 headroom savings --days 30  # restrict the lookback/retention window
+headroom savings --reset    # delete the ledger and start fresh
 ```
 
 ### Example
@@ -29,8 +30,8 @@ Cost avoided per model (all time):
   claude-haiku-4-5         $0.0250
 
 Savings by client:
-  proxy                    3 calls · 53,000 tokens saved
-  claude-code              3 calls · 25,000 tokens saved
+  claude-code              4 calls · 60,000 tokens saved
+  codex                    2 calls · 18,000 tokens saved
 ```
 
 ## How it works
