@@ -329,8 +329,19 @@ def _selected_context_tool() -> str:
     default=None,
     envvar="HEADROOM_BUDGET",
     help=(
-        "Daily budget limit in USD. Requests are rejected with 429 once the limit is reached. "
-        "Resets at midnight UTC. Env: HEADROOM_BUDGET."
+        "Budget limit in USD per --budget-period. Requests are rejected with 429 "
+        "once the limit is reached. Env: HEADROOM_BUDGET."
+    ),
+)
+@click.option(
+    "--budget-period",
+    type=click.Choice(["hourly", "daily", "monthly"]),
+    default="daily",
+    envvar="HEADROOM_BUDGET_PERIOD",
+    help=(
+        "Period the --budget limit applies to. Hourly resets on a rolling hour, "
+        "daily at local midnight, monthly on the 1st. Default: daily. "
+        "Env: HEADROOM_BUDGET_PERIOD."
     ),
 )
 # Code-aware compression (AST-based, requires `pip install headroom-ai[code]`).
@@ -565,6 +576,16 @@ def _selected_context_tool() -> str:
     help="AWS profile name for Bedrock (default: use default credentials)",
 )
 @click.option(
+    "--bedrock-api-url",
+    default=None,
+    help=(
+        "Custom Bedrock InvokeModel upstream for the /model/{id}/invoke "
+        "passthrough routes. Point at a re-signing gateway (LiteLLM, "
+        "LocalStack), NOT raw AWS — rewriting the body breaks SigV4. "
+        "(env: BEDROCK_TARGET_API_URL)"
+    ),
+)
+@click.option(
     "--no-telemetry",
     is_flag=True,
     help="Disable anonymous usage telemetry (env: HEADROOM_TELEMETRY=off)",
@@ -621,6 +642,7 @@ def proxy(
     codex_wire_debug: bool,
     codex_wire_debug_dir: str | None,
     budget: float | None,
+    budget_period: str,
     code_aware_flag: bool | None,
     disable_kompress: bool,
     code_graph: bool,
@@ -649,6 +671,7 @@ def proxy(
     region: str,
     bedrock_region: str | None,
     bedrock_profile: str | None,
+    bedrock_api_url: str | None,
     no_telemetry: bool,
     stateless: bool,
     embedding_server: bool,
@@ -827,6 +850,7 @@ def proxy(
         log_full_messages=log_messages
         or os.environ.get("HEADROOM_LOG_MESSAGES", "").lower() in ("true", "1", "yes", "on"),
         budget_limit_usd=budget,
+        budget_period=cast(Literal["hourly", "daily", "monthly"], budget_period),
         # Code-aware compression resolution:
         # 1. Explicit --code-aware / --no-code-aware always wins.
         # 2. Otherwise read HEADROOM_CODE_AWARE_ENABLED (truthy = on).
@@ -863,6 +887,9 @@ def proxy(
         backend=backend,
         bedrock_region=bedrock_region or region,
         bedrock_profile=bedrock_profile,
+        # CLI flag > env > unset. Matches the BEDROCK_TARGET_API_URL naming of
+        # the sibling *_TARGET_API_URL passthrough overrides.
+        bedrock_api_url=bedrock_api_url or os.environ.get("BEDROCK_TARGET_API_URL"),
         anyllm_provider=effective_anyllm_provider,
         # License / Usage Reporting (managed/enterprise)
         license_key=license_key,

@@ -45,7 +45,11 @@ import httpx
 from headroom.agent_savings import proxy_pipeline_kwargs
 from headroom.copilot_auth import apply_copilot_api_auth, build_copilot_upstream_url
 from headroom.pipeline import PipelineStage, summarize_routing_markers
-from headroom.proxy.auth_mode import classify_auth_mode, classify_client
+from headroom.proxy.auth_mode import (
+    classify_auth_mode,
+    classify_client,
+    should_stamp_codex_client,
+)
 from headroom.proxy.compression_decision import CompressionDecision
 from headroom.proxy.cost import _summarize_transforms, header_safe_transforms
 from headroom.proxy.outcome import RequestOutcome
@@ -1834,7 +1838,10 @@ class OpenAIHandlerMixin:
                 if result.waste_signals:
                     waste_signals_dict = result.waste_signals.to_dict()
             except Exception as e:
-                logger.warning(f"Optimization failed: {e}")
+                logger.warning(
+                    f"Optimization failed: {type(e).__name__}: {e}",
+                    exc_info=True,
+                )
                 # Flag compression failure for observability
                 _compression_failed = True
 
@@ -3495,17 +3502,22 @@ class OpenAIHandlerMixin:
 
         # Forward client headers to upstream, adding required OpenAI-Beta header
         ws_headers = dict(websocket.headers)
+        _ws_url_obj = getattr(websocket, "url", None)
+        _ws_url = str(_ws_url_obj) if _ws_url_obj is not None else ""
+        _ws_path = getattr(_ws_url_obj, "path", "") if _ws_url_obj is not None else ""
+        if not _ws_path:
+            _ws_path = "/v1/responses"
+        # WS sessions bypass the HTTP middleware that stamps X-Client: codex on
+        # the Responses endpoint, so apply the same path-based stamp here before
+        # classify_client runs (parallels server.py / should_stamp_codex_client).
+        if should_stamp_codex_client(_ws_path, ws_headers):
+            ws_headers["x-client"] = "codex"
         # Identify the WS harness before downstream auth/header rewrites.
         # Captured in closure so per-turn RequestOutcome can stamp it.
         client = classify_client(ws_headers)
         # WS sessions bypass the HTTP middleware, so bind the project here;
         # per-turn outcome emission inside this task inherits the context.
         set_current_project(classify_project(ws_headers))
-        _ws_url_obj = getattr(websocket, "url", None)
-        _ws_url = str(_ws_url_obj) if _ws_url_obj is not None else ""
-        _ws_path = getattr(_ws_url_obj, "path", "") if _ws_url_obj is not None else ""
-        if not _ws_path:
-            _ws_path = "/v1/responses"
         metrics_for_inbound_ws = getattr(self, "metrics", None)
         if metrics_for_inbound_ws is not None and hasattr(
             metrics_for_inbound_ws, "record_inbound_request"
@@ -3756,7 +3768,20 @@ class OpenAIHandlerMixin:
                         open_timeout=max(30, self.config.connect_timeout_seconds * 3),
                         close_timeout=10,
                         ping_interval=20,
-                        ping_timeout=20,
+                        # Image-generation turns go silent for 20-60s while the
+                        # model renders (a single ``image_generation_call`` event,
+                        # then a long quiet gap with no data frames). A 20s pong
+                        # deadline false-kills the still-healthy upstream
+                        # mid-render with ``upstream_error`` before the image
+                        # lands. Keep ``ping_interval`` for NAT keepalive but do
+                        # not tear the session down on a missing pong.
+                        ping_timeout=None,
+                        # The finished image arrives inline as a single base64
+                        # frame that exceeds the websockets default 1 MiB cap,
+                        # raising ``PayloadTooBig`` exactly as the image lands.
+                        # The relay must accept frames as large as the endpoints
+                        # do, so do not cap the upstream payload size.
+                        max_size=None,
                     )
                     ws_connected = True
                     if not _upstream_connect_recorded:

@@ -52,6 +52,7 @@ Headroom compresses everything your AI agent reads — tool outputs, logs, RAG c
 - **MCP server** — `headroom_compress`, `headroom_retrieve`, `headroom_stats` for any MCP client
 - **Cross-agent memory** — shared store across Claude, Codex, Gemini, auto-dedup
 - **`headroom learn`** — mines failed sessions, writes corrections to `CLAUDE.md` / `AGENTS.md`
+- **Output token reduction** — trims what the model *writes back* (not just what you send): drops ceremony/restated code and skips deep "thinking" on routine steps. See [Output token reduction](#output-token-reduction-cut-what-the-model-writes-back).
 - **Reversible (CCR)** — originals are cached for retrieval on demand
 
 ## How it works (30 seconds)
@@ -122,6 +123,54 @@ Granular extras: `[proxy]`, `[mcp]`, `[ml]`, `[code]`, `[memory]`, `[relevance]`
 | BFCL       | Tools    | 100 |        — |  **97%** | 32% compression |
 
 Reproduce: `python -m headroom.evals suite --tier 1` · [Full benchmarks & methodology](https://headroom-docs.vercel.app/docs/benchmarks)
+
+## Output token reduction (cut what the model writes back)
+
+Everything above shrinks the prompt you **send**. But you also pay for every
+token the model **writes back** — and on Opus-class models output costs 5× input.
+A lot of that output is waste: "Great, let me…" preambles, re-printing code you
+just showed it, and deep "thinking" on routine steps like reading a file.
+
+Headroom can trim that too, from the proxy, without you changing any code:
+
+- **Verbosity steering** — appends a short "be terse, don't restate context"
+  note to the end of the system prompt (so your prompt cache still hits).
+- **Effort routing** — when a turn is just the model resuming after a tool result
+  (a file read, a passing test), it dials the model's thinking effort down. New
+  questions and errors keep full effort.
+
+Turn it on:
+
+```bash
+export HEADROOM_OUTPUT_SHAPER=1     # off by default
+headroom proxy --port 8787
+```
+
+**Learn the right terseness for you.** People don't *say* how terse they want
+answers — they *show* it (they interrupt long replies, or move on before they
+could have read them). `headroom learn --verbosity` reads your past sessions and
+picks the level automatically:
+
+```bash
+headroom learn --verbosity            # preview what it found (dry run)
+headroom learn --verbosity --apply    # save it; the proxy uses it from now on
+```
+
+**See how many output tokens you saved.** Output savings are *counterfactual* —
+we never see what the model *would* have written — so Headroom reports an honest
+**estimate with a confidence range**, never a made-up number:
+
+```bash
+headroom output-savings
+# Reduction: 31.7%  (95% CI 27.7% … 35.7%)   [estimated]
+```
+
+Want a *measured* number instead of an estimate? Leave 10% of conversations
+unshaped as a control group: `export HEADROOM_OUTPUT_HOLDOUT=0.1`. The dashboard
+shows an **Output Tokens Saved** card next to input compression, labelled
+`measured` or `estimated` with the confidence band.
+
+→ Full write-up incl. the measurement methodology: [`docs/proposals/output-token-reduction.md`](docs/proposals/output-token-reduction.md)
 
 <a href="https://www.star-history.com/?repos=chopratejas%2Fheadroom&type=date&legend=top-left">
  <picture>
