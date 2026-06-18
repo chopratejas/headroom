@@ -218,3 +218,107 @@ async fn stats_persist_across_restart() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn health_endpoint_serves_dashboard_shape() {
+    // The embedded dashboard polls `/health` and reads `{ status, version }`
+    // (its status pill checks `status === "healthy"`). Served by the proxy
+    // itself so the dashboard's poll cycle works without an upstream.
+    let upstream = MockServer::start().await;
+    let proxy = start_proxy(&upstream.uri()).await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/health", proxy.url()))
+        .send()
+        .await
+        .expect("GET /health");
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.expect("health json");
+    assert_eq!(body["status"], "healthy");
+    assert_eq!(body["service"], "headroom-proxy");
+    assert!(body["version"].as_str().is_some_and(|v| !v.is_empty()));
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn transformations_feed_serves_empty_well_formed_feed() {
+    // The Rust proxy keeps no per-request transformation detail, so the feed is
+    // empty but well-formed — the dashboard renders "no data" instead of
+    // erroring on a 404/502.
+    let upstream = MockServer::start().await;
+    let proxy = start_proxy(&upstream.uri()).await;
+
+    let resp = reqwest::Client::new()
+        .get(format!("{}/transformations/feed?limit=50", proxy.url()))
+        .send()
+        .await
+        .expect("GET /transformations/feed");
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.expect("feed json");
+    assert_eq!(body["transformations"].as_array().unwrap().len(), 0);
+    assert_eq!(body["log_full_messages"], false);
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_history_endpoint_serves_history_contract() {
+    // `/stats-history` exposes the durable history the dashboard's Historical
+    // view consumes: lifetime totals, the raw checkpoint list, and a daily
+    // rollup series. The per-day rollup logic itself is unit-tested in
+    // `build_history_json`; here we cover the route + contract shape and that
+    // lifetime reflects recorded traffic. (A no-savings request increments
+    // lifetime but adds no checkpoint — history checkpoints are gated on
+    // `saved > 0`, and this branch's compressors are no-ops.)
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_matcher("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&upstream)
+        .await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    // Fresh proxy: well-formed and empty.
+    let empty: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats-history", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats-history")
+        .json()
+        .await
+        .expect("history json");
+    assert_eq!(empty["lifetime"]["requests"], 0);
+    assert_eq!(empty["history"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["series"]["daily"].as_array().unwrap().len(), 0);
+
+    // Record one request; lifetime should advance and the contract stays valid.
+    let req_body = serde_json::json!({
+        "model": "claude-haiku-4-5",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10
+    });
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.url()))
+        .header("content-type", "application/json")
+        .body(req_body.to_string())
+        .send()
+        .await
+        .expect("POST /v1/messages");
+
+    let hist: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats-history", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats-history")
+        .json()
+        .await
+        .expect("history json");
+    assert_eq!(hist["lifetime"]["requests"], 1);
+    assert!(hist["history"].is_array());
+    assert!(hist["series"]["daily"].is_array());
+
+    proxy.shutdown().await;
+}

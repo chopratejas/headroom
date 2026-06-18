@@ -24,7 +24,7 @@ use crate::compression;
 use crate::config::Config;
 use crate::error::ProxyError;
 use crate::headers::{build_forward_request_headers, filter_response_headers};
-use crate::health::{healthz, healthz_upstream};
+use crate::health::{health, healthz, healthz_upstream};
 use crate::websocket::ws_handler;
 // Phase F PR-F1: imported as `classify_auth_mode` to make the call
 // site self-documenting. `AuthMode` is re-exported under the same
@@ -177,6 +177,14 @@ pub fn build_app(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/healthz/upstream", get(healthz_upstream))
+        // Dashboard-facing health/history/feed endpoints. The embedded
+        // dashboard polls these; serving them on the proxy (one process →
+        // one store) keeps the status pill, Historical view, and feed working
+        // without an upstream. `/health` is the dashboard shape ({status,
+        // version}); `/healthz` above stays the machine probe.
+        .route("/health", get(health))
+        .route("/stats-history", get(handle_stats_history))
+        .route("/transformations/feed", get(handle_transformations_feed))
         // PR-D3: Prometheus scrape endpoint. Renders the global
         // registry in text format. The handler is stateless — no
         // `AppState` needed — and idempotent across concurrent
@@ -390,6 +398,21 @@ const DASHBOARD_HTML: &str = include_str!(concat!(
 /// `GET /dashboard` — serve the embedded dashboard UI.
 async fn handle_dashboard() -> axum::response::Html<&'static str> {
     axum::response::Html(DASHBOARD_HTML)
+}
+
+/// `GET /stats-history` — the durable savings history the dashboard's Historical
+/// view consumes (`lifetime`, the checkpoint `history`, and a daily rollup
+/// `series.daily`). Backed by the same in-process store as `/stats`.
+async fn handle_stats_history(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    axum::Json(state.savings.history_json())
+}
+
+/// `GET /transformations/feed` — the dashboard's per-request "what was removed"
+/// feed. The Rust proxy does not retain per-request transformation detail (that
+/// was a Python-proxy feature), so this returns an empty, well-formed feed: the
+/// dashboard renders "no data yet" instead of erroring on a 404/502.
+async fn handle_transformations_feed() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "transformations": [], "log_full_messages": false }))
 }
 
 /// Provider label for the savings store, derived from the compressible endpoint.

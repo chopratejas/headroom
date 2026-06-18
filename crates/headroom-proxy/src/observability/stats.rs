@@ -433,6 +433,14 @@ impl SavingsStore {
         build_stats_json(&state, now, &self.cfg)
     }
 
+    /// Build the dashboard-facing `/stats-history` JSON: lifetime totals, the
+    /// raw cumulative checkpoint history, and a per-day rollup. The dashboard's
+    /// Historical view reads `lifetime`, `history`, and `series.daily`.
+    pub fn history_json(&self) -> Value {
+        let state = self.snapshot();
+        build_history_json(&state)
+    }
+
     fn persist(&self) {
         let Some(path) = self.path.as_ref() else {
             return;
@@ -488,6 +496,48 @@ pub fn save_state(path: &Path, state: &SavingsState) -> std::io::Result<()> {
     std::fs::write(&tmp, &json)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// Build the `/stats-history` JSON from a state snapshot.
+///
+/// `history` is cumulative and appended in chronological order, so a per-day
+/// rollup is just the last checkpoint seen for each calendar day (the running
+/// totals at end of that day). Dates are the `YYYY-MM-DD` prefix of each
+/// checkpoint's RFC3339 timestamp.
+fn build_history_json(state: &SavingsState) -> Value {
+    let mut daily: Vec<Value> = Vec::new();
+    for pt in &state.history {
+        let date = pt.timestamp.get(0..10).unwrap_or("");
+        let same_day = daily
+            .last()
+            .and_then(|d| d.get("date"))
+            .and_then(Value::as_str)
+            == Some(date);
+        let entry = json!({
+            "date": date,
+            "tokens_saved": pt.total_tokens_saved,
+            "compression_savings_usd": round6(pt.compression_savings_usd),
+        });
+        if same_day {
+            *daily.last_mut().expect("same_day implies non-empty") = entry;
+        } else {
+            daily.push(entry);
+        }
+    }
+    // `to_value` over a Vec of all-finite scalar/string records cannot fail in
+    // practice; `unwrap_or_default` keeps this one executed line (100% line
+    // coverage on stable) rather than a panicking `unwrap`.
+    let history = serde_json::to_value(&state.history).unwrap_or_default();
+    json!({
+        "lifetime": {
+            "requests": state.lifetime.requests,
+            "tokens_saved": state.lifetime.tokens_saved,
+            "compression_savings_usd": round6(state.lifetime.compression_savings_usd),
+            "cache_savings_usd": round6(state.lifetime.cache_savings_usd),
+        },
+        "history": history,
+        "series": { "daily": daily },
+    })
 }
 
 /// Build the savings JSON contract from a state snapshot.
@@ -741,6 +791,51 @@ mod tests {
         assert_eq!(s.history.len(), 3);
         // newest retained
         assert_eq!(s.history.last().unwrap().timestamp, to_rfc3339(at(T0 + 9)));
+    }
+
+    fn hp(ts: &str, saved: u64, usd: f64) -> HistoryPoint {
+        HistoryPoint {
+            timestamp: ts.to_string(),
+            provider: "bedrock".to_string(),
+            model: "claude".to_string(),
+            total_tokens_saved: saved,
+            compression_savings_usd: usd,
+        }
+    }
+
+    #[test]
+    fn history_json_rolls_up_by_day() {
+        let mut s = SavingsState::default();
+        s.lifetime.requests = 3;
+        s.lifetime.tokens_saved = 600;
+        s.lifetime.compression_savings_usd = 0.012;
+        s.lifetime.cache_savings_usd = 0.004;
+        s.history = vec![
+            hp("2026-06-18T00:10:00Z", 100, 0.002),
+            hp("2026-06-18T05:30:00Z", 300, 0.007), // same day -> collapses, last wins
+            hp("2026-06-19T01:00:00Z", 600, 0.012), // new day
+        ];
+        let v = build_history_json(&s);
+        assert_eq!(v["lifetime"]["requests"], 3);
+        assert_eq!(v["lifetime"]["tokens_saved"], 600);
+        assert_eq!(v["lifetime"]["cache_savings_usd"], 0.004);
+        // raw checkpoints preserved
+        assert_eq!(v["history"].as_array().unwrap().len(), 3);
+        // daily rollup: 06-18 collapses to its last point (300), then 06-19
+        let daily = v["series"]["daily"].as_array().unwrap();
+        assert_eq!(daily.len(), 2);
+        assert_eq!(daily[0]["date"], "2026-06-18");
+        assert_eq!(daily[0]["tokens_saved"], 300);
+        assert_eq!(daily[1]["date"], "2026-06-19");
+        assert_eq!(daily[1]["tokens_saved"], 600);
+    }
+
+    #[test]
+    fn history_json_empty_is_well_formed() {
+        let v = build_history_json(&SavingsState::default());
+        assert_eq!(v["lifetime"]["requests"], 0);
+        assert_eq!(v["history"].as_array().unwrap().len(), 0);
+        assert_eq!(v["series"]["daily"].as_array().unwrap().len(), 0);
     }
 
     #[test]

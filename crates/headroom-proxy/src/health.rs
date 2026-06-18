@@ -13,6 +13,18 @@ pub async fn healthz() -> impl IntoResponse {
     Json(json!({ "ok": true, "service": "headroom-proxy" }))
 }
 
+/// Dashboard-facing health. The embedded dashboard polls `/health` and reads
+/// `{ status, version }` for its status pill (`status === "healthy"`). Served by
+/// the proxy itself so the dashboard's status/poll cycle works without an
+/// upstream — `/healthz` is the machine probe, `/health` is the dashboard shape.
+pub async fn health() -> impl IntoResponse {
+    Json(json!({
+        "status": "healthy",
+        "service": "headroom-proxy",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 /// Upstream health: GETs upstream `/healthz`. Returns 200 when reachable +
 /// 2xx, 503 otherwise. The endpoint name is reserved by the proxy and is
 /// not forwarded; operators must not name a real upstream route this.
