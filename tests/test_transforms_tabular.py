@@ -249,6 +249,17 @@ def test_router_caches_tabular_compressor() -> None:
     assert first is router._get_tabular_compressor()  # second call returns the cached instance
 
 
+def test_router_tabular_passthrough_when_compressor_unavailable(monkeypatch) -> None:
+    # Defensive guard: if the tabular compressor can't be constructed, routing to
+    # TABULAR leaves content untouched instead of crashing.
+    md = _verbose_markdown()
+    router = ContentRouter()
+    monkeypatch.setattr(router, "_get_tabular_compressor", lambda: None)
+    result = router.compress(md)
+    assert result.compressed == md
+    assert result.tokens_saved == 0
+
+
 def test_router_respects_disable_flag() -> None:
     # Disabling skips the tabular compressor: content passes through unchanged
     # (the selected strategy label may still read TABULAR, like other disabled
