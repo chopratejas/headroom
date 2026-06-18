@@ -50,6 +50,7 @@ def _register_commands() -> None:
         perf,  # noqa: F401
         proxy,  # noqa: F401
         tools,  # noqa: F401
+        uninstall,  # noqa: F401
         wrap,  # noqa: F401
     )
 
