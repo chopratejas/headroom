@@ -8,7 +8,18 @@ single Kompress model load).
 
 from __future__ import annotations
 
-from headroom.proxy.server import HeadroomProxy, ProxyConfig
+import os
+from unittest.mock import patch
+
+from click.testing import CliRunner
+
+from headroom.cli.main import main
+from headroom.proxy.server import (
+    HeadroomProxy,
+    ProxyConfig,
+    _get_env_optional_bool,
+    _proxy_config_from_env,
+)
 
 
 def _build(**overrides: object) -> HeadroomProxy:
@@ -66,3 +77,63 @@ def test_per_provider_override_beats_global() -> None:
     assert anthropic.config.enable_kompress is True
     assert openai.config.enable_kompress is False
     assert anthropic is not openai
+
+
+def test_get_env_optional_bool_tristate() -> None:
+    os.environ.pop("HRD_KOMPRESS_TEST", None)
+    assert _get_env_optional_bool("HRD_KOMPRESS_TEST") is None  # unset
+    with patch.dict(os.environ, {"HRD_KOMPRESS_TEST": ""}):
+        assert _get_env_optional_bool("HRD_KOMPRESS_TEST") is None  # empty
+    for truthy in ("1", "true", "yes", "on"):
+        with patch.dict(os.environ, {"HRD_KOMPRESS_TEST": truthy}):
+            assert _get_env_optional_bool("HRD_KOMPRESS_TEST") is True
+    for falsy in ("0", "false", "no", "off"):
+        with patch.dict(os.environ, {"HRD_KOMPRESS_TEST": falsy}):
+            assert _get_env_optional_bool("HRD_KOMPRESS_TEST") is False
+
+
+def test_proxy_config_from_env_reads_per_provider_kompress() -> None:
+    with patch.dict(
+        os.environ,
+        {
+            "HEADROOM_DISABLE_KOMPRESS_ANTHROPIC": "1",
+            "HEADROOM_DISABLE_KOMPRESS_OPENAI": "0",
+        },
+    ):
+        config = _proxy_config_from_env()
+    assert config.disable_kompress_anthropic is True
+    assert config.disable_kompress_openai is False
+
+
+def test_cli_disable_kompress_anthropic_only() -> None:
+    captured: dict = {}
+
+    def mock_run_server(config, **kwargs):
+        captured["config"] = config
+
+    with patch("headroom.proxy.server.run_server", mock_run_server):
+        result = CliRunner().invoke(
+            main,
+            ["proxy", "--disable-kompress-anthropic"],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    assert captured["config"].disable_kompress_anthropic is True
+    assert captured["config"].disable_kompress_openai is None
+
+
+def test_cli_enable_kompress_openai_from_env() -> None:
+    captured: dict = {}
+
+    def mock_run_server(config, **kwargs):
+        captured["config"] = config
+
+    with patch("headroom.proxy.server.run_server", mock_run_server):
+        result = CliRunner().invoke(
+            main,
+            ["proxy"],
+            env={"HEADROOM_DISABLE_KOMPRESS_OPENAI": "0"},
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    assert captured["config"].disable_kompress_openai is False
