@@ -138,6 +138,8 @@ pub async fn handle_invoke_streaming(
     // starts arriving.
     let region = state.config.bedrock_region.clone();
     let _latency_guard = LatencyGuard::start(&model_id, &region);
+    // Wall-clock for the savings-store recent-request latency.
+    let rec_start = Instant::now();
     record_bedrock_invoke(&model_id, &region, auth_mode);
 
     tracing::info!(
@@ -178,6 +180,7 @@ pub async fn handle_invoke_streaming(
         input_cost_per_token: rec_price.input,
         cache_read_cost_per_token: rec_price.cache_read,
         cache_write_cost_per_token: rec_price.cache_write,
+        request_id: request_id.clone(),
         ..Default::default()
     };
 
@@ -326,6 +329,7 @@ pub async fn handle_invoke_streaming(
             // Connect/timeout failure — record as a failed request.
             let mut o = rec_outcome;
             o.failed = true;
+            o.latency_ms = rec_start.elapsed().as_millis() as u64;
             state.savings.record(&o, std::time::SystemTime::now());
             let status = if e.is_timeout() {
                 StatusCode::GATEWAY_TIMEOUT
@@ -341,6 +345,7 @@ pub async fn handle_invoke_streaming(
     // Record now that the upstream status is known.
     let mut rec_outcome = rec_outcome;
     rec_outcome.failed = !status.is_success();
+    rec_outcome.latency_ms = rec_start.elapsed().as_millis() as u64;
     state
         .savings
         .record(&rec_outcome, std::time::SystemTime::now());

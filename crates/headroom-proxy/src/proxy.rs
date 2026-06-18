@@ -1016,6 +1016,7 @@ pub(crate) async fn forward_http(
             input_cost_per_token: rec_price.input,
             cache_read_cost_per_token: rec_price.cache_read,
             cache_write_cost_per_token: rec_price.cache_write,
+            request_id: request_id.clone(),
             ..Default::default()
         });
 
@@ -1104,6 +1105,7 @@ pub(crate) async fn forward_http(
     // populated `pending_record`; pure passthrough/streaming requests do not.
     if let Some(mut outcome) = pending_record.take() {
         outcome.failed = !upstream_status.is_success();
+        outcome.latency_ms = start.elapsed().as_millis() as u64;
         state.savings.record(&outcome, std::time::SystemTime::now());
     }
 

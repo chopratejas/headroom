@@ -85,6 +85,11 @@ pub struct RequestOutcome {
     pub cache_read_cost_per_token: f64,
     /// Cache-write USD per token (`0.0` when unknown).
     pub cache_write_cost_per_token: f64,
+    /// Correlating request id for the dashboard's recent-request feed. Empty is
+    /// allowed — the store synthesizes a stable id from the request counter.
+    pub request_id: String,
+    /// End-to-end latency in milliseconds (`0` when not measured).
+    pub latency_ms: u64,
 }
 
 impl RequestOutcome {
@@ -215,6 +220,22 @@ pub struct HistoryPoint {
     pub compression_savings_usd: f64,
 }
 
+/// One row of the dashboard's "Recent Requests" feed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecentRequest {
+    pub request_id: String,
+    pub timestamp: String,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens_original: u64,
+    pub input_tokens_optimized: u64,
+    pub tokens_saved: u64,
+    pub output_tokens: u64,
+    pub savings_percent: f64,
+    pub total_latency_ms: u64,
+    pub failed: bool,
+}
+
 /// The full persisted aggregate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavingsState {
@@ -224,6 +245,10 @@ pub struct SavingsState {
     pub history: Vec<HistoryPoint>,
     pub by_provider: HashMap<String, Bucket>,
     pub by_model: HashMap<String, Bucket>,
+    /// Bounded newest-last ring of recent requests for the dashboard feed.
+    /// `#[serde(default)]` so older persisted files (without this field) load.
+    #[serde(default)]
+    pub recent: Vec<RecentRequest>,
     /// Runtime-only counters (input/output tokens seen, failures). Persisted so
     /// the lifetime token totals survive restarts.
     pub total_input_tokens: u64,
@@ -240,6 +265,7 @@ impl Default for SavingsState {
             history: Vec::new(),
             by_provider: HashMap::new(),
             by_model: HashMap::new(),
+            recent: Vec::new(),
             total_input_tokens: 0,
             total_output_tokens: 0,
             requests_failed: 0,
@@ -342,6 +368,37 @@ impl SavingsState {
                 let drop = self.history.len() - cfg.max_history;
                 self.history.drain(0..drop);
             }
+        }
+
+        // Recent-request feed (every request, success or failure). A blank
+        // request id is backfilled from the lifetime counter so the dashboard's
+        // `:key="req.request_id"` never collides.
+        let savings_percent = if outcome.tokens_before == 0 {
+            0.0
+        } else {
+            (saved as f64 / outcome.tokens_before as f64) * 100.0
+        };
+        let request_id = if outcome.request_id.trim().is_empty() {
+            format!("req-{}", self.lifetime.requests)
+        } else {
+            outcome.request_id.clone()
+        };
+        self.recent.push(RecentRequest {
+            request_id,
+            timestamp: to_rfc3339(now),
+            provider: outcome.provider_key().to_string(),
+            model: outcome.model_key().to_string(),
+            input_tokens_original: outcome.tokens_before,
+            input_tokens_optimized: outcome.tokens_after,
+            tokens_saved: saved,
+            output_tokens: outcome.output_tokens,
+            savings_percent: round2(savings_percent),
+            total_latency_ms: outcome.latency_ms,
+            failed: outcome.failed,
+        });
+        if self.recent.len() > cfg.max_response_history {
+            let drop = self.recent.len() - cfg.max_response_history;
+            self.recent.drain(0..drop);
         }
     }
 
@@ -627,7 +684,39 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
         },
         "display_session": display_session_json(&session),
         "history_points": state.history.len(),
+        "recent_requests": recent_requests_json(state),
     })
+}
+
+/// Map the recent-request ring into the dashboard's `recent_requests` shape,
+/// newest first. The dashboard reads `request_id`, `timestamp`, `model`,
+/// `input_tokens_optimized`, `output_tokens`, `savings_percent`,
+/// `total_latency_ms` (and the original/saved fields in the expanded row).
+fn recent_requests_json(state: &SavingsState) -> Value {
+    let rows: Vec<Value> = state
+        .recent
+        .iter()
+        .rev()
+        .map(|r| {
+            json!({
+                "request_id": r.request_id,
+                "timestamp": r.timestamp,
+                "provider": r.provider,
+                "model": r.model,
+                "input_tokens_original": r.input_tokens_original,
+                "input_tokens_optimized": r.input_tokens_optimized,
+                "tokens_saved": r.tokens_saved,
+                "output_tokens": r.output_tokens,
+                "savings_percent": round2(r.savings_percent),
+                "total_latency_ms": r.total_latency_ms,
+                "optimization_latency_ms": 0,
+                "transforms_applied": [],
+                "waste_signals": {},
+                "failed": r.failed,
+            })
+        })
+        .collect();
+    Value::Array(rows)
 }
 
 fn display_session_json(s: &DisplaySession) -> Value {
@@ -828,6 +917,57 @@ mod tests {
         assert_eq!(daily[0]["tokens_saved"], 300);
         assert_eq!(daily[1]["date"], "2026-06-19");
         assert_eq!(daily[1]["tokens_saved"], 600);
+    }
+
+    #[test]
+    fn record_populates_recent_feed_with_backfilled_id() {
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig::default();
+
+        let mut o = outcome("bedrock", "claude", 100, 60); // saved 40
+        o.request_id = "req-abc".to_string();
+        o.latency_ms = 12;
+        o.output_tokens = 5;
+        s.record(&o, at(T0), &cfg);
+
+        // Second request with a blank id and zero input → backfilled id, 0%.
+        s.record(&outcome("openai", "gpt", 0, 0), at(T0 + 1), &cfg);
+
+        assert_eq!(s.recent.len(), 2);
+        let first = &s.recent[0];
+        assert_eq!(first.request_id, "req-abc");
+        assert_eq!(first.input_tokens_original, 100);
+        assert_eq!(first.input_tokens_optimized, 60);
+        assert_eq!(first.tokens_saved, 40);
+        assert_eq!(first.output_tokens, 5);
+        assert_eq!(first.total_latency_ms, 12);
+        assert!((first.savings_percent - 40.0).abs() < 0.01);
+        // The blank id is backfilled from the lifetime counter (2 at this point).
+        assert_eq!(s.recent[1].request_id, "req-2");
+        assert_eq!(s.recent[1].savings_percent, 0.0);
+
+        // JSON shape: newest first, with the expanded-row defaults present.
+        let v = recent_requests_json(&s);
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["request_id"], "req-2");
+        assert_eq!(arr[1]["request_id"], "req-abc");
+        assert_eq!(arr[1]["total_latency_ms"], 12);
+        assert!(arr[0]["transforms_applied"].is_array());
+        assert!(arr[0]["waste_signals"].is_object());
+    }
+
+    #[test]
+    fn recent_feed_is_bounded() {
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig {
+            max_response_history: 3,
+            ..StoreConfig::default()
+        };
+        for i in 0..10 {
+            s.record(&outcome("bedrock", "claude", 10, 5), at(T0 + i), &cfg);
+        }
+        assert_eq!(s.recent.len(), 3);
     }
 
     #[test]

@@ -398,3 +398,54 @@ async fn stats_does_not_count_failed_on_2xx() {
 
     proxy.shutdown().await;
 }
+
+#[tokio::test]
+async fn stats_exposes_recent_requests_feed() {
+    // The dashboard's Recent Requests panel reads `stats.recent_requests`. After
+    // one request the feed has a well-formed, keyed row.
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_matcher("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&upstream)
+        .await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+
+    // Fresh proxy: present and empty.
+    let empty: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
+    assert!(empty["recent_requests"].is_array());
+    assert_eq!(empty["recent_requests"].as_array().unwrap().len(), 0);
+
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.url()))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"max_tokens":10}"#)
+        .send()
+        .await
+        .expect("POST /v1/messages");
+
+    let stats: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
+    let feed = stats["recent_requests"].as_array().unwrap();
+    assert_eq!(feed.len(), 1);
+    let row = &feed[0];
+    assert!(row["request_id"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(row["model"], "claude-haiku-4-5");
+    assert!(row["savings_percent"].is_number());
+    assert!(row["total_latency_ms"].is_number());
+
+    proxy.shutdown().await;
+}

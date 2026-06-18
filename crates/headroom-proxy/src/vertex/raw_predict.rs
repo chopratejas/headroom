@@ -75,6 +75,8 @@ pub(crate) async fn forward_vertex_request(
     attach_sse_tee: bool,
 ) -> Response {
     let path_for_log = uri.path().to_string();
+    // Wall-clock for the savings-store recent-request latency.
+    let rec_start = std::time::Instant::now();
 
     // ─── 1. BUFFER BODY ────────────────────────────────────────────────
     let max = state.config.compression_max_body_bytes as usize;
@@ -217,6 +219,7 @@ pub(crate) async fn forward_vertex_request(
         input_cost_per_token: rec_price.input,
         cache_read_cost_per_token: rec_price.cache_read,
         cache_write_cost_per_token: rec_price.cache_write,
+        request_id: request_id.clone(),
         ..Default::default()
     };
 
@@ -350,6 +353,7 @@ pub(crate) async fn forward_vertex_request(
             // Connect/timeout failure — record as a failed request.
             let mut o = rec_outcome;
             o.failed = true;
+            o.latency_ms = rec_start.elapsed().as_millis() as u64;
             state.savings.record(&o, std::time::SystemTime::now());
             return error_response(StatusCode::BAD_GATEWAY, "vertex upstream error");
         }
@@ -361,6 +365,7 @@ pub(crate) async fn forward_vertex_request(
     // Record now that the upstream status is known.
     let mut rec_outcome = rec_outcome;
     rec_outcome.failed = !status.is_success();
+    rec_outcome.latency_ms = rec_start.elapsed().as_millis() as u64;
     state
         .savings
         .record(&rec_outcome, std::time::SystemTime::now());
