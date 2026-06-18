@@ -22,6 +22,57 @@ pub fn hello() -> &'static str {
     "headroom-core"
 }
 
+/// Initialise the ONNX Runtime execution provider from `HEADROOM_ORT_EP`.
+///
+/// Must be called once at process startup, before any ONNX session is
+/// created (fastembed `EmbeddingScorer` or magika `Session`). Both share
+/// the same ORT singleton so a single `ort::init()` commit covers both.
+///
+/// ort 2.x uses dynamic loading — all EP types are always compiled in;
+/// the provider library is loaded from the system at runtime. If the EP
+/// library is absent ORT logs a warning and falls back to CPU automatically.
+///
+/// Valid values for `HEADROOM_ORT_EP`:
+/// - unset / `cpu` — no-op; ORT defaults to CPU (always available)
+/// - `openvino`    — Intel CPU, GPU, NPU via OpenVINO runtime
+/// - `cuda`        — NVIDIA GPU via CUDA
+pub fn init_ort_ep() {
+    use ort::execution_providers::{CUDA, OpenVINO};
+
+    let ep = std::env::var("HEADROOM_ORT_EP").unwrap_or_default();
+    let ep = ep.trim().to_lowercase();
+
+    match ep.as_str() {
+        "" | "cpu" => {
+            tracing::debug!(ep = "cpu", "ORT execution provider: CPU (default)");
+        }
+        "openvino" => {
+            if ort::init()
+                .with_execution_providers([OpenVINO::default().build()])
+                .commit()
+            {
+                tracing::info!(ep = "openvino", "ORT execution provider: OpenVINO");
+            } else {
+                tracing::warn!(ep = "openvino", "ORT OpenVINO EP unavailable — falling back to CPU");
+            }
+        }
+        "cuda" => {
+            if ort::init()
+                .with_execution_providers([CUDA::default().build()])
+                .commit()
+            {
+                tracing::info!(ep = "cuda", "ORT execution provider: CUDA");
+            } else {
+                tracing::warn!(ep = "cuda", "ORT CUDA EP unavailable — falling back to CPU");
+            }
+        }
+        other => tracing::warn!(
+            ep = other,
+            "Unknown HEADROOM_ORT_EP — valid: cpu, openvino, cuda. Falling back to CPU"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
