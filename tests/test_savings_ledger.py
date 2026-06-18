@@ -128,6 +128,27 @@ def test_corrupt_lines_are_skipped(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+def test_cli_reset_deletes_ledger(monkeypatch, tmp_path):
+    pytest.importorskip("click")
+    from click.testing import CliRunner
+
+    from headroom.cli.savings import savings
+
+    path = _events_env(monkeypatch, tmp_path)
+    L.record_savings_event(tokens_before=1000, tokens_after=300, model=None, client="claude-code")
+    assert path.exists()
+
+    result = CliRunner().invoke(savings, ["--reset"])
+    assert result.exit_code == 0
+    assert "reset" in result.output.lower()
+    assert not path.exists()
+
+    # second reset on missing file is a no-op
+    result2 = CliRunner().invoke(savings, ["--reset"])
+    assert result2.exit_code == 0
+    assert "Nothing to reset" in result2.output
+
+
 def test_cli_empty_state(monkeypatch, tmp_path):
     pytest.importorskip("click")
     from click.testing import CliRunner
