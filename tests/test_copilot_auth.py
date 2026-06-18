@@ -795,9 +795,7 @@ def test_apply_copilot_api_auth_preserves_existing_headers_case_insensitively(
     assert "Copilot-Integration-Id" not in headers
 
 
-def test_capture_outbound_redacts_token(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_capture_outbound_redacts_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The debug capture must never write any token bytes — only fixed labels."""
 
     out = tmp_path / "cap.jsonl"
