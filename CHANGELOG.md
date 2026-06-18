@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+* **parser:** fix the excessive-whitespace waste signal always reporting `0`. `detect_waste_signals` normalized matched whitespace runs with `" ".join(...)`, which kept each run intact and only inserted single spaces *between* runs, so the normalized form was never shorter than the original and `whitespace_tokens` was clamped to `0`. Each matched run (4+ spaces/tabs or 3+ newlines) now collapses to a single space, so the signal reports the real collapsible-whitespace savings it feeds into `WasteSignals.total()`.
 * **proxy:** enable SSO credential resolution in the native Bedrock route via the `aws-config` `sso` feature flag, making the credential chain match what `docs/bedrock.md` already documented ([#999](https://github.com/chopratejas/headroom/pull/999)).
 * **proxy:** route native Bedrock `/model/{id}/converse` requests to the upstream Converse endpoint instead of the hard-coded `/invoke` action — the non-streaming handler now resolves the action from the inbound path, matching the streaming handler ([#999](https://github.com/chopratejas/headroom/pull/999)).
 * **ccr:** make retrieval store TTL configurable with `HEADROOM_CCR_TTL_SECONDS`, expose the effective TTL in `/v1/retrieve/stats`, and distinguish expired retrievals from missing hashes.
