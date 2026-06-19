@@ -546,7 +546,9 @@ class TestSubscriptionRouting:
 
         wrap_mod._inject_codex_provider_config(8787)
 
-        assert "requires_openai_auth = true" in (config_dir / "config.toml").read_text(encoding="utf-8")
+        assert "requires_openai_auth = true" in (config_dir / "config.toml").read_text(
+            encoding="utf-8"
+        )
 
     def test_inject_omits_requires_openai_auth_for_api_key(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -558,7 +560,9 @@ class TestSubscriptionRouting:
 
         wrap_mod._inject_codex_provider_config(8787)
 
-        assert "requires_openai_auth" not in (config_dir / "config.toml").read_text(encoding="utf-8")
+        assert "requires_openai_auth" not in (config_dir / "config.toml").read_text(
+            encoding="utf-8"
+        )
 
     def test_openai_base_url_port_updates_on_rewrap(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -583,7 +587,9 @@ class TestSubscriptionRouting:
         config_file.write_text(original, encoding="utf-8")
 
         wrap_mod._inject_codex_provider_config(8787)
-        assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in config_file.read_text(encoding="utf-8")
+        assert 'openai_base_url = "http://127.0.0.1:8787/v1"' in config_file.read_text(
+            encoding="utf-8"
+        )
 
         wrap_mod._restore_codex_provider_config()
         assert config_file.read_text(encoding="utf-8") == original
