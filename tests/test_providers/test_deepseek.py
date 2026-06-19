@@ -106,20 +106,32 @@ class TestDeepSeekLiteLLMInjection:
         assert pro["litellm_provider"] == "deepseek"
 
     def test_cost_per_token_resolves_deepseek_v4_flash(self):
-        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+        from headroom.pricing.litellm_pricing import (
+            litellm,
+            LITELLM_AVAILABLE,
+            resolve_litellm_model,
+        )
 
         if not LITELLM_AVAILABLE:
             pytest.skip("litellm not available")
-        # litellm.cost_per_token requires a provider prefix (deepseek/) for
-        # get_llm_provider() to resolve the model. Bare model names like
-        # "deepseek-v4-flash" would fail with BadRequestError.
+        # resolve_litellm_model adds the deepseek/ prefix so that
+        # litellm.cost_per_token can determine the provider via
+        # get_llm_provider(). Bare model names without a provider prefix
+        # would fail with BadRequestError.
+        resolved = resolve_litellm_model("deepseek-v4-flash")
         input_cost, output_cost = litellm.cost_per_token(
-            model="deepseek/deepseek-v4-flash",
+            model=resolved,
             prompt_tokens=1_000_000,
             completion_tokens=1_000_000,
         )
         assert input_cost == pytest.approx(0.14, rel=0.01)
         assert output_cost == pytest.approx(0.28, rel=0.01)
+
+    def test_resolve_litellm_model_prefixes_deepseek(self):
+        from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+        resolved = resolve_litellm_model("deepseek-v4-flash")
+        assert resolved == "deepseek/deepseek-v4-flash"
 
     def test_injection_does_not_overwrite_existing_upstream_entries(self):
         """If litellm upstream already has these, our injection is a no-op."""

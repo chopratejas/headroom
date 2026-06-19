@@ -76,6 +76,7 @@ def _resolve_litellm_model_uncached(model: str) -> str:
         "o3-": "openai/",
         "o4-": "openai/",
         "gemini-": "google/",
+        "deepseek-": "deepseek/",
     }
     for pattern, prefix in prefixes.items():
         if model.startswith(pattern):
