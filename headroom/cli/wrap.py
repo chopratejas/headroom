@@ -584,10 +584,12 @@ def _foundry_upstream_url(resource: str) -> str:
     If ANTHROPIC_FOUNDRY_BASE_URL is not already set in the environment,
     we derive it here so the proxy knows where to forward compressed requests.
 
-    Azure AI Foundry (AI Services) hosts Claude models at:
-      https://{resource}.services.ai.azure.com
+    Azure AI Foundry (AI Services) hosts the Anthropic-format Claude API at:
+      https://{resource}.services.ai.azure.com/anthropic
+    This matches the URL Claude Code constructs internally from ANTHROPIC_FOUNDRY_RESOURCE,
+    and what ANTHROPIC_FOUNDRY_BASE_URL must point to for the Anthropic SDK to reach Claude.
     """
-    return f"https://{resource.strip()}.services.ai.azure.com"
+    return f"https://{resource.strip()}.services.ai.azure.com/anthropic"
 
 
 def _write_claude_wrap_base_url(

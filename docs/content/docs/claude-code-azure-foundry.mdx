@@ -50,8 +50,8 @@ automatically:
 You'll see a line like:
 
 ```
-Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL=http://127.0.0.1:8787
-  → upstream https://my-org-claude.services.ai.azure.com
+Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL=http://127.0.0.1:8787/anthropic
+  → upstream https://my-org-claude.services.ai.azure.com/anthropic
 ```
 
 Use Claude Code exactly as you normally would.
@@ -66,8 +66,8 @@ Claude Code ──(Foundry request)──▶ Headroom ──(compressed)──�
 
 Claude Code sends its Foundry request (Anthropic API format) to Headroom. Headroom
 compresses the messages, then forwards to your Azure AI Foundry resource endpoint —
-`https://{ANTHROPIC_FOUNDRY_RESOURCE}.services.ai.azure.com` — with your auth
-headers passed through unchanged.
+`https://{ANTHROPIC_FOUNDRY_RESOURCE}.services.ai.azure.com/anthropic` — with your
+auth headers passed through unchanged.
 
 ## If you have ANTHROPIC_FOUNDRY_BASE_URL set explicitly
 

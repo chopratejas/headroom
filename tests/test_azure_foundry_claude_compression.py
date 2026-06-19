@@ -23,21 +23,21 @@ from headroom.providers.registry import resolve_api_overrides
 def test_foundry_upstream_url_builds_services_endpoint() -> None:
     assert (
         wrap_cli._foundry_upstream_url("my-org-claude")
-        == "https://my-org-claude.services.ai.azure.com"
+        == "https://my-org-claude.services.ai.azure.com/anthropic"
     )
 
 
 def test_foundry_upstream_url_strips_whitespace() -> None:
     assert (
         wrap_cli._foundry_upstream_url("  my-resource  ")
-        == "https://my-resource.services.ai.azure.com"
+        == "https://my-resource.services.ai.azure.com/anthropic"
     )
 
 
 def test_foundry_upstream_url_preserves_hyphens_and_digits() -> None:
     assert (
         wrap_cli._foundry_upstream_url("avanade-claude-42")
-        == "https://avanade-claude-42.services.ai.azure.com"
+        == "https://avanade-claude-42.services.ai.azure.com/anthropic"
     )
 
 
@@ -52,9 +52,11 @@ def test_resolve_api_overrides_uses_foundry_base_url_as_anthropic_target() -> No
         openai_api_url=None,
         gemini_api_url=None,
         cloudcode_api_url=None,
-        environ={"ANTHROPIC_FOUNDRY_BASE_URL": "https://my-resource.services.ai.azure.com"},
+        environ={
+            "ANTHROPIC_FOUNDRY_BASE_URL": "https://my-resource.services.ai.azure.com/anthropic"
+        },
     )
-    assert overrides.anthropic == "https://my-resource.services.ai.azure.com"
+    assert overrides.anthropic == "https://my-resource.services.ai.azure.com/anthropic"
 
 
 def test_resolve_api_overrides_explicit_target_beats_foundry_base_url() -> None:
@@ -66,7 +68,7 @@ def test_resolve_api_overrides_explicit_target_beats_foundry_base_url() -> None:
         cloudcode_api_url=None,
         environ={
             "ANTHROPIC_TARGET_API_URL": "https://explicit-override.example.com",
-            "ANTHROPIC_FOUNDRY_BASE_URL": "https://my-resource.services.ai.azure.com",
+            "ANTHROPIC_FOUNDRY_BASE_URL": "https://my-resource.services.ai.azure.com/anthropic",
         },
     )
     assert overrides.anthropic == "https://explicit-override.example.com"
@@ -84,18 +86,18 @@ def _settings(tmp_path: Path) -> Path:
 def test_write_foundry_mode_sets_foundry_key(tmp_path: Path) -> None:
     path = _settings(tmp_path)
     wrap_cli._write_claude_wrap_base_url(
-        "http://127.0.0.1:8787", foundry_mode=True, settings_path=path
+        "http://127.0.0.1:8787/anthropic", foundry_mode=True, settings_path=path
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["env"]["ANTHROPIC_FOUNDRY_BASE_URL"] == "http://127.0.0.1:8787"
+    assert payload["env"]["ANTHROPIC_FOUNDRY_BASE_URL"] == "http://127.0.0.1:8787/anthropic"
     assert "ANTHROPIC_BASE_URL" not in payload["env"]
 
 
 def test_write_non_foundry_mode_does_not_set_foundry_key(tmp_path: Path) -> None:
     path = _settings(tmp_path)
-    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787", settings_path=path)
+    wrap_cli._write_claude_wrap_base_url("http://127.0.0.1:8787/anthropic", settings_path=path)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787"
+    assert payload["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8787/anthropic"
     assert "ANTHROPIC_FOUNDRY_BASE_URL" not in payload["env"]
 
 
