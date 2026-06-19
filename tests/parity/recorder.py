@@ -923,8 +923,6 @@ def install_individual_grammar_parsers() -> None:
     Raises ImportError when the grammar wheels / core binding aren't present
     (the workload driver soft-fails, like kompress without its model).
     """
-    from tree_sitter import Language, Parser
-
     import tree_sitter_c
     import tree_sitter_cpp
     import tree_sitter_go
@@ -933,6 +931,7 @@ def install_individual_grammar_parsers() -> None:
     import tree_sitter_python
     import tree_sitter_rust
     import tree_sitter_typescript
+    from tree_sitter import Language, Parser
 
     from headroom.transforms import code_compressor as cc
 
@@ -1354,16 +1353,14 @@ def _varied_kompress_inputs() -> list[str]:
         log * 6,
         "Traceback (most recent call last): File main.py line 42 in handler "
         "raise ValueError invalid token; the request could not be processed "
-        "because the upstream returned an unexpected payload shape repeatedly. "
-        * 3,
+        "because the upstream returned an unexpected payload shape repeatedly. " * 3,
         # whitespace-irregular
         "tokens   with\tirregular\n\nwhitespace   runs   and\ttabs   scattered "
         + "throughout the body of the text repeatedly again and again here " * 5,
         # mixed prose + paths + assignments
         "Configure the service by setting config.timeout = 30 and config.retries = 5 "
         "then restart /etc/service/daemon to apply; verify via /health endpoint "
-        "returning 200 within the configured start_period window of fifteen seconds. "
-        * 3,
+        "returning 200 within the configured start_period window of fifteen seconds. " * 3,
         # multi-chunk (>350 words)
         (fox + engineer) * 20,
         (log + engineer) * 18,
@@ -1371,8 +1368,7 @@ def _varied_kompress_inputs() -> list[str]:
         # medium prose variations
         engineer + fox * 5,
         "Summarize the following document while preserving every named entity "
-        "and numeric figure so the reader can reconstruct the key facts later. "
-        * 4,
+        "and numeric figure so the reader can reconstruct the key facts later. " * 4,
         "The committee reviewed the quarterly report and concluded that revenue "
         "grew twelve percent while operating costs declined by four percent "
         "year over year across all major regional markets surveyed. " * 4,
@@ -1381,12 +1377,10 @@ def _varied_kompress_inputs() -> list[str]:
         "for the token compression model used by the proxy at request time. " * 3,
         "Once the migration completes the application reads its runtime feature "
         "flags from the host mounted configuration file and hot reloads them on "
-        "change without requiring a full restart of the running service process. "
-        * 3,
+        "change without requiring a full restart of the running service process. " * 3,
         "Performance benchmarks on the reference hardware show the int8 weight "
         "only model matching the full precision baseline within one tenth of a "
-        "percent on the held out evaluation split across five hundred samples. "
-        * 3,
+        "percent on the held out evaluation split across five hundred samples. " * 3,
     ]
     return inputs
 
