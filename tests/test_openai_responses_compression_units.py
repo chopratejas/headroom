@@ -459,9 +459,7 @@ def test_openai_responses_adapter_excludes_tool_case_insensitively_with_debug(mo
     name, so the protection must hit via the lowercased fallback. Debug logging
     is enabled so the protected-extraction debug record is also covered.
     """
-    monkeypatch.setattr(
-        openai_handler, "_log_codex_compression_debug", lambda *_a, **_k: None
-    )
+    monkeypatch.setattr(openai_handler, "_log_codex_compression_debug", lambda *_a, **_k: None)
     router = ContentRouter()
     router.config.exclude_tools = {"serena.find_symbol"}
 
