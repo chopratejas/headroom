@@ -592,6 +592,18 @@ def _foundry_upstream_url(resource: str) -> str:
     return f"https://{resource.strip()}.services.ai.azure.com/anthropic"
 
 
+def _foundry_proxy_url(proxy_url: str) -> str:
+    """Return the local proxy URL that Claude Code should use in Foundry mode.
+
+    ANTHROPIC_FOUNDRY_BASE_URL is the full base URL the Anthropic SDK appends
+    /v1/messages to, so it must include the /anthropic path component to match
+    the Azure AI Foundry endpoint structure.  _claude_proxy_base_url() returns
+    the bare http://127.0.0.1:<port> — this helper appends /anthropic so the
+    proxy URL Claude Code receives mirrors the real Foundry URL shape.
+    """
+    return proxy_url.rstrip("/") + "/anthropic"
+
+
 def _write_claude_wrap_base_url(
     proxy_url: str,
     *,
@@ -3110,7 +3122,7 @@ def claude(
             )
         elif foundry_upstream:
             click.echo(
-                f"  Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL={proxy_url} → upstream {foundry_upstream}"
+                f"  Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL={_foundry_proxy_url(proxy_url)} → upstream {foundry_upstream}"
             )
         else:
             click.echo(f"  ANTHROPIC_BASE_URL={proxy_url}")
@@ -3126,7 +3138,10 @@ def claude(
             # we only redirect its Vertex endpoint to Headroom.
             env["ANTHROPIC_VERTEX_BASE_URL"] = proxy_url
         elif foundry_upstream:
-            env["ANTHROPIC_FOUNDRY_BASE_URL"] = proxy_url
+            # ANTHROPIC_FOUNDRY_BASE_URL is the base URL the Anthropic SDK
+            # appends /v1/messages to.  The real Foundry URL includes /anthropic,
+            # so the proxy URL must mirror that structure.
+            env["ANTHROPIC_FOUNDRY_BASE_URL"] = _foundry_proxy_url(proxy_url)
         else:
             env["ANTHROPIC_BASE_URL"] = proxy_url
 
@@ -3135,7 +3150,8 @@ def claude(
         # daemon's environment) also route through Headroom.
         _settings_foundry[0] = bool(foundry_upstream)
         _saved_base_url[0] = _write_claude_wrap_base_url(
-            proxy_url, foundry_mode=_settings_foundry[0]
+            _foundry_proxy_url(proxy_url) if _settings_foundry[0] else proxy_url,
+            foundry_mode=_settings_foundry[0],
         )
 
         # Per-project savings attribution: tag every request with the launch
