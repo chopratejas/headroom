@@ -290,9 +290,7 @@ def aggregate_savings(
 
     # "Today" is local-calendar-day; the 7-day window is a rolling 168h.
     today_cutoff = (
-        now.astimezone()
-        .replace(hour=0, minute=0, second=0, microsecond=0)
-        .astimezone(timezone.utc)
+        now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     )
     week_cutoff = now - timedelta(days=7)
 

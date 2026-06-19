@@ -25,9 +25,7 @@ def _events_env(monkeypatch, tmp_path):
 
 def test_unknown_model_uses_blended_fallback(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
-    assert L.record_savings_event(
-        tokens_before=1000, tokens_after=400, model=None, client="c"
-    )
+    assert L.record_savings_event(tokens_before=1000, tokens_after=400, model=None, client="c")
     report = L.aggregate_savings()
     assert report.lifetime["tokens_saved"] == 600
     expected = round(600 * L.DEFAULT_FALLBACK_INPUT_COST_PER_TOKEN, 6)
@@ -42,9 +40,7 @@ def test_estimate_cost_unknown_short_circuits_to_fallback():
 
 def test_explicit_cost_is_honored(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
-    L.record_savings_event(
-        tokens_before=100, tokens_after=10, model="x", client="c", cost_usd=1.25
-    )
+    L.record_savings_event(tokens_before=100, tokens_after=10, model="x", client="c", cost_usd=1.25)
     assert L.aggregate_savings().lifetime["cost_usd"] == pytest.approx(1.25)
 
 
@@ -73,13 +69,21 @@ def test_breakdowns_aggregate_by_dimension(monkeypatch, tmp_path):
 def test_windows_today_week_alltime(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
     now = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
-    L.record_savings_event(tokens_before=1000, tokens_after=500, model=None, client="c", timestamp=now)
     L.record_savings_event(
-        tokens_before=1000, tokens_after=600, model=None, client="c",
+        tokens_before=1000, tokens_after=500, model=None, client="c", timestamp=now
+    )
+    L.record_savings_event(
+        tokens_before=1000,
+        tokens_after=600,
+        model=None,
+        client="c",
         timestamp=now - timedelta(days=3),
     )
     L.record_savings_event(
-        tokens_before=1000, tokens_after=700, model=None, client="c",
+        tokens_before=1000,
+        tokens_after=700,
+        model=None,
+        client="c",
         timestamp=now - timedelta(days=30),
     )
     report = L.aggregate_savings(now=now)
@@ -94,9 +98,14 @@ def test_windows_today_week_alltime(monkeypatch, tmp_path):
 def test_retention_excludes_old_events(monkeypatch, tmp_path):
     _events_env(monkeypatch, tmp_path)
     now = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
-    L.record_savings_event(tokens_before=1000, tokens_after=500, model=None, client="c", timestamp=now)
     L.record_savings_event(
-        tokens_before=1000, tokens_after=500, model=None, client="c",
+        tokens_before=1000, tokens_after=500, model=None, client="c", timestamp=now
+    )
+    L.record_savings_event(
+        tokens_before=1000,
+        tokens_after=500,
+        model=None,
+        client="c",
         timestamp=now - timedelta(days=400),
     )
     report = L.aggregate_savings(now=now, retention_days=365)

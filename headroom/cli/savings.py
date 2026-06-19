@@ -103,5 +103,3 @@ def savings(as_json: bool, days: int, reset: bool) -> None:
                 f"  {str(row['client']):<24} {int(row['calls']):,} calls · "
                 f"{_tokens(int(row['tokens_saved']))} tokens saved"
             )
-
-
