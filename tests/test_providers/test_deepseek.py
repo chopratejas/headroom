@@ -1,5 +1,7 @@
 """Tests for DeepSeek model pricing and cost estimation."""
 
+import pytest
+
 from headroom.pricing.deepseek_prices import (
     DEEPSEEK_PRICES,
     get_deepseek_registry,
@@ -60,3 +62,85 @@ class TestDeepSeekPricingModule:
             cached_input_tokens=1_000_000,
         )
         assert cost.cost_usd == 0.14 + 0.0028
+
+
+class TestDeepSeekLiteLLMInjection:
+    """Tests for DeepSeek V4 pricing injection into litellm."""
+
+    def test_deepseek_v4_models_in_litellm_model_cost(self):
+        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+
+        if not LITELLM_AVAILABLE:
+            pytest.skip("litellm not available")
+        assert "deepseek-v4-flash" in litellm.model_cost
+        assert "deepseek-v4-pro" in litellm.model_cost
+
+    def test_deepseek_v4_prefixed_models_in_litellm_model_cost(self):
+        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+
+        if not LITELLM_AVAILABLE:
+            pytest.skip("litellm not available")
+        assert "deepseek/deepseek-v4-flash" in litellm.model_cost
+        assert "deepseek/deepseek-v4-pro" in litellm.model_cost
+
+    def test_deepseek_v4_flash_litellm_pricing(self):
+        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+
+        if not LITELLM_AVAILABLE:
+            pytest.skip("litellm not available")
+        flash = litellm.model_cost["deepseek-v4-flash"]
+        assert flash["input_cost_per_token"] == 0.14 / 1_000_000
+        assert flash["output_cost_per_token"] == 0.28 / 1_000_000
+        assert flash["cache_read_input_token_cost"] == 0.0028 / 1_000_000
+        assert flash["litellm_provider"] == "deepseek"
+
+    def test_deepseek_v4_pro_litellm_pricing(self):
+        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+
+        if not LITELLM_AVAILABLE:
+            pytest.skip("litellm not available")
+        pro = litellm.model_cost["deepseek-v4-pro"]
+        assert pro["input_cost_per_token"] == 0.435 / 1_000_000
+        assert pro["output_cost_per_token"] == 0.87 / 1_000_000
+        assert pro["cache_read_input_token_cost"] == 0.003625 / 1_000_000
+        assert pro["litellm_provider"] == "deepseek"
+
+    def test_cost_per_token_resolves_deepseek_v4_flash(self):
+        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+
+        if not LITELLM_AVAILABLE:
+            pytest.skip("litellm not available")
+        # litellm.cost_per_token requires a provider prefix (deepseek/) for
+        # get_llm_provider() to resolve the model. Bare model names like
+        # "deepseek-v4-flash" would fail with BadRequestError.
+        input_cost, output_cost = litellm.cost_per_token(
+            model="deepseek/deepseek-v4-flash",
+            prompt_tokens=1_000_000,
+            completion_tokens=1_000_000,
+        )
+        assert input_cost == pytest.approx(0.14, rel=0.01)
+        assert output_cost == pytest.approx(0.28, rel=0.01)
+
+    def test_injection_does_not_overwrite_existing_upstream_entries(self):
+        """If litellm upstream already has these, our injection is a no-op."""
+        from headroom.pricing.litellm_pricing import litellm, LITELLM_AVAILABLE
+
+        if not LITELLM_AVAILABLE:
+            pytest.skip("litellm not available")
+        # Force-inject with wrong value, then verify the injection guard
+        litellm.model_cost["deepseek-v4-flash"] = {"input_cost_per_token": 999}
+        # Reimport to trigger _inject_deepseek_pricing — but it should NOT overwrite
+        import importlib
+        import headroom.pricing.litellm_pricing as lp
+
+        importlib.reload(lp)
+        assert litellm.model_cost["deepseek-v4-flash"]["input_cost_per_token"] == 999
+        # Reset to correct value
+        litellm.model_cost["deepseek-v4-flash"] = {
+            "input_cost_per_token": 0.14 / 1_000_000,
+            "output_cost_per_token": 0.28 / 1_000_000,
+            "cache_read_input_token_cost": 0.0028 / 1_000_000,
+            "litellm_provider": "deepseek",
+            "max_tokens": 384_000,
+            "max_input_tokens": 1_000_000,
+        }
