@@ -422,7 +422,7 @@ def test_content_router_retries_kompress_when_structured_strategy_noops(monkeypa
     monkeypatch.setattr(
         router,
         "_try_ml_compressor",
-        lambda value, context, question=None: ("short summary", 2),
+        lambda value, context, question=None, **_kwargs: ("short summary", 2),
     )
 
     compressed, compressed_tokens, strategy_chain = router._apply_strategy_to_content(

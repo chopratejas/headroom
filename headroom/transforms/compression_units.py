@@ -17,6 +17,7 @@ from .content_router import (
     CompressionStrategy,
     ContentRouter,
     RouterCompressionResult,
+    RouterRequestOptions,
 )
 
 
@@ -127,6 +128,7 @@ def _compress_live_text_with_markers(
     unit: CompressionUnit,
     *,
     router: ContentRouter,
+    request_options: RouterRequestOptions,
 ) -> tuple[str, list[str], RouterCompressionResult | None]:
     """Compress text around CCR markers while preserving marker bytes."""
 
@@ -142,6 +144,7 @@ def _compress_live_text_with_markers(
                 prefix,
                 unit=unit,
                 router=router,
+                request_options=request_options,
                 last_router_result=last_router_result,
             )
             parts.append(compressed_prefix)
@@ -155,6 +158,7 @@ def _compress_live_text_with_markers(
             suffix,
             unit=unit,
             router=router,
+            request_options=request_options,
             last_router_result=last_router_result,
         )
         parts.append(compressed_suffix)
@@ -171,6 +175,7 @@ def _compress_marker_free_text(
     *,
     unit: CompressionUnit,
     router: ContentRouter,
+    request_options: RouterRequestOptions,
     last_router_result: RouterCompressionResult | None,
 ) -> tuple[str, list[str], RouterCompressionResult | None]:
     boundary = re.match(r"^(\s*)(.*?)(\s*)$", text, flags=re.DOTALL)
@@ -186,6 +191,7 @@ def _compress_marker_free_text(
         context=unit.context,
         question=unit.question,
         bias=unit.bias,
+        request_options=request_options,
     )
     if router_result.compressed == core:
         return text, [], router_result
@@ -253,18 +259,13 @@ def compress_unit_with_router(
     if len(unit.text) < unit.min_bytes:
         return _with_reason(reason="below_unit_floor")
 
-    prior_target_ratio = getattr(router, "_runtime_target_ratio", None)
-    if target_ratio is not None:
-        router._runtime_target_ratio = target_ratio
+    request_options = RouterRequestOptions(target_ratio=target_ratio)
     if _CCR_MARKER_RE.search(unit.text):
-        try:
-            replacement, marker_transforms, router_result = _compress_live_text_with_markers(
-                unit,
-                router=router,
-            )
-        finally:
-            if target_ratio is not None:
-                router._runtime_target_ratio = prior_target_ratio
+        replacement, marker_transforms, router_result = _compress_live_text_with_markers(
+            unit,
+            router=router,
+            request_options=request_options,
+        )
         if replacement == unit.text:
             return _with_reason(
                 router_result=router_result,
@@ -296,16 +297,13 @@ def compress_unit_with_router(
             reason_category="applied",
         )
 
-    try:
-        router_result = router.compress(
-            unit.text,
-            context=unit.context,
-            question=unit.question,
-            bias=unit.bias,
-        )
-    finally:
-        if target_ratio is not None:
-            router._runtime_target_ratio = prior_target_ratio
+    router_result = router.compress(
+        unit.text,
+        context=unit.context,
+        question=unit.question,
+        bias=unit.bias,
+        request_options=request_options,
+    )
     replacement = router_result.compressed
     strategy = router_result.strategy_used.value
     if replacement == unit.text:
