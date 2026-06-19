@@ -214,17 +214,21 @@ _DEEPSEEK_V4_PRICING: dict[str, dict[str, float | str | int]] = {
         "input_cost_per_token": 0.14 / 1_000_000,
         "output_cost_per_token": 0.28 / 1_000_000,
         "cache_read_input_token_cost": 0.0028 / 1_000_000,
+        "input_cost_per_token_cache_hit": 0.0028 / 1_000_000,
         "litellm_provider": "deepseek",
         "max_tokens": 384_000,
         "max_input_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
     },
     "deepseek-v4-pro": {
         "input_cost_per_token": 0.435 / 1_000_000,
         "output_cost_per_token": 0.87 / 1_000_000,
         "cache_read_input_token_cost": 0.003625 / 1_000_000,
+        "input_cost_per_token_cache_hit": 0.003625 / 1_000_000,
         "litellm_provider": "deepseek",
         "max_tokens": 384_000,
         "max_input_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
     },
 }
 
