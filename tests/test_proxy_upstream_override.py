@@ -94,6 +94,28 @@ def test_override_strips_trailing_v1_with_slash() -> None:
     )
 
 
+def test_override_strips_trailing_v1beta() -> None:
+    # Gemini's version segment is /v1beta (not /v1). The proxy's gemini
+    # handlers append /v1beta/models/... themselves, so a caller passing the
+    # versioned URL (e.g. matching headroom's _KNOWN_UPSTREAMS) must have it
+    # stripped to avoid a doubled /v1beta/v1beta path.
+    assert (
+        request_upstream_override(
+            _stub_request({"x-headroom-upstream": "https://generativelanguage.googleapis.com/v1beta"})
+        )
+        == "https://generativelanguage.googleapis.com"
+    )
+
+
+def test_override_strips_trailing_v1beta_with_slash() -> None:
+    assert (
+        request_upstream_override(
+            _stub_request({"x-headroom-upstream": "https://generativelanguage.googleapis.com/v1beta/"})
+        )
+        == "https://generativelanguage.googleapis.com"
+    )
+
+
 def test_override_preserves_path_prefix_before_v1() -> None:
     # OpenRouter / Groq style: the /v1 is the API version, the prefix is real.
     assert (
@@ -254,6 +276,73 @@ def test_catchall_forwards_to_override_upstream() -> None:
 
     url = http.request.call_args.kwargs["url"]
     assert url == "https://api.deepseek.com/some/custom/path"
+
+
+# ── /v1beta gemini routes thread the override through upstream_base_url ─
+
+
+def test_v1beta_generate_content_threads_override(monkeypatch) -> None:
+    captured: list[Any] = []
+
+    async def fake_gemini_generate(
+        self, request, model, upstream_base_url=None, provider_name="gemini"
+    ):  # type: ignore[no-untyped-def]
+        captured.append(upstream_base_url)
+        return JSONResponse({"upstream_base_url": upstream_base_url, "model": model})
+
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_generate_content", fake_gemini_generate)
+
+    with TestClient(_app()) as client:
+        assert client.post(
+            "/v1beta/models/gemini-mock:generateContent",
+            json={"contents": [{"parts": [{"text": "hi"}]}]},
+            headers={"X-Headroom-Upstream": "https://generativelanguage.googleapis.com/v1beta"},
+        ).json()["upstream_base_url"] == "https://generativelanguage.googleapis.com"
+
+    assert captured == ["https://generativelanguage.googleapis.com"]
+
+
+def test_v1beta_count_tokens_threads_override(monkeypatch) -> None:
+    captured: list[Any] = []
+
+    async def fake_gemini_count(
+        self, request, model, upstream_base_url=None, provider_name="gemini"
+    ):  # type: ignore[no-untyped-def]
+        captured.append(upstream_base_url)
+        return JSONResponse({"upstream_base_url": upstream_base_url})
+
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_count_tokens", fake_gemini_count)
+
+    with TestClient(_app()) as client:
+        assert client.post(
+            "/v1beta/models/gemini-mock:countTokens",
+            json={"contents": [{"parts": [{"text": "hi"}]}]},
+            headers={"X-Headroom-Upstream": "https://generativelanguage.googleapis.com"},
+        ).json()["upstream_base_url"] == "https://generativelanguage.googleapis.com"
+
+    assert captured == ["https://generativelanguage.googleapis.com"]
+
+
+def test_v1beta_stream_generate_content_threads_override(monkeypatch) -> None:
+    """handle_gemini_stream_generate_content now accepts upstream_base_url."""
+    captured: list[Any] = []
+
+    async def fake_gemini_stream(
+        self, request, model, upstream_base_url=None
+    ):  # type: ignore[no-untyped-def]
+        captured.append(upstream_base_url)
+        return JSONResponse({"upstream_base_url": upstream_base_url})
+
+    monkeypatch.setattr(HeadroomProxy, "handle_gemini_stream_generate_content", fake_gemini_stream)
+
+    with TestClient(_app()) as client:
+        assert client.post(
+            "/v1beta/models/gemini-mock:streamGenerateContent",
+            json={"contents": [{"parts": [{"text": "hi"}]}]},
+            headers={"X-Headroom-Upstream": "https://generativelanguage.googleapis.com/v1beta"},
+        ).json()["upstream_base_url"] == "https://generativelanguage.googleapis.com"
+
+    assert captured == ["https://generativelanguage.googleapis.com"]
 
 
 def test_override_header_stripped_before_upstream_call() -> None:

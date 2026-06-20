@@ -1574,10 +1574,12 @@ def request_upstream_override(request: Request) -> str | None:
     providers) and the proxy forwards there instead of its startup default.
 
     The value is normalized to match the proxy's internal ``*_API_URL``
-    format (trailing slash and a trailing ``/v1`` segment are stripped), so
-    both ``https://api.deepseek.com`` and ``https://api.deepseek.com/v1``
-    resolve to ``https://api.deepseek.com``. The proxy then appends the
-    incoming request path (e.g. ``/v1/chat/completions``).
+    format (trailing slash and a trailing API-version segment are stripped),
+    so all of ``https://api.deepseek.com``, ``https://api.deepseek.com/v1``,
+    and ``https://generativelanguage.googleapis.com/v1beta`` resolve to their
+    bare host. The proxy then appends the incoming request path —
+    ``/v1/chat/completions`` for OpenAI/Anthropic, ``/v1beta/models/...`` for
+    Gemini — so passing the version in the header does not double it up.
 
     Returns ``None`` when the header is unset or empty. The header is an
     ``x-headroom-*`` control flag and is stripped from upstream-bound
@@ -1589,8 +1591,13 @@ def request_upstream_override(request: Request) -> str | None:
     normalized = raw.strip().rstrip("/")
     if not normalized:
         return None
-    if normalized.endswith("/v1"):
-        normalized = normalized[:-3]
+    # Strip a trailing API-version segment the proxy's handlers add
+    # themselves (/v1 for OpenAI/Anthropic/Vertex, /v1beta for Gemini), so
+    # callers may pass either the bare host or the versioned URL.
+    for suffix in ("/v1", "/v1beta"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
     return normalized
 
 

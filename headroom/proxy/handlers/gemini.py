@@ -901,11 +901,12 @@ class GeminiHandlerMixin:
         self,
         request: Request,
         model: str,
+        upstream_base_url: str | None = None,
     ) -> StreamingResponse | JSONResponse:
         """Handle Gemini streaming endpoint /v1beta/models/{model}:streamGenerateContent."""
         from fastapi.responses import JSONResponse
 
-        from headroom.proxy.helpers import _read_request_json
+        from headroom.proxy.helpers import _read_request_json, request_upstream_override
         from headroom.tokenizers import get_tokenizer
 
         start_time = time.time()
@@ -957,9 +958,10 @@ class GeminiHandlerMixin:
 
         # Build URL with SSE param
         query_params = dict(request.query_params)
-        url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?alt=sse"
+        _gemini_base = upstream_base_url or request_upstream_override(request) or self.GEMINI_API_URL
+        url = f"{_gemini_base}/v1beta/models/{model}:streamGenerateContent?alt=sse"
         if "key" in query_params:
-            url = f"{self.GEMINI_API_URL}/v1beta/models/{model}:streamGenerateContent?key={query_params['key']}&alt=sse"
+            url = f"{_gemini_base}/v1beta/models/{model}:streamGenerateContent?key={query_params['key']}&alt=sse"
 
         return await self._stream_response(
             url,

@@ -576,15 +576,21 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
 
     @app.post("/v1beta/models/{model}:generateContent")
     async def gemini_generate_content(request: Request, model: str):
-        return await proxy.handle_gemini_generate_content(request, model)
+        return await proxy.handle_gemini_generate_content(
+            request, model, upstream_base_url=request_upstream_override(request)
+        )
 
     @app.post("/v1beta/models/{model}:streamGenerateContent")
     async def gemini_stream_generate_content(request: Request, model: str):
-        return await proxy.handle_gemini_stream_generate_content(request, model)
+        return await proxy.handle_gemini_stream_generate_content(
+            request, model, upstream_base_url=request_upstream_override(request)
+        )
 
     @app.post("/v1beta/models/{model}:countTokens")
     async def gemini_count_tokens(request: Request, model: str):
-        return await proxy.handle_gemini_count_tokens(request, model)
+        return await proxy.handle_gemini_count_tokens(
+            request, model, upstream_base_url=request_upstream_override(request)
+        )
 
     @app.post("/v1internal:streamGenerateContent")
     async def google_cloudcode_stream_generate_content(request: Request):
