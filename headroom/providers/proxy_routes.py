@@ -417,8 +417,12 @@ async def _handle_chatgpt_codex_images(
     sub_path: str,
 ) -> Response | None:
     """Forward Codex OAuth image requests to ChatGPT's Codex image backend."""
+    from headroom.proxy.helpers import _strip_internal_headers
+
     headers = dict(request.headers.items())
     headers.pop("host", None)
+    headers.pop("accept-encoding", None)
+    headers = _strip_internal_headers(headers)
     headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
     if not is_chatgpt_auth:
         return None
@@ -429,8 +433,10 @@ async def _handle_chatgpt_codex_images(
 
     body = await request.body()
     try:
-        assert proxy.http_client is not None
-        client = getattr(proxy, "http_client_h1", None) or proxy.http_client
+        client = getattr(proxy, "http_client_h1", None) or getattr(proxy, "http_client", None)
+        if client is None:
+            raise RuntimeError("No HTTP client configured for Codex image forwarding")
+        # OAuth image traffic intentionally skips request-outcome telemetry; no token usage is available here.
         resp = await client.request(
             request.method,
             url,
@@ -438,14 +444,28 @@ async def _handle_chatgpt_codex_images(
             content=body,
             timeout=120.0,
         )
+        response_headers = dict(resp.headers)
+        response_headers.pop("content-encoding", None)
+        response_headers.pop("content-length", None)
         return Response(
             content=resp.content,
             status_code=resp.status_code,
-            headers=dict(resp.headers),
+            headers=response_headers,
         )
     except Exception as exc:
         logger.error("Passthrough /v1/images/%s failed: %s", sub_path, exc)
-        return Response(content=str(exc), status_code=502)
+        return Response(
+            content=json.dumps(
+                {
+                    "error": {
+                        "type": "upstream_error",
+                        "message": "Failed to forward Codex image request",
+                    }
+                }
+            ),
+            status_code=502,
+            media_type="application/json",
+        )
 
 
 def register_provider_routes(app: FastAPI, proxy: Any) -> None:
