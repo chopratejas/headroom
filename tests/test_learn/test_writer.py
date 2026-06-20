@@ -174,6 +174,28 @@ class TestClaudeCodeWriter:
         assert r"C:\Users\john.doe\repo" in full_content
         assert "stale" not in full_content
 
+    def test_merge_tolerates_stray_legacy_bytes_in_existing_context(self, tmp_path):
+        proj = _project(tmp_path)
+        claude_md = proj.project_path / "CLAUDE.md"
+        claude_md.write_bytes(
+            b"# Existing\n\n"
+            b"Some legacy byte: \x9d\n\n"
+            b"<!-- headroom:learn:start -->\n"
+            b"## Headroom Learned Patterns\n"
+            b"### Existing Section\n"
+            b"- keep this\n"
+            b"<!-- headroom:learn:end -->\n"
+        )
+
+        full_content = _merge_into_file(
+            claude_md,
+            [_rec(RecommendationTarget.CONTEXT_FILE, "Windows Paths", "- Use UTF-8")],
+        )
+
+        assert "Some legacy byte: \ufffd" in full_content
+        assert "Existing Section" in full_content
+        assert "Windows Paths" in full_content
+
     def test_memory_md_carry_forward(self, tmp_path):
         """Carry-forward also works for MEMORY.md."""
         proj = _project(tmp_path)

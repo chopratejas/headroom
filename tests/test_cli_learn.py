@@ -43,6 +43,7 @@ class FakePlugin:
         self.writer = FakeWriter()
         self.scan_calls: list[tuple[object, int]] = []
         self.last_include_subagents: bool | None = None
+        self.fail_scan_for: object | None = None
 
     def detect(self) -> bool:
         return True
@@ -56,6 +57,8 @@ class FakePlugin:
     def scan_project(self, project, max_workers: int = 1, include_subagents: bool = True):  # noqa: ANN001, ANN201
         self.scan_calls.append((project, max_workers))
         self.last_include_subagents = include_subagents
+        if project is self.fail_scan_for:
+            raise UnicodeDecodeError("utf-8", b"\x9d", 0, 1, "invalid start byte")
         return [SimpleNamespace(events=["event"], tool_calls=[], failure_count=0)]
 
 
@@ -251,6 +254,27 @@ def test_learn_analyze_all_continues_when_one_project_write_fails(
     assert str(ok.project_path / "AGENTS.md") in result.output
     expected_workers = min(os.cpu_count() or 4, 8)
     assert plugin.scan_calls == [(blocked, expected_workers), (ok, expected_workers)]
+
+
+def test_learn_analyze_all_continues_when_one_project_scan_fails(
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner, tmp_path: Path
+) -> None:
+    unreadable = SimpleNamespace(name="unreadable", project_path=tmp_path / "unreadable")
+    ok = SimpleNamespace(name="ok", project_path=tmp_path / "ok")
+    plugin = FakePlugin("codex", "Codex", [unreadable, ok])
+    plugin.fail_scan_for = unreadable
+    analyzer = FakeAnalyzer()
+
+    monkeypatch.setattr("headroom.learn.analyzer._detect_default_model", lambda: "gpt-4o")
+    monkeypatch.setattr("headroom.learn.registry.get_plugin", lambda name: plugin)
+    monkeypatch.setattr("headroom.learn.analyzer.SessionAnalyzer", lambda model=None: analyzer)
+
+    result = runner.invoke(main, ["learn", "--agent", "codex", "--all"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: failed to scan conversation data" in result.output
+    assert "[codex] ok" in result.output
+    assert "Recommendations: 1" in result.output
 
 
 def test_learn_handles_empty_sessions_and_no_pattern_outputs(

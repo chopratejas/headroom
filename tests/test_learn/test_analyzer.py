@@ -241,6 +241,33 @@ class TestPriorPatternsInjection:
         digest = _build_digest(project, [])
         assert "Prior Learned Patterns" not in digest
 
+    def test_digest_tolerates_stray_legacy_bytes_in_prior_file(self, tmp_path):
+        proj_dir = tmp_path / "proj"
+        proj_dir.mkdir()
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        context_file = proj_dir / "CLAUDE.md"
+        context_file.write_bytes(
+            b"# Project\n\n"
+            b"<!-- headroom:learn:start -->\n"
+            b"## Headroom Learned Patterns\n"
+            b"### Windows Paths\n"
+            b"- Path contains one stray byte: \x9d\n"
+            b"<!-- headroom:learn:end -->\n"
+        )
+        project = ProjectInfo(
+            name="proj",
+            project_path=proj_dir,
+            data_path=data_dir,
+            context_file=context_file,
+            memory_file=None,
+        )
+
+        digest = _build_digest(project, [])
+
+        assert "Prior Learned Patterns" in digest
+        assert "stray byte: \ufffd" in digest
+
     def test_digest_surfaces_both_files_when_both_present(self, tmp_path):
         project = _project_with_files(
             tmp_path,
@@ -658,6 +685,8 @@ class TestCallCliLlm:
         assert result == {"context_file_rules": [], "memory_file_rules": []}
         cmd = popen.call_args[0][0]
         assert cmd == ["claude", "-p", "--output-format", "stream-json", "--verbose"]
+        assert popen.call_args.kwargs["encoding"] == "utf-8"
+        assert popen.call_args.kwargs["errors"] == "replace"
 
     def test_claude_cli_parses_fenced_result(self):
         stdout = [
@@ -756,6 +785,8 @@ class TestCallCliLlm:
         assert result == {"context_file_rules": [], "memory_file_rules": []}
         cmd = mock_run.call_args[0][0]
         assert cmd == ["codex", "exec"]
+        assert mock_run.call_args.kwargs["encoding"] == "utf-8"
+        assert mock_run.call_args.kwargs["errors"] == "replace"
 
     @patch("headroom.learn.analyzer.subprocess.run")
     def test_gemini_cli_uses_p_flag(self, mock_run: MagicMock):

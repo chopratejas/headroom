@@ -139,6 +139,11 @@ def _parse_prior_recommendations(existing: str) -> list[Recommendation]:
     return recs
 
 
+def _read_text_tolerant(file_path: Path) -> str:
+    """Read UTF-8 text while tolerating stray legacy bytes in user files."""
+    return file_path.read_text(encoding="utf-8", errors="replace")
+
+
 def _merge_recommendations(
     file_path: Path,
     new_recommendations: list[Recommendation],
@@ -153,7 +158,7 @@ def _merge_recommendations(
     """
     if not file_path.exists():
         return new_recommendations
-    prior = _parse_prior_recommendations(file_path.read_text(encoding="utf-8"))
+    prior = _parse_prior_recommendations(_read_text_tolerant(file_path))
     if not prior:
         return new_recommendations
     new_sections = {r.section for r in new_recommendations}
@@ -166,7 +171,7 @@ def _merge_into_file(file_path: Path, new_recommendations: list[Recommendation])
     merged = _merge_recommendations(file_path, new_recommendations)
     section = _build_section(merged)
     if file_path.exists():
-        existing = file_path.read_text(encoding="utf-8")
+        existing = _read_text_tolerant(file_path)
         if _MARKER_START in existing:
             return _MARKER_PATTERN.sub(lambda _match: section, existing)
         return existing.rstrip() + "\n\n" + section + "\n"

@@ -236,9 +236,15 @@ def learn(
             click.echo(f"Path: {proj.project_path}")
             click.echo(f"{'=' * 60}")
 
-            sessions = plugin.scan_project(
-                proj, max_workers=max_workers, include_subagents=not main_only
-            )
+            try:
+                sessions = plugin.scan_project(
+                    proj, max_workers=max_workers, include_subagents=not main_only
+                )
+            except (OSError, UnicodeError) as e:
+                click.echo(
+                    f"  Warning: failed to scan conversation data for {proj.project_path}: {e}"
+                )
+                continue
             if not sessions:
                 click.echo("  No conversation data found.")
                 continue
