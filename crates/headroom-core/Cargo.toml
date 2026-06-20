@@ -121,6 +121,13 @@ redis = { version = "0.27", optional = true, default-features = false }
 # classifier live with the other Phase B/F policy primitives without
 # cycling through the proxy crate. Tiny crate (no I/O, just types).
 http = "1"
+# Direct `ort` dep to call ort::init() for EP selection. ort 2.x uses
+# libloading (dynamic dispatch) — there are no compile-time EP feature flags;
+# all EP types are always present and providers are loaded at runtime.
+# Version is pinned to the exact lock entry so Cargo unifies to the single
+# ORT instance already in the tree via fastembed/magika.
+# `default-features = false` avoids re-triggering ort's binary-download logic.
+ort = { version = "=2.0.0-rc.12", default-features = false }
 
 [target.'cfg(not(windows))'.dependencies]
 fastembed = { version = "5", default-features = false, features = [
