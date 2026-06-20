@@ -16,7 +16,7 @@ Supported Languages (Tier 1):
 - Python, JavaScript, TypeScript
 
 Supported Languages (Tier 2):
-- Go, Rust, Java, C, C++
+- Go, Rust, Java, C, C++, C#
 
 Compression Strategy:
 1. Parse code into AST using tree-sitter
@@ -73,6 +73,120 @@ def _check_tree_sitter_available() -> bool:
     return _tree_sitter_available
 
 
+def _call_or_value(value: Any) -> Any:
+    """Return a tree-sitter attribute value across Python/Rust bindings."""
+    return value() if callable(value) else value
+
+
+def _point_to_tuple(point: Any) -> tuple[int, int]:
+    """Normalize tree-sitter point objects to ``(row, column)`` tuples."""
+    if isinstance(point, tuple):
+        return int(point[0]), int(point[1])
+    row = _call_or_value(getattr(point, "row", 0))
+    column = _call_or_value(getattr(point, "column", 0))
+    return int(row), int(column)
+
+
+class _CompatNode:
+    """Classic tree-sitter ``Node`` facade for Rust binding nodes."""
+
+    def __init__(self, node: Any, source: bytes):
+        self._node = node
+        self._source = source
+
+    @property
+    def type(self) -> str:
+        node_type = getattr(self._node, "type", None)
+        if isinstance(node_type, str):
+            return node_type
+        kind = getattr(self._node, "kind", None)
+        return str(_call_or_value(kind))
+
+    @property
+    def start_byte(self) -> int:
+        return int(_call_or_value(self._node.start_byte))
+
+    @property
+    def end_byte(self) -> int:
+        return int(_call_or_value(self._node.end_byte))
+
+    @property
+    def start_point(self) -> tuple[int, int]:
+        point = getattr(self._node, "start_point", None)
+        if point is None:
+            point = self._node.start_position
+        return _point_to_tuple(_call_or_value(point))
+
+    @property
+    def end_point(self) -> tuple[int, int]:
+        point = getattr(self._node, "end_point", None)
+        if point is None:
+            point = self._node.end_position
+        return _point_to_tuple(_call_or_value(point))
+
+    @property
+    def child_count(self) -> int:
+        return int(_call_or_value(self._node.child_count))
+
+    @property
+    def children(self) -> list[_CompatNode]:
+        children = getattr(self._node, "children", None)
+        if children is not None and not callable(children):
+            return [_CompatNode(child, self._source) for child in children]
+        return [
+            _CompatNode(self._node.child(i), self._source) for i in range(self.child_count)
+        ]
+
+    @property
+    def is_missing(self) -> bool:
+        missing = getattr(self._node, "is_missing", False)
+        return bool(_call_or_value(missing))
+
+    @property
+    def is_named(self) -> bool:
+        named = getattr(self._node, "is_named", True)
+        return bool(_call_or_value(named))
+
+    @property
+    def text(self) -> bytes:
+        text = getattr(self._node, "text", None)
+        if text is not None and not callable(text):
+            return text
+        return self._source[self.start_byte : self.end_byte]
+
+
+class _CompatTree:
+    """Classic tree-sitter ``Tree`` facade for Rust binding trees."""
+
+    def __init__(self, tree: Any, source: bytes):
+        self._tree = tree
+        self._source = source
+
+    @property
+    def root_node(self) -> _CompatNode:
+        root = _call_or_value(self._tree.root_node)
+        return _CompatNode(root, self._source)
+
+
+class _CompatParser:
+    """Parser facade that accepts bytes and returns classic-style nodes."""
+
+    def __init__(self, parser: Any):
+        self._parser = parser
+
+    def parse(self, source: bytes | str) -> Any:
+        source_bytes = source if isinstance(source, bytes) else source.encode("utf-8")
+        try:
+            tree = self._parser.parse(source)
+        except TypeError:
+            tree = self._parser.parse(source_bytes.decode("utf-8"))
+
+        root = _call_or_value(tree.root_node)
+        if isinstance(getattr(root, "type", None), str):
+            return tree
+        return _CompatTree(tree, source_bytes)
+
+
 def _get_parser(language: str) -> Any:
     """Get a tree-sitter parser for the given language.
 
@@ -120,18 +234,24 @@ def _get_parser(language: str) -> Any:
             # `language` is a validated runtime str; get_language types its arg
             # as a Literal of supported names, which a dynamic str can't satisfy.
             parser.language = get_language(language)  # type: ignore[arg-type]
-            parsers[language] = parser
-            logger.debug(
-                "Loaded tree-sitter parser for %s (thread %s)",
-                language,
-                threading.current_thread().name,
-            )
-        except Exception as e:
-            raise ValueError(
-                f"Language '{language}' is not supported by tree-sitter. "
-                f"Supported: python, javascript, typescript, go, rust, java, c, cpp. "
-                f"Error: {e}"
-            ) from e
+        except Exception as classic_error:
+            try:
+                from tree_sitter_language_pack import get_parser
+
+                parser = _CompatParser(get_parser(language))  # type: ignore[arg-type]
+            except Exception as e:
+                raise ValueError(
+                    f"Language '{language}' is not supported by tree-sitter. "
+                    f"Supported: python, javascript, typescript, go, rust, java, c, cpp, csharp. "
+                    f"Error: {e}"
+                ) from classic_error
+
+        parsers[language] = parser
+        logger.debug(
+            "Loaded tree-sitter parser for %s (thread %s)",
+            language,
+            threading.current_thread().name,
+        )
 
     return parsers[language]
 
@@ -183,6 +303,7 @@ class CodeLanguage(Enum):
     JAVA = "java"
     C = "c"
     CPP = "cpp"
+    CSHARP = "csharp"
     UNKNOWN = "unknown"
 
 
@@ -294,6 +415,32 @@ _LANG_CONFIGS: dict[CodeLanguage, LangConfig] = {
         uses_colon_after_signature=False,
         package_node="package_declaration",
         detection_hints=("public ", "private ", "protected ", "class ", "interface "),
+    ),
+    CodeLanguage.CSHARP: LangConfig(
+        import_nodes=frozenset({"using_directive", "file_scoped_namespace_declaration"}),
+        function_nodes=frozenset(
+            {
+                "method_declaration",
+                "constructor_declaration",
+                "destructor_declaration",
+                "operator_declaration",
+                "conversion_operator_declaration",
+            }
+        ),
+        class_nodes=frozenset(
+            {
+                "class_declaration",
+                "interface_declaration",
+                "struct_declaration",
+                "record_declaration",
+            }
+        ),
+        type_nodes=frozenset({"enum_declaration", "delegate_declaration"}),
+        body_node_types=frozenset({"block", "declaration_list"}),
+        decorator_node=None,
+        comment_prefix="//",
+        uses_colon_after_signature=False,
+        detection_hints=("using ", "namespace ", "[", "public class ", "Task<"),
     ),
     CodeLanguage.C: LangConfig(
         import_nodes=frozenset({"preproc_include"}),
@@ -496,6 +643,18 @@ _LANGUAGE_PREFILTER: dict[CodeLanguage, list[re.Pattern[str]]] = {
         re.compile(r"^\s*(public|private|protected)\s+(class|interface|enum)", re.MULTILINE),
         re.compile(r"^\s*package\s+[\w.]+;", re.MULTILINE),
     ],
+    CodeLanguage.CSHARP: [
+        re.compile(r"^\s*using\s+[\w.]+;", re.MULTILINE),
+        re.compile(r"^\s*namespace\s+[\w.]+;?", re.MULTILINE),
+        re.compile(r"^\s*\[[A-Za-z]\w*(?:\([^]]*\))?\]", re.MULTILINE),
+        re.compile(
+            r"^\s*(public|private|protected|internal)\s+"
+            r"(sealed\s+|static\s+|abstract\s+|partial\s+)*"
+            r"(class|interface|struct|record|enum)\s+\w+",
+            re.MULTILINE,
+        ),
+        re.compile(r"\b(Task|ValueTask)<[^>]+>\s+\w+\s*\(", re.MULTILINE),
+    ],
     CodeLanguage.C: [
         re.compile(r"^\s*#include\s*[<\"]", re.MULTILINE),
         re.compile(r"^\s*(int|void|char|float|double)\s+\w+\s*\(", re.MULTILINE),
@@ -554,6 +713,14 @@ def detect_language(code: str) -> tuple[CodeLanguage, float]:
     if CodeLanguage.TYPESCRIPT in candidates and CodeLanguage.JAVASCRIPT in candidates:
         if candidates[CodeLanguage.TYPESCRIPT] >= 2:
             candidates[CodeLanguage.JAVASCRIPT] = 0
+
+    # Disambiguation: C# shares class/interface syntax with Java and namespace with C++
+    if CodeLanguage.CSHARP in candidates:
+        csharp_score = candidates[CodeLanguage.CSHARP]
+        if CodeLanguage.JAVA in candidates and csharp_score >= candidates[CodeLanguage.JAVA]:
+            candidates[CodeLanguage.JAVA] = 0
+        if CodeLanguage.CPP in candidates and csharp_score >= 2:
+            candidates[CodeLanguage.CPP] = 0
 
     # Disambiguation: C++ superset of C
     if CodeLanguage.CPP in candidates and CodeLanguage.C in candidates:
@@ -1648,7 +1815,8 @@ class CodeAwareCompressor(Transform):
         elif not lang_config.uses_colon_after_signature:
             # Ensure closing brace
             last_body_line = node_lines[-1] if node_lines else ""
-            if last_body_line.strip() == "}":
+            already_has_closing_brace = bool(body_parts and body_parts[-1].strip() == "}")
+            if last_body_line.strip() == "}" and not already_has_closing_brace:
                 result_parts.append(last_body_line)
 
         return "\n".join(result_parts)

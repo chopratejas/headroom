@@ -207,6 +207,67 @@ def generate_go_code(n_functions: int = 3) -> str:
     return "\n".join(lines)
 
 
+def generate_csharp_code(n_methods: int = 3) -> str:
+    """Generate C# code for testing."""
+    lines = [
+        "using System;",
+        "using System.Threading.Tasks;",
+        "",
+        "namespace Demo.Services;",
+        "",
+        "[Authorize]",
+        "public sealed class GreetingService : IGreetingService",
+        "{",
+        "    private readonly ILogger<GreetingService> _logger;",
+        "",
+        "    public GreetingService(ILogger<GreetingService> logger)",
+        "    {",
+        "        _logger = logger;",
+        "    }",
+        "",
+    ]
+
+    for i in range(n_methods):
+        lines.extend(
+            [
+                f"    public async Task<string> BuildGreeting{i}Async(string? name)",
+                "    {",
+                "        var normalized = name?.Trim();",
+                '        var prefix = "Hello";',
+                "        if (string.IsNullOrWhiteSpace(normalized))",
+                "        {",
+                "            return prefix;",
+                "        }",
+                "",
+                "        await Task.Delay(1);",
+                "        try",
+                "        {",
+                '            return $"{prefix} {normalized}";',
+                "        }",
+                "        catch (Exception ex)",
+                "        {",
+                '            _logger.LogError(ex, "Failed to build greeting");',
+                "            throw;",
+                "        }",
+                "    }",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "}",
+            "",
+            "public interface IGreetingService",
+            "{",
+            "    Task<string> BuildGreeting0Async(string? name);",
+            "}",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
 # =============================================================================
 # TestCodeCompressorConfig
 # =============================================================================
@@ -331,6 +392,7 @@ class TestCodeLanguage:
         """All language enum values are unique."""
         values = [lang.value for lang in CodeLanguage]
         assert len(values) == len(set(values))
+        assert "csharp" in values
 
     def test_detect_python_language(self):
         """Python language is detected from code patterns."""
@@ -380,6 +442,16 @@ func main() {
 """
         lang, confidence = detect_language(code)
         assert lang == CodeLanguage.GO
+        assert confidence > 0.3
+
+    def test_detect_csharp_language(self):
+        """C# language is detected from code patterns."""
+
+        code = generate_csharp_code(1)
+
+        lang, confidence = detect_language(code)
+
+        assert lang == CodeLanguage.CSHARP
         assert confidence > 0.3
 
 
@@ -476,6 +548,38 @@ func main() {
 """
         result = compressor.compress(code)
         assert result.language in (CodeLanguage.GO, CodeLanguage.UNKNOWN)
+
+    def test_compress_auto_detects_csharp(self, compressor):
+        """C# code is auto-detected during compression."""
+        code = generate_csharp_code(2)
+
+        result = compressor.compress(code)
+
+        assert result.language == CodeLanguage.CSHARP
+        assert result.syntax_valid is True
+
+    def test_compress_csharp_preserves_structure(self, default_config):
+        """C# compression preserves using directives, attributes, and signatures."""
+        config = CodeCompressorConfig(
+            min_tokens_for_compression=10,
+            max_body_lines=2,
+            enable_ccr=False,
+        )
+        compressor = CodeAwareCompressor(config)
+        code = generate_csharp_code(3)
+
+        result = compressor.compress(code, language="csharp")
+
+        assert result.language == CodeLanguage.CSHARP
+        assert result.syntax_valid is True
+        assert result.compression_ratio < 1.0
+        assert "// [15 lines omitted]" in result.compressed
+        assert "using System;" in result.compressed
+        assert "namespace Demo.Services;" in result.compressed
+        assert "[Authorize]" in result.compressed
+        assert "public sealed class GreetingService : IGreetingService" in result.compressed
+        assert "public async Task<string> BuildGreeting0Async(string? name)" in result.compressed
+        assert "public interface IGreetingService" in result.compressed
 
 
 # =============================================================================
