@@ -106,6 +106,32 @@ class TestCLIWrapProxyTimeout:
         assert env["GITHUB_COPILOT_API_URL"] == "https://copilot-api.acme.ghe.com"
         assert env["GITHUB_COPILOT_API_TOKEN"] == "copilot-api-token"
 
+    def test_start_proxy_redirects_subprocess_stdio_to_standalone_log(self, monkeypatch, tmp_path):
+        fake_proc = _FakeProxyProcess()
+        captured: dict[str, object] = {}
+        logs: list[str] = []
+
+        monkeypatch.delenv(wrap_mod._WRAP_PROXY_TIMEOUT_ENV, raising=False)
+        monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+        monkeypatch.setattr(wrap_mod, "_check_proxy", lambda _port: True)
+        monkeypatch.setattr(wrap_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(wrap_mod, "_ml_wrap_extras_detected", lambda: False)
+        monkeypatch.setattr(wrap_mod.click, "echo", lambda message: logs.append(str(message)))
+
+        def fake_popen(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured["kwargs"] = kwargs
+            return fake_proc
+
+        monkeypatch.setattr(wrap_mod.subprocess, "Popen", fake_popen)
+
+        proc = wrap_mod._start_proxy(8787, agent_type="codex")
+
+        assert proc is fake_proc
+        assert captured["kwargs"]["stdout"] is captured["kwargs"]["stderr"]
+        assert captured["kwargs"]["stdout"].name == str(tmp_path / "proxy-stdio.log")
+        assert captured["kwargs"]["stdout"].name != str(tmp_path / "proxy.log")
+        assert f"  Logs: {tmp_path / 'proxy.log'}" in logs
+
     def test_env_timeout_allows_slow_start_proxy_to_succeed(self, monkeypatch, tmp_path):
         fake_proc = _FakeProxyProcess()
         sleeps = []
@@ -128,6 +154,30 @@ class TestCLIWrapProxyTimeout:
         assert checks == [8787, 8787, 8787, 8787]
         assert sleeps == [1, 1, 1, 1]
         assert fake_proc.killed is False
+
+    def test_start_proxy_tail_reads_standalone_stdio_log_on_process_exit(
+        self, monkeypatch, tmp_path
+    ):
+        fake_proc = _FakeProxyProcess()
+        fake_proc.returncode = 1
+        fake_proc.poll = lambda: fake_proc.returncode
+
+        monkeypatch.setenv(wrap_mod._WRAP_PROXY_TIMEOUT_ENV, "2")
+        monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+        monkeypatch.setattr(wrap_mod, "_check_proxy", lambda _port: False)
+        monkeypatch.setattr(wrap_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(wrap_mod.subprocess, "Popen", lambda *args, **kwargs: fake_proc)
+
+        (tmp_path / "proxy.log").write_text("canonical runtime log output")
+        (tmp_path / "proxy-stdio.log").write_text("proxy stdio startup output")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            wrap_mod._start_proxy(8787, agent_type="codex")
+
+        message = str(excinfo.value)
+        assert "Proxy exited with code 1" in message
+        assert "proxy stdio startup output" in message
+        assert "canonical runtime log output" not in message
 
     def test_timeout_error_names_configured_timeout_and_env_var(self, monkeypatch, tmp_path):
         fake_proc = _FakeProxyProcess()

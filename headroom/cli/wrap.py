@@ -317,6 +317,11 @@ def _get_log_path() -> Path:
     return log_dir / "proxy.log"
 
 
+def _get_proxy_stdio_log_path() -> Path:
+    """Get path for dedicated proxy stdio capture."""
+    return _get_log_path().with_name("proxy-stdio.log")
+
+
 def _start_proxy(
     port: int,
     *,
@@ -333,9 +338,9 @@ def _start_proxy(
 ) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
 
-    Logs are written to ~/.headroom/logs/proxy.log to avoid pipe buffer
-    deadlocks (macOS pipe buffer is ~64KB — a busy proxy fills it quickly,
-    blocking the process).
+    Stdout and stderr are written to a dedicated sibling file, usually
+    `~/.headroom/logs/proxy-stdio.log`, to avoid pipe deadlock risk without
+    competing with the rotating `proxy.log` runtime log.
     """
     cmd = [sys.executable, "-m", "headroom.cli", "proxy", "--port", str(port)]
 
@@ -377,7 +382,8 @@ def _start_proxy(
 
     timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
-    log_file = open(log_path, "a")  # noqa: SIM115
+    stdio_log_path = _get_proxy_stdio_log_path()
+    stdio_log_file = open(stdio_log_path, "a")  # noqa: SIM115
 
     # Ensure proxy subprocess uses UTF-8 (Windows defaults to cp1252)
     proxy_env = os.environ.copy()
@@ -407,8 +413,8 @@ def _start_proxy(
 
     proc = subprocess.Popen(
         cmd,
-        stdout=log_file,
-        stderr=log_file,
+        stdout=stdio_log_file,
+        stderr=stdio_log_file,
         env=proxy_env,
         start_new_session=os.name == "posix",
     )
@@ -420,19 +426,20 @@ def _start_proxy(
         time.sleep(1)
         if _check_proxy(port):
             click.echo(f"  Logs: {log_path}")
+            stdio_log_file.close()
             return proc
         # Check if process died
         if proc.poll() is not None:
-            log_file.close()
+            stdio_log_file.close()
             # Read last few lines of log for error context
             try:
-                tail = log_path.read_text()[-500:]
+                tail = stdio_log_path.read_text()[-500:]
             except Exception:
                 tail = "(no log output)"
             raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
 
     proc.kill()
-    log_file.close()
+    stdio_log_file.close()
     raise RuntimeError(
         f"Proxy failed to start on port {port} within {timeout_seconds} seconds. "
         f"Set {_WRAP_PROXY_TIMEOUT_ENV} to a larger number of seconds for slow startup."
