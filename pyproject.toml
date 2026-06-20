@@ -87,7 +87,8 @@ proxy-prod = [
 ]
 # AST-based code compression (tree-sitter)
 code = [
-    "tree-sitter-language-pack>=0.10.0",
+    "tree-sitter>=0.21,<0.26",
+    "tree-sitter-language-pack>=0.10,<0.21",
 ]
 # ML-based compression with Kompress (ModernBERT).
 # (The legacy [llmlingua] extra was removed in 0.9.x — no live code path used it.
