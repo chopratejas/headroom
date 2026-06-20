@@ -1,4 +1,4 @@
-"""Tests for `headroom wrap antigravity` command."""
+"""Tests for `headroom wrap agy` command."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-def test_wrap_antigravity_launch(
+def test_wrap_agy_launch(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Antigravity launches with correct configuration."""
+    """Agy launches with correct configuration."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
 
@@ -35,7 +35,7 @@ def test_wrap_antigravity_launch(
     with patch.object(wrap_mod.shutil, "which", return_value="agy"):
         with patch.object(wrap_mod, "_launch_tool", side_effect=fake_launch_tool):
             result = runner.invoke(
-                main, ["wrap", "antigravity", "--port", "9000", "--", "--model", "gemini-2.5-pro"]
+                main, ["wrap", "agy", "--port", "9000", "--", "--model", "gemini-2.5-pro"]
             )
 
     assert result.exit_code == 0, result.output
@@ -53,7 +53,7 @@ def test_wrap_antigravity_launch(
     assert captured["args"] == ("--model", "gemini-2.5-pro")
 
 
-def test_wrap_antigravity_not_found(
+def test_wrap_agy_not_found(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -63,14 +63,14 @@ def test_wrap_antigravity_not_found(
     monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
 
     with patch.object(wrap_mod.shutil, "which", return_value=None):
-        result = runner.invoke(main, ["wrap", "antigravity"])
+        result = runner.invoke(main, ["wrap", "agy"])
 
     assert result.exit_code == 1
     assert "Error: 'agy' not found in PATH" in result.output
     assert "Install Antigravity: https://antigravity.google/docs" in result.output
 
 
-def test_wrap_antigravity_no_proxy(
+def test_wrap_agy_no_proxy(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -86,13 +86,13 @@ def test_wrap_antigravity_no_proxy(
 
     with patch.object(wrap_mod.shutil, "which", return_value="agy"):
         with patch.object(wrap_mod, "_launch_tool", side_effect=fake_launch_tool):
-            result = runner.invoke(main, ["wrap", "antigravity", "--no-proxy"])
+            result = runner.invoke(main, ["wrap", "agy", "--no-proxy"])
 
     assert result.exit_code == 0, result.output
     assert captured["no_proxy"] is True
 
 
-def test_wrap_antigravity_learn_memory(
+def test_wrap_agy_learn_memory(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -108,7 +108,7 @@ def test_wrap_antigravity_learn_memory(
 
     with patch.object(wrap_mod.shutil, "which", return_value="agy"):
         with patch.object(wrap_mod, "_launch_tool", side_effect=fake_launch_tool):
-            result = runner.invoke(main, ["wrap", "antigravity", "--learn", "--memory"])
+            result = runner.invoke(main, ["wrap", "agy", "--learn", "--memory"])
 
     assert result.exit_code == 0, result.output
     assert captured["learn"] is True

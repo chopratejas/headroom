@@ -2910,7 +2910,7 @@ def wrap() -> None:
         headroom wrap goose               # Goose (Block) CLI
         headroom wrap openhands           # OpenHands CLI
         headroom wrap openclaw            # OpenClaw plugin bootstrap
-        headroom wrap antigravity         # Google Antigravity (agy) CLI
+        headroom wrap agy                 # Google Antigravity (agy) CLI
 
     \b
     `wrap` vs `proxy`:
@@ -4548,11 +4548,11 @@ def openhands(
 
 
 # =============================================================================
-# Antigravity (agy)
+# Google Antigravity (agy)
 # =============================================================================
 
 
-@wrap.command(context_settings={"ignore_unknown_options": True})
+@wrap.command("agy", context_settings={"ignore_unknown_options": True})
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option("--learn", is_flag=True, help="Enable live traffic learning")
@@ -4563,8 +4563,8 @@ def openhands(
 @click.option("--anyllm-provider", default=None, help="Provider for any-llm backend")
 @click.option("--region", default=None, help="Cloud region for Bedrock/Vertex")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-@click.argument("antigravity_args", nargs=-1, type=click.UNPROCESSED)
-def antigravity(
+@click.argument("agy_args", nargs=-1, type=click.UNPROCESSED)
+def agy(
     port: int,
     no_proxy: bool,
     learn: bool,
@@ -4573,7 +4573,7 @@ def antigravity(
     anyllm_provider: str | None,
     region: str | None,
     verbose: bool,
-    antigravity_args: tuple,
+    agy_args: tuple,
 ) -> None:
     """Launch Google Antigravity CLI (agy) through Headroom proxy.
 
@@ -4583,8 +4583,8 @@ def antigravity(
 
     \b
     Examples:
-        headroom wrap antigravity                          # Start proxy + agy
-        headroom wrap antigravity -- --model claude-3-5-sonnet  # Pass args to agy
+        headroom wrap agy                          # Start proxy + agy
+        headroom wrap agy -- --model claude-3-5-sonnet  # Pass args to agy
     """
     agy_bin = shutil.which("agy")
     if not agy_bin:
@@ -4615,7 +4615,7 @@ def antigravity(
 
     _launch_tool(
         binary=agy_bin,
-        args=antigravity_args,
+        args=agy_args,
         env=env,
         port=port,
         no_proxy=no_proxy,
