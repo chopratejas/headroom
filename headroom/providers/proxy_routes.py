@@ -869,6 +869,8 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
     async def passthrough(request: Request, path: str):
         custom_base = request.headers.get("x-headroom-base-url")
+        if not custom_base and "x-original-host" in request.headers:
+            custom_base = f"https://{request.headers['x-original-host']}"
         if custom_base:
             return await proxy.handle_passthrough(request, custom_base.rstrip("/"))
 

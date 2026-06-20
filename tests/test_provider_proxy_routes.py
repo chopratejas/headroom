@@ -175,6 +175,26 @@ def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> No
             ).json()["base_url"]
             == "https://custom.example/base"
         )
+        # X-Original-Host support: patched VS Code Copilot extension sends this header
+        # instead of x-headroom-base-url to avoid modifying the path.
+        assert (
+            client.post(
+                "/chat/completions",
+                headers={"x-original-host": "api.githubcopilot.com"},
+            ).json()["base_url"]
+            == "https://api.githubcopilot.com"
+        )
+        # x-headroom-base-url still wins over x-original-host when both are present
+        assert (
+            client.get(
+                "/chat/completions",
+                headers={
+                    "x-headroom-base-url": "https://explicit.example",
+                    "x-original-host": "api.githubcopilot.com",
+                },
+            ).json()["base_url"]
+            == "https://explicit.example"
+        )
         assert client.get("/another/path", headers={"x-goog-api-key": "test"}).json()[
             "base_url"
         ] == ("https://api.gemini.test")
