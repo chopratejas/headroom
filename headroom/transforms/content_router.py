@@ -941,6 +941,20 @@ class ContentRouter(Transform):
         self._tabular_compressor: Any = None
         self._kompress: Any = None
 
+        # Phase 0 (#1171): cap the input size handed to kompress (ModernBERT
+        # ONNX). Its inference scales O(tokens) and runs synchronously on the
+        # request thread under the 30s compression budget; above this ceiling we
+        # route to the fast LogCompressor instead so the request path stays
+        # bounded. ~4 chars/token is a cheap proxy (no tokenizer needed; counts
+        # dense JSON/code correctly, unlike word count). 0 disables the gate.
+        try:
+            self._kompress_max_tokens: int = int(
+                os.environ.get("HEADROOM_KOMPRESS_MAX_TOKENS", "50000")
+            )
+        except ValueError:
+            self._kompress_max_tokens = 50000
+        self._kompress_gate_fires: int = 0
+
         # TOIN integration for cross-strategy learning
         self._toin: Any = None
 
@@ -1680,6 +1694,30 @@ class ContentRouter(Transform):
         text_to_compress = cleaned if protected else content
         compressed: str | None = None
         compressed_tokens: int | None = None
+
+        # Phase 0 (#1171): size gate. This is the single ML boundary, so gating
+        # here covers ALL three kompress entry points (TEXT, KOMPRESS-direct,
+        # CODE_AWARE->KOMPRESS). Kompress ONNX inference is O(tokens) and runs
+        # synchronously on the request thread; on a large/cold context it
+        # exceeds the 30s budget and leaks a non-preemptible worker (#1171).
+        # Above the ceiling, route to the fast LogCompressor (or pass through)
+        # rather than ModernBERT, keeping the request path bounded.
+        if self._kompress_max_tokens > 0 and len(text_to_compress) > self._kompress_max_tokens * 4:
+            self._kompress_gate_fires += 1
+            out = text_to_compress
+            if self.config.enable_log_compressor:
+                lc = self._get_log_compressor()
+                if lc:
+                    try:
+                        out = lc.compress(text_to_compress).compressed
+                    except Exception as e:
+                        logger.warning(
+                            "Kompress size-gate -> LogCompressor failed (%s); passing through", e
+                        )
+                        out = text_to_compress
+            if protected:
+                out = restore_tags(out, protected)
+            return out, len(out.split())
 
         # Primary: Kompress. On a cold cache the model is fetched once in the
         # background (ensure_background_load) instead of blocking this request
