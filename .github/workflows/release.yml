@@ -259,6 +259,14 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             manylinux: ""
+          # Windows x86_64 -- builds with MSVC on windows-latest runner.
+          # The abi3 wheel (cp310-abi3-win_amd64) covers all CPython >= 3.10.
+          # Content detection uses the pure-Python regex backend on Windows
+          # (see HEADROOM_DETECT_BACKEND in content_router.py) to avoid the
+          # ONNX Runtime init deadlock (issue #845).
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -499,6 +507,8 @@ jobs:
           # ship today (Intel macOS dropped in PR #371 — ort-sys
           # has no x86_64-apple-darwin prebuilts).
           - { runner: macos-14, image: "", python: "3.13", wheel_target: aarch64-apple-darwin, wheel_artifact: wheels-macos-14-aarch64-apple-darwin, glibc_label: "" }
+          # Windows x86_64 -- runs natively on the host runner; no container.
+          - { runner: windows-latest, image: "", python: "3.12", wheel_target: x86_64-pc-windows-msvc, wheel_artifact: wheels-windows-latest-x86_64-pc-windows-msvc, glibc_label: "" }
 
     steps:
       - name: Download wheels artifact for this target
@@ -639,20 +649,31 @@ jobs:
               /tmp/venv/bin/python /smoke_import.py
             '
 
-      - name: Smoke-import wheel on macOS host
+      - name: Smoke-import wheel on host (macOS / Windows)
         if: matrix.image == ''
         env:
           PYTHON_VERSION: ${{ matrix.python }}
+          WHEEL_TARGET: ${{ matrix.wheel_target }}
         run: |
           set -e
           py_tag=cp$(echo "$PYTHON_VERSION" | tr -d .)
-          # macOS wheels are tagged macosx_*_arm64 (Apple Silicon only).
-          whl=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_arm64.whl" -print -quit)
+          # Platform-specific wheel glob
+          case "$WHEEL_TARGET" in
+            aarch64-apple-darwin)    whl_glob="headroom_ai-*-${py_tag}-${py_tag}-macosx_*_arm64.whl" ;;
+            x86_64-pc-windows-msvc) whl_glob="headroom_ai-*-${py_tag}-${py_tag}-win_amd64.whl" ;;
+            *) echo "ERROR: unsupported host target $WHEEL_TARGET" >&2; exit 1 ;;
+          esac
+          whl=$(find dist -maxdepth 1 -type f -name "$whl_glob" -print -quit)
           if [ -z "$whl" ]; then
-            # Stable-ABI (abi3) fallback — see the Linux path above. A
-            # cp3<floor>-abi3 wheel installs on any CPython >= floor.
+            # Stable-ABI (abi3) fallback — a cp3<floor>-abi3 wheel
+            # installs on any CPython >= floor.
             py_minor=${PYTHON_VERSION#*.}
-            abi3=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-abi3-macosx_*_arm64.whl" -print -quit)
+            case "$WHEEL_TARGET" in
+              aarch64-apple-darwin)    abi3_glob="headroom_ai-*-abi3-macosx_*_arm64.whl" ;;
+              x86_64-pc-windows-msvc) abi3_glob="headroom_ai-*-abi3-win_amd64.whl" ;;
+              *) abi3_glob="" ;;
+            esac
+            abi3=$(find dist -maxdepth 1 -type f -name "$abi3_glob" -print -quit)
             if [ -n "$abi3" ]; then
               abi3_base=${abi3##*/}
               abi3_floor=${abi3_base#*-cp3}
@@ -662,20 +683,30 @@ jobs:
             fi
           fi
           if [ -z "$whl" ]; then
-            echo "ERROR: no macOS wheel matching python=$PYTHON_VERSION"
+            echo "ERROR: no wheel matching $whl_glob for python=$PYTHON_VERSION"
             find dist -maxdepth 1 -type f -exec basename {} \;
             exit 1
           fi
           echo "Installing: $whl"
 
-          # Use the system python at the requested minor version. The
-          # macos-14 runner image preinstalls multiple Python versions.
-          "python$PYTHON_VERSION" -m venv /tmp/venv
-          /tmp/venv/bin/pip install --quiet --upgrade pip
-          /tmp/venv/bin/pip install --quiet "$whl"
-          # Same staged smoke script as the Linux container path uses,
-          # invoked directly on the macOS host (no docker mount needed).
-          /tmp/venv/bin/python "${RUNNER_TEMP}/smoke_import.py"
+          # On macOS runners, python3.XX is on PATH; on Windows,
+          # actions/setup-python puts `python` on PATH.
+          if command -v "python$PYTHON_VERSION" >/dev/null 2>&1; then
+            python_cmd="python$PYTHON_VERSION"
+          else
+            python_cmd="python"
+          fi
+          "$python_cmd" -m venv /tmp/venv
+          # Windows venv uses Scripts/ instead of bin/
+          venv_pip="/tmp/venv/bin/pip"
+          venv_python="/tmp/venv/bin/python"
+          if [ ! -f "$venv_pip" ]; then
+            venv_pip="/tmp/venv/Scripts/pip"
+            venv_python="/tmp/venv/Scripts/python"
+          fi
+          "$venv_pip" install --quiet --upgrade pip
+          "$venv_pip" install --quiet "$whl"
+          "$venv_python" "${RUNNER_TEMP}/smoke_import.py"
 
   publish-pypi:
     needs: [collect-dist, smoke-import-wheels]
