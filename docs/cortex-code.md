@@ -16,7 +16,10 @@ response — not headroom's local estimate.
 | `dbt` run-results (40 models) | 4,968 | 1,927 | **61%** |
 | Cortex Search results (15 docs) | 2,764 | 956 | **65%** |
 
-At 1,000 CoCo calls/day: **~$66/day saved**, **~$24,000/year saved**.
+At 1,000 calls/day: **~$16/day saved**, **~$6,000/year saved**.
+
+> Numbers above are per-call averages across the four benchmark payloads.
+> The full-session payload alone saves ~$33/1,000 calls/day.
 
 ## How it works
 
