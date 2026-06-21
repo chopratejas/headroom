@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+* **subscription:** stop zeroing the 5-hour headroom contribution counters on every poll. The rollover check compared `five_hour.resets_at` with a bare `!=`, but the usage API reports that timestamp with second-level jitter (observed flapping between `01:59:59Z` and `02:00:00Z` on consecutive polls within the same window), so a spurious "5h window rolled over" reset fired every poll interval (~5 min) and the dashboard's per-window savings stuck near 0%. Only a forward jump larger than `_ROLLOVER_MIN_ADVANCE` (1 minute) now counts as a real rollover.
 * **proxy:** route Codex OAuth image generation and edit requests through the ChatGPT Codex image backend, while preserving OpenAI API-key image passthrough ([#1215](https://github.com/chopratejas/headroom/pull/1215)).
 * **wrap (codex):** keep RTK guidance in the global Codex `AGENTS.md` instead of modifying the shared project `AGENTS.md` ([#1235](https://github.com/chopratejas/headroom/issues/1235)).
 * **proxy:** enable SSO credential resolution in the native Bedrock route via the `aws-config` `sso` feature flag, making the credential chain match what `docs/bedrock.md` already documented ([#999](https://github.com/chopratejas/headroom/pull/999)).
