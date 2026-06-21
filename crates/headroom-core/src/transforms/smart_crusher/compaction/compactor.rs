@@ -838,8 +838,12 @@ mod tests {
         let with = compact_with_store(&items, &cfg(), Some(&store));
 
         // Marker text is store-independent — only a side-effecting write is
-        // added, so the two IRs are byte-for-byte identical.
-        assert_eq!(format!("{without:?}"), format!("{with:?}"));
+        // added, so the two IRs render identically. Compare a deterministic
+        // formatter's output rather than Debug formatting, which is not a
+        // stable contract.
+        use super::super::{Formatter, JsonFormatter};
+        let fmt = JsonFormatter::new();
+        assert_eq!(fmt.format(&without), fmt.format(&with));
         // ...and that write actually happened.
         assert!(!store.is_empty());
     }
