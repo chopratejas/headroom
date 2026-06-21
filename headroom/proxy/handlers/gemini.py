@@ -648,7 +648,7 @@ class GeminiHandlerMixin:
                     # Gemini returns cachedContentTokenCount for context-cached tokens
                     # These are charged at 10-25% of the input price depending on model
                     cache_read_tokens = usage.get("cachedContentTokenCount", 0)
-                except (KeyError, TypeError, AttributeError) as e:
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from Gemini response: {e}"
                     )

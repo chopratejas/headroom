@@ -734,7 +734,7 @@ def split_into_sections(content: str) -> list[ContentSection]:
 
         # Code fence: ```language
         if match := _CODE_FENCE_PATTERN.match(line):
-            language = match.group(1) or "unknown"
+            language = match.group(1) or None
             code_lines = []
             start_line = i
             i += 1
@@ -1303,9 +1303,10 @@ class ContentRouter(Transform):
                 bias=bias,
             )
 
-            # Preserve code fence markers
-            if section.is_code_fence and section.language:
-                compressed_content = f"```{section.language}\n{compressed_content}\n```"
+            # Preserve code fence markers (language tag only if the source had one)
+            if section.is_code_fence:
+                lang = section.language or ""
+                compressed_content = f"```{lang}\n{compressed_content}\n```"
 
             compressed_sections.append(compressed_content)
             routing_log.append(
