@@ -548,11 +548,12 @@ def verify_codex_wrap(
         cwd=project_dir,
         timeout=120,
     )
-    project_agents = project_dir / "AGENTS.md"
+    # RTK guidance for Codex is global-only (#1240): it is injected into
+    # ~/.codex/AGENTS.md, never a project-level AGENTS.md. A project AGENTS.md is
+    # written only when `wrap codex --memory` is used (for memory guidance), which
+    # this scenario does not exercise.
     global_agents = Path(base_env["HOME"]) / ".codex" / "AGENTS.md"
-    assert_true(project_agents.exists(), "Codex wrap should create project AGENTS.md")
     assert_true(global_agents.exists(), "Codex wrap should create ~/.codex/AGENTS.md")
-    assert_true(RTK_MARKER in project_agents.read_text(encoding="utf-8"), "Missing RTK marker")
     assert_true(
         RTK_MARKER in global_agents.read_text(encoding="utf-8"), "Missing global RTK marker"
     )
