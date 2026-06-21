@@ -1674,6 +1674,7 @@ class AnthropicHandlerMixin:
                 sorted_tools = self._sort_tools_deterministically(tools)
                 if sorted_tools != tools:
                     tools = sorted_tools
+                if tools != _original_tools:
                     body["tools"] = tools
 
             presend_event = self.pipeline_extensions.emit(
@@ -1695,9 +1696,11 @@ class AnthropicHandlerMixin:
                 sorted_tools = self._sort_tools_deterministically(presend_event.tools)
                 if sorted_tools != presend_event.tools:
                     tools = sorted_tools
-                    body["tools"] = tools
                 else:
                     tools = presend_event.tools
+                if tools or body.get("tools") is not None:
+                    if tools != body.get("tools"):
+                        body["tools"] = tools
             if presend_event.headers is not None:
                 headers = presend_event.headers
             if presend_event.messages is not previous_presend_messages:
@@ -2735,7 +2738,10 @@ class AnthropicHandlerMixin:
                 if tools is not None:
                     sorted_tools = self._sort_tools_deterministically(tools)
                     if sorted_tools != tools:
-                        compressed_params["tools"] = sorted_tools
+                        tools = sorted_tools
+                    if tools or canonical_tools is not None:
+                        if tools != canonical_tools:
+                            compressed_params["tools"] = tools
                 compressed_requests.append(
                     {
                         "custom_id": custom_id,
