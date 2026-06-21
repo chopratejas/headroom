@@ -280,3 +280,85 @@ def test_issue_327_openai_handler_does_not_call_walker_functions() -> None:
     # Sanity: the safe positional methods DID fire.
     assert "compute_frozen_count" in method_names
     assert "apply_cached" in method_names
+
+
+# ─── Issue #987 token-mode frozen-count regression ──────────────────────────
+#
+# In token mode the OpenAI handler used to OVERWRITE the prefix-tracker frozen
+# count with `compute_frozen_count(messages)` directly. For a tool-light /
+# prose conversation `compute_frozen_count` marks every leading message stable
+# and returns `len(messages) - 1`, freezing the entire live zone and producing
+# zero compression — while the Anthropic handler (which clamps with
+# `min(prefix_tracker, compute_frozen_count)`) compressed the same content.
+# Reported as: /v1/chat/completions `tokens_saved=0`, `transforms_applied=[]`
+# while /v1/messages on the same proxy compressed.
+#
+# The fix mirrors Anthropic: clamp so the local heuristic can only LOWER the
+# frozen boundary, never extend it past the provider-confirmed cached prefix.
+
+
+def test_issue_987_token_mode_clamps_frozen_count_to_prefix_tracker() -> None:
+    captured = {}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = True
+        proxy.config.mode = "token"
+
+        # Cold session: provider has confirmed nothing cached yet.
+        fake_tracker = _FakePrefixTracker(frozen_count=0)
+        proxy.session_tracker_store.compute_session_id = lambda request, model, messages: (
+            "issue-987-session"
+        )
+        proxy.session_tracker_store.get_or_create = lambda s, p: fake_tracker
+
+        def _fake_apply(**kwargs):  # noqa: ANN003
+            captured["frozen_message_count"] = kwargs.get("frozen_message_count")
+            return SimpleNamespace(
+                messages=list(kwargs["messages"]),
+                transforms_applied=[],
+                timing={},
+                tokens_before=60,
+                tokens_after=60,
+                waste_signals=None,
+            )
+
+        proxy.openai_pipeline.apply = _fake_apply
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_987",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 60, "completion_tokens": 3, "total_tokens": 63},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+
+        # Tool-less prose conversation. With the bug, the real
+        # `compute_frozen_count` returns len(messages) - 1 = 3, freezing the
+        # whole live zone. With a cold prefix tracker (0) the clamp must win.
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Summarize the run log."},
+                    {"role": "assistant", "content": "INFO: line\n" * 400},
+                    {"role": "user", "content": "And the final summary please."},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        # Clamped to the cold prefix tracker (0), not len(messages) - 1 (3).
+        assert captured["frozen_message_count"] == 0
