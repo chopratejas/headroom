@@ -2655,10 +2655,10 @@ class AnthropicHandlerMixin:
             custom_id = batch_req.get("custom_id", "")
             params = batch_req.get("params", {})
             canonical_params = dict(params)
-            canonical_tools = canonical_params.get("tools")
-            if canonical_tools is not None:
-                sorted_tools = self._sort_tools_deterministically(canonical_tools)
-                if sorted_tools != canonical_tools:
+            original_tools = canonical_params.get("tools")
+            if original_tools is not None:
+                sorted_tools = self._sort_tools_deterministically(original_tools)
+                if sorted_tools != original_tools:
                     canonical_params["tools"] = sorted_tools
             messages = params.get("messages", [])
             original_messages = copy.deepcopy(messages)
@@ -2739,8 +2739,8 @@ class AnthropicHandlerMixin:
                     sorted_tools = self._sort_tools_deterministically(tools)
                     if sorted_tools != tools:
                         tools = sorted_tools
-                    if tools or canonical_tools is not None:
-                        if tools != canonical_tools:
+                    if tools or original_tools is not None:
+                        if tools != original_tools:
                             compressed_params["tools"] = tools
                 compressed_requests.append(
                     {
