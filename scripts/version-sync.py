@@ -113,7 +113,7 @@ def update_pyproject_version(root: Path, version: str) -> None:
 
 
 def write_release_metadata(root: Path, version: str) -> None:
-    """Write .releaseetadata JSON file."""
+    """Write .releasemetadata JSON file."""
     metadata = {
         "version": version,
         "packages": {
@@ -123,7 +123,7 @@ def write_release_metadata(root: Path, version: str) -> None:
             "agent-hooks-plugin": version,
         },
     }
-    metadata_path = root / ".releaseetadata"
+    metadata_path = root / ".releasemetadata"
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
         f.write("\n")
