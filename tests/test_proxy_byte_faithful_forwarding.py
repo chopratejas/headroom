@@ -418,6 +418,7 @@ def test_compression_off_numeric_precision_preserved() -> None:
     assert upstream == inbound_bytes
 
 
+# Forward coverage only; the PRE_SEND case below is the base-fails proof for this fix.
 def test_anthropic_tools_canonical_order_preserves_byte_faithful_request() -> None:
     client, transport = _make_no_optimize_app()
     inbound_dict = {
