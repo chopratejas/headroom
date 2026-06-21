@@ -548,11 +548,12 @@ def verify_codex_wrap(
         cwd=project_dir,
         timeout=120,
     )
-    project_agents = project_dir / "AGENTS.md"
+    # Since #1235/#1240, codex wrap keeps RTK guidance in the global
+    # ~/.codex/AGENTS.md and no longer creates or modifies the shared project
+    # AGENTS.md (covered at the unit level by
+    # test_wrap_codex_injects_rtk_globally_without_changing_project_agents).
     global_agents = Path(base_env["HOME"]) / ".codex" / "AGENTS.md"
-    assert_true(project_agents.exists(), "Codex wrap should create project AGENTS.md")
     assert_true(global_agents.exists(), "Codex wrap should create ~/.codex/AGENTS.md")
-    assert_true(RTK_MARKER in project_agents.read_text(encoding="utf-8"), "Missing RTK marker")
     assert_true(
         RTK_MARKER in global_agents.read_text(encoding="utf-8"), "Missing global RTK marker"
     )
