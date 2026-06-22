@@ -1201,6 +1201,20 @@ def _has_redirectable_top_level_key(content: str, key: str) -> bool:
     return pattern.search(content) is not None
 
 
+def _codex_config_has_headroom_markers(content: str) -> bool:
+    """Return whether a Codex config already contains Headroom-managed markers."""
+    managed_markers = (
+        _CODEX_TOP_LEVEL_MARKER,
+        _CODEX_END_MARKER,
+        _CODEX_MCP_MARKER,
+        _MEMORY_MCP_MARKER,
+    )
+    return (
+        any(marker in content for marker in managed_markers)
+        or "# --- Headroom MCP server:" in content
+    )
+
+
 def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) -> None:
     """Snapshot ``config.toml`` to ``backup_file`` before the first injection.
 
@@ -1225,15 +1239,7 @@ def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) ->
         content = config_file.read_text()
     except OSError:
         return
-    managed_markers = (
-        _CODEX_TOP_LEVEL_MARKER,
-        _CODEX_END_MARKER,
-        _CODEX_MCP_MARKER,
-        _MEMORY_MCP_MARKER,
-    )
-    if any(marker in content for marker in managed_markers):
-        return
-    if "# --- Headroom MCP server:" in content:
+    if _codex_config_has_headroom_markers(content):
         return
     backup_file.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_file, backup_file)
@@ -1477,7 +1483,7 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
     # Case 2: no backup, but config file exists and has markers — strip them.
     if config_file.exists():
         original = config_file.read_text()
-        if _CODEX_TOP_LEVEL_MARKER in original or _CODEX_END_MARKER in original:
+        if _codex_config_has_headroom_markers(original):
             cleaned = _strip_codex_headroom_blocks(original, remove_mcp=True)
             if not cleaned.strip():
                 # Nothing left but Headroom content — remove the file entirely
