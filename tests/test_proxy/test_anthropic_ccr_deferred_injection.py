@@ -279,7 +279,6 @@ def test_token_mode_reclamp_keeps_reversible_ccr_path_when_effective_prefix_drop
             "stable-session"
         )
         proxy.session_tracker_store.get_or_create = lambda session_id, provider: fake_tracker
-        proxy._get_compression_cache = lambda session_id: _FakeCompressionCache(frozen_count=1)
         proxy._get_compression_cache = lambda session_id: _FakeCompressionCache(frozen_count=0)
 
         def _fake_apply(**kwargs):
