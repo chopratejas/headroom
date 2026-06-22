@@ -112,6 +112,25 @@ class TestStripCodexHeadroomBlocks:
         assert "[mcp_servers.headroom_memory]" not in cleaned
         assert 'model = "gpt-4o"' in cleaned
 
+    def test_preserves_named_mcp_blocks_when_remove_named_mcp_false(self) -> None:
+        content = (
+            "# --- Headroom MCP server: serena ---\n"
+            "[mcp_servers.serena]\n"
+            'command = "uvx"\n'
+            "# --- end Headroom MCP server: serena ---\n\n"
+            f"{wrap_mod._MEMORY_MCP_MARKER}\n"
+            "[mcp_servers.headroom_memory]\n"
+            'command = "python"\n'
+            f"{wrap_mod._MEMORY_MCP_END}\n"
+        )
+
+        cleaned = wrap_mod._strip_codex_headroom_blocks(
+            content, remove_mcp=True, remove_named_mcp=False
+        )
+
+        assert "[mcp_servers.serena]" in cleaned
+        assert "[mcp_servers.headroom_memory]" not in cleaned
+
 
 class TestSnapshotCodexConfig:
     """Tests for ``_snapshot_codex_config_if_unwrapped``."""

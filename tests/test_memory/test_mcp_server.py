@@ -112,6 +112,23 @@ def test_memory_mcp_startup_context_reports_static_external_db(tmp_path) -> None
     }
 
 
+def test_memory_mcp_startup_context_reports_custom_db_path(tmp_path) -> None:
+    project_dir = tmp_path / "project-a"
+    project_dir.mkdir()
+    custom_db = tmp_path / "queries.db"
+
+    context = mcp_server_mod._memory_mcp_startup_context(
+        str(custom_db),
+        project_dir,
+        db_flag_present=True,
+    )
+
+    assert context["storage_scope"] == "custom-db-path"
+    assert context["config_source"] == "cli-flag"
+    assert context["path_exists"] is False
+    assert context["path_readable"] is False
+
+
 def test_main_logs_memory_mcp_startup_context(monkeypatch, tmp_path, caplog) -> None:
     project_dir = tmp_path / "project-a"
     project_dir.mkdir()
