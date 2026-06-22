@@ -29,6 +29,7 @@ pub mod safety;
 pub mod search_compressor;
 pub mod smart_crusher;
 pub mod tag_protector;
+pub mod text_crusher;
 pub mod unidiff_detector;
 
 pub use content_detector::{
@@ -56,6 +57,7 @@ pub use pipeline::{
 };
 pub use recommendations::{Recommendation, RecommendationStore, RECOMMENDATIONS_PATH_ENV_VAR};
 pub use safety::{tool_pair_indices, ToolPair};
+pub use text_crusher::{TextCrusher, TextCrusherConfig, TextCrusherResult};
 pub use search_compressor::{
     FileMatches, SearchCompressionResult, SearchCompressor, SearchCompressorConfig,
     SearchCompressorStats, SearchMatch,
