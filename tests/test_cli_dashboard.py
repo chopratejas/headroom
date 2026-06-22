@@ -34,6 +34,7 @@ def test_dashboard_opens_browser_by_default(monkeypatch):
 
 def test_dashboard_browser_failure_is_swallowed(monkeypatch):
     """A headless box where webbrowser.open raises must not crash the command."""
+
     def _boom(*_a, **_k):
         raise RuntimeError("no display")
 
