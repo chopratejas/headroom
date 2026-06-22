@@ -2385,7 +2385,10 @@ class OpenAIHandlerMixin:
                 )
 
         # Direct OpenAI API (no backend configured)
-        url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/chat/completions")
+        base_url, headers = self.resolve_upstream(
+            protocol="openai", model=model, headers=headers
+        )
+        url = build_copilot_upstream_url(base_url, "/v1/chat/completions")
 
         try:
             if stream:
@@ -3118,7 +3121,10 @@ class OpenAIHandlerMixin:
         if is_chatgpt_auth:
             url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/responses")
+            base_url, headers = self.resolve_upstream(
+                protocol="openai", model=model, headers=headers
+            )
+            url = build_copilot_upstream_url(base_url, "/v1/responses")
 
         # The standalone Rust proxy has native /v1/responses item handling,
         # but the default CLI runtime is this Python proxy. Compress the
@@ -5734,7 +5740,12 @@ class OpenAIHandlerMixin:
         if "chatgpt-account-id" in _lower:
             http_url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            http_url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/responses")
+            ws_model = body.get("model") if isinstance(body, dict) else None
+            base_url, resolved_headers = self.resolve_upstream(
+                protocol="openai", model=ws_model, headers=upstream_headers
+            )
+            http_url = build_copilot_upstream_url(base_url, "/v1/responses")
+            upstream_headers = resolved_headers
 
         # Build HTTP body from the WS response.create payload.
         # WS messages use {"type": "response.create", "response": {...}} wrapper.

@@ -1950,13 +1950,15 @@ class AnthropicHandlerMixin:
 
             # Direct Anthropic API, or a provider-compatible Anthropic
             # Messages endpoint such as Vertex AI publisher rawPredict.
-            url = (
-                build_copilot_upstream_url(upstream_base_url, request.url.path)
-                if upstream_base_url
-                else f"{self.ANTHROPIC_API_URL}/v1/messages"
-            )
-            if upstream_base_url and request.url.query:
-                url = f"{url}?{request.url.query}"
+            if upstream_base_url:
+                url = build_copilot_upstream_url(upstream_base_url, request.url.path)
+                if request.url.query:
+                    url = f"{url}?{request.url.query}"
+            else:
+                base_url, headers = self.resolve_upstream(
+                    protocol="anthropic", model=model, headers=headers
+                )
+                url = f"{base_url}/v1/messages"
 
             try:
                 if stream:

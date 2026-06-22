@@ -98,6 +98,7 @@ from headroom.providers.registry import (
     DEFAULT_GEMINI_API_URL,
     DEFAULT_OPENAI_API_URL,
     DEFAULT_VERTEX_API_URL,
+    BearerAuth,
     build_proxy_provider_runtime,
     create_proxy_backend,
     format_backend_status,
@@ -581,6 +582,13 @@ class HeadroomProxy(
         self.anthropic_provider = self.provider_runtime.pipeline_provider("anthropic")
         self.openai_provider = self.provider_runtime.pipeline_provider("openai")
 
+        self._route_logger = logging.getLogger("headroom.proxy.routes")
+        if self.provider_runtime.upstream_routes:
+            self._route_logger.info(
+                "multi-upstream routing enabled: %d route(s)",
+                len(self.provider_runtime.upstream_routes),
+            )
+
         # `metrics` is hoisted ahead of transform construction so the
         # transforms can receive `self.metrics` as their compression
         # observer at __init__ time. The forcing function for catching
@@ -984,6 +992,63 @@ class HeadroomProxy(
                 "memory_enabled": self.config.memory_enabled,
             },
         )
+
+    def resolve_upstream(
+        self,
+        *,
+        protocol: str,
+        model: str | None,
+        headers: dict[str, str],
+    ) -> tuple[str, dict[str, str]]:
+        """Resolve the per-request upstream URL and return
+        (base_url, outbound_headers) with auth substitution applied.
+
+        With no routes configured, returns (legacy_url, headers_unchanged)
+        so behavior is identical to a build without this feature. With
+        routes, walks the table by model prefix; on a BearerAuth route,
+        strips inbound Authorization / x-api-key and injects the
+        env-sourced bearer. If the env var is unset/empty on a BearerAuth
+        route, returns (base_url, {}) so the caller can detect the empty
+        auth and fail closed (502).
+        """
+        resolution = self.provider_runtime.resolve_upstream(
+            protocol=protocol, model=model, headers=headers
+        )
+        outbound = dict(headers)
+        if isinstance(resolution.auth, BearerAuth):
+            token = os.environ.get(resolution.auth.env_var, "") or ""
+            for h in list(outbound):
+                if h.lower() in ("authorization", "x-api-key", "api-key"):
+                    del outbound[h]
+            if token:
+                outbound["Authorization"] = f"Bearer {token}"
+            else:
+                self._route_logger.error(
+                    "multi-upstream: route auth env var %s is empty; failing closed for model=%s",
+                    resolution.auth.env_var,
+                    model,
+                )
+        return resolution.base_url, outbound
+
+    def resolve_upstream_url(
+        self,
+        *,
+        protocol: str,
+        model: str | None,
+        headers: dict[str, str],
+        default_url: str,
+    ) -> str:
+        """Convenience wrapper: return only the resolved base URL.
+
+        Use at call sites that only need the URL (e.g. where headers are
+        managed separately). Falls back to ``default_url`` (the legacy
+        ``self.OPENAI_API_URL`` / ``self.ANTHROPIC_API_URL``) when no routes
+        are configured.
+        """
+        if not self.provider_runtime.upstream_routes:
+            return default_url
+        base_url, _ = self.resolve_upstream(protocol=protocol, model=model, headers=headers)
+        return base_url
 
     async def _run_compression_in_executor(
         self,
