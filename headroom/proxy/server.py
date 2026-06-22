@@ -1810,7 +1810,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             try:
                 # Startup
                 await proxy.startup()
-                asyncio.create_task(_log_toin_stats_periodically())
+                if config.periodic_toin_stats_enabled:
+                    asyncio.create_task(_log_toin_stats_periodically())
                 if proxy.usage_reporter:
                     await proxy.usage_reporter.start(proxy)
                 if proxy.traffic_learner:
@@ -3740,6 +3741,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", 500),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", 100),
         http2=_get_env_bool("HEADROOM_HTTP2", True),
+        periodic_toin_stats_enabled=_get_env_bool("HEADROOM_PERIODIC_TOIN_STATS", True),
         mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
     )
 
