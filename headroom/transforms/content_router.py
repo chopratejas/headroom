@@ -170,8 +170,7 @@ def _detect_content(content: str) -> DetectionResult:
         if not _detect_panic_warned:
             _detect_panic_warned = True
             logger.warning(
-                "Native content detector failed (%s); falling back to "
-                "pure-Python detection.",
+                "Native content detector failed (%s); falling back to pure-Python detection.",
                 type(exc).__name__,
             )
         return _regex_detect_content_type(content)
