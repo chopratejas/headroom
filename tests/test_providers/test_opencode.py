@@ -262,20 +262,21 @@ class TestBuildOverlay:
             == "https://api.deepseek.com"
         )
 
-    def test_single_mode_excludes_headers_for_openai(self):
+    def test_single_mode_all_have_headers(self):
         pm = {"openai": "https://api.openai.com/v1"}
         overlay = build_overlay(pm, 8787, routing_mode="single")
         entry = overlay["provider"]["openai"]
-        assert "headers" not in entry["options"]
+        assert "headers" in entry["options"]
+        assert entry["options"]["headers"]["x-headroom-base-url"] == "https://api.openai.com/v1"
 
-    def test_single_mode_openai_gets_dedicated_port(self):
+    def test_single_mode_all_proxies_share_port(self):
         pm = {
             "deepseek": "https://api.deepseek.com",
             "openai": "https://api.openai.com/v1",
         }
         overlay = build_overlay(pm, 8787, routing_mode="single")
         assert overlay["provider"]["deepseek"]["options"]["baseURL"].endswith("8787/v1")
-        assert overlay["provider"]["openai"]["options"]["baseURL"].endswith("8788/v1")
+        assert overlay["provider"]["openai"]["options"]["baseURL"].endswith("8787/v1")
 
     def test_multi_mode_uses_port_map(self):
         pm = {"deepseek": "https://api.deepseek.com", "groq": "https://api.groq.com"}

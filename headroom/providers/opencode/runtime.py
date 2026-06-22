@@ -93,11 +93,6 @@ _KNOWN_UPSTREAMS: dict[str, str] = {
     "cohere": "https://api.cohere.ai/v1",
 }
 
-# Providers that always get a dedicated proxy in single-proxy mode.
-# Their handlers don't support x-headroom-base-url overrides or
-# require handler-specific processing that passthrough would lose.
-_DIRECT_PROXY_PROVIDERS: set[str] = {"openai"}
-
 # Providers routed through the shared proxy's Anthropic handler
 # in single-proxy mode (handle_anthropic_messages accepts
 # upstream_base_url).
@@ -165,10 +160,8 @@ _AUTH_PATH = Path.home() / ".local" / "share" / "opencode" / "auth.json"
 
 def _opencode_home_dir() -> Path:
     """Derive the OpenCode config home directory from common env vars."""
-    env_path = os.environ.get("OPENCODE_HOME", "").strip()
-    if env_path:
-        return Path(env_path).expanduser()
-    return Path.home() / ".config" / "opencode"
+    from headroom.providers.opencode.config import _opencode_home_dir as _home
+    return _home()
 
 
 def _user_config_path() -> Path | None:
@@ -341,31 +334,25 @@ def _build_overlay_body_single(
 ) -> dict[str, dict[str, object]]:
     """Build the ``provider`` block for single-proxy mode.
 
-    All passthrough providers share *shared_port*.  Providers that
-    need handler-specific processing (OpenAI) get a dedicated proxy
-    on the next available port.
+    All providers share *shared_port*.  The ``x-headroom-base-url``
+    header tells the proxy which upstream to target.  The header is
+    stripped by ``_strip_internal_headers`` before the upstream call.
 
-    For shared providers the ``x-headroom-base-url`` header tells the
-    proxy which upstream to target.  The header is stripped by
-    ``_strip_internal_headers`` before the upstream call.
+    For providers whose handler supports ``upstream_base_url``
+    (Anthropic, Gemini), the handler receives the dynamic upstream
+    URL and applies full compression/CCR/caching.  For all others
+    (OpenAI, DeepSeek, etc.), the request goes through
+    ``handle_passthrough`` which is a correct byte-level forwarder.
     """
-    next_port = shared_port + 1
     overlay: dict[str, dict[str, object]] = {}
 
     for name, upstream_url in sorted(provider_map.items()):
-        if name in _DIRECT_PROXY_PROVIDERS:
-            port = next_port
-            next_port += 1
-            overlay[name] = {
-                "options": {"baseURL": proxy_base_url(port, project)},
-            }
-        else:
-            overlay[name] = {
-                "options": {
-                    "baseURL": proxy_base_url(shared_port, project),
-                    "headers": {"x-headroom-base-url": upstream_url},
-                },
-            }
+        overlay[name] = {
+            "options": {
+                "baseURL": proxy_base_url(shared_port, project),
+                "headers": {"x-headroom-base-url": upstream_url},
+            },
+        }
 
     return overlay
 

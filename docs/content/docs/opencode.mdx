@@ -1,0 +1,152 @@
+---
+title: OpenCode Integration
+description: Route OpenCode traffic through Headroom for token compression, MCP tools, and cached model access. One command to wrap, one to unwrap.
+---
+
+Use `headroom wrap opencode` to route all OpenCode LLM traffic through the
+Headroom proxy with a single command. The proxy compresses context, injects MCP
+tools, and routes API calls to your configured backend.
+
+## Quick start
+
+```bash
+# Wrap OpenCode — discovers all providers, starts proxy, injects config
+headroom wrap opencode
+
+# Unwrap — restores original config, stops proxy, removes MCP
+headroom unwrap opencode
+```
+
+## What happens during wrap
+
+| Step | What happens |
+|---|---|
+| Provider discovery | Reads `auth.json` and `opencode.json` to discover all configured providers |
+| Upstream mapping | Maps each provider to its upstream URL (14+ known providers) |
+| Config backup | Snapshots `opencode.json` to `.json.headroom-backup` before changes |
+| Proxy routing | Starts proxy instances and builds config overlay via `OPENCODE_CONFIG_CONTENT` |
+| Context tool | Injects RTK (or `lean-ctx`) instructions into `AGENTS.md` |
+| MCP setup | Registers Headroom MCP server (`headroom_compress`, `headroom_retrieve`, `headroom_stats`) |
+| Serena MCP | Optionally registers Serena code graph tools (`--no-serena` to skip) |
+| Launch | Starts the `opencode` binary through the proxy |
+
+## Provider discovery
+
+Headroom discovers providers from three sources, in precedence order:
+
+1. **`opencode.json`** — custom providers with explicit `baseURL` (e.g. `mimo`, `helicone`)
+2. **`auth.json`** — entries with `type: "api"` that match a known upstream
+3. **Known upstreams table** — 14 hardcoded provider URLs
+
+Both **OpenCode Zen** (`opencode`) and **OpenCode Go** (`opencode-go`) are
+supported with their correct upstream URLs:
+
+| Provider | Upstream |
+|---|---|
+| `opencode` (Zen) | `https://opencode.ai/zen/v1` |
+| `opencode-go` (Go) | `https://opencode.ai/zen/go/v1` |
+| `anthropic` | `https://api.anthropic.com/v1` |
+| `openai` | `https://api.openai.com/v1` |
+| `deepseek` | `https://api.deepseek.com` |
+| `google` | `https://generativelanguage.googleapis.com/v1beta` |
+| `groq` | `https://api.groq.com/openai/v1` |
+| `together` | `https://api.together.xyz/v1` |
+| `fireworks` | `https://api.fireworks.ai/v1` |
+| `xai` | `https://api.x.ai/v1` |
+| `perplexity` | `https://api.perplexity.ai` |
+| `cerebras` | `https://api.cerebras.ai/v1` |
+| `mistral` | `https://api.mistral.ai/v1` |
+| `cohere` | `https://api.cohere.ai/v1` |
+
+Providers using OAuth (e.g. `github-copilot`) are automatically excluded.
+Providers with `localhost` or `127.0.0.1` upstream URLs are filtered to prevent
+routing loops from prior installs.
+
+## Routing modes
+
+### Multi-proxy (default)
+
+One Headroom proxy process per unique upstream URL. Each proxy is configured with
+that provider's exact upstream, so the proxy's full handler stack (compression,
+CCR, caching) operates correctly. Zero proxy handler changes required.
+
+```
+OpenCode → proxy:8787 → DeepSeek API
+OpenCode → proxy:8788 → OpenAI API
+OpenCode → proxy:8789 → Anthropic API
+```
+
+### Single-proxy (`--routing-mode single`)
+
+A single Headroom proxy on one port. Providers share this proxy using the
+`x-headroom-base-url` request header for routing. Providers that need
+handler-specific processing (OpenAI) get a dedicated proxy.
+
+```
+OpenCode → proxy:8787 → DeepSeek API   (via x-headroom-base-url header)
+OpenCode → proxy:8787 → Anthropic API  (via x-headroom-base-url header)
+OpenCode → proxy:8788 → OpenAI API     (dedicated proxy, full handler)
+```
+
+Use single-proxy mode when you want fewer processes at the cost of losing
+provider-specific compression for some providers.
+
+## Options
+
+```bash
+headroom wrap opencode \
+  --port 8787 \              # Proxy port (default: 8787)
+  --routing-mode multi \     # 'multi' or 'single'
+  --no-rtk \                 # Skip RTK context tool injection
+  --no-mcp \                 # Skip headroom MCP registration
+  --no-serena \              # Skip Serena code graph MCP
+  --code-graph \             # Include code graph in context
+  --no-proxy \               # Use existing proxy instead of starting one
+  --learn \                  # Enable memory and live learning
+  --memory \                 # Enable persistent memory
+  --backend anthropic \      # Set backend: anthropic, openai, anyllm
+  --anyllm-provider ... \    # AnyLLM provider selection
+  --region ... \             # Provider region
+  -- <opencode args>         # Arguments passed to opencode binary
+```
+
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `OPENCODE_CONFIG_CONTENT` | JSON payload with provider routing overlay injected by wrap |
+| `HEADROOM_PROJECT` | Project name for per-project savings attribution |
+| `HEADROOM_CONTEXT_TOOL` | Set to `lean-ctx` to use lean-ctx instead of RTK |
+
+The overlay does **not** overwrite your on-disk `opencode.json`. It is injected
+at launch via `OPENCODE_CONFIG_CONTENT` and merged by OpenCode at startup.
+Existing `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` values are preserved.
+
+## Persistent installs
+
+```bash
+headroom install apply --preset persistent-service --providers manual --target opencode
+```
+
+This writes the Headroom provider into `~/.config/opencode/opencode.json` and
+keeps the proxy running on port 8787.
+
+## Unwrap
+
+```bash
+headroom unwrap opencode
+```
+
+Restores `opencode.json` from the pre-wrap backup. If no backup exists, strips
+Headroom marker blocks from the config. Also unregisters Headroom MCP servers
+and stops all OpenCode-managed proxy instances.
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---|---|---|
+| Provider not discovered | No `type: "api"` entry in `auth.json` | Check `~/.local/share/opencode/auth.json` |
+| Port conflict | Another service on port 8787 | Use `--port 9999` |
+| Config not applied | `OPENCODE_CONFIG_CONTENT` not set | Check `headroom wrap opencode` output |
+| OpenCode Go expired | Subscription issue | Not a Headroom issue — renew at opencode.ai |
+| Proxy not starting | Port in use by prior Headroom instance | Run `headroom kill` first |

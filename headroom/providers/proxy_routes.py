@@ -883,7 +883,8 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     async def passthrough(request: Request, path: str):
         custom_base = request.headers.get("x-headroom-base-url")
         if custom_base:
-            return await proxy.handle_passthrough(request, custom_base.rstrip("/"))
+            normalized = normalize_upstream_base(custom_base)
+            return await proxy.handle_passthrough(request, normalized)
 
         # Intercept Code Assist authentication and onboarding routes
         clean_path = path.lstrip("/")

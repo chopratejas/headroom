@@ -49,6 +49,9 @@ from headroom.copilot_auth import (
     resolve_copilot_api_url,
     resolve_subscription_bearer_token_details,
 )
+from headroom.port_utils import (
+    find_opencode_ports,
+)
 from headroom.providers.aider import build_launch_env as _build_aider_launch_env
 from headroom.providers.claude import (
     TOOL_SEARCH_DEFAULT,
@@ -110,19 +113,12 @@ from headroom.providers.openclaw import (
 from headroom.providers.opencode import (
     build_launch_env as _build_opencode_launch_env,
 )
-from headroom.providers.opencode import (
-    proxy_base_url as _opencode_proxy_base_url,
-)
 from headroom.providers.opencode.config import (
-    _opencode_config_path,
+    _MCP_MARKER_START,
+    _PROVIDER_MARKER_START,
     opencode_config_paths,
     snapshot_opencode_config_if_unwrapped,
     strip_opencode_headroom_blocks,
-)
-from headroom.port_utils import (
-    DEFAULT_PROXY_PORT,
-    allocate_ports,
-    find_opencode_ports,
 )
 from headroom.proxy.project_context import with_project_prefix as _with_project_prefix
 
@@ -5205,7 +5201,5 @@ def unwrap_opencode(port: int, no_stop_proxy: bool) -> None:
 
 
 def _opencode_home_dir() -> Path:
-    env_path = os.environ.get("OPENCODE_HOME", "").strip()
-    if env_path:
-        return Path(env_path).expanduser()
-    return Path.home() / ".config" / "opencode"
+    from headroom.providers.opencode.config import _opencode_home_dir as _home
+    return _home()

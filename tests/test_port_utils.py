@@ -48,16 +48,14 @@ class TestAllocatePorts:
     def test_skip_occupied_port(self):
         with patch("socket.socket") as mock_socket_class:
             mock_sock = mock_socket_class.return_value.__enter__.return_value
-            connect_calls = []
+            bind_calls = []
 
             def side_effect(*args: object, **kwargs: object) -> None:
-                connect_calls.append(args)
-                if len(connect_calls) == 1:
-                    pass  # success — port occupied
-                else:
-                    raise ConnectionRefusedError
+                bind_calls.append(args)
+                if len(bind_calls) == 1:
+                    raise OSError("Address already in use")
 
-            mock_sock.connect.side_effect = side_effect
+            mock_sock.bind.side_effect = side_effect
             ports = allocate_ports(8787, 1)
             assert len(ports) == 1
             assert ports[0] == 8788
@@ -65,7 +63,7 @@ class TestAllocatePorts:
     def test_all_ports_occupied_raises(self):
         with patch("socket.socket") as mock_socket_class:
             mock_sock = mock_socket_class.return_value.__enter__.return_value
-            mock_sock.connect.return_value = None  # all succeed = all occupied
+            mock_sock.bind.side_effect = OSError("Address already in use")
 
             with pytest.raises(ValueError, match="could not find"):
                 allocate_ports(8787, 1)

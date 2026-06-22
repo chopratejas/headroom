@@ -22,7 +22,8 @@ def allocate_ports(
 ) -> list[int]:
     """Return *count* free ports starting from *base_port*.
 
-    Skips ports where a TCP connect succeeds (anything is listening).
+    Skips ports where a TCP bind fails (port is in use or reserved).
+    Uses bind-and-release rather than connect to avoid TOCTOU races.
     Raises ValueError if no free port is found within *max_scan* attempts.
 
     Raises ValueError if *base_port* is 0 (OS-assigned ports are not supported).
@@ -43,10 +44,11 @@ def allocate_ports(
     while len(ports) < count and candidate < bound:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1)
-                s.connect(("127.0.0.1", candidate))
-        except (TimeoutError, ConnectionRefusedError, OSError):
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", candidate))
             ports.append(candidate)
+        except OSError:
+            pass
         candidate += 1
 
     if len(ports) < count:
