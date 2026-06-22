@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .models import SessionData, ToolCall
+from .models import Recommendation, SessionData, ToolCall
 
 # Minimum repetitions of one signature before it counts as a loop. Three is the
 # smallest count that distinguishes a loop ("again, and again") from a one-off
@@ -194,7 +194,7 @@ def _signature_tokens(signature: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", body) if len(t) > 2}
 
 
-def apply_loop_weighting(recommendations, loops: list[LoopPattern]) -> None:
+def apply_loop_weighting(recommendations: list[Recommendation], loops: list[LoopPattern]) -> None:
     """Boost recommendations that address a detected loop, in place.
 
     The analyzer ranks recommendations by ``estimated_tokens_saved`` (an LLM
@@ -203,9 +203,6 @@ def apply_loop_weighting(recommendations, loops: list[LoopPattern]) -> None:
     tokens and tag it as loop-derived. Because measured loop waste aggregates
     many repetitions, this reliably lifts loop guardrails above one-off rules
     without trusting the LLM to have weighted them correctly.
-
-    Imported lazily-typed (``recommendations`` is ``list[Recommendation]``) to
-    avoid a circular import with ``models``.
     """
     if not loops:
         return
