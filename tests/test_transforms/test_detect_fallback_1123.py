@@ -3,6 +3,8 @@ detector instead of propagating out as an HTTP 500. Regression test for #1123.""
 
 from __future__ import annotations
 
+import asyncio
+
 import headroom._core as core
 from headroom.transforms import content_router as cr
 
@@ -53,4 +55,20 @@ def test_control_flow_exceptions_propagate(monkeypatch):
     import pytest
 
     with pytest.raises(KeyboardInterrupt):
+        cr._detect_content("content")
+
+
+def test_cancelled_error_propagates(monkeypatch):
+    """asyncio.CancelledError must propagate, not be swallowed as a fallback."""
+
+    def _cancel(_content):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setenv("HEADROOM_DETECT_BACKEND", "rust")
+    monkeypatch.setattr(core, "detect_content_type", _cancel)
+    monkeypatch.setattr(cr, "_detect_panic_warned", False, raising=False)
+
+    import pytest
+
+    with pytest.raises(asyncio.CancelledError):
         cr._detect_content("content")

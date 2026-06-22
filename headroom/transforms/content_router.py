@@ -34,6 +34,7 @@ Pipeline Usage:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -167,6 +168,10 @@ def _detect_content(content: str) -> DetectionResult:
         # the panic would propagate out as an HTTP 500. Any detector failure
         # (panic, or an unrecognized content-type tag) degrades to the
         # pure-Python detector instead of aborting the request. See #1123.
+        # Guard: don't swallow cancellation/control-flow BaseExceptions such
+        # as asyncio.CancelledError — keep them propagating.
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         if not _detect_panic_warned:
             _detect_panic_warned = True
             logger.warning(
