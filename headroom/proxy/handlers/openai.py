@@ -2331,6 +2331,8 @@ class OpenAIHandlerMixin:
                             cache_read_tokens,
                         )
 
+                    uncached_input_tokens = max(0, total_input_tokens - cache_read_tokens)
+
                     openai_prefix_tracker.update_from_response(
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
@@ -2347,6 +2349,9 @@ class OpenAIHandlerMixin:
                             output_tokens=output_tokens,
                             tokens_saved=tokens_saved,
                             attempted_input_tokens=total_input_tokens + tokens_saved,
+                            cache_read_tokens=cache_read_tokens,
+                            cache_write_tokens=cache_write_tokens,
+                            uncached_input_tokens=uncached_input_tokens,
                             total_latency_ms=total_latency,
                             overhead_ms=optimization_latency,
                             pipeline_timing=pipeline_timing,
