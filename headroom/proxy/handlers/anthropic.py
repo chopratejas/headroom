@@ -1036,16 +1036,15 @@ class AnthropicHandlerMixin:
                         for tool in (body.get("tools") or [])
                         if isinstance(tool, dict)
                     }
-                    # If the tool is already present, CCR stays reversible even on frozen turns.
-                    skip_ccr_request_compression = (
-                        self.config.ccr_inject_tool
-                        and frozen_message_count > 0
-                        and CCR_TOOL_NAME not in existing_tool_names
-                    )
-                    if skip_ccr_request_compression:
-                        logger.info(
-                            f"[{request_id}] CCR: skipping request-side compression "
-                            f"(frozen prefix={frozen_message_count}) because tool injection is deferred"
+
+                    def should_skip_ccr_request_compression(
+                        current_frozen_message_count: int,
+                    ) -> bool:
+                        # If the tool is already present, CCR stays reversible even on frozen turns.
+                        return (
+                            self.config.ccr_inject_tool
+                            and current_frozen_message_count > 0
+                            and CCR_TOOL_NAME not in existing_tool_names
                         )
 
                     if is_token_mode(self.config.mode):
@@ -1082,6 +1081,14 @@ class AnthropicHandlerMixin:
                         # Record all tool_results in the verified frozen prefix as stable
                         comp_cache.mark_stable_from_messages(messages, frozen_message_count)
 
+                        skip_ccr_request_compression = should_skip_ccr_request_compression(
+                            frozen_message_count
+                        )
+                        if skip_ccr_request_compression:
+                            logger.info(
+                                f"[{request_id}] CCR: skipping request-side compression "
+                                f"(frozen prefix={frozen_message_count}) because tool injection is deferred"
+                            )
                         if skip_ccr_request_compression:
                             optimized_messages = working_messages
                             optimized_tokens = tokenizer.count_messages(optimized_messages)
@@ -1127,6 +1134,14 @@ class AnthropicHandlerMixin:
                             # the upstream call latency.
                             optimized_tokens = tokenizer.count_messages(optimized_messages)
                     elif not is_cache_mode(self.config.mode):
+                        skip_ccr_request_compression = should_skip_ccr_request_compression(
+                            frozen_message_count
+                        )
+                        if skip_ccr_request_compression:
+                            logger.info(
+                                f"[{request_id}] CCR: skipping request-side compression "
+                                f"(frozen prefix={frozen_message_count}) because tool injection is deferred"
+                            )
                         if not skip_ccr_request_compression:
                             async with stage_timer.measure("compression_first_stage"):
                                 result = await self._run_compression_in_executor(
@@ -1151,6 +1166,14 @@ class AnthropicHandlerMixin:
                                 original_tokens = result.tokens_before
                                 optimized_tokens = result.tokens_after
                     else:
+                        skip_ccr_request_compression = should_skip_ccr_request_compression(
+                            frozen_message_count
+                        )
+                        if skip_ccr_request_compression:
+                            logger.info(
+                                f"[{request_id}] CCR: skipping request-side compression "
+                                f"(frozen prefix={frozen_message_count}) because tool injection is deferred"
+                            )
                         previous_original_messages = prefix_tracker.get_last_original_messages()
                         previous_forwarded_messages = prefix_tracker.get_last_forwarded_messages()
                         delta = self._extract_cache_stable_delta(
