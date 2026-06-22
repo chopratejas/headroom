@@ -512,6 +512,51 @@ class TestCLIProxyEnvVars:
         assert captured_config["config"].openai_api_url == "http://my-vllm:4000"
         assert captured_config["config"].gemini_api_url == "http://my-gemini:5000"
 
+    @pytest.mark.parametrize("timeout", [-1, 0, 1, 10000])
+    def test_request_timeout_cli_flags(self, runner, timeout):
+        """Fast-fail CLI flags should map into ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy", "--request-timeout-seconds", f"{timeout}"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].request_timeout_seconds == timeout
+            if timeout and timeout > 0
+            else 300
+        )
+
+    @pytest.mark.parametrize("timeout", [-1, 0, 1, 10000])
+    def test_request_timeout_from_env(self, runner, timeout):
+        """HEADROOM_REQUEST_TIMEOUT env var should be passed to ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"HEADROOM_REQUEST_TIMEOUT": f"{timeout}"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].request_timeout_seconds == timeout
+            if timeout and timeout > 0
+            else 300
+        )
+
     def test_retry_and_connect_timeout_cli_flags(self, runner):
         """Fast-fail CLI flags should map into ProxyConfig."""
         captured_config = {}
@@ -565,6 +610,24 @@ class TestCLIProxyEnvVars:
         assert captured["kwargs"]["workers"] == 4
         assert captured["kwargs"]["limit_concurrency"] == 250
         assert captured["kwargs"].get("print_banner") is False
+
+    def test_keepalive_expiry_env_var(self, runner):
+        captured = {}
+
+        def mock_run_server(config, **kwargs):
+            captured["config"] = config
+            captured["kwargs"] = kwargs
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"HEADROOM_KEEPALIVE_EXPIRY": "45"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured["config"].keepalive_expiry == 45.0
 
     def test_production_scaling_cli_flags_override_env_vars(self, runner):
         captured = {}
@@ -813,6 +876,29 @@ class TestArgparseBackendValidation:
             config = _proxy_config_from_env()
 
         assert config.disable_kompress is True
+
+    def test_argparse_registers_keepalive_expiry_flag(self):
+        """The argparse path (python -m headroom.proxy.server) must register
+        --keepalive-expiry as a float flag, so it can override the
+        HEADROOM_KEEPALIVE_EXPIRY fallback. A bad value makes argparse exit
+        before the server boots, which both proves the flag exists and keeps
+        the test fast.
+        """
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "headroom.proxy.server", "--keepalive-expiry", "notafloat"],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        assert result.returncode == 2, result.stderr
+        # "invalid float value" only appears if --keepalive-expiry is a registered
+        # float arg; a missing flag would instead say "unrecognized arguments".
+        assert "--keepalive-expiry" in result.stderr
+        assert "invalid float value" in result.stderr
 
 
 class TestCLIProxyExcludeToolsEnvVar:
