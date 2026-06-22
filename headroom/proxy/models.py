@@ -107,6 +107,14 @@ class ProxyConfig:
     backend: str = "anthropic"
     bedrock_region: str = "us-west-2"
     bedrock_profile: str | None = None
+    # Custom upstream for the Bedrock InvokeModel passthrough routes
+    # (`/model/{id}/invoke[-with-response-stream]`). When set, those routes are
+    # registered and compress the request body before forwarding here. Point it
+    # at a re-signing gateway (LiteLLM, LocalStack, a corporate Bedrock
+    # proxy) — NOT raw AWS, since rewriting the body invalidates the caller's
+    # SigV4 signature. Leave unset (default) to keep `--backend bedrock`'s
+    # direct-to-AWS, re-signing behavior unchanged.
+    bedrock_api_url: str | None = None
     anyllm_provider: str = "openai"
 
     # Optimization mode: "token" (rewrite for max compression) or
@@ -285,6 +293,12 @@ class ProxyConfig:
     subscription_tracking_enabled: bool = True
     subscription_poll_interval_s: int = 300
     subscription_active_window_s: int = 60
+
+    # Periodic TOIN stats logging. Enabled by default for observability, but
+    # operators of long-lived proxies can disable it if TOIN stats collection
+    # causes avoidable memory pressure on their platform.
+    # Env: HEADROOM_PERIODIC_TOIN_STATS=0.
+    periodic_toin_stats_enabled: bool = True
 
     # Stateless mode — disable all filesystem writes for read-only / container deployments
     stateless: bool = False

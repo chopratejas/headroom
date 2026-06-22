@@ -111,6 +111,29 @@ class TestTiktokenCounter:
         decoded = counter.decode(tokens)
         assert decoded == text
 
+    def test_count_text_allows_literal_special_tokens(self):
+        """count_text must not raise on literal tiktoken special-token strings.
+
+        Regression: passthrough/tool content containing "<|endoftext|>" (or FIM
+        markers) made tiktoken raise ValueError under its default
+        disallowed_special="all", aborting token counting for the whole request.
+        Through the proxy this surfaced as an HTTP 413 compression_refused.
+        """
+        counter = TiktokenCounter("gpt-4o")
+        text = "before <|endoftext|> after <|fim_prefix|> end"
+        # Must not raise; markers are counted as ordinary text.
+        count = counter.count_text(text)
+        assert count > counter.count_text("before  after  end")
+
+    def test_encode_allows_literal_special_tokens(self):
+        """encode must treat literal special-token strings as ordinary text."""
+        counter = TiktokenCounter("gpt-4o")
+        text = "x <|endoftext|> y"
+        tokens = counter.encode(text)
+        assert isinstance(tokens, list) and len(tokens) > 0
+        # Encoding as ordinary text round-trips back to the original literal.
+        assert counter.decode(tokens) == text
+
     def test_repr(self):
         """Test string representation."""
         counter = TiktokenCounter("gpt-4o")

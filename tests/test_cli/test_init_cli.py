@@ -424,7 +424,11 @@ def test_ensure_claude_hooks_rewrites_existing_entries(monkeypatch, tmp_path: Pa
     init_cli._ensure_claude_hooks(settings_path, "init-local-demo", 9001)
 
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
-    assert payload["env"] == {"KEEP": "1", "ANTHROPIC_BASE_URL": "http://127.0.0.1:9001"}
+    assert payload["env"] == {
+        "KEEP": "1",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:9001",
+        "ENABLE_TOOL_SEARCH": "true",
+    }
     session_entries = payload["hooks"]["SessionStart"]
     assert session_entries[0] == "not-a-dict"
     assert session_entries[1] == {"hooks": "not-a-list"}
@@ -527,6 +531,30 @@ def test_ensure_codex_provider_replaces_existing_model_provider(
     parsed = tomllib.loads(path.read_text(encoding="utf-8"))  # raises on a duplicate key
     assert parsed["model_provider"] == "headroom"
     assert parsed["features"]["hooks"] is True
+
+
+def test_ensure_codex_provider_emits_requires_openai_auth_for_chatgpt(
+    monkeypatch, tmp_path: Path
+) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    path = tmp_path / "config.toml"
+    (tmp_path / "auth.json").write_text('{"auth_mode": "chatgpt"}', encoding="utf-8")
+
+    init_cli._ensure_codex_provider(path, 8787)
+
+    assert "requires_openai_auth = true" in path.read_text(encoding="utf-8")
+
+
+def test_ensure_codex_provider_omits_requires_openai_auth_for_api_key(
+    monkeypatch, tmp_path: Path
+) -> None:
+    init_cli, _ = _load_init_module(monkeypatch)
+    path = tmp_path / "config.toml"
+    (tmp_path / "auth.json").write_text('{"auth_mode": "apikey"}', encoding="utf-8")
+
+    init_cli._ensure_codex_provider(path, 8787)
+
+    assert "requires_openai_auth" not in path.read_text(encoding="utf-8")
 
 
 def test_ensure_codex_feature_flag_replaces_existing_marker(monkeypatch, tmp_path: Path) -> None:

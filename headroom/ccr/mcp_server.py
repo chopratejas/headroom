@@ -424,6 +424,23 @@ class HeadroomMCPServer:
                     "results": results,
                     "count": len(results),
                 }
+            # The query matched no items above the relevance floor, but the
+            # entry itself may still be present and unexpired. An empty search
+            # is not the same as a missing/expired hash, so fall back to the
+            # full content rather than reporting it as not found.
+            entry = store.retrieve(hash_key)
+            if entry:
+                self._stats.record_retrieval(hash_key)
+                return {
+                    "hash": hash_key,
+                    "source": "local",
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "original_content": entry.original_content,
+                    "note": "Entry exists but no item matched the query above "
+                    "the relevance threshold; returning the full content.",
+                }
         else:
             entry = store.retrieve(hash_key)
             if entry:
@@ -451,8 +468,11 @@ class HeadroomMCPServer:
         return {
             "error": "Content not found. It may have expired or the hash may be incorrect.",
             "hash": hash_key,
-            "hint": "Content compressed via headroom_compress is stored for the session. "
-            "Content compressed by the proxy uses the configured CCR TTL.",
+            "hint": "To recover: if the compression marker references a file Read, "
+            "re-read that file (the path is in the marker; disk is the source of "
+            "truth). If it was command output, re-run the command. Content "
+            "compressed via headroom_compress is stored for the session; content "
+            "compressed by the proxy uses the configured CCR TTL.",
         }
 
     async def _retrieve_via_proxy(
@@ -543,6 +563,7 @@ class HeadroomMCPServer:
                     inputSchema={
                         "type": "object",
                         "properties": {},
+                        "required": [],
                     },
                 ),
             ]
