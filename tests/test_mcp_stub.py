@@ -53,7 +53,7 @@ def test_import_module_with_mcp_stub_imports_target_and_cleans_up(monkeypatch) -
         assert name not in sys.modules
 
 
-def test_import_module_with_mcp_stub_reloads_target_and_restores_originals(monkeypatch) -> None:
+def test_import_module_with_mcp_stub_reimports_target_and_restores_originals(monkeypatch) -> None:
     original_modules = {}
     for name in mcp_stub._MCP_MODULE_NAMES:
         module = ModuleType(f"original::{name}")
@@ -62,18 +62,20 @@ def test_import_module_with_mcp_stub_reloads_target_and_restores_originals(monke
 
     existing = ModuleType("fake_target")
     monkeypatch.setitem(sys.modules, "fake_target", existing)
-    reloaded = ModuleType("fake_target")
+    imported = ModuleType("fake_target")
 
-    def fake_reload(module: ModuleType) -> ModuleType:
-        assert module is existing
+    def fake_import_module(module_name: str) -> ModuleType:
+        assert module_name == "fake_target"
+        assert "fake_target" not in sys.modules
         for name in mcp_stub._MCP_MODULE_NAMES:
             assert sys.modules[name] is not original_modules[name]
-        return reloaded
+        return imported
 
-    monkeypatch.setattr(mcp_stub.importlib, "reload", fake_reload)
+    monkeypatch.setattr(mcp_stub.importlib, "import_module", fake_import_module)
 
     result = mcp_stub.import_module_with_mcp_stub("fake_target")
 
-    assert result is reloaded
+    assert result is imported
+    assert sys.modules["fake_target"] is existing
     for name, module in original_modules.items():
         assert sys.modules[name] is module
