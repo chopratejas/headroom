@@ -152,6 +152,12 @@ from headroom.proxy.prometheus_metrics import PrometheusMetrics  # noqa: F401
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter  # noqa: F401
 from headroom.proxy.request_logger import RequestLogger  # noqa: F401
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
+from headroom.proxy.session_registry import (
+    ActiveSessionRegistry,
+    ClusterConfig,
+    aggregate_sessions,
+    list_active_sessions,
+)
 from headroom.proxy.ssl_context import find_ca_bundle
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
@@ -596,6 +602,12 @@ class HeadroomProxy(
             else None
         )
         self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker)
+        self.active_session_registry = ActiveSessionRegistry(
+            agent_type=config.traffic_learning_agent_type
+            if config.traffic_learning_agent_type != "unknown"
+            else "proxy",
+            cluster=ClusterConfig.from_env(),
+        )
 
         # Initialize transforms based on routing mode.
         #
@@ -1335,6 +1347,13 @@ class HeadroomProxy(
         else:
             logger.info("CCR: DISABLED")
         logger.info(f"Savings history: {self.metrics.savings_tracker.storage_path}")
+        self.active_session_registry.heartbeat(self._session_metrics_snapshot())
+        logger.info(
+            "Active session: %s (cluster_enabled=%s cluster_id=%s)",
+            self.active_session_registry.session_id,
+            self.active_session_registry.cluster.enabled,
+            self.active_session_registry.cluster.cluster_id,
+        )
 
         # Reset and rebuild the quota tracker registry for this server instance.
         # reset_quota_registry() ensures a clean slate when the proxy is restarted
@@ -1417,6 +1436,7 @@ class HeadroomProxy(
 
         # Print final stats
         self._print_summary()
+        self.active_session_registry.close()
 
     def _print_summary(self):
         """Print session summary."""
@@ -1471,6 +1491,21 @@ class HeadroomProxy(
         from headroom.proxy.outcome import emit_request_outcome
 
         await emit_request_outcome(self, outcome)
+
+    def _session_metrics_snapshot(self) -> dict[str, Any]:
+        """Return compact counters safe to publish in active-session manifests."""
+
+        m = self.metrics
+        return {
+            "requests": m.requests_total,
+            "tokens_saved": m.tokens_saved_total,
+            "input_tokens": m.tokens_input_total,
+            "output_tokens": m.tokens_output_total,
+            "failed_requests": m.requests_failed,
+            "cached_requests": m.requests_cached,
+            "rate_limited_requests": m.requests_rate_limited,
+            "savings_storage_path": m.savings_tracker.storage_path,
+        }
 
     async def _next_request_id(self) -> str:
         """Generate unique request ID."""
@@ -2627,6 +2662,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         total_tokens_all_layers = all_layers_tokens_saved
         persistent_savings = m.savings_tracker.stats_preview()
         display_session = persistent_savings.get("display_session", {})
+        current_session = proxy.active_session_registry.heartbeat(proxy._session_metrics_snapshot())
+        local_active_sessions = list_active_sessions(
+            proxy.active_session_registry.local_sessions_dir,
+            stale_after_seconds=proxy.active_session_registry.stale_after_seconds,
+            prune_stale=True,
+        )
+        cluster_active_sessions: list[dict[str, Any]] = []
+        cluster_manifest_path = proxy.active_session_registry.cluster_manifest_path
+        if proxy.active_session_registry.cluster.enabled and cluster_manifest_path is not None:
+            cluster_active_sessions = list_active_sessions(
+                cluster_manifest_path.parents[2],
+                stale_after_seconds=proxy.active_session_registry.stale_after_seconds,
+            )
         recent_request_logs = proxy.logger.get_recent(10_000) if proxy.logger else []
         recent_request_payload = _build_recent_request_payload()
         agent_usage = _build_agent_usage_summary(
@@ -2891,6 +2939,16 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             },
             "savings_history": m.savings_history[-100:],  # Last 100 data points
             "display_session": display_session,
+            "active_sessions": {
+                "current": current_session,
+                "local": local_active_sessions,
+                "local_summary": aggregate_sessions(local_active_sessions),
+            },
+            "cluster": {
+                **proxy.active_session_registry.cluster.snapshot(),
+                "active_sessions": cluster_active_sessions,
+                "summary": aggregate_sessions(cluster_active_sessions),
+            },
             "persistent_savings": persistent_savings,
             "prefix_cache": prefix_cache_stats,
             "cost": _merge_cost_stats(

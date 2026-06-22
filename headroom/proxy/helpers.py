@@ -1242,9 +1242,14 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
     base_payload = _context_tool_zero_payload(tool=_CONTEXT_TOOL_LEAN_CTX, installed=True)
 
     try:
+        lean_ctx_executable = (
+            lean_ctx_path.as_posix() if isinstance(lean_ctx_path, Path) else str(lean_ctx_path)
+        )
         result = subprocess.run(
-            [str(lean_ctx_path), "gain", "--json"],
+            [lean_ctx_executable, "gain", "--json"],
             capture_output=True,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=5,
         )
