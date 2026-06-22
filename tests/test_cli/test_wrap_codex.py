@@ -174,6 +174,20 @@ class TestSnapshotCodexConfig:
 
         assert not backup_file.exists()
 
+    def test_no_backup_when_config_already_contains_named_mcp_marker(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.toml"
+        backup_file = tmp_path / "config.toml.headroom-backup"
+        config_file.write_text(
+            "# --- Headroom MCP server: headroom ---\n"
+            "[mcp_servers.headroom]\n"
+            'command = "headroom"\n'
+            "# --- end Headroom MCP server: headroom ---\n"
+        )
+
+        wrap_mod._snapshot_codex_config_if_unwrapped(config_file, backup_file)
+
+        assert not backup_file.exists()
+
 
 class TestCodexMemoryMcpConfig:
     """Tests for the persisted Codex memory MCP block."""
