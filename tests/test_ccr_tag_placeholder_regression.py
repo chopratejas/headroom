@@ -96,8 +96,16 @@ def test_router_omits_ccr_original_when_no_tags(monkeypatch):
         def ensure_background_load(self) -> None:  # pragma: no cover - guard
             raise AssertionError("must not fetch when ready")
 
-        def compress(self, content, *, context="", question=None, target_ratio=None,
-                     allow_download=True, ccr_original="__unset__"):
+        def compress(
+            self,
+            content,
+            *,
+            context="",
+            question=None,
+            target_ratio=None,
+            allow_download=True,
+            ccr_original="__unset__",
+        ):
             captured["called"] = True
             captured["ccr_original"] = ccr_original
             return RecordingResult()
@@ -134,9 +142,7 @@ def test_compress_batch_validates_ccr_originals_length():
 # it keeps the first two words of each chunk so the compression ratio clears the
 # ``< 0.8`` CCR-store threshold.
 
-_RAW = "<system-reminder>CRITICAL: invoke the skill</system-reminder> " + " ".join(
-    ["filler"] * 40
-)
+_RAW = "<system-reminder>CRITICAL: invoke the skill</system-reminder> " + " ".join(["filler"] * 40)
 _PLACEHOLDER = "{{HEADROOM_TAG_0}} " + " ".join(["filler"] * 40)
 
 
