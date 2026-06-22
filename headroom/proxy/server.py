@@ -3949,7 +3949,8 @@ def _parse_exclude_tools(cli_excludes: str | None) -> set[str]:
     (e.g. "WebSearch,WebFetch"). Each name is added in both original and
     lowercase form for case-insensitive matching, mirroring
     DEFAULT_EXCLUDE_TOOLS. Unset/empty -> empty set (DEFAULT_EXCLUDE_TOOLS
-    used unchanged).
+    used unchanged). Entries may contain glob patterns (e.g. "mcp__*"); see
+    config.is_tool_excluded for the matching semantics.
     """
     raw = ",".join(s for s in (cli_excludes, os.environ.get("HEADROOM_EXCLUDE_TOOLS")) if s)
     names: set[str] = set()
@@ -4118,6 +4119,7 @@ if __name__ == "__main__":
         default=None,
         help="Comma-separated tool names whose output is never compressed, "
         "merged with the built-in defaults (e.g., WebSearch,WebFetch). "
+        "Entries may use glob patterns, e.g. 'mcp__*' to exclude every MCP tool. "
         "Also settable via HEADROOM_EXCLUDE_TOOLS env var.",
     )
 

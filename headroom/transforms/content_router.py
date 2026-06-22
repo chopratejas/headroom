@@ -47,7 +47,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from ..config import DEFAULT_EXCLUDE_TOOLS, ReadLifecycleConfig, TransformResult
+from ..config import (
+    DEFAULT_EXCLUDE_TOOLS,
+    ReadLifecycleConfig,
+    TransformResult,
+    is_tool_excluded,
+)
 from ..tokenizer import Tokenizer
 from .base import Transform
 from .content_detector import ContentType, DetectionResult
@@ -2318,7 +2323,9 @@ class ContentRouter(Transform):
             else DEFAULT_EXCLUDE_TOOLS
         )
         excluded_tool_ids = {
-            tool_id for tool_id, name in tool_name_map.items() if name in exclude_tools
+            tool_id
+            for tool_id, name in tool_name_map.items()
+            if is_tool_excluded(name, exclude_tools)
         }
 
         # --- Adaptive parameters based on context pressure ---
