@@ -317,19 +317,7 @@ impl SavingsState {
         }
 
         // Display session (rollover on inactivity)
-        let expired = match self
-            .display_session
-            .last_activity_at
-            .as_deref()
-            .and_then(parse_rfc3339)
-        {
-            Some(last) => now
-                .duration_since(last)
-                .map(|d| d > cfg.session_inactivity)
-                .unwrap_or(false),
-            None => true,
-        };
-        if expired {
+        if session_expired(&self.display_session, now, cfg) {
             self.display_session = DisplaySession {
                 started_at: Some(now_iso.clone()),
                 ..DisplaySession::default()
@@ -365,10 +353,7 @@ impl SavingsState {
                 total_tokens_saved: self.lifetime.tokens_saved,
                 compression_savings_usd: self.lifetime.compression_savings_usd,
             });
-            if self.history.len() > cfg.max_history {
-                let drop = self.history.len() - cfg.max_history;
-                self.history.drain(0..drop);
-            }
+            cap_front(&mut self.history, cfg.max_history);
         }
 
         // Recent-request feed (every request, success or failure). A blank
@@ -397,10 +382,7 @@ impl SavingsState {
             total_latency_ms: outcome.latency_ms,
             failed: outcome.failed,
         });
-        if self.recent.len() > cfg.max_response_history {
-            let drop = self.recent.len() - cfg.max_response_history;
-            self.recent.drain(0..drop);
-        }
+        cap_front(&mut self.recent, cfg.max_response_history);
     }
 
     /// Coerce a deserialized state into a known-good shape (clamps version,
@@ -411,22 +393,29 @@ impl SavingsState {
     }
 }
 
-/// Compute the live display-session view, collapsing to empty when the window
-/// has elapsed (so the dashboard shows a fresh session after idle time).
-fn session_view(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) -> DisplaySession {
-    let expired = match state
-        .display_session
-        .last_activity_at
-        .as_deref()
-        .and_then(parse_rfc3339)
-    {
+/// Whether `session`'s inactivity window has elapsed by `now`. No recorded
+/// activity counts as expired, so the first request opens a fresh session.
+fn session_expired(session: &DisplaySession, now: SystemTime, cfg: &StoreConfig) -> bool {
+    match session.last_activity_at.as_deref().and_then(parse_rfc3339) {
         Some(last) => now
             .duration_since(last)
             .map(|d| d > cfg.session_inactivity)
             .unwrap_or(false),
         None => true,
-    };
-    if expired {
+    }
+}
+
+/// Trim a newest-last buffer to its last `max` entries, dropping the oldest.
+fn cap_front<T>(buf: &mut Vec<T>, max: usize) {
+    if buf.len() > max {
+        buf.drain(0..buf.len() - max);
+    }
+}
+
+/// Compute the live display-session view, collapsing to empty when the window
+/// has elapsed (so the dashboard shows a fresh session after idle time).
+fn session_view(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) -> DisplaySession {
+    if session_expired(&state.display_session, now, cfg) {
         DisplaySession::default()
     } else {
         state.display_session.clone()
