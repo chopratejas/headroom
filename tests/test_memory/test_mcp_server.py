@@ -1,14 +1,59 @@
 import asyncio
+import importlib
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import numpy as np
-import pytest
 
-pytest.importorskip("mcp")
-
-from headroom.memory.mcp_server import _memory_mcp_startup_context, _warm_up_backend
 from headroom.memory.models import Memory
+
+
+def _load_mcp_server_module():
+    if "mcp" not in sys.modules:
+        mcp_module = type(sys)("mcp")
+        mcp_server_module = type(sys)("mcp.server")
+        mcp_stdio_module = type(sys)("mcp.server.stdio")
+        mcp_types_module = type(sys)("mcp.types")
+
+        class DummyServer:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def list_tools(self):
+                return lambda fn: fn
+
+            def call_tool(self):
+                return lambda fn: fn
+
+            def create_initialization_options(self):
+                return {}
+
+        class DummyTool:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+
+        class DummyTextContent:
+            def __init__(self, **kwargs) -> None:
+                self.kwargs = kwargs
+
+        async def dummy_stdio_server():
+            raise RuntimeError("stdio_server should not run in unit tests")
+
+        mcp_server_module.Server = DummyServer
+        mcp_stdio_module.stdio_server = dummy_stdio_server
+        mcp_types_module.TextContent = DummyTextContent
+        mcp_types_module.Tool = DummyTool
+
+        sys.modules["mcp"] = mcp_module
+        sys.modules["mcp.server"] = mcp_server_module
+        sys.modules["mcp.server.stdio"] = mcp_stdio_module
+        sys.modules["mcp.types"] = mcp_types_module
+
+    return importlib.import_module("headroom.memory.mcp_server")
+
+
+mcp_server_mod = _load_mcp_server_module()
 
 
 def test_warm_up_backend_batches_embedding_and_indexing() -> None:
@@ -49,7 +94,7 @@ def test_warm_up_backend_batches_embedding_and_indexing() -> None:
         get_user_memories=AsyncMock(return_value=memories),
     )
 
-    asyncio.run(_warm_up_backend(backend, "alice"))
+    asyncio.run(mcp_server_mod._warm_up_backend(backend, "alice"))
 
     backend._ensure_initialized.assert_awaited_once()
     backend.get_user_memories.assert_awaited_once_with("alice", limit=500)
@@ -68,7 +113,11 @@ def test_memory_mcp_startup_context_reports_dynamic_project_db(tmp_path) -> None
     project_dir.mkdir()
     configured_db = str(project_dir / ".headroom" / "memory.db")
 
-    context = _memory_mcp_startup_context(configured_db, project_dir, db_flag_present=False)
+    context = mcp_server_mod._memory_mcp_startup_context(
+        configured_db,
+        project_dir,
+        db_flag_present=False,
+    )
 
     assert context == {
         "configured_db": configured_db,
@@ -90,7 +139,7 @@ def test_memory_mcp_startup_context_reports_static_external_db(tmp_path) -> None
     external_db.parent.mkdir()
     external_db.write_text("sqlite placeholder")
 
-    context = _memory_mcp_startup_context(
+    context = mcp_server_mod._memory_mcp_startup_context(
         str(external_db),
         project_dir,
         db_flag_present=True,
@@ -107,3 +156,39 @@ def test_memory_mcp_startup_context_reports_static_external_db(tmp_path) -> None
         "path_readable": True,
         "resolution": "static-cli",
     }
+
+
+def test_main_logs_memory_mcp_startup_context(monkeypatch, tmp_path, caplog) -> None:
+    project_dir = tmp_path / "project-a"
+    project_dir.mkdir()
+    monkeypatch.chdir(project_dir)
+    monkeypatch.setenv("USER", "codex-user")
+    monkeypatch.setattr(mcp_server_mod.logging, "basicConfig", lambda **kwargs: None)
+    monkeypatch.setattr(mcp_server_mod.sys, "argv", ["memory-mcp"])
+
+    captured_run_payloads: list[object] = []
+    monkeypatch.setattr(
+        mcp_server_mod,
+        "_run",
+        lambda db_path, user_id: ("run", db_path, user_id),
+    )
+    monkeypatch.setattr(
+        mcp_server_mod.asyncio,
+        "run",
+        lambda payload: captured_run_payloads.append(payload),
+    )
+
+    caplog.set_level("INFO", logger="headroom.memory.mcp")
+
+    mcp_server_mod.main()
+
+    assert captured_run_payloads == [
+        ("run", str(project_dir / ".headroom" / "memory.db"), "codex-user")
+    ]
+    assert any(
+        "Memory MCP startup: configured_db=" in record.message
+        and "config_source=cwd-default" in record.message
+        and "storage_scope=active-project" in record.message
+        and "resolution=dynamic-cwd" in record.message
+        for record in caplog.records
+    )
