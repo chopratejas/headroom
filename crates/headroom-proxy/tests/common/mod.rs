@@ -117,6 +117,19 @@ pub fn install_static_token_source(mut state: AppState, bearer: &str) -> AppStat
     state
 }
 
+/// Convenience: `GET /stats` on a running proxy and parse the JSON body.
+#[allow(dead_code)]
+pub async fn get_stats(proxy: &ProxyHandle) -> serde_json::Value {
+    reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json")
+}
+
 /// Hold a reference to the config so dead_code doesn't strip its use.
 #[allow(dead_code)]
 pub fn _config_ref() -> Arc<Config> {

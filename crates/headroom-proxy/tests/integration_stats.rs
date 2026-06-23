@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{start_proxy, start_proxy_with};
+use common::{get_stats, start_proxy, start_proxy_with};
 use wiremock::matchers::{method, path as path_matcher};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -70,14 +70,7 @@ async fn stats_records_llm_request_attributed_by_provider() {
         .expect("POST /v1/messages");
     assert_eq!(resp.status(), 200);
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
 
     // The request was recorded and attributed to the Anthropic backend.
     assert_eq!(stats["requests"]["total"], 1);
@@ -114,14 +107,7 @@ async fn stats_attributes_openai_chat_completions() {
         .expect("POST /v1/chat/completions");
     assert_eq!(resp.status(), 200);
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     assert_eq!(stats["requests"]["by_provider"]["openai"], 1);
 
     proxy.shutdown().await;
@@ -193,14 +179,7 @@ async fn stats_folds_in_supplemental_python_blocks() {
         .expect("POST /v1/messages");
     assert_eq!(resp.status(), 200);
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
 
     // Harmony: the Python-only block surfaces AND the Rust-native count is the
     // real one (1), not the Python proxy's 999 — both backends coexist.
@@ -275,14 +254,7 @@ async fn stats_persist_across_restart() {
     {
         let p = path.clone();
         let proxy = start_proxy_with(&upstream.uri(), move |c| c.savings_path = Some(p)).await;
-        let stats: serde_json::Value = reqwest::Client::new()
-            .get(format!("{}/stats", proxy.url()))
-            .send()
-            .await
-            .expect("GET /stats")
-            .json()
-            .await
-            .expect("stats json");
+        let stats = get_stats(&proxy).await;
         assert_eq!(stats["requests"]["total"], 1);
         assert_eq!(stats["persistent_savings"]["lifetime"]["requests"], 1);
         proxy.shutdown().await;
@@ -421,14 +393,7 @@ async fn stats_counts_failed_when_upstream_returns_5xx() {
         .expect("POST /v1/messages");
     assert_eq!(resp.status(), 500);
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     assert_eq!(stats["requests"]["total"], 1);
     assert_eq!(
         stats["requests"]["failed"], 1,
@@ -457,14 +422,7 @@ async fn stats_does_not_count_failed_on_2xx() {
         .await
         .expect("POST /v1/messages");
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     assert_eq!(stats["requests"]["total"], 1);
     assert_eq!(stats["requests"]["failed"], 0);
 
@@ -484,14 +442,7 @@ async fn stats_exposes_recent_requests_feed() {
     let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     // Fresh proxy: present and empty.
-    let empty: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let empty = get_stats(&proxy).await;
     assert!(empty["recent_requests"].is_array());
     assert_eq!(empty["recent_requests"].as_array().unwrap().len(), 0);
 
@@ -503,14 +454,7 @@ async fn stats_exposes_recent_requests_feed() {
         .await
         .expect("POST /v1/messages");
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     let feed = stats["recent_requests"].as_array().unwrap();
     assert_eq!(feed.len(), 1);
     let row = &feed[0];
@@ -582,14 +526,7 @@ async fn stats_records_connect_error_as_failed() {
         .expect("POST /v1/messages");
     assert!(resp.status().is_server_error(), "got {}", resp.status());
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     assert_eq!(stats["requests"]["total"], 1);
     assert_eq!(stats["requests"]["failed"], 1);
 
@@ -614,14 +551,7 @@ async fn stats_rejects_oversized_supplemental_response() {
     })
     .await;
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     // Oversized supplemental is dropped — no copilot_quota folded in, /stats still 200.
     assert!(stats.get("copilot_quota").is_none());
     assert_eq!(stats["requests"]["total"], 0);
@@ -655,14 +585,7 @@ async fn stats_not_recorded_when_mode_off() {
         .expect("POST /v1/messages");
     assert_eq!(resp.status(), 200);
 
-    let stats: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/stats", proxy.url()))
-        .send()
-        .await
-        .expect("GET /stats")
-        .json()
-        .await
-        .expect("stats json");
+    let stats = get_stats(&proxy).await;
     assert_eq!(stats["requests"]["total"], 0);
 
     proxy.shutdown().await;
