@@ -84,6 +84,33 @@ def test_openai_responses_tool_results_for_learning_pairs_calls_with_outputs() -
     ]
 
 
+def test_openai_responses_tool_results_for_learning_pairs_custom_tool_calls() -> None:
+    input_items: list[dict[str, Any]] = [
+        {
+            "type": "custom_tool_call",
+            "call_id": "call_shell",
+            "name": "shell",
+            "input": '{"cmd": "python --version"}',
+        },
+        {
+            "type": "custom_tool_call_output",
+            "call_id": "call_shell",
+            "output": "Python 3.12.13",
+        },
+    ]
+
+    results = _openai_responses_tool_results_for_learning(input_items)
+
+    assert results == [
+        {
+            "tool_name": "shell",
+            "input": {"cmd": "python --version"},
+            "output": "Python 3.12.13",
+            "is_error": False,
+        }
+    ]
+
+
 def test_openai_responses_tool_results_for_learning_handles_bad_args_and_errors() -> None:
     input_items: list[dict[str, Any]] = [
         {

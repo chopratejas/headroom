@@ -450,20 +450,32 @@ def _openai_responses_tool_results_for_learning(
 
     calls_by_id: dict[str, dict[str, Any]] = {}
     for item in input_data:
-        if not isinstance(item, dict) or item.get("type") != "function_call":
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if (
+            item_type != "function_call"
+            and (
+                not isinstance(item_type, str)
+                or f"{item_type}_output" not in _RESPONSES_OUTPUT_ITEM_TYPES
+            )
+        ):
             continue
         call_id = item.get("call_id") or item.get("id")
         if not isinstance(call_id, str) or not call_id:
             continue
         name = item.get("name")
+        input_args = item.get("arguments") if item_type == "function_call" else item.get("input")
         calls_by_id[call_id] = {
             "tool_name": name if isinstance(name, str) and name else "unknown",
-            "input": _responses_function_args(item.get("arguments")),
+            "input": _responses_function_args(input_args),
         }
 
     results: list[dict[str, Any]] = []
     for item in input_data:
-        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in _RESPONSES_OUTPUT_ITEM_TYPES:
             continue
         call_id = item.get("call_id")
         call = calls_by_id.get(call_id if isinstance(call_id, str) else "", {})
