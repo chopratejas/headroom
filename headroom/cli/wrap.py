@@ -2607,13 +2607,24 @@ def _unregister_proxy_client(port: int) -> None:
 
 def _pid_alive(pid: int) -> bool:
     """Return True if ``pid`` names a live process."""
+    if pid <= 0:
+        return False  # non-positive PIDs are never valid client markers
+    try:
+        import psutil  # type: ignore[import-untyped]  # optional dep, already used elsewhere
+
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
     except PermissionError:
         return True  # exists but owned by another user
-    except OSError:
+    except (ProcessLookupError, OSError, SystemError):
+        # On Windows, os.kill against a stale/invalid PID can fail with WinError
+        # 87 ("The parameter is incorrect"); CPython sometimes surfaces this as a
+        # SystemError rather than an OSError. SystemError is not an OSError
+        # subclass, so a bare `except OSError` lets it escape and crash cleanup(),
+        # leaving the shared proxy running.
         return False
     return True
 
