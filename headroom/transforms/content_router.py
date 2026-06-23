@@ -95,6 +95,36 @@ def _json_shape(content: str) -> dict[str, Any]:
     return {"is_json": True, "kind": type(parsed).__name__}
 
 
+def _content_is_valid_json(content: str) -> bool:
+    """Return True iff ``content`` parses as valid JSON.
+
+    Used by the SMART_CRUSHER → Log fallback guard (#1306): the native
+    magika detector tags content by shape, so truncated/mid-stream JSON
+    tool outputs are misclassified as ``json_array``. SmartCrusher can't
+    parse them and returns no savings; without this guard the LogCompressor
+    would then collapse the broken JSON to a single CCR-retrieval marker
+    (99.9% data loss). Valid JSON arrays still reach the Log fallback —
+    LogCompressor is a no-op on them, so the guard is safe for the
+    intended "repetitive JSONL" case.
+    """
+    try:
+        json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    except RecursionError:
+        # Deeply nested JSON (e.g. ``[[[[...]]]]`` with 10k+ levels) can
+        # exceed Python's recursion limit inside ``json.loads``.  Treat
+        # it as invalid so the Log fallback is skipped — the content
+        # passes through verbatim instead of being collapsed.
+        logger.warning(
+            "json.loads hit recursion limit on deeply nested JSON "
+            "(%d chars); treating as invalid for Log-fallback guard",
+            len(content),
+        )
+        return False
+    return True
+
+
 def _mixed_indicators(content: str) -> dict[str, bool]:
     return {
         "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
@@ -1272,6 +1302,22 @@ class ContentRouter(Transform):
         """
         # 1. Check for mixed content
         if is_mixed_content(content):
+            # 2. Verify with the native detector: ``is_mixed_content`` uses
+            # cheap regex heuristics that produce false positives on source
+            # code.  Python files with dict/list literals (``{``, ``[`` at
+            # line start) trigger ``has_json_blocks``, and docstrings/comments
+            # trigger ``has_prose`` — so a pure Python blob is misclassified
+            # as MIXED, routed through ``_compress_mixed`` which splits it
+            # into sections and dispatches each to KOMPRESS (no-op on code),
+            # wasting latency on splitting without any compression.
+            # When the native magika detector confidently says SOURCE_CODE,
+            # trust it over the regex heuristics.
+            detection = _detect_content(content)
+            if (
+                detection.content_type == ContentType.SOURCE_CODE
+                and detection.confidence >= 0.8
+            ):
+                return self._strategy_from_detection(detection)
             return CompressionStrategy.MIXED
 
         # 2. Detect content type from content itself
@@ -1305,7 +1351,19 @@ class ContentRouter(Transform):
             strategy == CompressionStrategy.CODE_AWARE
             and not self.config.prefer_code_aware_for_code
         ):
-            strategy = CompressionStrategy.KOMPRESS
+            # When CodeAware is not preferred, the intent is "let code pass
+            # through unmangled" (per the config comment).  Previously this
+            # fell back to KOMPRESS, which is an ML compressor that can
+            # destroy code semantics — on a 45K-token Python blob it
+            # compresses to 912 tokens with 11% fact recall, making the
+            # code useless for an agent.  The MIXED path accidentally
+            # protected code by splitting it into small sections that
+            # KOMPRESS passes through, but that was a side-effect, not
+            # intent.  Now that the MIXED false-positive on source code is
+            # fixed (``_determine_strategy`` trusts the native detector),
+            # code reaches this path directly — so use PASSTHROUGH to
+            # honour the "unmangled" intent explicitly.
+            strategy = CompressionStrategy.PASSTHROUGH
 
         return strategy
 
@@ -1620,9 +1678,24 @@ class ContentRouter(Transform):
                     # Kompress can't shrink but the log compressor can).
                     # Only attempted when the strategy was SMART_CRUSHER so
                     # we don't reroute genuine code/diff content.
+                    #
+                    # JSON-validity guard (#1306): the native magika detector
+                    # classifies content by shape, not parseability, so a
+                    # truncated/mid-stream JSON tool output is tagged
+                    # ``json_array`` and routed to SMART_CRUSHER. SmartCrusher
+                    # returns it unchanged (it can't parse the broken JSON),
+                    # Kompress passes it through, and then the LogCompressor
+                    # treats the whole thing as a multi-thousand-line "log"
+                    # and collapses it to a single CCR-retrieval marker —
+                    # 99.9% data loss when CCR retrieval isn't configured.
+                    # Skip the Log fallback when the content isn't actually
+                    # valid JSON; the passthrough at the bottom of this
+                    # function preserves it verbatim. Valid JSON arrays still
+                    # get the Log fallback (LogCompressor is a no-op on them).
                     if (
                         strategy == CompressionStrategy.SMART_CRUSHER
                         and self.config.enable_log_compressor
+                        and _content_is_valid_json(content)
                     ):
                         log_compressor = self._get_log_compressor()
                         if log_compressor is not None:

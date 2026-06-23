@@ -205,7 +205,12 @@ def _try_detect_json(content: str) -> DetectionResult | None:
                 0.8,
                 {"item_count": len(parsed), "is_dict_array": False},
             )
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
+        pass
+    except RecursionError:
+        # Deeply nested JSON (e.g. ``[[[[...]]]]`` with 10k+ levels) can
+        # exceed Python's recursion limit.  Treat as non-JSON so the
+        # router falls through to a safe strategy instead of crashing.
         pass
 
     return None
