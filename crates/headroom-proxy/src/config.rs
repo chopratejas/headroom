@@ -19,14 +19,13 @@ use url::Url;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 pub enum CompressionMode {
-    /// Compression disabled. Body forwards byte-equal to upstream.
-    /// This is the default; Phase B will switch the default to
-    /// `live_zone` once that mode is implemented.
+    /// Compression disabled. Body forwards byte-equal to upstream. This is the
+    /// default. A request under this mode is not recorded as a savings event
+    /// (see [`Config::should_record`]).
     Off,
-    /// Compress only live-zone blocks (latest user message,
-    /// latest tool/function/shell/patch outputs). NOT YET IMPLEMENTED:
-    /// in PR-A1 this falls through to passthrough behaviour with a
-    /// loud warning. Phase B PR-B2 wires in the actual dispatcher.
+    /// Compress only live-zone blocks: the latest user message and the latest
+    /// tool/function/shell/patch outputs. Runs the live-zone dispatcher over the
+    /// request body.
     LiveZone,
 }
 
@@ -519,11 +518,10 @@ pub struct Config {
     /// Inherits `max_body_bytes` when not overridden. Bodies larger
     /// than this still forward, just unchanged.
     pub compression_max_body_bytes: u64,
-    /// Policy mode for compression on `/v1/messages`. PR-A1 lockdown:
-    /// both `Off` and `LiveZone` result in byte-faithful passthrough;
-    /// `LiveZone` additionally emits a `tracing::warn!` per request
-    /// because the dispatcher isn't implemented yet (Phase B PR-B2
-    /// fills this in).
+    /// Policy mode for compression. `Off` forwards the body byte-faithful;
+    /// `LiveZone` runs the live-zone dispatcher (compressing the latest user
+    /// message + tool/output blocks). Only a non-`off` mode is a savings event —
+    /// see [`Config::should_record`].
     pub compression_mode: CompressionMode,
     /// Whether the live-zone dispatcher derives `frozen_message_count`
     /// automatically from customer `cache_control` markers. PR-A4

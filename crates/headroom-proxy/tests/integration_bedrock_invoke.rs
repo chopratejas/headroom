@@ -603,3 +603,43 @@ async fn bedrock_invoke_recorded_in_stats() {
 
     proxy.shutdown().await;
 }
+
+#[tokio::test]
+async fn bedrock_not_recorded_when_mode_off() {
+    // Recording is gated on should_record(): compression on but mode == off is a
+    // byte-equal passthrough with zero savings, so the Bedrock lane records nothing
+    // (per-lane guard for the mode clause, matching forward_http).
+    let upstream = MockServer::start().await;
+    let _captured = mount_capture_invoke(&upstream, r#"{"id":"msg_x","content":[]}"#).await;
+    let proxy = bedrock_proxy(&upstream, |c| {
+        c.compression = true;
+        c.compression_mode = headroom_proxy::config::CompressionMode::Off;
+    })
+    .await;
+
+    let body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/model/{TEST_MODEL}/invoke", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("POST bedrock invoke");
+    assert_eq!(resp.status(), 200);
+
+    let stats: Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
+    assert_eq!(stats["requests"]["total"], 0);
+
+    proxy.shutdown().await;
+}

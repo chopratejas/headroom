@@ -209,8 +209,9 @@ pub(crate) async fn forward_vertex_request(
 
     // Phase H: build this Vertex request's savings outcome now but record it once
     // the upstream result is known, so `requests.failed` reflects connect errors
-    // / non-2xx upstreams. Recording is gated on the compression master switch,
-    // consistent with `forward_http`.
+    // / non-2xx upstreams. Recording is gated on `should_record()` (compression on
+    // AND mode != off) — the shared predicate; narrower than the plain-`compression`
+    // interception gate.
     let rec_outcome = state.config.should_record().then(|| {
         crate::observability::stats::RequestOutcome::priced(
             "vertex",

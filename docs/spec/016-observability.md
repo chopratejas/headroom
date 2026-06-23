@@ -162,6 +162,14 @@ completion, and counting it would inflate the figures and double-count on retry.
 | `/metrics` | `observability/prometheus.rs` | yes | Prometheus scrape → Grafana / alerting |
 | `/stats` (JSON), `/dashboard` (HTML) | `observability/stats.rs` | no (persisted) | Dashboard savings view |
 
+> **The two surfaces count different things.** `/metrics` counters
+> (e.g. `bedrock_invoke_total`) count *forwarded* traffic and fire regardless of
+> compression. `/stats` counts only *savings-eligible* requests — those recorded
+> when compression is on **and** the mode is not `off` (a `mode == off` request
+> forwards byte-equal with zero savings and is not a savings event). So under the
+> `compression on / mode off` misconfig (which startup warns about), `/metrics`
+> will show traffic while `/stats` stays empty. This is expected, not a bug.
+
 > **Access control:** like `/metrics`, the `/stats` and `/dashboard` surfaces are
 > unauthenticated and expose usage/savings data (model names, token counts, USD).
 > They carry no secrets, but operators should keep the proxy port on a trusted

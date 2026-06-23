@@ -302,6 +302,45 @@ async fn vertex_not_recorded_when_compression_off() {
     proxy.shutdown().await;
 }
 
+#[tokio::test]
+async fn vertex_not_recorded_when_mode_off() {
+    // Recording is gated on should_record(): compression on but mode == off is a
+    // byte-equal passthrough with zero savings, so the Vertex lane records nothing
+    // (per-lane guard for the mode clause, matching forward_http).
+    let upstream = MockServer::start().await;
+    mount_capture_json(&upstream).await;
+    let proxy = start_proxy_with_state(
+        &upstream.uri(),
+        |c| {
+            c.compression = true;
+            c.compression_mode = headroom_proxy::config::CompressionMode::Off;
+        },
+        |s| install_static_token_source(s, TEST_BEARER),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(raw_predict_url(&proxy.url()))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&minimal_vertex_body()).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let stats: Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stats["requests"]["total"], 0);
+
+    proxy.shutdown().await;
+}
+
 // ─── TEST 2 ────────────────────────────────────────────────────────────
 
 #[tokio::test]

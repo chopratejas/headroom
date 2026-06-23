@@ -203,9 +203,11 @@ pub async fn handle_invoke(
     // record site and are intentionally NOT counted; they are config/client
     // errors, not upstream interactions.
     //
-    // Recording is gated on the compression master switch, consistent with
-    // `forward_http` (whose `should_intercept` requires `config.compression`):
-    // when compression is off the savings store stays empty across all lanes.
+    // Recording is gated on `should_record()` (compression on AND mode != off),
+    // the same predicate every lane uses — a request that can't actually compress
+    // is not a savings event. Note this is narrower than the interception gate:
+    // `forward_http`'s `should_intercept` is the plain `config.compression` flag
+    // (it still buffers/forwards a mode=off request, just doesn't record it).
     let rec_outcome = state.config.should_record().then(|| {
         crate::observability::stats::RequestOutcome::priced(
             "bedrock",
