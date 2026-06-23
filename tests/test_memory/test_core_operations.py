@@ -23,13 +23,13 @@ import functools
 import tempfile
 from pathlib import Path
 
-import httpx
 import pytest
 
 from headroom.memory.config import MemoryConfig
 from headroom.memory.core import HierarchicalMemory
 from headroom.memory.models import Memory, ScopeLevel
 from headroom.memory.ports import MemoryFilter
+from tests._skip_helpers import external_model_skip_reason
 
 # Check if hnswlib is available (HierarchicalMemory requires it)
 try:
@@ -43,14 +43,17 @@ pytestmark = pytest.mark.skipif(not HNSW_AVAILABLE, reason="hnswlib not availabl
 
 
 def network_timeout_handler(func):
-    """Decorator to skip tests on network timeouts (flaky CI)."""
+    """Decorator to skip tests on transient/offline model dependency failures."""
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         try:
             return await func(*args, **kwargs)
-        except httpx.ReadTimeout:
-            pytest.skip("Skipped due to network timeout (flaky CI)")
+        except Exception as exc:
+            reason = external_model_skip_reason(exc)
+            if reason is not None:
+                pytest.skip(reason)
+            raise
 
     return wrapper
 
