@@ -736,7 +736,7 @@ pub(crate) async fn forward_http(
     // controls what the buffered branch does (currently both `Off`
     // and `LiveZone` passthrough); Phase B will branch on it inside
     // `compress_anthropic_request`.
-    let should_intercept = state.config.should_record()
+    let should_intercept = state.config.compression
         && method == axum::http::Method::POST
         && compression::is_compressible_path(uri.path())
         && is_application_json(req.headers());
@@ -1062,14 +1062,21 @@ pub(crate) async fn forward_http(
         // to zero here, so compression savings are exact and request counts
         // accurate from day one. USD is valued via the price book when the model
         // is priced; otherwise savings stay token-only with USD at zero.
-        pending_record = Some(crate::observability::stats::RequestOutcome::priced(
-            rec_provider,
-            rec_model,
-            rec_tokens_before,
-            rec_tokens_after,
-            request_id.clone(),
-            &state.price_book,
-        ));
+        //
+        // Recording is gated on `should_record()` (compression on AND mode not
+        // `off`): interception above buffers/forwards regardless, but a request
+        // that can't actually compress (mode `off`) is not a savings event. The
+        // Bedrock/Vertex lanes gate on the same predicate.
+        pending_record = state.config.should_record().then(|| {
+            crate::observability::stats::RequestOutcome::priced(
+                rec_provider,
+                rec_model,
+                rec_tokens_before,
+                rec_tokens_after,
+                request_id.clone(),
+                &state.price_book,
+            )
+        });
 
         // C2 fix: cache-safety alarm. When the dispatcher returned
         // `NoCompression` or `Passthrough`, the post-dispatcher body

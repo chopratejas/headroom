@@ -236,8 +236,9 @@ async fn stats_attributes_vertex_raw_predict() {
     let proxy = start_proxy_with_state(
         &upstream.uri(),
         |c| {
-            // Recording is gated on the compression master switch.
+            // Recording is gated on should_record(): compression on AND mode != off.
             c.compression = true;
+            c.compression_mode = headroom_proxy::config::CompressionMode::LiveZone;
         },
         |s| install_static_token_source(s, TEST_BEARER),
     )

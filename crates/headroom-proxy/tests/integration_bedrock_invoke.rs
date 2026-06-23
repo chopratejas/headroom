@@ -570,7 +570,9 @@ async fn bedrock_invoke_recorded_in_stats() {
     let upstream = MockServer::start().await;
     let _captured = mount_capture_invoke(&upstream, r#"{"id":"msg_x","content":[]}"#).await;
     let proxy = bedrock_proxy(&upstream, |c| {
+        // Recording is gated on should_record(): compression on AND mode != off.
         c.compression = true;
+        c.compression_mode = headroom_proxy::config::CompressionMode::LiveZone;
     })
     .await;
 

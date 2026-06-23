@@ -7,6 +7,13 @@ use common::{start_proxy, start_proxy_with};
 use wiremock::matchers::{method, path as path_matcher};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Recording is gated on `Config::should_record()` — the compression master
+/// switch AND a non-`off` mode. Tests that assert `/stats` recording enable both.
+fn enable_recording(c: &mut headroom_proxy::config::Config) {
+    c.compression = true;
+    c.compression_mode = headroom_proxy::config::CompressionMode::LiveZone;
+}
+
 #[tokio::test]
 async fn stats_endpoint_serves_savings_json_by_default() {
     let upstream = MockServer::start().await;
@@ -47,7 +54,7 @@ async fn stats_records_llm_request_attributed_by_provider() {
         .await;
 
     // Recording is gated on the compression master switch; enable it.
-    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+    let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     let req_body = serde_json::json!({
         "model": "claude-haiku-4-5",
@@ -89,7 +96,7 @@ async fn stats_attributes_openai_chat_completions() {
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
         .mount(&upstream)
         .await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+    let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/chat/completions", proxy.url()))
@@ -170,7 +177,7 @@ async fn stats_folds_in_supplemental_python_blocks() {
 
     let url = format!("{}/stats", python.uri());
     let proxy = start_proxy_with(&upstream.uri(), move |c| {
-        c.compression = true; // recording gated on the master switch
+        enable_recording(c);
         c.upstream_stats_url = Some(url.clone());
     })
     .await;
@@ -247,7 +254,7 @@ async fn stats_persist_across_restart() {
     {
         let p = path.clone();
         let proxy = start_proxy_with(&upstream.uri(), move |c| {
-            c.compression = true;
+            enable_recording(c);
             c.savings_path = Some(p);
         })
         .await;
@@ -344,7 +351,7 @@ async fn stats_history_endpoint_serves_history_contract() {
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
         .mount(&upstream)
         .await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+    let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     // Fresh proxy: well-formed and empty.
     let empty: serde_json::Value = reqwest::Client::new()
@@ -398,7 +405,7 @@ async fn stats_counts_failed_when_upstream_returns_5xx() {
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
         .mount(&upstream)
         .await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+    let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     let req_body = serde_json::json!({
         "model": "claude-haiku-4-5",
@@ -440,7 +447,7 @@ async fn stats_does_not_count_failed_on_2xx() {
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
         .mount(&upstream)
         .await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+    let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     reqwest::Client::new()
         .post(format!("{}/v1/messages", proxy.url()))
@@ -474,7 +481,7 @@ async fn stats_exposes_recent_requests_feed() {
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
         .mount(&upstream)
         .await;
-    let proxy = start_proxy_with(&upstream.uri(), |c| c.compression = true).await;
+    let proxy = start_proxy_with(&upstream.uri(), enable_recording).await;
 
     // Fresh proxy: present and empty.
     let empty: serde_json::Value = reqwest::Client::new()
@@ -564,7 +571,7 @@ async fn stats_records_connect_error_as_failed() {
     // A transport error (dead upstream) on the forward_http lane must be recorded
     // as a failed request — consistent with the Bedrock/Vertex handlers — not
     // dropped silently, so OpenAI/Anthropic outages stay visible in /stats.
-    let proxy = start_proxy_with("http://127.0.0.1:1", |c| c.compression = true).await;
+    let proxy = start_proxy_with("http://127.0.0.1:1", enable_recording).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/v1/messages", proxy.url()))
@@ -617,6 +624,45 @@ async fn stats_rejects_oversized_supplemental_response() {
         .expect("stats json");
     // Oversized supplemental is dropped — no copilot_quota folded in, /stats still 200.
     assert!(stats.get("copilot_quota").is_none());
+    assert_eq!(stats["requests"]["total"], 0);
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn stats_not_recorded_when_mode_off() {
+    // Decision (b): compression on but mode == off forwards byte-equal with zero
+    // savings, so it is not a savings event — the request is still forwarded, but
+    // `/stats` stays empty (consistent with the master switch being off).
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_matcher("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&upstream)
+        .await;
+    let proxy = start_proxy_with(&upstream.uri(), |c| {
+        c.compression = true;
+        c.compression_mode = headroom_proxy::config::CompressionMode::Off;
+    })
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.url()))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"max_tokens":10}"#)
+        .send()
+        .await
+        .expect("POST /v1/messages");
+    assert_eq!(resp.status(), 200);
+
+    let stats: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
     assert_eq!(stats["requests"]["total"], 0);
 
     proxy.shutdown().await;

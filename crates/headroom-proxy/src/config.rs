@@ -591,14 +591,16 @@ impl Config {
     }
 
     /// Whether request outcomes should be recorded into the savings store. The
-    /// single predicate every recorder lane (forward_http's `should_intercept`,
-    /// plus the Bedrock/Vertex handlers) gates on, so the rule lives in one place
-    /// and can't drift across lanes. Gated on the compression master switch:
-    /// with compression off there are no savings to track. (To also exclude the
-    /// `compression && mode == off` misconfig — see `compression_enabled_but_mode_off`
-    /// — narrow this to `&& !self.compression_enabled_but_mode_off()`.)
+    /// single predicate the Bedrock/Vertex handlers and forward_http's recording
+    /// gate on, so the rule lives in one place and can't drift across lanes.
+    /// Requires the compression master switch AND a non-`off` mode: with
+    /// compression off (or on but `mode == off`, which forwards byte-equal with
+    /// zero savings) there is no savings event to record, so `/stats` stays empty
+    /// rather than logging traffic the proxy didn't actually compress. Note this
+    /// is narrower than the interception gate (`config.compression` alone): a
+    /// `mode == off` request is still buffered/forwarded, just not recorded.
     pub fn should_record(&self) -> bool {
-        self.compression
+        self.compression && self.compression_mode != CompressionMode::Off
     }
 
     pub fn from_cli(args: CliArgs) -> Self {
@@ -720,5 +722,20 @@ mod tests {
 
         c.compression = false; // master off, mode live_zone → not misconfigured
         assert!(!c.compression_enabled_but_mode_off());
+    }
+
+    #[test]
+    fn should_record_requires_master_on_and_mode_engaged() {
+        let mut c = cfg();
+        assert!(!c.should_record()); // compression off
+
+        c.compression = true; // master on, but mode still Off → byte-equal, no savings
+        assert!(!c.should_record());
+
+        c.compression_mode = CompressionMode::LiveZone; // actually compressing → record
+        assert!(c.should_record());
+
+        c.compression = false; // master off again → no record regardless of mode
+        assert!(!c.should_record());
     }
 }
