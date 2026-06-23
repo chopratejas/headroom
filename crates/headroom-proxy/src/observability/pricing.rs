@@ -6,9 +6,9 @@
 //! ecosystem uses) and resolves a request's model id to its per-token prices.
 //!
 //! It is deliberately separate from [`super::stats`] so the store stays a pure
-//! token aggregator and the (fuzzy, provider-specific) price lookup is tested in
-//! isolation. An empty price book is valid — savings are then reported in tokens
-//! with USD left at zero rather than guessed.
+//! token aggregator and the (provider-specific, substring-resolving) price lookup
+//! is tested in isolation. An empty price book is valid — savings are then
+//! reported in tokens with USD left at zero rather than guessed.
 //!
 //! [models.dev]: https://models.dev
 

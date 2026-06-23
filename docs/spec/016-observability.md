@@ -121,7 +121,8 @@ truth for savings.
 
 ```json
 {
-  "requests": { "total": 184, "by_provider": { "anthropic": 120, "bedrock": 64 } },
+  "requests": { "total": 184, "failed": 3, "compressed": 96,
+                "by_provider": { "anthropic": 120, "bedrock": 64 } },
   "tokens":   { "saved": 79000, "savings_percent": 41.2 },
   "cost":     { "compression_savings_usd": 2.81, "per_model": { "claude-haiku-4-5": { "tokens_saved": 51000 } } },
   "persistent_savings": {
@@ -130,6 +131,15 @@ truth for savings.
   }
 }
 ```
+
+**Reading `savings_percent` honestly.** It is the input-token reduction over the
+requests that were actually **compressed** — not over all traffic. The proxy
+only tokenizes requests it compresses, so passthrough requests (too small, `n>1`,
+etc.) contribute no input count and are not in the denominator. Use
+`requests.compressed` / `requests.total` to see how much of the traffic that
+percentage applies to. **Failed upstreams** (`requests.failed`) count toward the
+request totals but accrue **no** savings — a failed call produced no successful
+completion, and counting it would inflate the figures and double-count on retry.
 
 **Properties:**
 

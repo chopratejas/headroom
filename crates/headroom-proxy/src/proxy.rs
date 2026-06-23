@@ -78,13 +78,14 @@ pub struct AppState {
     /// to in-memory; a persistent path is wired from config when set.
     pub savings: Arc<crate::observability::stats::SavingsStore>,
     /// Phase H: per-model price book used to value token savings in USD. Loaded
-    /// from a models.dev JSON file (`HEADROOM_PRICEBOOK`) when present; empty
-    /// otherwise, in which case savings are reported in tokens with USD at zero.
+    /// from a models.dev JSON file (`--pricebook` / `HEADROOM_PROXY_PRICEBOOK`)
+    /// when set; empty otherwise, in which case savings are reported in tokens
+    /// with USD at zero.
     pub price_book: Arc<crate::observability::pricing::PriceBook>,
 }
 
-/// Load the per-model price book from the `HEADROOM_PRICEBOOK` env var (a path
-/// to a models.dev JSON file). Returns an empty book when unset or unreadable —
+/// Load the per-model price book from `Config::pricebook_path` (a path to a
+/// models.dev JSON file). Returns an empty book when unset or unreadable —
 /// savings still report in tokens, just with USD at zero.
 fn load_price_book(path: Option<&std::path::Path>) -> crate::observability::pricing::PriceBook {
     match path {
