@@ -23,6 +23,8 @@ import threading
 import time
 from pathlib import Path
 
+from headroom._subprocess import run
+
 logger = logging.getLogger(__name__)
 
 # Source file extensions worth reindexing for
@@ -217,7 +219,7 @@ class CodeGraphWatcher:
 
         try:
             start = time.monotonic()
-            result = subprocess.run(
+            result = run(
                 [
                     self.cbm_binary,
                     "cli",
@@ -226,8 +228,6 @@ class CodeGraphWatcher:
                 ],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=30,
             )
 

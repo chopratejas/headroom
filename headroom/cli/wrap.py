@@ -31,6 +31,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+from headroom._subprocess import run
+
 # Fix Windows cp1252 encoding — box-drawing characters require UTF-8
 if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
     if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
@@ -501,12 +503,10 @@ def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
             # lean-ctx writes project-local files when initialized from a git
             # checkout. Run from a non-project directory so setup is limited to
             # home-scoped agent config such as ~/.codex or ~/.claude.
-            result = subprocess.run(
+            result = run(
                 [str(lean_ctx), "init", "--agent", agent],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=30,
                 cwd=setup_cwd,
             )
@@ -892,22 +892,18 @@ def _register_cbm_mcp_server(cbm_bin: str) -> None:
         return
 
     # Check if already registered
-    check = subprocess.run(
+    check = run(
         [claude_cli, "mcp", "get", _CBM_MCP_SERVER_NAME],
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if check.returncode == 0:
         return  # Already registered
 
-    result = subprocess.run(
+    result = run(
         [claude_cli, "mcp", "add", _CBM_MCP_SERVER_NAME, "-s", "user", "--", cbm_bin],
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if result.returncode == 0:
         click.echo(f"  Code graph: registered {_CBM_MCP_SERVER_NAME} MCP server")
@@ -952,7 +948,7 @@ def _setup_code_graph(verbose: bool = False) -> bool:
     # Index current project (fast — ~1s for most repos, idempotent)
     project_dir = str(Path.cwd())
     try:
-        result = subprocess.run(
+        result = run(
             [
                 cbm_bin,
                 "cli",
@@ -961,8 +957,6 @@ def _setup_code_graph(verbose: bool = False) -> bool:
             ],
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=30,
         )
         if result.returncode == 0:
@@ -2791,14 +2785,12 @@ def _run_checked(
 ) -> subprocess.CompletedProcess[str]:
     """Run subprocess and raise a ClickException with actionable context on failure."""
     try:
-        return subprocess.run(
+        return run(
             cmd,
             cwd=str(cwd) if cwd else None,
             check=True,
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
         )
     except FileNotFoundError as e:
         raise click.ClickException(f"{action} failed: command not found: {cmd[0]}") from e
@@ -2829,12 +2821,10 @@ def _normalize_openclaw_gateway_provider_ids(provider_ids: tuple[str, ...] | Non
 
 def _read_openclaw_config_value(openclaw_bin: str, path: str) -> Any | None:
     """Read an OpenClaw config value when present, returning None on missing paths."""
-    result = subprocess.run(
+    result = run(
         [openclaw_bin, "config", "get", path],
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if result.returncode != 0:
         return None
@@ -2913,12 +2903,10 @@ def _set_openclaw_context_engine_slot(openclaw_bin: str, engine_id: str) -> None
 
 def _restart_or_start_openclaw_gateway(openclaw_bin: str) -> tuple[str, str]:
     """Restart the gateway when running, otherwise start it."""
-    restart_result = subprocess.run(
+    restart_result = run(
         [openclaw_bin, "gateway", "restart"],
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if restart_result.returncode == 0:
         output = restart_result.stdout.strip() or restart_result.stderr.strip()
@@ -3131,15 +3119,13 @@ def claude(
     # Memory sync BEFORE proxy startup — sync headroom DB ↔ Claude's files
     if memory:
         try:
-            import subprocess as _sp
-
             mem_dir = Path.cwd() / ".headroom"
             mem_dir.mkdir(parents=True, exist_ok=True)
             _sync_db = str(mem_dir / "memory.db")
             _sync_user = os.environ.get("USER", os.environ.get("USERNAME", "default"))
 
             click.echo(f"  Syncing memory (user={_sync_user})...")
-            sync_result = _sp.run(
+            sync_result = run(
                 [
                     sys.executable,
                     "-m",
@@ -3154,8 +3140,6 @@ def claude(
                 ],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=30,
             )
             if sync_result.returncode == 0 and sync_result.stdout.strip():
@@ -4824,13 +4808,11 @@ def openclaw(
         install_cwd = None
 
     click.echo("  Installing OpenClaw plugin with required unsafe-install flag...")
-    install_result = subprocess.run(
+    install_result = run(
         install_cmd,
         cwd=str(install_cwd) if install_cwd else None,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if install_result.returncode != 0:
         combined_error = "\n".join(

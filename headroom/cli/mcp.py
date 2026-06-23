@@ -13,6 +13,8 @@ from typing import Any
 
 import click
 
+from headroom._subprocess import run
+
 from .main import main
 
 # Default paths
@@ -177,12 +179,10 @@ def mcp_uninstall() -> None:
             capture_output=True,
         )
         if check.returncode == 0:
-            rm = subprocess.run(
+            rm = run(
                 [claude_cli, "mcp", "remove", "headroom", "-s", "user"],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
             )
             if rm.returncode == 0:
                 click.echo("✓ Headroom MCP server removed (via claude mcp remove)")
@@ -200,12 +200,10 @@ def mcp_uninstall() -> None:
             capture_output=True,
         )
         if cbm_check.returncode == 0:
-            cbm_rm = subprocess.run(
+            cbm_rm = run(
                 [claude_cli, "mcp", "remove", "codebase-memory-mcp", "-s", "user"],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
             )
             if cbm_rm.returncode == 0:
                 click.echo("✓ codebase-memory-mcp MCP server removed")

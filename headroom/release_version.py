@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from headroom._subprocess import run
 
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$")
@@ -220,14 +221,12 @@ def get_canonical_version(root: Path) -> str:
 def list_release_tags(root: Path) -> list[str]:
     """List release tags from the local Git checkout."""
 
-    result = subprocess.run(
+    result = run(
         ["git", "tag", "-l", "v*"],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     return [tag.strip() for tag in result.stdout.splitlines() if tag.strip()]
 
@@ -241,14 +240,12 @@ def list_release_commits(root: Path, previous_tag: str) -> list[CommitInfo]:
     else:
         cmd.append("HEAD")
 
-    result = subprocess.run(
+    result = run(
         cmd,
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
 
     commits: list[CommitInfo] = []
@@ -266,14 +263,12 @@ def commit_height_since(root: Path, previous_tag: str) -> str:
     if not previous_tag:
         return "0"
 
-    result = subprocess.run(
+    result = run(
         ["git", "rev-list", f"{previous_tag}..HEAD", "--count"],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     return result.stdout.strip() or "0"
 

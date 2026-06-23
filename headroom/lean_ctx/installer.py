@@ -13,6 +13,8 @@ import zipfile
 from pathlib import Path
 from urllib.request import urlopen
 
+from headroom._subprocess import run
+
 from . import LEAN_CTX_BIN_DIR, LEAN_CTX_VERSION
 
 logger = logging.getLogger(__name__)
@@ -40,12 +42,10 @@ def _detect_runtime_target_triple() -> str:
 
 def _is_musl() -> bool:
     try:
-        result = subprocess.run(
+        result = run(
             ["ldd", "--version"],
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=2,
             check=False,
         )
@@ -141,12 +141,10 @@ def download_lean_ctx(version: str | None = None) -> Path:
 
     if _should_verify_target(target):
         try:
-            result = subprocess.run(
+            result = run(
                 [str(target_path), "--version"],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=5,
             )
             if result.returncode != 0:
