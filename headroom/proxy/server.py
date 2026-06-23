@@ -2701,9 +2701,27 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         except Exception:  # pragma: no cover - defensive
             pass
 
+        # Carbon savings: grams of CO2e avoided by tokens Headroom kept out of
+        # model context (compression + CLI filtering). Best-effort — never
+        # break /stats if the energy registry is missing.
+        carbon_stats: dict[str, Any] = {"available": False}
+        try:
+            from headroom.proxy.carbon import build_carbon_stats
+
+            carbon_stats = build_carbon_stats(
+                session_tokens_saved=all_layers_tokens_saved,
+                lifetime_tokens_saved=int(
+                    persistent_savings.get("lifetime", {}).get("tokens_saved", 0) or 0
+                ),
+                requests_by_model=dict(m.requests_by_model),
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("Failed to build carbon savings stats", exc_info=True)
+
         return {
             "summary": summary,
             "agent_usage": agent_usage,
+            "carbon": carbon_stats,
             "savings": {
                 "total_tokens": total_tokens_all_layers,
                 "per_project": persistent_savings.get("projects", {}),

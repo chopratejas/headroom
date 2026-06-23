@@ -1,0 +1,626 @@
+{
+  "o4-mini-high": {
+    "name": "OpenAI o4-mini (high)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.13
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 5.66
+      }
+    ]
+  },
+  "o3-pro": {
+    "name": "OpenAI o3 Pro",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 32.36
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 36.08
+      }
+    ]
+  },
+  "o3-mini-high": {
+    "name": "OpenAI o3 Mini (high)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 5.04
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 8.47
+      }
+    ]
+  },
+  "o3-mini": {
+    "name": "OpenAI o3 Mini",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.72
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.7
+      }
+    ]
+  },
+  "o3-medium": {
+    "name": "OpenAI o3 Medium",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 4.32
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 5.73
+      }
+    ]
+  },
+  "o3": {
+    "name": "OpenAI o3",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 4.32
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 5.73
+      }
+    ]
+  },
+  "o1-medium": {
+    "name": "OpenAI o1 Medium",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 7.03
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 14.4
+      }
+    ]
+  },
+  "o1": {
+    "name": "OpenAI o1",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 7.03
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 14.4
+      }
+    ]
+  },
+  "o4": {
+    "name": "OpenAI o4 default (o4 high)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.13
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 5.66
+      }
+    ]
+  },
+  "gpt-5-mini-high": {
+    "name": "GPT5 Mini (high)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 14.86
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 13.37
+      }
+    ]
+  },
+  "gpt-5-mini-medium": {
+    "name": "GPT5 Mini (medium)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 4.3
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.52
+      }
+    ]
+  },
+  "gpt-5-nano-high": {
+    "name": "GPT5 Nano (high)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.65
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 6.45
+      }
+    ]
+  },
+  "gpt-5-nano-medium": {
+    "name": "GPT5 Nano (medium)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 3.87
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.14
+      }
+    ]
+  },
+  "gpt-5-nano-minimal": {
+    "name": "GPT5 Nano (minimal)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 0.5
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 0.65
+      }
+    ]
+  },
+  "gpt-5-minimal": {
+    "name": "GPT5 (minimal)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 3
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 4.72
+      }
+    ]
+  },
+  "gpt-5-high": {
+    "name": "GPT5 (high)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 22.16
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 21.83
+      }
+    ]
+  },
+  "gpt-5-medium": {
+    "name": "GPT5 (medium)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 11.89
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.59
+      }
+    ]
+  },
+  "gpt-5-low": {
+    "name": "GPT5 (low)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 5.01
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 6.47
+      }
+    ]
+  },
+  "gpt-5-mini": {
+    "name": "GPT5 Mini",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 4.3
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.52
+      }
+    ]
+  },
+  "gpt-5": {
+    "name": "GPT5 (medium)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 11.89
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.59
+      }
+    ]
+  },
+  "gpt-4-turbo": {
+    "name": "GPT4 Turbo",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 7.01
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.93
+      }
+    ]
+  },
+  "gpt-4.1-nano": {
+    "name": "GPT4.1 Nano",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 0.36
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 0.57
+      }
+    ]
+  },
+  "gpt-4.1-mini": {
+    "name": "GPT4.1 Mini",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.4
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.25
+      }
+    ]
+  },
+  "gpt-4.1": {
+    "name": "GPT4.1",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.85
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.94
+      }
+    ]
+  },
+  "gpt-4o-2024-11-20": {
+    "name": "GPT4o November",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.33
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.19
+      }
+    ]
+  },
+  "gpt-4o-2024-08-06": {
+    "name": "GPT4o August",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.63
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.24
+      }
+    ]
+  },
+  "gpt-4o-2024-05-13": {
+    "name": "GPT4o May",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 2.18
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.89
+      }
+    ]
+  },
+  "gpt-4o-mini": {
+    "name": "GPT4o mini",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.65
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.85
+      }
+    ]
+  },
+  "gpt-4o": {
+    "name": "GPT4o",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.3
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 3.47
+      }
+    ]
+  },
+  "claude-haiku-4.5": {
+    "name": "Claude Haiku 4.5",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 4.75
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 8.73
+      }
+    ]
+  },
+  "claude-opus-4.1": {
+    "name": "Claude Opus 4.1",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.97
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 13.22
+      }
+    ]
+  },
+  "claude-sonnet-4.5": {
+    "name": "Claude Sonnet 4.5",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.44
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.11
+      }
+    ]
+  },
+  "claude-sonnet-4": {
+    "name": "Claude Sonnet 4",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 5.63
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.02
+      }
+    ]
+  },
+  "claude-opus-4": {
+    "name": "Claude Opus 4",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 5.62
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.73
+      }
+    ]
+  },
+  "claude-haiku-3": {
+    "name": "Claude Haiku 3",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.77
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.74
+      }
+    ]
+  },
+  "claude-fable-5": {
+    "name": "Claude Fable 5 (estimated, flagship-class)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.97
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 13.22
+      }
+    ]
+  },
+  "claude-3-5-sonnet": {
+    "name": "Claude 3.5 Sonnet (estimated, Sonnet-class)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.44
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.11
+      }
+    ]
+  },
+  "claude-3-5-haiku": {
+    "name": "Claude 3.5 Haiku (estimated, Haiku-class)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.77
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.74
+      }
+    ]
+  },
+  "claude-3-opus": {
+    "name": "Claude 3 Opus (estimated, Opus-class)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.97
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 13.22
+      }
+    ]
+  },
+  "claude-3-sonnet": {
+    "name": "Claude 3 Sonnet (estimated, Sonnet-class)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.44
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.11
+      }
+    ]
+  },
+  "claude-3-haiku": {
+    "name": "Claude 3 Haiku",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.77
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.74
+      }
+    ]
+  },
+  "claude-sonnet": {
+    "name": "Claude Sonnet (Generic - using 4.5 data)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.44
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.11
+      }
+    ]
+  },
+  "claude-haiku": {
+    "name": "Claude Haiku (Generic - using 4.5 data)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 4.75
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 8.73
+      }
+    ]
+  },
+  "claude-opus": {
+    "name": "Claude Opus (Generic - using 4.1 data)",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 6.97
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 13.22
+      }
+    ]
+  },
+  "gemini-2.5-pro": {
+    "name": "Gemini 2.5 Pro",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 2.29
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.54
+      }
+    ]
+  },
+  "gemini-2.5-flash": {
+    "name": "Gemini 2.5 Flash",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.24
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 2.51
+      }
+    ]
+  },
+  "gemini-3.1-pro": {
+    "name": "Gemini 3.1 Pro",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 1.44
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 10.33
+      }
+    ]
+  },
+  "gemini-3-flash": {
+    "name": "Gemini 3 Flash",
+    "tiers": [
+      {
+        "limit": 2000,
+        "energyPerToken": 0.57
+      },
+      {
+        "limit": "veryLarge",
+        "energyPerToken": 4.14
+      }
+    ]
+  }
+}

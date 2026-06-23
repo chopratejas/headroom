@@ -272,7 +272,12 @@
                     TTFB <span x-text="((stats.ttfb?.average_ms || 0) / 1000).toFixed(2)"></span>s avg
                 </div>
             </div>
+        </div>
 
+        <!-- Second row: Throughput shares the line with Carbon Saved so the
+             throughput card no longer wraps onto a row of its own. Throughput
+             takes one column; Carbon Saved fills the remaining three. -->
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
             <!-- Token Throughput -->
             <div class="bg-surface rounded-lg p-4 border border-border flex flex-col justify-between">
                 <div>
@@ -316,6 +321,52 @@
                     </span>
                 </div>
             </div>
+
+            <!-- Carbon Saved (fills the three columns beside Throughput) -->
+            <template x-if="stats.carbon?.available">
+                <div class="bg-surface rounded-lg p-4 border border-border lg:col-span-3">
+                <div class="flex justify-between items-center mb-3">
+                    <div class="text-sm font-medium text-gray-300 flex items-center gap-2">
+                        <span>🌱 Carbon Saved</span>
+                        <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-gray-500">estimated</span>
+                    </div>
+                    <div class="text-xs text-emerald-400/70 font-mono"
+                         x-text="formatCarbon(stats.carbon?.lifetime_grams || 0) + ' all-time · see Historical'"></div>
+                </div>
+
+                <!-- Headline + equivalents (this session) -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                    <div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">CO₂e Avoided (this session)</div>
+                        <div class="text-2xl font-light tabular-nums text-emerald-400"
+                             x-text="formatCarbon(stats.carbon?.session_grams || 0)"></div>
+                        <div class="text-xs text-emerald-400/70"
+                             x-text="formatNumber(stats.carbon?.session_tokens_saved || 0) + ' tokens not sent'"></div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">📱 Phone Charges</div>
+                        <div class="text-2xl font-light tabular-nums text-accent"
+                             x-text="formatNumber(Math.round(stats.carbon?.session_equivalents?.phone_charges || 0))"></div>
+                        <div class="text-xs text-gray-600">equivalent smartphone charges</div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">🚗 Driving Avoided</div>
+                        <div class="text-2xl font-light tabular-nums text-accent"
+                             x-text="(stats.carbon?.session_equivalents?.km_driven || 0).toFixed(1) + ' km'"></div>
+                        <div class="text-xs text-gray-600">avg passenger car</div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">🌳 Tree-Years</div>
+                        <div class="text-2xl font-light tabular-nums text-accent"
+                             x-text="(stats.carbon?.session_equivalents?.tree_years || 0).toFixed(3)"></div>
+                        <div class="text-xs text-gray-600">CO₂ a tree absorbs per year</div>
+                    </div>
+                </div>
+
+                <div class="pt-2 border-t border-border/40 text-[10px] text-gray-500 leading-relaxed"
+                     x-text="'~' + (stats.carbon?.effective_g_per_1k_tokens || 0).toFixed(2) + ' gCO₂e / 1k saved tokens · scaled to ' + Math.round((stats.carbon?.input_token_energy_share ?? 0.3) * 100) + '% of generation rate (saved tokens are mostly input/context) · grid intensity ' + (stats.carbon?.carbon_intensity_g_per_kwh || 471) + ' gCO₂e/kWh · Jegham et al. (2025)' + ((stats.carbon?.unpriced_requests || 0) > 0 ? ' · ' + formatNumber(stats.carbon.unpriced_requests) + ' requests priced at default rate' : '')"></div>
+                </div>
+            </template>
         </div>
 
         <!-- Agent Usage -->
@@ -1537,6 +1588,50 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <!-- Lifetime Carbon Saved (fills the two columns beside Historical Summary) -->
+                            <div class="bg-surface rounded-lg p-4 border border-border lg:col-span-2 flex flex-col"
+                                 x-show="stats.carbon?.available">
+                                <div class="flex justify-between items-center mb-4">
+                                    <div class="text-sm font-medium text-gray-300 flex items-center gap-2">
+                                        <span>🌱 Carbon Saved (lifetime)</span>
+                                        <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-border text-gray-500">estimated</span>
+                                    </div>
+                                    <div class="text-xs text-emerald-400/70 font-mono"
+                                         x-text="formatCarbon(stats.carbon?.session_grams || 0) + ' this session'"></div>
+                                </div>
+
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 flex-1">
+                                    <div>
+                                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">CO₂e Avoided (lifetime)</div>
+                                        <div class="text-2xl font-light tabular-nums text-emerald-400"
+                                             x-text="formatCarbon(stats.carbon?.lifetime_grams || 0)"></div>
+                                        <div class="text-xs text-emerald-400/70"
+                                             x-text="formatNumber(stats.carbon?.lifetime_tokens_saved || 0) + ' tokens not sent'"></div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">📱 Phone Charges</div>
+                                        <div class="text-2xl font-light tabular-nums text-accent"
+                                             x-text="formatNumber(Math.round(stats.carbon?.lifetime_equivalents?.phone_charges || 0))"></div>
+                                        <div class="text-xs text-gray-600">equivalent smartphone charges</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">🚗 Driving Avoided</div>
+                                        <div class="text-2xl font-light tabular-nums text-accent"
+                                             x-text="(stats.carbon?.lifetime_equivalents?.km_driven || 0).toFixed(1) + ' km'"></div>
+                                        <div class="text-xs text-gray-600">avg passenger car</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">🌳 Tree-Years</div>
+                                        <div class="text-2xl font-light tabular-nums text-accent"
+                                             x-text="(stats.carbon?.lifetime_equivalents?.tree_years || 0).toFixed(3)"></div>
+                                        <div class="text-xs text-gray-600">CO₂ a tree absorbs per year</div>
+                                    </div>
+                                </div>
+
+                                <div class="pt-2 border-t border-border/40 text-[10px] text-gray-500 leading-relaxed"
+                                     x-text="'~' + (stats.carbon?.effective_g_per_1k_tokens || 0).toFixed(2) + ' gCO₂e / 1k saved tokens · scaled to ' + Math.round((stats.carbon?.input_token_energy_share ?? 0.3) * 100) + '% of generation rate (saved tokens are mostly input/context) · grid intensity ' + (stats.carbon?.carbon_intensity_g_per_kwh || 471) + ' gCO₂e/kWh · Jegham et al. (2025)' + ((stats.carbon?.unpriced_requests || 0) > 0 ? ' · ' + formatNumber(stats.carbon.unpriced_requests) + ' requests priced at default rate' : '')"></div>
+                            </div>
                         </div>
 
                         <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -1964,6 +2059,15 @@
                     if (n >= 0.01) return n.toFixed(3);
                     if (n > 0) return n.toFixed(4);
                     return '0.00';
+                },
+
+                formatCarbon(grams) {
+                    grams = grams || 0;
+                    if (grams >= 1000000) return (grams / 1000000).toFixed(2) + ' t CO₂e';
+                    if (grams >= 1000) return (grams / 1000).toFixed(2) + ' kg CO₂e';
+                    if (grams >= 10) return Math.round(grams) + ' g CO₂e';
+                    if (grams > 0) return grams.toFixed(1) + ' g CO₂e';
+                    return '0 g CO₂e';
                 },
 
                 formatResetTime(seconds) {
