@@ -588,3 +588,36 @@ async fn stats_records_connect_error_as_failed() {
 
     proxy.shutdown().await;
 }
+
+#[tokio::test]
+async fn stats_rejects_oversized_supplemental_response() {
+    // The supplemental `/stats` fetch is bounded: a misbehaving upstream
+    // returning a huge body is dropped (fail-open), not read into memory whole.
+    let upstream = MockServer::start().await;
+    let python = MockServer::start().await;
+    let huge = serde_json::json!({ "copilot_quota": { "x": "z".repeat(2 * 1024 * 1024) } });
+    Mock::given(method("GET"))
+        .and(path_matcher("/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(huge))
+        .mount(&python)
+        .await;
+    let url = format!("{}/stats", python.uri());
+    let proxy = start_proxy_with(&upstream.uri(), move |c| {
+        c.upstream_stats_url = Some(url.clone());
+    })
+    .await;
+
+    let stats: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
+    // Oversized supplemental is dropped — no copilot_quota folded in, /stats still 200.
+    assert!(stats.get("copilot_quota").is_none());
+    assert_eq!(stats["requests"]["total"], 0);
+
+    proxy.shutdown().await;
+}

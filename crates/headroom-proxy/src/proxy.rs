@@ -401,6 +401,12 @@ async fn handle_stats(State(state): State<AppState>) -> axum::Json<serde_json::V
 /// is a dashboard convenience, never on a request hot path.
 const SUPPLEMENTAL_STATS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
 
+/// Cap on the supplemental `/stats` response body. The URL is operator-controlled
+/// (the transitional Python proxy), so this is defense-in-depth: a stats JSON is
+/// far under 1 MiB, and a buggy/compromised upstream must not be able to OOM us
+/// with a huge (or chunked, content-length-less) response.
+const MAX_SUPPLEMENTAL_BYTES: usize = 1024 * 1024;
+
 /// Fetch the transitional Python proxy's `/stats` JSON, or `None` on any error
 /// (unreachable, non-2xx, unparseable) — the caller treats `None` as "no
 /// supplemental blocks this poll".
@@ -414,9 +420,18 @@ async fn fetch_upstream_stats(client: &reqwest::Client, url: &str) -> Option<ser
     if !resp.status().is_success() {
         return None;
     }
-    // Parse via `serde_json` rather than `Response::json` so we don't need
-    // reqwest's `json` feature enabled.
-    let bytes = resp.bytes().await.ok()?;
+    // Bounded streaming read so a misbehaving upstream can't OOM us via a huge
+    // response (a declared content-length is also unreliable). Parse via
+    // `serde_json` rather than `Response::json` so we don't need reqwest's `json`
+    // feature enabled.
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if bytes.len() + chunk.len() > MAX_SUPPLEMENTAL_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     serde_json::from_slice::<serde_json::Value>(&bytes).ok()
 }
 
