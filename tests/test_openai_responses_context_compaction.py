@@ -8,6 +8,7 @@ from headroom.proxy.handlers.openai import (
     _compact_openai_responses_tools,
     _ensure_responses_store_for_memory_tools,
     _openai_responses_context_budget,
+    _openai_responses_tool_results_for_learning,
 )
 from headroom.transforms.content_router import (
     CompressionStrategy,
@@ -54,6 +55,58 @@ def test_openai_responses_context_budget_breaks_out_static_and_live_buckets() ->
         b"line one\nline two\n"
     )
     assert budget["input_breakdown"]["message"]["items"] == 1
+
+
+def test_openai_responses_tool_results_for_learning_pairs_calls_with_outputs() -> None:
+    input_items: list[dict[str, Any]] = [
+        {
+            "type": "function_call",
+            "call_id": "call_read",
+            "name": "Read",
+            "arguments": '{"file_path": "/tmp/example.py"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_read",
+            "output": "print('ok')",
+        },
+    ]
+
+    results = _openai_responses_tool_results_for_learning(input_items)
+
+    assert results == [
+        {
+            "tool_name": "Read",
+            "input": {"file_path": "/tmp/example.py"},
+            "output": "print('ok')",
+            "is_error": False,
+        }
+    ]
+
+
+def test_openai_responses_tool_results_for_learning_handles_bad_args_and_errors() -> None:
+    input_items: list[dict[str, Any]] = [
+        {
+            "type": "function_call",
+            "call_id": "call_bash",
+            "name": "Bash",
+            "arguments": "{not json",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_bash",
+            "output": "No such file or directory",
+        },
+    ]
+
+    results = _openai_responses_tool_results_for_learning(input_items)
+
+    assert results[0] == {
+        "tool_name": "Bash",
+        "input": {},
+        "output": "No such file or directory",
+        "is_error": True,
+    }
 
 
 def test_openai_tool_schema_compaction_preserves_invocation_shape() -> None:
