@@ -970,6 +970,27 @@ class ContentRouter(Transform):
         self._tabular_compressor: Any = None
         self._kompress: Any = None
 
+        # Phase 0 (#1171): cap the input size handed to kompress (ModernBERT
+        # ONNX). Its inference scales O(tokens) and runs synchronously on the
+        # request thread under the 30s compression budget; above this ceiling we
+        # route to the fast LogCompressor instead so the request path stays
+        # bounded. ~4 chars/token is a cheap proxy (no tokenizer needed; counts
+        # dense JSON/code correctly, unlike word count). 0 disables the gate.
+        try:
+            self._kompress_max_tokens: int = int(
+                os.environ.get("HEADROOM_KOMPRESS_MAX_TOKENS", "50000")
+            )
+        except ValueError:
+            self._kompress_max_tokens = 50000
+        self._kompress_gate_fires: int = 0
+        # Phase 2 (#1171): when enabled, the size-gate routes oversized text to
+        # the fast extractive TextCrusher (real prose savings) instead of the
+        # LogCompressor (~0 savings on prose). Opt-in, default off.
+        self._text_crusher_enabled: bool = os.environ.get(
+            "HEADROOM_TEXT_CRUSHER", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self._text_crusher: Any = None
+
         # TOIN integration for cross-strategy learning
         self._toin: Any = None
 
@@ -1713,6 +1734,46 @@ class ContentRouter(Transform):
         compressed: str | None = None
         compressed_tokens: int | None = None
 
+        # Phase 0 (#1171): size gate. This is the single ML boundary, so gating
+        # here covers EVERY kompress entry point -- TEXT, KOMPRESS-direct,
+        # CODE_AWARE->KOMPRESS, and the strategy-fallback path all route through
+        # _try_ml_compressor. Kompress ONNX inference is O(tokens) and runs
+        # synchronously on the request thread; on a large/cold context it
+        # exceeds the 30s budget and leaks a non-preemptible worker (#1171).
+        # Above the ceiling, route to the fast LogCompressor (or pass through)
+        # rather than ModernBERT, keeping the request path bounded.
+        if self._kompress_max_tokens > 0 and len(text_to_compress) > self._kompress_max_tokens * 4:
+            self._kompress_gate_fires += 1
+            logger.info(
+                "kompress size-gate fired: ~%d tok (>%d) routed off ML (fire #%d)",
+                len(text_to_compress) // 4,
+                self._kompress_max_tokens,
+                self._kompress_gate_fires,
+            )
+            out = text_to_compress
+            crusher = self._get_text_crusher()
+            if crusher is not None:
+                try:
+                    out = crusher.compress(text_to_compress, context=context or "").compressed
+                except Exception as e:
+                    logger.warning(
+                        "Kompress size-gate -> TextCrusher failed (%s); passing through", e
+                    )
+                    out = text_to_compress
+            elif self.config.enable_log_compressor:
+                lc = self._get_log_compressor()
+                if lc:
+                    try:
+                        out = lc.compress(text_to_compress).compressed
+                    except Exception as e:
+                        logger.warning(
+                            "Kompress size-gate -> LogCompressor failed (%s); passing through", e
+                        )
+                        out = text_to_compress
+            if protected:
+                out = restore_tags(out, protected)
+            return out, len(out.split())
+
         # Primary: Kompress. On a cold cache the model is fetched once in the
         # background (ensure_background_load) instead of blocking this request
         # thread on a 274MB download that races the compression timeout and
@@ -1843,6 +1904,22 @@ class ContentRouter(Transform):
             except ImportError:
                 logger.debug("LogCompressor not available")
         return self._log_compressor
+
+    def _get_text_crusher(self) -> Any:
+        """Get TextCrusher (Phase 2, lazy load). Returns None when disabled, or
+        when the native ``headroom._core`` extension is not built (mirrors the
+        ImportError handling of the other ``_get_*`` compressor getters)."""
+        if not getattr(self, "_text_crusher_enabled", False):
+            return None
+        if self._text_crusher is None:
+            try:
+                from .text_crusher import TextCrusher
+
+                self._text_crusher = TextCrusher()
+            except ImportError:
+                logger.debug("TextCrusher (headroom._core) unavailable; disabling gate route")
+                self._text_crusher_enabled = False
+        return self._text_crusher
 
     def _get_tabular_compressor(self) -> Any:
         """Get TabularCompressor (lazy load)."""

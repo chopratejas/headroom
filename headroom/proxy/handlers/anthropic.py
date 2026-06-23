@@ -1092,8 +1092,13 @@ class AnthropicHandlerMixin:
                         else:
                             # Zone 1: Swap cached compressed versions into working copy
                             working_messages = comp_cache.apply_cached(messages)
-                            async with stage_timer.measure("compression_first_stage"):
-                                result = await self._run_compression_in_executor(
+                            if (
+                                getattr(self, "_background_compression_enabled", False)
+                                and frozen_message_count == 0
+                                and original_tokens >= self._background_compression_min_tokens
+                            ):
+                                accepted = self._background_compressor.enqueue(
+                                    session_id,
                                     lambda: self.anthropic_pipeline.apply(
                                         messages=working_messages,
                                         model=model,
@@ -1105,8 +1110,37 @@ class AnthropicHandlerMixin:
                                         compression_policy=compression_policy,
                                         **proxy_pipeline_kwargs(self.config),
                                     ),
-                                    timeout=COMPRESSION_TIMEOUT_SECONDS,
+                                    lambda bg_result: comp_cache.update_from_result(
+                                        messages, bg_result.messages
+                                    ),
                                 )
+
+                                class _DeferredCompressionResult:
+                                    messages = working_messages
+                                    transforms_applied = [
+                                        "deferred:background_compression"
+                                        if accepted
+                                        else "deferred:dropped"
+                                    ]
+                                    timing = {}
+
+                                result = _DeferredCompressionResult()
+                            else:
+                                async with stage_timer.measure("compression_first_stage"):
+                                    result = await self._run_compression_in_executor(
+                                        lambda: self.anthropic_pipeline.apply(
+                                            messages=working_messages,
+                                            model=model,
+                                            model_limit=context_limit,
+                                            context=extract_user_query(working_messages),
+                                            frozen_message_count=frozen_message_count,
+                                            biases=biases,
+                                            request_id=request_id,
+                                            compression_policy=compression_policy,
+                                            **proxy_pipeline_kwargs(self.config),
+                                        ),
+                                        timeout=COMPRESSION_TIMEOUT_SECONDS,
+                                    )
 
                             # Cache newly compressed messages (index-aligned diff)
                             if result.messages != working_messages:
