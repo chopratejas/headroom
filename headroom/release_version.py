@@ -283,9 +283,10 @@ def write_github_outputs(info: ReleaseVersionInfo, output_path: str) -> None:
 def main() -> None:
     root = Path.cwd()
     manual_version = os.environ.get("MANUAL_VER", "").strip()
+    manual_raw = os.environ.get("MANUAL_VER") or os.environ.get("LEVEL") or "patch"
     manual_match = re.fullmatch(
         r"v?(\d+\.\d+\.\d+(?:[abrc]\d+)?)",
-        (os.environ.get("MANUAL_VER") or os.environ.get("LEVEL", "patch")).strip(),
+        manual_raw.strip(),
     )
     if manual_match:
         version = manual_match.group(1)

@@ -143,7 +143,6 @@ _WRAP_PROXY_TIMEOUT_ML_MODULES = ("torch", "sentence_transformers", "spacy")
 _TOOL_SEARCH_ENV = TOOL_SEARCH_ENV
 _TOOL_SEARCH_DEFAULT = TOOL_SEARCH_DEFAULT
 _AGENT_SAVINGS_WRAP_AGENTS = {"claude", "codex", "cursor"}
-_DEFAULT_AGENT_SAVINGS_PROFILE = "agent-90"
 
 
 def _normalize_tool_search_mode(value: str) -> str:
@@ -238,7 +237,7 @@ def _wrap_agent_savings_profile(agent_type: str) -> str | None:
 
     if agent_type not in _AGENT_SAVINGS_WRAP_AGENTS:
         return None
-    return os.environ.get("HEADROOM_SAVINGS_PROFILE") or _DEFAULT_AGENT_SAVINGS_PROFILE
+    return os.environ.get("HEADROOM_SAVINGS_PROFILE") or None
 
 
 def _default_wrap_proxy_timeout_seconds() -> int:
@@ -399,9 +398,6 @@ def _start_proxy(
     # Ensure proxy subprocess uses UTF-8 (Windows defaults to cp1252)
     proxy_env = os.environ.copy()
     proxy_env["PYTHONIOENCODING"] = "utf-8"
-    if agent_type in {"claude", "codex", "cursor"}:
-        apply_agent_savings_env_defaults(proxy_env)
-
     # Tell the proxy which agent is being wrapped (for traffic learning output)
     if agent_type != "unknown":
         proxy_env["HEADROOM_AGENT_TYPE"] = agent_type
@@ -1936,6 +1932,9 @@ def _agent_savings_config_mismatches(
     if agent_type not in _AGENT_SAVINGS_TARGET_AGENTS:
         return []
 
+    if _wrap_agent_savings_profile(agent_type) is None:
+        return []
+
     desired_env = os.environ.copy()
     apply_agent_savings_env_defaults(desired_env)
     checks: tuple[tuple[str, str, str, str], ...] = (
@@ -2506,6 +2505,7 @@ def _ensure_proxy(
                 ),
             )
             click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
+            click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
             return proc
         except RuntimeError as e:
             click.echo(f"  Error: {e}")
