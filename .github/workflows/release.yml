@@ -236,6 +236,7 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             manylinux: 2_28
+            interpreters: python3.10 python3.11 python3.12 python3.13
           # Native arm64 runner (`ubuntu-24.04-arm`, GA Jan 2025, free
           # for public repos) replaces the previous `ubuntu-latest` +
           # QEMU path. Building inside `manylinux_2_28_aarch64` natively
@@ -247,6 +248,7 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             manylinux: 2_28
+            interpreters: python3.10 python3.11 python3.12 python3.13
           # NOTE: `macos-15-intel` (x86_64-apple-darwin) is intentionally
           # NOT in the matrix. `ort-sys 2.0.0-rc.12` (transitive via our
           # ML compression backend) does not provide prebuilt ONNX Runtime
@@ -259,6 +261,7 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             manylinux: ""
+            interpreters: python3.10 python3.11 python3.12 python3.13
           # Windows x86_64 -- builds with MSVC on windows-latest runner.
           # The abi3 wheel (cp310-abi3-win_amd64) covers all CPython >= 3.10.
           # Content detection uses the pure-Python regex backend on Windows
@@ -267,6 +270,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             manylinux: ""
+            interpreters: python
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -291,7 +295,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter python3.10 python3.11 python3.12 python3.13
+          args: --release --out dist --interpreter ${{ matrix.interpreters }}
           manylinux: ${{ matrix.manylinux }}
           # No before-script-linux needed: the rustls-everywhere refactor
           # (PR #371) switched fastembed to `hf-hub-rustls-tls` +
@@ -543,6 +547,12 @@ jobs:
           from headroom._core import hello as _rust_hello
           print(f"smoke-import OK: python={sys.version_info[:3]} hello={_rust_hello()}")
           PY
+
+      - name: Set up host Python for smoke import
+        if: matrix.image == ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
 
       - name: Smoke-import wheel inside container (Linux)
         if: matrix.image != ''
