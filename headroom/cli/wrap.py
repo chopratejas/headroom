@@ -5018,7 +5018,6 @@ def opencode(
         click.echo("  Setting up memory for OpenCode...")
         mem_dir = Path.cwd() / ".headroom"
         mem_dir.mkdir(parents=True, exist_ok=True)
-        db_path = str(mem_dir / "memory.db")
         mem_user = os.environ.get("USER", os.environ.get("USERNAME", "default"))
         _inject_memory_mcp_config(mem_user)
         agents_md = Path.cwd() / "AGENTS.md"
