@@ -590,6 +590,17 @@ impl Config {
         self.compression && self.compression_mode == CompressionMode::Off
     }
 
+    /// Whether request outcomes should be recorded into the savings store. The
+    /// single predicate every recorder lane (forward_http's `should_intercept`,
+    /// plus the Bedrock/Vertex handlers) gates on, so the rule lives in one place
+    /// and can't drift across lanes. Gated on the compression master switch:
+    /// with compression off there are no savings to track. (To also exclude the
+    /// `compression && mode == off` misconfig — see `compression_enabled_but_mode_off`
+    /// — narrow this to `&& !self.compression_enabled_but_mode_off()`.)
+    pub fn should_record(&self) -> bool {
+        self.compression
+    }
+
     pub fn from_cli(args: CliArgs) -> Self {
         let rewrite_host = if args.no_rewrite_host {
             false

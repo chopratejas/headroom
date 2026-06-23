@@ -55,6 +55,46 @@ pub const DEFAULT_MAX_RESPONSE_HISTORY: usize = 500;
 /// silently dropped from the per-provider / per-model breakdowns.
 const UNKNOWN: &str = "unknown";
 
+/// Max length (chars) retained for a provider/model label or request id. The
+/// `model` and `x-request-id` values are attacker-controlled (request body /
+/// header), so they are truncated before being stored — otherwise a huge value
+/// could bloat the breakdown maps, the recent-request ring, and the persisted
+/// file.
+const MAX_LABEL_LEN: usize = 128;
+
+/// Max length (chars) retained for a recorded request id.
+const MAX_REQUEST_ID_LEN: usize = 200;
+
+/// Max distinct per-provider / per-model buckets. The `model` key comes from the
+/// untrusted request body; without a cap, a client streaming distinct model ids
+/// would grow `by_model` (and the persisted file + the `/stats` payload, which
+/// inlines it twice) without bound — a memory/disk DoS. New keys past the cap
+/// fold into the [`UNKNOWN`] bucket. (`history`/`recent` are already bounded by
+/// `cap_front`; these maps were the one unbounded surface.)
+const MAX_DISTINCT_BUCKETS: usize = 1000;
+
+/// Truncate to at most `max_chars` characters on a char boundary. Cheap on the
+/// common path: a byte length ≤ `max_chars` implies a char count ≤ `max_chars`.
+fn truncate_chars(s: String, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        s
+    } else {
+        s.chars().take(max_chars).collect()
+    }
+}
+
+/// Resolve the breakdown-map key for `label`, capping cardinality: a key that is
+/// not already present and would push the map past [`MAX_DISTINCT_BUCKETS`] folds
+/// into the [`UNKNOWN`] bucket, so an attacker-controlled `model` cannot grow the
+/// map without bound. (`label` is already length-bounded at construction.)
+fn bucket_key(map: &HashMap<String, Bucket>, label: &str) -> String {
+    if map.contains_key(label) || map.len() < MAX_DISTINCT_BUCKETS {
+        label.to_string()
+    } else {
+        UNKNOWN.to_string()
+    }
+}
+
 /// One recorded request outcome — the single input to the store.
 ///
 /// The wiring layer fills this in from the compression dispatch (tokens), the
@@ -116,17 +156,21 @@ impl RequestOutcome {
         request_id: impl Into<String>,
         prices: &crate::observability::pricing::PriceBook,
     ) -> Self {
-        let model = model.into();
+        // The `model` and `request_id` are attacker-controlled (request body /
+        // header); truncate them here, at the single construction point, so every
+        // downstream sink (breakdown-map keys, the recent ring, the persisted
+        // file, the `/stats` payload) inherits the bound.
+        let model = truncate_chars(model.into(), MAX_LABEL_LEN);
         let price = prices.lookup(&model).unwrap_or_default();
         Self {
-            provider: provider.into(),
+            provider: truncate_chars(provider.into(), MAX_LABEL_LEN),
             model,
             tokens_before,
             tokens_after,
             input_cost_per_token: price.input,
             cache_read_cost_per_token: price.cache_read,
             cache_write_cost_per_token: price.cache_write,
-            request_id: request_id.into(),
+            request_id: truncate_chars(request_id.into(), MAX_REQUEST_ID_LEN),
             ..Default::default()
         }
     }
@@ -197,9 +241,7 @@ pub struct Lifetime {
     /// Successful requests where compression actually reduced tokens. Lets the
     /// dashboard show coverage (`requests_compressed`/`requests`) so the savings
     /// percentage — which is the reduction over *compressed* input — is read in
-    /// context rather than as an all-traffic figure. `#[serde(default)]` so
-    /// pre-existing persisted files (without the field) still load.
-    #[serde(default)]
+    /// context rather than as an all-traffic figure.
     pub requests_compressed: u64,
     pub tokens_saved: u64,
     pub compression_savings_usd: f64,
@@ -212,7 +254,6 @@ pub struct Lifetime {
 pub struct DisplaySession {
     pub requests: u64,
     /// Successful requests in this session where compression reduced tokens.
-    #[serde(default)]
     pub requests_compressed: u64,
     pub tokens_saved: u64,
     pub total_input_tokens: u64,
@@ -315,8 +356,6 @@ pub struct SavingsState {
     pub by_provider: HashMap<String, Bucket>,
     pub by_model: HashMap<String, Bucket>,
     /// Bounded newest-last ring of recent requests for the dashboard feed.
-    /// `#[serde(default)]` so older persisted files (without this field) load.
-    #[serde(default)]
     pub recent: Vec<RecentRequest>,
     /// Runtime-only counters (input/output tokens seen, failures). Persisted so
     /// the lifetime token totals survive restarts.
@@ -431,12 +470,15 @@ impl SavingsState {
         // Per-provider / per-model. `!failed` is the single failure decision,
         // the same one that zeroed the savings locals above, so buckets and the
         // lifetime/session totals can never disagree about what a failure counts.
+        // `bucket_key` caps the map cardinality (the `model` key is untrusted).
+        let provider_key = bucket_key(&self.by_provider, outcome.provider_key());
         self.by_provider
-            .entry(outcome.provider_key().to_string())
+            .entry(provider_key)
             .or_default()
             .apply(outcome, !failed);
+        let model_key = bucket_key(&self.by_model, outcome.model_key());
         self.by_model
-            .entry(outcome.model_key().to_string())
+            .entry(model_key)
             .or_default()
             .apply(outcome, !failed);
 
@@ -712,7 +754,12 @@ pub fn save_state(path: &Path, state: &SavingsState) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     std::fs::write(&tmp, &json)?;
     let _ = std::fs::File::open(&tmp).and_then(|f| f.sync_all());
-    std::fs::rename(&tmp, path)?;
+    // Clean up the temp file if the rename fails (target is a directory,
+    // cross-device, permissions) instead of leaving it orphaned on disk.
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -889,7 +936,7 @@ fn recent_requests_json(state: &SavingsState) -> Value {
                 "input_tokens_optimized": r.input_tokens_optimized,
                 "tokens_saved": r.tokens_saved,
                 "output_tokens": r.output_tokens,
-                "savings_percent": round2(r.savings_percent),
+                "savings_percent": r.savings_percent, // already rounded at record time
                 "total_latency_ms": r.total_latency_ms,
                 "optimization_latency_ms": 0,
                 "transforms_applied": [],
@@ -1047,6 +1094,44 @@ mod tests {
         assert_eq!(s.lifetime.requests, 2);
         assert_eq!(s.lifetime.requests_compressed, 1);
         assert_eq!(s.display_session.requests_compressed, 1);
+    }
+
+    #[test]
+    fn priced_truncates_untrusted_model_and_request_id() {
+        let book = crate::observability::pricing::PriceBook::empty();
+        // Huge attacker-controlled values are truncated at the construction point.
+        let o = RequestOutcome::priced(
+            "openai",
+            "m".repeat(10_000),
+            100,
+            60,
+            "r".repeat(10_000),
+            &book,
+        );
+        assert!(o.model.chars().count() <= MAX_LABEL_LEN);
+        assert!(o.request_id.chars().count() <= MAX_REQUEST_ID_LEN);
+        // A normal short model passes through unchanged.
+        let o2 = RequestOutcome::priced("openai", "gpt-4o", 100, 60, "req-1", &book);
+        assert_eq!(o2.model, "gpt-4o");
+    }
+
+    #[test]
+    fn breakdown_map_cardinality_is_capped() {
+        // The `model` key is attacker-controlled; distinct ids past the cap must
+        // fold into the UNKNOWN bucket instead of growing the map without bound.
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig::default();
+        for i in 0..(MAX_DISTINCT_BUCKETS + 50) {
+            s.record(
+                &outcome("openai", &format!("model-{i}"), 100, 60),
+                at(T0),
+                &cfg,
+            );
+        }
+        assert!(s.by_model.len() <= MAX_DISTINCT_BUCKETS + 1); // + the UNKNOWN overflow bucket
+        assert!(s.by_model.contains_key(UNKNOWN));
+        // All requests are still counted in the lifetime total.
+        assert_eq!(s.lifetime.requests, (MAX_DISTINCT_BUCKETS + 50) as u64);
     }
 
     #[test]

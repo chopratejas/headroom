@@ -721,7 +721,7 @@ pub(crate) async fn forward_http(
     // controls what the buffered branch does (currently both `Off`
     // and `LiveZone` passthrough); Phase B will branch on it inside
     // `compress_anthropic_request`.
-    let should_intercept = state.config.compression
+    let should_intercept = state.config.should_record()
         && method == axum::http::Method::POST
         && compression::is_compressible_path(uri.path())
         && is_application_json(req.headers());

@@ -206,7 +206,7 @@ pub async fn handle_invoke(
     // Recording is gated on the compression master switch, consistent with
     // `forward_http` (whose `should_intercept` requires `config.compression`):
     // when compression is off the savings store stays empty across all lanes.
-    let rec_outcome = state.config.compression.then(|| {
+    let rec_outcome = state.config.should_record().then(|| {
         crate::observability::stats::RequestOutcome::priced(
             "bedrock",
             model_id.clone(),

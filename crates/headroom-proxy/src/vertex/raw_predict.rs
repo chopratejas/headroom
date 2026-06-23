@@ -211,7 +211,7 @@ pub(crate) async fn forward_vertex_request(
     // the upstream result is known, so `requests.failed` reflects connect errors
     // / non-2xx upstreams. Recording is gated on the compression master switch,
     // consistent with `forward_http`.
-    let rec_outcome = state.config.compression.then(|| {
+    let rec_outcome = state.config.should_record().then(|| {
         crate::observability::stats::RequestOutcome::priced(
             "vertex",
             ctx.model_id.clone(),
