@@ -918,9 +918,7 @@ class TestNoCcrMarkerCompressors:
             ContentRouterConfig,
         )
 
-        router = ContentRouter(
-            ContentRouterConfig(ccr_inject_marker=False, ccr_enabled=True)
-        )
+        router = ContentRouter(ContentRouterConfig(ccr_inject_marker=False, ccr_enabled=True))
 
         # search compressor
         sc = router._get_search_compressor()
@@ -986,8 +984,7 @@ class TestNoCcrMarkerCompressors:
         )
         result = compressor.compress(content)
         assert "<<ccr:" not in result.compressed, (
-            f"SearchCompressor emitted marker when enable_ccr=False: "
-            f"{result.compressed[:300]!r}"
+            f"SearchCompressor emitted marker when enable_ccr=False: {result.compressed[:300]!r}"
         )
 
     def test_log_compressor_suppresses_markers_with_enable_ccr_false(self):
@@ -999,13 +996,10 @@ class TestNoCcrMarkerCompressors:
 
         npm_lines = ["npm WARN deprecated x"] * 30 + ["npm ERR! something broke"] * 5
         content = "\n".join(npm_lines)
-        compressor = LogCompressor(
-            LogCompressorConfig(enable_ccr=False, min_lines_for_ccr=3)
-        )
+        compressor = LogCompressor(LogCompressorConfig(enable_ccr=False, min_lines_for_ccr=3))
         result = compressor.compress(content)
         assert "<<ccr:" not in result.compressed, (
-            f"LogCompressor emitted marker when enable_ccr=False: "
-            f"{result.compressed[:300]!r}"
+            f"LogCompressor emitted marker when enable_ccr=False: {result.compressed[:300]!r}"
         )
 
     def test_diff_compressor_suppresses_markers_with_enable_ccr_false(self):
@@ -1015,9 +1009,7 @@ class TestNoCcrMarkerCompressors:
             DiffCompressorConfig,
         )
 
-        compressor = DiffCompressor(
-            DiffCompressorConfig(enable_ccr=False, min_lines_for_ccr=10)
-        )
+        compressor = DiffCompressor(DiffCompressorConfig(enable_ccr=False, min_lines_for_ccr=10))
         diff_lines = []
         for i in range(30):
             diff_lines.append(f"diff --git a/src/file{i}.py b/src/file{i}.py")
@@ -1029,8 +1021,7 @@ class TestNoCcrMarkerCompressors:
         content = "\n".join(diff_lines)
         result = compressor.compress(content)
         assert "<<ccr:" not in result.compressed, (
-            f"DiffCompressor emitted marker when enable_ccr=False: "
-            f"{result.compressed[:300]!r}"
+            f"DiffCompressor emitted marker when enable_ccr=False: {result.compressed[:300]!r}"
         )
 
     def test_code_compressor_suppresses_markers_with_enable_ccr_false(self):
@@ -1054,17 +1045,14 @@ class TestNoCcrMarkerCompressors:
             "    result *= 2\n"
             "    return result\n"
         )
-        content = "\n".join(
-            func_template.format(i=i, j=j) for i in range(30) for j in range(1, 6)
-        )
+        content = "\n".join(func_template.format(i=i, j=j) for i in range(30) for j in range(1, 6))
 
         compressor = CodeAwareCompressor(
             CodeCompressorConfig(enable_ccr=False, min_tokens_for_compression=1)
         )
         result = compressor.compress(content)
         assert "<<ccr:" not in result.compressed, (
-            f"CodeAwareCompressor emitted marker when enable_ccr=False: "
-            f"{result.compressed[:300]!r}"
+            f"CodeAwareCompressor emitted marker when enable_ccr=False: {result.compressed[:300]!r}"
         )
 
 
