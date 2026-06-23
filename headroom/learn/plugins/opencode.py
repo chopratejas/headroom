@@ -210,7 +210,9 @@ class OpenCodePlugin(LearnPlugin, ConversationScanner):
                 continue
 
             raw_tool_name = str(data.get("tool") or "unknown")
-            tool_name = "Bash" if raw_tool_name.lower() == "bash" else normalize_tool_name(raw_tool_name)
+            tool_name = (
+                "Bash" if raw_tool_name.lower() == "bash" else normalize_tool_name(raw_tool_name)
+            )
             call_id = str(data.get("callID") or f"oc_{session_id}_{idx}")
             state_raw = data.get("state")
             state: dict = state_raw if isinstance(state_raw, dict) else {}
