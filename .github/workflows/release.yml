@@ -535,6 +535,7 @@ jobs:
         #    YAML `run: |` level (uniform strip), the docker container
         #    sees it as a read-only mount, and macOS host runs the
         #    same script — no quoting drift between paths.
+        shell: bash
         run: |
           cat > "${RUNNER_TEMP}/smoke_import.py" <<'PY'
           import sys
@@ -654,6 +655,7 @@ jobs:
         env:
           PYTHON_VERSION: ${{ matrix.python }}
           WHEEL_TARGET: ${{ matrix.wheel_target }}
+        shell: bash
         run: |
           set -e
           py_tag=cp$(echo "$PYTHON_VERSION" | tr -d .)
