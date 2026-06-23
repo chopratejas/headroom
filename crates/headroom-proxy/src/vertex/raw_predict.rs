@@ -209,15 +209,18 @@ pub(crate) async fn forward_vertex_request(
 
     // Phase H: build this Vertex request's savings outcome now but record it once
     // the upstream result is known, so `requests.failed` reflects connect errors
-    // / non-2xx upstreams.
-    let rec_outcome = crate::observability::stats::RequestOutcome::priced(
-        "vertex",
-        ctx.model_id.clone(),
-        rec_tokens_before,
-        rec_tokens_after,
-        request_id.clone(),
-        &state.price_book,
-    );
+    // / non-2xx upstreams. Recording is gated on the compression master switch,
+    // consistent with `forward_http`.
+    let rec_outcome = state.config.compression.then(|| {
+        crate::observability::stats::RequestOutcome::priced(
+            "vertex",
+            ctx.model_id.clone(),
+            rec_tokens_before,
+            rec_tokens_after,
+            request_id.clone(),
+            &state.price_book,
+        )
+    });
 
     // ─── 4. RESOLVE BEARER TOKEN ───────────────────────────────────────
     let bearer = match state.vertex_token_source.bearer().await {
@@ -347,7 +350,9 @@ pub(crate) async fn forward_vertex_request(
                 "vertex upstream call failed"
             );
             // Connect/timeout failure — record as a failed request.
-            state.savings.record_finalized(rec_outcome, true, rec_start);
+            if let Some(o) = rec_outcome {
+                state.savings.record_finalized(o, true, rec_start);
+            }
             return error_response(StatusCode::BAD_GATEWAY, "vertex upstream error");
         }
     };
@@ -356,9 +361,11 @@ pub(crate) async fn forward_vertex_request(
     let upstream_status = upstream_resp.status();
     let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     // Record now that the upstream status is known.
-    state
-        .savings
-        .record_finalized(rec_outcome, !status.is_success(), rec_start);
+    if let Some(o) = rec_outcome {
+        state
+            .savings
+            .record_finalized(o, !status.is_success(), rec_start);
+    }
     let resp_headers = filter_response_headers(upstream_resp.headers());
 
     // PR-C1 reuse: when `attach_sse_tee` is set AND the upstream

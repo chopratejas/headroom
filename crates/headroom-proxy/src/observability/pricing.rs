@@ -95,14 +95,17 @@ impl PriceBook {
             };
             for (model_id, model) in provider_models {
                 let Some(cost) = &model.cost else { continue };
-                let (Some(input), Some(output)) = (cost.input, cost.output) else {
-                    continue;
-                };
+                // Require only `input`: compression savings are valued from the
+                // input price, so a model with an input price but no published
+                // output price (embedding/classifier models, promotional
+                // `output: null`) is still usable. `output` defaults to 0 — it
+                // is forward-schema (no lane counts output tokens yet).
+                let Some(input) = cost.input else { continue };
                 let per = 1_000_000.0;
                 let input_pt = input / per;
                 let price = ModelPrice {
                     input: input_pt,
-                    output: output / per,
+                    output: cost.output.map(|o| o / per).unwrap_or(0.0),
                     cache_read: cost.cache_read.map(|c| c / per).unwrap_or(input_pt),
                     cache_write: cost.cache_write.map(|c| c / per).unwrap_or(input_pt),
                 };
@@ -165,7 +168,8 @@ mod tests {
         "broken": {
             "models": {
                 "no-cost": {},
-                "no-output": { "cost": {"input": 1.0} }
+                "no-output": { "cost": {"input": 1.0} },
+                "no-input": { "cost": {"output": 5.0} }
             }
         },
         "no-models": {}
@@ -204,10 +208,18 @@ mod tests {
     }
 
     #[test]
-    fn skips_models_without_usable_cost() {
+    fn skips_models_without_an_input_price_but_keeps_input_only_models() {
         let book = PriceBook::from_models_dev_json(SAMPLE);
+        // No cost block / no input price → unusable, skipped.
         assert_eq!(book.lookup("no-cost"), None);
-        assert_eq!(book.lookup("no-output"), None);
+        assert_eq!(book.lookup("no-input"), None);
+        // Input price but no output price → still valued (compression USD only
+        // needs input); output defaults to 0.
+        let p = book
+            .lookup("no-output")
+            .expect("input-only model should be priced");
+        assert!((p.input - 1e-6).abs() < 1e-15);
+        assert_eq!(p.output, 0.0);
     }
 
     #[test]

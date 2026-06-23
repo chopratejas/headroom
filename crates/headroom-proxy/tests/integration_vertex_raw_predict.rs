@@ -265,6 +265,42 @@ async fn stats_attributes_vertex_raw_predict() {
     proxy.shutdown().await;
 }
 
+#[tokio::test]
+async fn vertex_not_recorded_when_compression_off() {
+    // Recording is gated on the compression master switch — consistent with
+    // forward_http and the Bedrock lanes. With compression off, no request is
+    // recorded (so all lanes stay consistent, none provider-skewed).
+    let upstream = MockServer::start().await;
+    mount_capture_json(&upstream).await;
+    let proxy = start_proxy_with_state(
+        &upstream.uri(),
+        |c| c.compression = false,
+        |s| install_static_token_source(s, TEST_BEARER),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(raw_predict_url(&proxy.url()))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&minimal_vertex_body()).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let stats: Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stats["requests"]["total"], 0);
+
+    proxy.shutdown().await;
+}
+
 // ─── TEST 2 ────────────────────────────────────────────────────────────
 
 #[tokio::test]

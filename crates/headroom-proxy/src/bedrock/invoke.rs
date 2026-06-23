@@ -202,14 +202,20 @@ pub async fn handle_invoke(
     // SigV4 failure, an invalid endpoint or action path — return before the
     // record site and are intentionally NOT counted; they are config/client
     // errors, not upstream interactions.
-    let rec_outcome = crate::observability::stats::RequestOutcome::priced(
-        "bedrock",
-        model_id.clone(),
-        rec_tokens_before,
-        rec_tokens_after,
-        request_id.clone(),
-        &state.price_book,
-    );
+    //
+    // Recording is gated on the compression master switch, consistent with
+    // `forward_http` (whose `should_intercept` requires `config.compression`):
+    // when compression is off the savings store stays empty across all lanes.
+    let rec_outcome = state.config.compression.then(|| {
+        crate::observability::stats::RequestOutcome::priced(
+            "bedrock",
+            model_id.clone(),
+            rec_tokens_before,
+            rec_tokens_after,
+            request_id.clone(),
+            &state.price_book,
+        )
+    });
 
     // Resolve the Bedrock action from the inbound path so `/converse`
     // forwards to the upstream Converse endpoint instead of `/invoke`.
@@ -363,7 +369,9 @@ pub async fn handle_invoke(
                 "bedrock invoke: upstream request failed"
             );
             // Connect/timeout failure — record as a failed request.
-            state.savings.record_finalized(rec_outcome, true, rec_start);
+            if let Some(o) = rec_outcome {
+                state.savings.record_finalized(o, true, rec_start);
+            }
             let status = if e.is_timeout() {
                 StatusCode::GATEWAY_TIMEOUT
             } else {
@@ -377,9 +385,11 @@ pub async fn handle_invoke(
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     // Record now that the upstream status is known: a non-2xx upstream counts
     // toward `requests.failed`.
-    state
-        .savings
-        .record_finalized(rec_outcome, !status.is_success(), rec_start);
+    if let Some(o) = rec_outcome {
+        state
+            .savings
+            .record_finalized(o, !status.is_success(), rec_start);
+    }
     let resp_headers = filter_response_headers(upstream_resp.headers());
 
     tracing::info!(

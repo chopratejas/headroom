@@ -170,15 +170,18 @@ pub async fn handle_invoke_streaming(
 
     // Phase H: build this Bedrock streaming request's savings outcome now (token
     // counts are known) but record it only once the upstream result is known, so
-    // `requests.failed` reflects connect errors / non-2xx upstreams.
-    let rec_outcome = crate::observability::stats::RequestOutcome::priced(
-        "bedrock",
-        model_id.clone(),
-        rec_tokens_before,
-        rec_tokens_after,
-        request_id.clone(),
-        &state.price_book,
-    );
+    // `requests.failed` reflects connect errors / non-2xx upstreams. Recording is
+    // gated on the compression master switch, consistent with `forward_http`.
+    let rec_outcome = state.config.compression.then(|| {
+        crate::observability::stats::RequestOutcome::priced(
+            "bedrock",
+            model_id.clone(),
+            rec_tokens_before,
+            rec_tokens_after,
+            request_id.clone(),
+            &state.price_book,
+        )
+    });
 
     // 2. Resolve the Bedrock streaming action from the inbound path and
     // build the upstream URL.
@@ -323,7 +326,9 @@ pub async fn handle_invoke_streaming(
                 "bedrock invoke-streaming: upstream request failed"
             );
             // Connect/timeout failure — record as a failed request.
-            state.savings.record_finalized(rec_outcome, true, rec_start);
+            if let Some(o) = rec_outcome {
+                state.savings.record_finalized(o, true, rec_start);
+            }
             let status = if e.is_timeout() {
                 StatusCode::GATEWAY_TIMEOUT
             } else {
@@ -336,9 +341,11 @@ pub async fn handle_invoke_streaming(
     let status =
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     // Record now that the upstream status is known.
-    state
-        .savings
-        .record_finalized(rec_outcome, !status.is_success(), rec_start);
+    if let Some(o) = rec_outcome {
+        state
+            .savings
+            .record_finalized(o, !status.is_success(), rec_start);
+    }
     let upstream_content_type = upstream_resp
         .headers()
         .get(http::header::CONTENT_TYPE)

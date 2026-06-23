@@ -191,6 +191,7 @@ fn round6(value: f64) -> f64 {
 
 /// Cumulative all-time counters.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)] // tolerate older/partial persisted files: missing fields default
 pub struct Lifetime {
     pub requests: u64,
     /// Successful requests where compression actually reduced tokens. Lets the
@@ -207,6 +208,7 @@ pub struct Lifetime {
 
 /// Rolling working-session counters that reset after inactivity.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DisplaySession {
     pub requests: u64,
     /// Successful requests in this session where compression reduced tokens.
@@ -233,6 +235,7 @@ impl DisplaySession {
 
 /// Per-provider / per-model breakdown bucket.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Bucket {
     pub requests: u64,
     pub tokens_before: u64,
@@ -274,7 +277,8 @@ impl Bucket {
 }
 
 /// One cumulative history checkpoint, tagged with its originating provider/model.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HistoryPoint {
     pub timestamp: String,
     pub provider: String,
@@ -284,7 +288,8 @@ pub struct HistoryPoint {
 }
 
 /// One row of the dashboard's "Recent Requests" feed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RecentRequest {
     pub request_id: String,
     pub timestamp: String,
@@ -301,6 +306,7 @@ pub struct RecentRequest {
 
 /// The full persisted aggregate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SavingsState {
     pub schema_version: u32,
     pub lifetime: Lifetime,
@@ -764,6 +770,7 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
     } else {
         (state.lifetime.tokens_saved as f64 / total_before as f64) * 100.0
     };
+    let savings_percent = round2(savings_percent);
 
     let by_provider_requests: HashMap<&String, u64> = state
         .by_provider
@@ -817,17 +824,21 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
             "output": state.total_output_tokens,
             "saved": state.lifetime.tokens_saved,
             "proxy_compression_saved": state.lifetime.tokens_saved,
+            // `all_layers_saved` equals `proxy_compression_saved` under the Rust
+            // proxy; the two diverge only in the Python proxy, where a CLI-filtering
+            // layer adds savings the Rust proxy has no equivalent for. Kept for
+            // contract parity.
             "all_layers_saved": state.lifetime.tokens_saved,
             "total_before_compression": total_before,
-            "savings_percent": round2(savings_percent),
+            "savings_percent": savings_percent,
             // The dashboard headline reads these. Our `savings_percent` already
             // measures reduction over the input we tokenized = the input we
             // attempted to compress, so the "active" ratio equals it and
             // `proxy_attempted_tokens` is the pre-compression input (`total_before`).
             // Emitting them keeps the shared template's headline non-zero under the
             // Rust proxy (it falls back to 0 when these are absent).
-            "active_savings_percent": round2(savings_percent),
-            "proxy_savings_percent": round2(savings_percent),
+            "active_savings_percent": savings_percent,
+            "proxy_savings_percent": savings_percent,
             "proxy_attempted_tokens": total_before,
         },
         "cost": {
@@ -1318,6 +1329,20 @@ mod tests {
         let path = dir.join("bad.json");
         std::fs::write(&path, b"{ not valid json ]").unwrap();
         assert_eq!(load_state(&path), SavingsState::default());
+
+        // A valid-JSON but PARTIAL file (older schema missing newer fields) must
+        // load with the present fields and the rest defaulted — NOT be discarded
+        // and reset to zero (every persisted struct is `#[serde(default)]`).
+        let partial = dir.join("partial.json");
+        std::fs::write(
+            &partial,
+            br#"{"lifetime":{"requests":7,"tokens_saved":123}}"#,
+        )
+        .unwrap();
+        let s = load_state(&partial);
+        assert_eq!(s.lifetime.requests, 7);
+        assert_eq!(s.lifetime.tokens_saved, 123);
+        assert_eq!(s.requests_failed, 0); // missing field defaulted, not a load failure
         std::fs::remove_dir_all(&dir).ok();
     }
 
