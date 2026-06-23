@@ -3,38 +3,86 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 
-from .runtime import CONFIG_SCHEMA_URL, build_provider_overrides, proxy_base_url
+from headroom.install.models import ConfigScope, DeploymentManifest, ManagedMutation, ToolTarget
+from headroom.install.paths import opencode_config_path
+
+from .config import (
+    _inject_key_into_json,
+    _parse_json_loose,
+    snapshot_opencode_config_if_unwrapped,
+    strip_opencode_headroom_blocks,
+)
+from .runtime import proxy_base_url
 
 
-def render_provider_config(port: int, project: str | None = None) -> str:
-    """Return the ``opencode.json`` snippet that routes OpenCode through Headroom."""
-    config = {"$schema": CONFIG_SCHEMA_URL, "provider": build_provider_overrides(port, project)}
-    return json.dumps(config, indent=2)
+def build_install_env(*, port: int, backend: str) -> dict[str, str]:
+    """Build the persistent install environment for OpenCode."""
+    del backend
+    del port
+    return {}
 
 
-def render_setup_lines(port: int, project: str | None = None) -> list[str]:
-    """Render the OpenCode manual-setup instructions for the local proxy.
+def apply_provider_scope(manifest: DeploymentManifest) -> ManagedMutation | None:
+    """Apply OpenCode provider-scope configuration when requested."""
+    if manifest.scope != ConfigScope.PROVIDER.value:
+        return None
 
-    Used for ``--no-proxy`` / proxy-only displays and documentation.  OpenCode
-    cannot be pointed at a base URL via environment variables, so the snippet
-    below is merged into ``opencode.json`` automatically by
-    ``headroom wrap opencode``; these lines describe the equivalent manual edit.
+    config_file = opencode_config_path()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+
+    snapshot_opencode_config_if_unwrapped(
+        config_file, config_file.with_suffix(".json.headroom-backup")
+    )
+
+    if config_file.exists():
+        content = config_file.read_text()
+        data = _parse_json_loose(content)
+    else:
+        data = {}
+
+    provider = {
+        "headroom": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Headroom Proxy",
+            "options": {"baseURL": proxy_base_url(manifest.port)},
+        }
+    }
+    data = _inject_key_into_json(data, "provider", provider)
+
+    config_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return ManagedMutation(
+        target=ToolTarget.OPENCODE.value,
+        kind="json-block",
+        path=str(config_file),
+    )
+
+
+def revert_provider_scope(mutation: ManagedMutation, manifest: DeploymentManifest) -> None:
+    """Revert OpenCode provider-scope configuration.
+
+    Restores from pre-wrap backup when available, otherwise strips the
+    headroom provider from the config file.
     """
-    snippet = render_provider_config(port, project).splitlines()
-    lines = [
-        "  Headroom proxy is running. Configure OpenCode:",
-        "",
-        "  Add the following to opencode.json (project root) so the built-in",
-        f"  anthropic + openai providers route through the proxy at {proxy_base_url(port)}:",
-        "",
-    ]
-    lines += [f"    {line}" for line in snippet]
-    if project:
-        lines += [
-            "",
-            f"  Dashboard savings will be attributed to project '{project}'",
-            "  (the directory this command was run from). Re-run from another",
-            "  project directory to get that project's URL.",
-        ]
-    return lines
+    del manifest
+    if not mutation.path:
+        return
+    path = Path(mutation.path)
+    backup_file = path.with_suffix(".json.headroom-backup")
+    if backup_file.exists():
+        try:
+            shutil.copy2(backup_file, path)
+            backup_file.unlink()
+            return
+        except OSError:
+            pass
+    if not path.exists():
+        return
+    content = path.read_text()
+    cleaned = strip_opencode_headroom_blocks(content)
+    if cleaned:
+        path.write_text(cleaned + "\n", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)

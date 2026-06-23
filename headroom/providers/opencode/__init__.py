@@ -1,28 +1,31 @@
-"""OpenCode (sst/opencode) provider helpers."""
+"""OpenCode-specific provider helpers."""
 
-from .install import render_provider_config, render_setup_lines
-from .runtime import (
-    CONFIG_SCHEMA_URL,
-    MANAGED_PROVIDERS,
-    apply_provider_overrides,
-    build_provider_overrides,
-    config_has_headroom_overrides,
-    is_headroom_base_url,
-    proxy_base_url,
-    strip_managed_config,
-    strip_provider_overrides,
+from .config import (
+    _MCP_MARKER_END,
+    _MCP_MARKER_START,
+    _PROVIDER_MARKER_END,
+    _PROVIDER_MARKER_START,
+    inject_opencode_provider_config,
+    opencode_config_paths,
+    snapshot_opencode_config_if_unwrapped,
+    strip_opencode_headroom_blocks,
 )
+from .install import apply_provider_scope, build_install_env, revert_provider_scope
+from .runtime import build_launch_env, build_opencode_config_content, proxy_base_url
 
 __all__ = [
-    "CONFIG_SCHEMA_URL",
-    "MANAGED_PROVIDERS",
-    "apply_provider_overrides",
-    "build_provider_overrides",
-    "config_has_headroom_overrides",
-    "is_headroom_base_url",
+    "_MCP_MARKER_END",
+    "_MCP_MARKER_START",
+    "_PROVIDER_MARKER_END",
+    "_PROVIDER_MARKER_START",
+    "apply_provider_scope",
+    "build_install_env",
+    "build_launch_env",
+    "build_opencode_config_content",
+    "inject_opencode_provider_config",
+    "opencode_config_paths",
     "proxy_base_url",
-    "render_provider_config",
-    "render_setup_lines",
-    "strip_managed_config",
-    "strip_provider_overrides",
+    "revert_provider_scope",
+    "snapshot_opencode_config_if_unwrapped",
+    "strip_opencode_headroom_blocks",
 ]
