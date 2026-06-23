@@ -5020,7 +5020,7 @@ def opencode(
         mem_dir.mkdir(parents=True, exist_ok=True)
         db_path = str(mem_dir / "memory.db")
         mem_user = os.environ.get("USER", os.environ.get("USERNAME", "default"))
-        _inject_memory_mcp_config(db_path, mem_user)
+        _inject_memory_mcp_config(mem_user)
         agents_md = Path.cwd() / "AGENTS.md"
         _inject_memory_agents_md(agents_md)
 
@@ -5043,7 +5043,6 @@ def opencode(
     if memory:
         mem_dir = Path.cwd() / ".headroom"
         _inject_memory_mcp_config(
-            str(mem_dir / "memory.db"),
             os.environ.get("USER", os.environ.get("USERNAME", "default")),
         )
 
