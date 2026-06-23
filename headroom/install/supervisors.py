@@ -206,7 +206,13 @@ def install_supervisor(manifest: DeploymentManifest) -> list[ArtifactRecord]:
             cron_path.write_text(content)
             records.append(ArtifactRecord(kind="cron", path=str(cron_path)))
         else:
-            current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            current = subprocess.run(
+                ["crontab", "-l"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
             existing = current.stdout if current.returncode == 0 else ""
             marker_start = f"# >>> headroom {manifest.profile} >>>"
             marker_end = f"# <<< headroom {manifest.profile} <<<"
@@ -450,7 +456,9 @@ def remove_supervisor(manifest: DeploymentManifest) -> None:
         if cron_path and cron_path.exists():
             cron_path.unlink()
             return
-        current = subprocess.run(["crontab", "-l"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        current = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
         if current.returncode != 0:
             return
         marker_start = f"# >>> headroom {manifest.profile} >>>"
