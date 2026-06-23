@@ -33,11 +33,33 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509 import Certificate
 
 from headroom.proxy.agy_ca import ensure_root_ca
-from headroom.proxy.agy_terminator import _LeafCache
+from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, _LeafCache
 
 logger = logging.getLogger("headroom.proxy.agy_dispatch")
 
 _BIND_HOST = "127.0.0.1"
+_PLACEHOLDER_HOST = "headroom.internal"
+
+# ---------------------------------------------------------------------------
+# ASGI helpers
+# ---------------------------------------------------------------------------
+
+
+async def _send_421(send: Any) -> None:
+    """Send a minimal HTTP 421 Misdirected Request response."""
+    body = b"Misdirected Request"
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 421,
+            "headers": [
+                (b"content-type", b"text/plain"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body, "more_body": False})
+
 
 # ---------------------------------------------------------------------------
 # SNI-capable SSL context builder
@@ -45,7 +67,10 @@ _BIND_HOST = "127.0.0.1"
 
 
 def _build_sni_ssl_context(
-    leaf_cache: _LeafCache, ca_key: RSAPrivateKey, ca_cert: Certificate
+    leaf_cache: _LeafCache,
+    ca_key: RSAPrivateKey,
+    ca_cert: Certificate,
+    allowlist: frozenset[str],
 ) -> ssl.SSLContext:
     """Return a server SSLContext whose SNI callback mints leaf certs on demand.
 
@@ -56,9 +81,8 @@ def _build_sni_ssl_context(
     ALPN: ["h2", "http/1.1"] — required for HTTP/2 negotiation.
     """
     # Mint a placeholder leaf for the initial load_cert_chain (SNI callback
-    # overwrites it before the handshake completes, so the hostname doesn't
-    # matter — we use a stable sentinel that won't reach the wire).
-    _PLACEHOLDER_HOST = "headroom.internal"
+    # guards against it before the handshake completes — placeholder never
+    # served to real clients because SNI guard rejects non-allowlisted names).
     init_cert_pem, init_key_pem = leaf_cache.get_or_mint(_PLACEHOLDER_HOST, ca_key, ca_cert)
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -84,10 +108,13 @@ def _build_sni_ssl_context(
         ssl_obj: ssl.SSLObject,
         server_name: str | None,
         ctx_in: ssl.SSLContext,  # noqa: ARG001
-    ) -> None:
-        """Mint or reuse a leaf cert for *server_name* and swap it in-place."""
-        hostname = server_name or _PLACEHOLDER_HOST
-        cert_pem, key_pem = leaf_cache.get_or_mint(hostname, ca_key, ca_cert)
+    ) -> int | None:
+        """Guard SNI then mint or reuse a leaf cert for *server_name* and swap it in-place."""
+        if server_name is None or server_name not in allowlist:
+            logger.warning("event=sni_refused host=%s", server_name)
+            return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+        cert_pem, key_pem = leaf_cache.get_or_mint(server_name, ca_key, ca_cert)
 
         new_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         new_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -107,8 +134,8 @@ def _build_sni_ssl_context(
             kf.flush()
             new_ctx.load_cert_chain(cf.name, kf.name)
 
-        new_ctx.set_alpn_protocols(["h2", "http/1.1"])
         ssl_obj.context = new_ctx  # type: ignore[assignment]
+        return None
 
     ctx.set_servername_callback(_sni_callback)  # type: ignore[arg-type]
     return ctx
@@ -144,11 +171,13 @@ class AgyDispatchServer:
         ca_cert: Certificate | None = None,
         base_dir: Path | None = None,
         port: int = 0,
+        allowlist: frozenset[str] | None = None,
     ) -> None:
         self._ca_key_init = ca_key
         self._ca_cert_init = ca_cert
         self._base_dir = base_dir
         self._port = port
+        self._allowlist: frozenset[str] = allowlist if allowlist is not None else DEFAULT_ALLOWLIST
 
         self._server: asyncio.Server | None = None
         self._lifespan_task: asyncio.Task[None] | None = None
@@ -172,8 +201,8 @@ class AgyDispatchServer:
         else:
             ca_key, ca_cert, _, _ = ensure_root_ca(base_dir=self._base_dir)
 
-        self._leaf_cache = _LeafCache(max_size=32)
-        ssl_ctx = _build_sni_ssl_context(self._leaf_cache, ca_key, ca_cert)
+        self._leaf_cache = _LeafCache(max_size=len(self._allowlist) + 1)
+        ssl_ctx = _build_sni_ssl_context(self._leaf_cache, ca_key, ca_cert, self._allowlist)
 
         # Build minimal hypercorn Config (no certfile/keyfile — we supply ssl directly).
         config = Config()
@@ -186,9 +215,45 @@ class AgyDispatchServer:
         # Import and build the FastAPI app.
         from headroom.proxy.server import create_app
 
+        _allowlist = self._allowlist
+
         app = create_app()
+
+        # Mandatory post-handshake Host/authority guard (defense-in-depth for
+        # the no-SNI / placeholder path). Hypercorn normalizes HTTP/2
+        # ``:authority`` into a ``host`` header, so reading ``host`` covers h2
+        # and http/1.1 uniformly.
+        async def _host_guard_app(
+            scope: dict[str, Any],
+            receive: Any,
+            send: Any,
+        ) -> None:
+            if scope.get("type") in ("http", "websocket"):
+                raw_host: bytes | None = None
+                for name, value in scope.get("headers", ()):
+                    if name.lower() == b"host":
+                        raw_host = value
+                        break
+                host_str = raw_host.decode("latin-1") if raw_host else ""
+                # Normalize: reject empty; strip a single trailing :port; lowercase.
+                if not host_str:
+                    logger.warning("event=host_refused host=%r", host_str)
+                    await _send_421(send)
+                    return
+                normalized = host_str.lower()
+                # Strip trailing :port (only one, so split on last colon-digit block).
+                if ":" in normalized:
+                    left, _, right = normalized.rpartition(":")
+                    if right.isdigit():
+                        normalized = left
+                if normalized not in _allowlist:
+                    logger.warning("event=host_refused host=%s", host_str)
+                    await _send_421(send)
+                    return
+            await app(scope, receive, send)
+
         # wrap_app accepts the ASGI callable directly; ignore the narrow stub type.
-        app_wrapper = wrap_app(app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]
+        app_wrapper = wrap_app(_host_guard_app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]
         self._app_wrapper = app_wrapper
 
         # Run hypercorn lifespan (startup/shutdown events).

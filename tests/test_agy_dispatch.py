@@ -474,3 +474,501 @@ def test_dispatch_server_address_raises_before_start(
     srv = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
     with pytest.raises(RuntimeError, match="not started"):
         _ = srv.address
+
+
+# ---------------------------------------------------------------------------
+# Tests: SNI allowlist guard (headroom-oqb.1)
+# ---------------------------------------------------------------------------
+
+_ATTACKER_HOST = "evilcloudcode-pa.googleapis.com"
+_CONTROLLED_HOST = "allowed.test"
+_CONTROLLED_ALLOWLIST: frozenset[str] = frozenset({_CONTROLLED_HOST})
+
+
+async def _try_tls_connect(
+    port: int,
+    ca_cert_pem: bytes,
+    server_hostname: str | None,
+    *,
+    timeout: float = 5.0,
+) -> bool:
+    """Return True if TLS handshake succeeds, False if it fails with an SSL error."""
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_ctx.check_hostname = server_hostname is not None
+    ssl_ctx.verify_mode = ssl.CERT_REQUIRED if server_hostname is not None else ssl.CERT_NONE
+    with tempfile.NamedTemporaryFile(suffix=".pem", delete=True, mode="wb") as f:
+        f.write(ca_cert_pem)
+        f.flush()
+        ssl_ctx.load_verify_locations(f.name)
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                "127.0.0.1",
+                port,
+                ssl=ssl_ctx,
+                server_hostname=server_hostname,
+            ),
+            timeout=timeout,
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except (ssl.SSLError, OSError, ConnectionResetError, asyncio.TimeoutError):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_sni_allowlisted_still_routes(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allowlisted SNI completes handshake (no regression)."""
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    from fastapi.responses import StreamingResponse
+
+    from headroom.proxy.server import HeadroomProxy
+
+    async def _fake_stream(self: Any, *args: Any, **kwargs: Any) -> StreamingResponse:
+        async def _body() -> bytes:
+            yield b"data: [DONE]\n\n"
+
+        return StreamingResponse(_body(), status_code=200, media_type="text/event-stream")
+
+    monkeypatch.setattr(HeadroomProxy, "_stream_response", _fake_stream)
+
+    async with AgyDispatchServer(
+        ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+    ) as srv:
+        _, port = srv.address
+        success = await _try_tls_connect(port, ca_cert_pem, _CONTROLLED_HOST)
+    assert success, "Allowlisted SNI must complete handshake"
+
+
+@pytest.mark.asyncio
+async def test_sni_non_allowlisted_rejected(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Non-allowlisted SNI -> handshake aborts; server stays alive;
+    get_or_mint NOT called for attacker host; event=sni_refused is logged."""
+    from unittest.mock import patch
+
+    from headroom.proxy.agy_terminator import _LeafCache
+
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    # Capture log records via a handler installed before the server starts.
+    # caplog cannot reliably capture records from SSL C-level callbacks, so
+    # we install a custom handler directly on the module logger.
+    sni_log_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            sni_log_records.append(record)
+
+    capture_handler = _Capture(logging.WARNING)
+    _dispatch_logger = logging.getLogger("headroom.proxy.agy_dispatch")
+    _dispatch_logger.addHandler(capture_handler)
+
+    try:
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+
+            # Spy on _LeafCache.get_or_mint to verify attacker host is never minted.
+            original_get_or_mint = _LeafCache.get_or_mint
+            call_hostnames: list[str] = []
+
+            def _spy_get_or_mint(
+                self: _LeafCache, host: str, *args: Any, **kwargs: Any
+            ) -> Any:
+                call_hostnames.append(host)
+                return original_get_or_mint(self, host, *args, **kwargs)
+
+            with patch.object(_LeafCache, "get_or_mint", _spy_get_or_mint):
+                rejected = not await _try_tls_connect(port, ca_cert_pem, _ATTACKER_HOST)
+
+            # Server must still respond to further connections.
+            assert srv._server is not None, "Server must stay alive after rejected SNI"
+    finally:
+        _dispatch_logger.removeHandler(capture_handler)
+
+    assert rejected, "Non-allowlisted SNI must abort handshake"
+    attacker_mints = [h for h in call_hostnames if h == _ATTACKER_HOST]
+    assert attacker_mints == [], f"get_or_mint called for attacker host: {attacker_mints}"
+
+    # Attacker host must be absent from the leaf cache.
+    assert srv._leaf_cache is not None
+    assert _ATTACKER_HOST not in srv._leaf_cache._cache, (
+        "Attacker host must not appear in leaf cache"
+    )
+
+    warned = any("event=sni_refused" in r.getMessage() for r in sni_log_records)
+    assert warned, (
+        f"Expected event=sni_refused WARNING; got records: "
+        f"{[r.getMessage() for r in sni_log_records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sni_named_attack_evilcloudcode_rejected(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Named attack: SNI 'evilcloudcode-pa.googleapis.com' is rejected."""
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    async with AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert) as srv:
+        _, port = srv.address
+        rejected = not await _try_tls_connect(port, ca_cert_pem, _ATTACKER_HOST)
+
+    assert rejected, "evilcloudcode-pa.googleapis.com must be rejected by SNI guard"
+
+
+@pytest.mark.asyncio
+async def test_sni_placeholder_headroom_internal_rejected(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Explicit wire SNI 'headroom.internal' (the placeholder) is rejected."""
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    # Use a handler to verify event=sni_refused is logged (caplog is unreliable
+    # in SSL C-level callbacks).
+    sni_log_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            sni_log_records.append(record)
+
+    capture_handler = _Capture(logging.WARNING)
+    _dispatch_logger = logging.getLogger("headroom.proxy.agy_dispatch")
+    _dispatch_logger.addHandler(capture_handler)
+
+    try:
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+            rejected = not await _try_tls_connect(port, ca_cert_pem, "headroom.internal")
+    finally:
+        _dispatch_logger.removeHandler(capture_handler)
+
+    assert rejected, "headroom.internal must be rejected (not in allowlist)"
+    warned = any("event=sni_refused" in r.getMessage() for r in sni_log_records)
+    assert warned, (
+        f"Expected event=sni_refused WARNING for headroom.internal; "
+        f"got: {[r.getMessage() for r in sni_log_records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sni_none_and_empty_rejected(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """None SNI and empty-string SNI are rejected; no headroom.internal leaf served."""
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    # Capture log records via a handler (caplog is unreliable in SSL C-level callbacks).
+    sni_log_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            sni_log_records.append(record)
+
+    capture_handler = _Capture(logging.WARNING)
+    _dispatch_logger = logging.getLogger("headroom.proxy.agy_dispatch")
+    _dispatch_logger.addHandler(capture_handler)
+
+    try:
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+
+            # None SNI: disable hostname verification so we can send without SNI.
+            ssl_ctx_no_sni = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_ctx_no_sni.check_hostname = False
+            ssl_ctx_no_sni.verify_mode = ssl.CERT_NONE
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(
+                        "127.0.0.1",
+                        port,
+                        ssl=ssl_ctx_no_sni,
+                        server_hostname=None,  # no SNI extension
+                    ),
+                    timeout=5.0,
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:  # noqa: BLE001
+                    pass
+                none_sni_accepted = True
+            except (ssl.SSLError, OSError, ConnectionResetError, asyncio.TimeoutError):
+                none_sni_accepted = False
+    finally:
+        _dispatch_logger.removeHandler(capture_handler)
+
+    assert not none_sni_accepted, "None SNI must be rejected"
+    warned = any("event=sni_refused" in r.getMessage() for r in sni_log_records)
+    assert warned, (
+        f"Expected event=sni_refused WARNING for None SNI; "
+        f"got: {[r.getMessage() for r in sni_log_records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sni_trailing_dot_fqdn_rejected(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Trailing-dot FQDN 'daily-cloudcode-pa.googleapis.com.' is rejected under exact match."""
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    # Use a controlled allowlist with only the non-dotted form.
+    allowlist = frozenset({"daily-cloudcode-pa.googleapis.com"})
+    async with AgyDispatchServer(
+        ca_key=ca_key, ca_cert=ca_cert, allowlist=allowlist
+    ) as srv:
+        _, port = srv.address
+        # trailing dot form is not in allowlist — must be rejected
+        rejected = not await _try_tls_connect(
+            port, ca_cert_pem, "daily-cloudcode-pa.googleapis.com."
+        )
+
+    assert rejected, "Trailing-dot FQDN must be rejected under exact match"
+
+
+@pytest.mark.asyncio
+async def test_sni_exception_inside_callback_server_stays_alive(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Exception raised inside _sni_callback -> handshake aborts AND server stays alive."""
+    from unittest.mock import patch
+
+    from headroom.proxy.agy_terminator import _LeafCache
+
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    async with AgyDispatchServer(
+        ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+    ) as srv:
+        _, port = srv.address
+
+        def _boom(self: _LeafCache, *a: Any, **kw: Any) -> Any:
+            raise RuntimeError("injected failure")
+
+        with patch.object(_LeafCache, "get_or_mint", _boom):
+            # The handshake must fail (SSL error), not crash the server.
+            rejected = not await _try_tls_connect(port, ca_cert_pem, _CONTROLLED_HOST)
+
+        # Server must still be alive.
+        assert srv._server is not None, "Server must stay alive after exception in callback"
+
+    assert rejected, "Exception in SNI callback must abort handshake"
+
+
+def test_placeholder_host_not_in_default_allowlist() -> None:
+    """_PLACEHOLDER_HOST 'headroom.internal' must NOT be in DEFAULT_ALLOWLIST."""
+    assert "headroom.internal" not in DEFAULT_ALLOWLIST, (
+        "headroom.internal must never appear in DEFAULT_ALLOWLIST"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: post-handshake Host guard (headroom-oqb.1)
+# ---------------------------------------------------------------------------
+
+async def _http11_request(
+    port: int,
+    ca_cert_pem: bytes,
+    sni_host: str,
+    host_header: str,
+    *,
+    timeout: float = 10.0,
+) -> int:
+    """Perform HTTP/1.1 GET / and return the status code (or 0 on connection failure)."""
+    ssl_ctx = _build_client_ssl_ctx(ca_cert_pem)
+    ssl_ctx.set_alpn_protocols(["http/1.1"])
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                "127.0.0.1", port, ssl=ssl_ctx, server_hostname=sni_host
+            ),
+            timeout=timeout,
+        )
+    except (ssl.SSLError, OSError, ConnectionResetError):
+        return 0
+    try:
+        request = (
+            f"GET / HTTP/1.1\r\n"
+            f"Host: {host_header}\r\n"
+            f"Connection: close\r\n"
+            f"\r\n"
+        ).encode()
+        writer.write(request)
+        await writer.drain()
+        status_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+        if not status_line:
+            return 0
+        parts = status_line.split()
+        return int(parts[1]) if len(parts) >= 2 else 0
+    except (OSError, asyncio.TimeoutError, IndexError, ValueError):
+        return 0
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@pytest.mark.asyncio
+async def test_host_guard_non_allowlisted_returns_421(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Post-handshake Host guard: non-allowlisted Host header -> 421 Misdirected Request.
+
+    We spy on _send_421 to confirm the guard is what sends the 421 (not the upstream app).
+    """
+    from unittest.mock import patch
+
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    send_421_called = [False]
+
+    async def _spy_send_421(send: Any) -> None:
+        send_421_called[0] = True
+        import headroom.proxy.agy_dispatch as _m
+
+        await _m._send_421.__wrapped__(send) if hasattr(
+            _m._send_421, "__wrapped__"
+        ) else await _real_send_421(send)
+
+    from headroom.proxy import agy_dispatch as _agy_dispatch_mod
+
+    _real_send_421 = _agy_dispatch_mod._send_421
+
+    with patch("headroom.proxy.agy_dispatch._send_421", _spy_send_421):
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+            status = await _http11_request(
+                port, ca_cert_pem, _CONTROLLED_HOST, "evil.example.com"
+            )
+
+    assert status == 421, f"Expected 421 for non-allowlisted Host, got {status}"
+    assert send_421_called[0], "Guard must call _send_421 for non-allowlisted Host"
+
+
+@pytest.mark.asyncio
+async def test_host_guard_allowlisted_passes(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-handshake Host guard: allowlisted Host passes through to the app (guard not triggered).
+
+    We spy on _send_421 to confirm the guard does NOT refuse the allowlisted host.
+    The app may return any status (404, 200, …) — that is app-layer behavior, not the guard.
+    """
+    from unittest.mock import patch
+
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    send_421_called = [False]
+
+    async def _spy_send_421(send: Any) -> None:
+        send_421_called[0] = True
+        from headroom.proxy.agy_dispatch import _send_421
+
+        await _send_421(send)
+
+    with patch("headroom.proxy.agy_dispatch._send_421", _spy_send_421):
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+            status = await _http11_request(
+                port, ca_cert_pem, _CONTROLLED_HOST, _CONTROLLED_HOST
+            )
+
+    assert not send_421_called[0], (
+        f"Guard must NOT refuse the allowlisted Host '{_CONTROLLED_HOST}'; "
+        f"got HTTP status {status}"
+    )
+    assert status != 0, "Expected a valid HTTP response (guard passed request to app)"
+
+
+@pytest.mark.asyncio
+async def test_host_guard_port_qualified_host_passes(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Post-handshake Host guard: 'host:443' form is normalized and passes the guard.
+
+    Spy on _send_421 — the guard must NOT refuse 'allowed.test:443'.
+    """
+    from unittest.mock import patch
+
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    send_421_called = [False]
+
+    async def _spy_send_421(send: Any) -> None:
+        send_421_called[0] = True
+        from headroom.proxy.agy_dispatch import _send_421
+
+        await _send_421(send)
+
+    with patch("headroom.proxy.agy_dispatch._send_421", _spy_send_421):
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+            status = await _http11_request(
+                port, ca_cert_pem, _CONTROLLED_HOST, f"{_CONTROLLED_HOST}:443"
+            )
+
+    assert not send_421_called[0], (
+        f"Guard must NOT refuse 'host:port' form; got HTTP status {status}"
+    )
+    assert status != 0, "Expected a valid HTTP response (guard passed request to app)"
+
+
+@pytest.mark.asyncio
+async def test_host_guard_mixed_case_host_passes(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """Post-handshake Host guard: mixed-case Host is normalized (lowercased) and passes.
+
+    Spy on _send_421 — the guard must NOT refuse the uppercased form.
+    """
+    from unittest.mock import patch
+
+    ca_key, ca_cert, ca_cert_pem = tmp_ca
+
+    send_421_called = [False]
+
+    async def _spy_send_421(send: Any) -> None:
+        send_421_called[0] = True
+        from headroom.proxy.agy_dispatch import _send_421
+
+        await _send_421(send)
+
+    with patch("headroom.proxy.agy_dispatch._send_421", _spy_send_421):
+        async with AgyDispatchServer(
+            ca_key=ca_key, ca_cert=ca_cert, allowlist=_CONTROLLED_ALLOWLIST
+        ) as srv:
+            _, port = srv.address
+            mixed_case = _CONTROLLED_HOST.upper()
+            status = await _http11_request(
+                port, ca_cert_pem, _CONTROLLED_HOST, mixed_case
+            )
+
+    assert not send_421_called[0], (
+        f"Guard must NOT refuse mixed-case Host (normalized to lower); got HTTP status {status}"
+    )
+    assert status != 0, "Expected a valid HTTP response (guard passed request to app)"
