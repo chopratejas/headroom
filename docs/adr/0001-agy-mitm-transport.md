@@ -152,8 +152,20 @@ signals extend that to the user's normal runtime.
 - The combined bundle (= system roots + Headroom CA cert + any pre-existing corporate CA;
   public certs only, no key) is written under `~/.headroom` with `0600` perms (not a
   predictable world-writable temp path); perms asserted after write.
-- Leaf certs minted **only** for the cloudcode allowlist host(s), validity ≤ 72h, SAN/EKU
-  constrained to that host + `serverAuth` only, cached (bound = allowlist size, 1–2 entries).
+- Leaf certs minted for the cloudcode allowlist host(s), validity ≤ 72h, SAN/EKU
+  constrained to that host + `serverAuth` only, cached (bound = allowlist size + 1 — the
+  extra slot holds the `headroom.internal` placeholder leaf, below). A non-served placeholder
+  leaf is minted once at dispatch start to satisfy `ssl.SSLContext.load_cert_chain` before the
+  SNI callback exists; it is never put on the wire (see dispatch trust-boundary enforcement).
+- **Dispatch trust-boundary enforcement (allowlist at the SNI + authority layer).** The
+  dispatch hypercorn listener is itself a loopback HTTPS port; a local process could connect
+  directly and request a leaf for any SNI. Enforced in two layers: (1) the per-SNI
+  `set_servername_callback` rejects any `server_name` that is `None` or (lowercased) not in
+  the allowlist with `ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME` **before** any mint/cache/swap;
+  (2) a mandatory post-handshake ASGI `host`/`:authority` guard (`make_host_guard`) returns
+  421 for absent/duplicate/non-allowlisted Host — covering the no-SNI/placeholder path where
+  OpenSSL may skip the SNI callback. The dispatch allowlist is the same single value wired
+  into the CONNECT terminator (no drift).
 - **Leaf private key handling:** `load_cert_chain_in_memory` (`headroom/proxy/agy_ca.py`) is
   used at all three `load_cert_chain` call sites (terminator `_build_server_ssl_context`;
   dispatch placeholder init; dispatch `_sni_callback`). Primary path (Linux, `os.memfd_create`

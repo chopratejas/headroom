@@ -32,7 +32,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509 import Certificate
 from cryptography.x509.oid import NameOID
 
-from headroom.proxy.agy_dispatch import AgyDispatchServer
+from headroom.proxy.agy_dispatch import AgyDispatchServer, make_host_guard
 from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, AgyCONNECTTerminator
 
 # ---------------------------------------------------------------------------
@@ -1064,3 +1064,87 @@ async def test_dispatch_handshake_still_works_via_helper(
     assert response_line.startswith(b"HTTP/"), (
         f"Expected HTTP response; TLS handshake must succeed via helper. Got: {response_line!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# make_host_guard — unit tests (synthetic ASGI scopes, no TLS)
+# ---------------------------------------------------------------------------
+
+_GUARD_ALLOW = frozenset({"daily-cloudcode-pa.googleapis.com"})
+
+
+async def _run_host_guard(
+    allowlist: frozenset[str], scope: dict[str, Any]
+) -> tuple[bool, int | None]:
+    """Drive make_host_guard over *scope*; return (downstream_app_called, status)."""
+    app_called = [False]
+    status: list[int | None] = [None]
+
+    async def _app(s: Any, r: Any, sd: Any) -> None:
+        app_called[0] = True
+
+    async def _send(msg: dict[str, Any]) -> None:
+        if msg.get("type") == "http.response.start":
+            status[0] = msg["status"]
+
+    async def _receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    await make_host_guard(_app, allowlist)(scope, _receive, _send)
+    return app_called[0], status[0]
+
+
+@pytest.mark.asyncio
+async def test_host_guard_allowlisted_passes_to_app() -> None:
+    called, status = await _run_host_guard(
+        _GUARD_ALLOW,
+        {"type": "http", "headers": [(b"host", b"daily-cloudcode-pa.googleapis.com")]},
+    )
+    assert called and status is None
+
+
+@pytest.mark.asyncio
+async def test_host_guard_non_allowlisted_421() -> None:
+    called, status = await _run_host_guard(
+        _GUARD_ALLOW, {"type": "http", "headers": [(b"host", b"evil.example.com")]}
+    )
+    assert not called and status == 421
+
+
+@pytest.mark.asyncio
+async def test_host_guard_duplicate_host_421() -> None:
+    """Two Host headers (smuggling vector) -> 421, app never reached."""
+    called, status = await _run_host_guard(
+        _GUARD_ALLOW,
+        {
+            "type": "http",
+            "headers": [
+                (b"host", b"daily-cloudcode-pa.googleapis.com"),
+                (b"host", b"evil.example.com"),
+            ],
+        },
+    )
+    assert not called and status == 421
+
+
+@pytest.mark.asyncio
+async def test_host_guard_zero_host_421() -> None:
+    called, status = await _run_host_guard(_GUARD_ALLOW, {"type": "http", "headers": []})
+    assert not called and status == 421
+
+
+@pytest.mark.asyncio
+async def test_host_guard_uppercase_and_port_passes() -> None:
+    """RFC-compliant mixed-case + port-qualified Host normalizes and passes."""
+    called, status = await _run_host_guard(
+        _GUARD_ALLOW,
+        {"type": "http", "headers": [(b"host", b"DAILY-CloudCode-PA.googleapis.com:443")]},
+    )
+    assert called and status is None
+
+
+@pytest.mark.asyncio
+async def test_host_guard_lifespan_scope_passes() -> None:
+    """Non-http/websocket scopes (e.g. lifespan) are not guarded."""
+    called, status = await _run_host_guard(_GUARD_ALLOW, {"type": "lifespan", "headers": []})
+    assert called and status is None

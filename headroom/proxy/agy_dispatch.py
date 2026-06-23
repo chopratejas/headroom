@@ -62,6 +62,48 @@ async def _send_421(send: Any) -> None:
     await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
+def make_host_guard(app: Any, allowlist: frozenset[str]) -> Any:
+    """Wrap an ASGI *app* with a post-handshake Host/authority allowlist guard.
+
+    Mandatory defense-in-depth for the no-SNI / placeholder path (where the
+    TLS SNI guard may not fire). Hypercorn normalizes the HTTP/2 ``:authority``
+    pseudo-header into a ``host`` header, so reading ``host`` covers h2 and
+    http/1.1 uniformly. Module-level (not a closure) so it is unit-testable
+    with synthetic ASGI scopes.
+    """
+
+    async def _host_guard_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") in ("http", "websocket"):
+            # Enforce exactly ONE Host header — multiple Host headers are a
+            # request-smuggling vector (guard validates one, backend may route
+            # on another). RFC 7230 §5.4 requires rejecting them.
+            host_values = [
+                value for name, value in scope.get("headers", ()) if name.lower() == b"host"
+            ]
+            if len(host_values) != 1:
+                logger.warning("event=host_refused host_count=%d", len(host_values))
+                await _send_421(send)
+                return
+            host_str = host_values[0].decode("latin-1")
+            if not host_str:
+                logger.warning("event=host_refused host=%r", host_str)
+                await _send_421(send)
+                return
+            # Normalize: strip a single trailing :port; lowercase (RFC 6066/7230).
+            normalized = host_str.lower()
+            if ":" in normalized:
+                left, _, right = normalized.rpartition(":")
+                if right.isdigit():
+                    normalized = left
+            if normalized not in allowlist:
+                logger.warning("event=host_refused host=%s", host_str)
+                await _send_421(send)
+                return
+        await app(scope, receive, send)
+
+    return _host_guard_app
+
+
 # ---------------------------------------------------------------------------
 # SNI-capable SSL context builder
 # ---------------------------------------------------------------------------
@@ -194,50 +236,10 @@ class AgyDispatchServer:
         # Import and build the FastAPI app.
         from headroom.proxy.server import create_app
 
-        _allowlist = self._allowlist
-
-        app = create_app()
-
-        # Mandatory post-handshake Host/authority guard (defense-in-depth for
-        # the no-SNI / placeholder path). Hypercorn normalizes HTTP/2
-        # ``:authority`` into a ``host`` header, so reading ``host`` covers h2
-        # and http/1.1 uniformly.
-        async def _host_guard_app(
-            scope: dict[str, Any],
-            receive: Any,
-            send: Any,
-        ) -> None:
-            if scope.get("type") in ("http", "websocket"):
-                # Enforce exactly ONE Host header — multiple Host headers are a
-                # request-smuggling vector (guard validates one, backend may
-                # route on another). RFC 7230 §5.4 requires rejecting them.
-                host_values = [
-                    value for name, value in scope.get("headers", ()) if name.lower() == b"host"
-                ]
-                if len(host_values) != 1:
-                    logger.warning("event=host_refused host_count=%d", len(host_values))
-                    await _send_421(send)
-                    return
-                host_str = host_values[0].decode("latin-1")
-                # Normalize: reject empty; strip a single trailing :port; lowercase.
-                if not host_str:
-                    logger.warning("event=host_refused host=%r", host_str)
-                    await _send_421(send)
-                    return
-                normalized = host_str.lower()
-                # Strip trailing :port (only one, so split on last colon-digit block).
-                if ":" in normalized:
-                    left, _, right = normalized.rpartition(":")
-                    if right.isdigit():
-                        normalized = left
-                if normalized not in _allowlist:
-                    logger.warning("event=host_refused host=%s", host_str)
-                    await _send_421(send)
-                    return
-            await app(scope, receive, send)
+        app = make_host_guard(create_app(), self._allowlist)
 
         # wrap_app accepts the ASGI callable directly; ignore the narrow stub type.
-        app_wrapper = wrap_app(_host_guard_app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]
+        app_wrapper = wrap_app(app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]
         self._app_wrapper = app_wrapper
 
         # Run hypercorn lifespan (startup/shutdown events).
