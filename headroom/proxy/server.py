@@ -3916,7 +3916,8 @@ def run_server(
         else:
             logger.warning(
                 "Headroom is running with workers=%d. The in-memory CCR store, "
-                "compression cache, prefix tracker, TOIN state, and CostTracker are all "
+                "compression cache (incl. off-path background compression), prefix "
+                "tracker, TOIN state, and CostTracker are all "
                 "per-process; multi-worker deployments produce silent CCR retrieval "
                 "failures, avoidable cache busts, and an unstable dashboard 'Proxy $ Saved' "
                 "hero tile (each /stats poll hits a different worker's partial total) when "
