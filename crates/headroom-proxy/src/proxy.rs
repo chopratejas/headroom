@@ -86,13 +86,13 @@ pub struct AppState {
 /// Load the per-model price book from the `HEADROOM_PRICEBOOK` env var (a path
 /// to a models.dev JSON file). Returns an empty book when unset or unreadable —
 /// savings still report in tokens, just with USD at zero.
-fn load_price_book() -> crate::observability::pricing::PriceBook {
-    match std::env::var("HEADROOM_PRICEBOOK") {
-        Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path) {
+fn load_price_book(path: Option<&std::path::Path>) -> crate::observability::pricing::PriceBook {
+    match path {
+        Some(p) => match std::fs::read_to_string(p) {
             Ok(json) => crate::observability::pricing::PriceBook::from_models_dev_json(&json),
             Err(_) => crate::observability::pricing::PriceBook::empty(),
         },
-        _ => crate::observability::pricing::PriceBook::empty(),
+        None => crate::observability::pricing::PriceBook::empty(),
     }
 }
 
@@ -137,7 +137,7 @@ impl AppState {
         // dirty; `spawn_savings_flusher` (wired in `main`) does the disk I/O on a
         // background interval. Kept out of this constructor so building an
         // `AppState` never silently spawns a task.
-        let price_book = Arc::new(load_price_book());
+        let price_book = Arc::new(load_price_book(config.pricebook_path.as_deref()));
 
         Ok(Self {
             config: Arc::new(config),
@@ -746,7 +746,7 @@ pub(crate) async fn forward_http(
     // provider), rather than being mis-counted as a success.
     let mut pending_record: Option<crate::observability::stats::RequestOutcome> = None;
 
-    let upstream_resp = if should_intercept {
+    let upstream_send_result = if should_intercept {
         // Buffer up to `compression_max_body_bytes`. If the body
         // exceeds this, the body is already partially consumed and
         // cannot be resumed as a stream — fail loudly per project
@@ -1038,18 +1038,14 @@ pub(crate) async fn forward_http(
         // to zero here, so compression savings are exact and request counts
         // accurate from day one. USD is valued via the price book when the model
         // is priced; otherwise savings stay token-only with USD at zero.
-        let rec_price = state.price_book.lookup(&rec_model).unwrap_or_default();
-        pending_record = Some(crate::observability::stats::RequestOutcome {
-            provider: rec_provider.to_string(),
-            model: rec_model,
-            tokens_before: rec_tokens_before,
-            tokens_after: rec_tokens_after,
-            input_cost_per_token: rec_price.input,
-            cache_read_cost_per_token: rec_price.cache_read,
-            cache_write_cost_per_token: rec_price.cache_write,
-            request_id: request_id.clone(),
-            ..Default::default()
-        });
+        pending_record = Some(crate::observability::stats::RequestOutcome::priced(
+            rec_provider,
+            rec_model,
+            rec_tokens_before,
+            rec_tokens_after,
+            request_id.clone(),
+            &state.price_book,
+        ));
 
         // C2 fix: cache-safety alarm. When the dispatcher returned
         // `NoCompression` or `Passthrough`, the post-dispatcher body
@@ -1113,7 +1109,7 @@ pub(crate) async fn forward_http(
             .headers(outgoing_headers)
             .body(body_to_send)
             .send()
-            .await?
+            .await
     } else {
         // Pure streaming path — the original passthrough behaviour.
         let body_stream =
@@ -1125,7 +1121,23 @@ pub(crate) async fn forward_http(
             .headers(outgoing_headers)
             .body(reqwest_body)
             .send()
-            .await?
+            .await
+    };
+
+    // Connect/timeout/transport errors carry no upstream status. Record the
+    // request as failed before propagating — same as the Bedrock/Vertex handlers
+    // — so an OpenAI/Anthropic upstream outage is not silently absent from
+    // `/stats` (and `requests.failed` stays consistent across providers).
+    let upstream_resp = match upstream_send_result {
+        Ok(resp) => resp,
+        Err(e) => {
+            if let Some(mut outcome) = pending_record.take() {
+                outcome.failed = true;
+                outcome.latency_ms = start.elapsed().as_millis() as u64;
+                state.savings.record(&outcome, std::time::SystemTime::now());
+            }
+            return Err(e.into());
+        }
     };
 
     let upstream_status = upstream_resp.status();

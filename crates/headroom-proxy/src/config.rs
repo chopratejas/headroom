@@ -483,6 +483,12 @@ pub struct CliArgs {
     /// unreachable Python proxy just omits those blocks.
     #[arg(long = "upstream-stats-url", env = "HEADROOM_PROXY_UPSTREAM_STATS_URL")]
     pub upstream_stats_url: Option<String>,
+
+    /// Phase H: path to a models.dev-shaped JSON price book used to value token
+    /// savings in USD. When unset (or unreadable), savings are reported in tokens
+    /// with USD left at zero.
+    #[arg(long = "pricebook", env = "HEADROOM_PROXY_PRICEBOOK")]
+    pub pricebook_path: Option<std::path::PathBuf>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -570,6 +576,9 @@ pub struct Config {
     /// Transitional Python `/stats` URL for supplemental blocks (see
     /// `CliArgs::upstream_stats_url`).
     pub upstream_stats_url: Option<String>,
+    /// Phase H: models.dev price-book path for USD valuation (see
+    /// `CliArgs::pricebook_path`).
+    pub pricebook_path: Option<std::path::PathBuf>,
 }
 
 impl Config {
@@ -616,6 +625,7 @@ impl Config {
             vertex_adc_scope: args.vertex_adc_scope,
             savings_path: args.savings_path,
             upstream_stats_url: args.upstream_stats_url,
+            pricebook_path: args.pricebook_path,
         }
     }
 
@@ -672,6 +682,7 @@ impl Config {
             vertex_adc_scope: "https://www.googleapis.com/auth/cloud-platform".to_string(),
             savings_path: None,
             upstream_stats_url: None,
+            pricebook_path: None,
         }
     }
 }

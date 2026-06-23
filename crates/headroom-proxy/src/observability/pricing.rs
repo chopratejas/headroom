@@ -116,10 +116,16 @@ impl PriceBook {
     ///
     /// Resolution order (each over the normalized id):
     /// 1. exact match;
-    /// 2. longest substring match in either direction, so prefixed ids resolve
-    ///    to a stored model — region/vendor-prefixed Bedrock ids
-    ///    (`eu.anthropic.claude-…`) and LiteLLM's `copilot-<m>` (which contains
-    ///    the bare `<m>` models.dev stores) both land on the right entry.
+    /// 2. the longest stored id that the request id *contains* — so vendor/region
+    ///    prefixes resolve correctly: Bedrock's `eu.anthropic.claude-haiku-4-5-…`
+    ///    and LiteLLM's `copilot-gpt-5-mini` both contain the bare models.dev id.
+    ///
+    /// Only the request-contains-stored direction is matched. The reverse (a
+    /// stored id containing the request) is deliberately NOT matched: a short or
+    /// generic request id (e.g. a bare `claude`) would otherwise resolve to
+    /// whichever stored id is longest (`claude-opus-…`), mispricing it. A request
+    /// shorter than its canonical id simply misses → unpriced (USD 0), which is
+    /// safer than guessing the wrong model's rate.
     pub fn lookup(&self, model: &str) -> Option<ModelPrice> {
         if self.models.is_empty() {
             return None;
@@ -128,11 +134,11 @@ impl PriceBook {
         if let Some(p) = self.models.get(&key) {
             return Some(*p);
         }
-        // Longest substring match in either direction. `max_by_key` keeps the
+        // Longest stored id contained in the request id. `max_by_key` keeps the
         // selection branch in std (deterministic, not a coverage region here).
         self.models
             .iter()
-            .filter(|(id, _)| key.contains(id.as_str()) || id.contains(key.as_str()))
+            .filter(|(id, _)| key.contains(id.as_str()))
             .max_by_key(|(id, _)| id.len())
             .map(|(_, price)| *price)
     }
@@ -244,5 +250,16 @@ mod tests {
     fn unknown_model_misses() {
         let book = PriceBook::from_models_dev_json(SAMPLE);
         assert_eq!(book.lookup("totally-unknown-model"), None);
+    }
+
+    #[test]
+    fn short_request_id_does_not_mismatch_to_a_longer_stored_id() {
+        // The reverse (stored-contains-request) direction is intentionally NOT
+        // matched: a bare `claude` must miss rather than resolve to the longest
+        // stored `claude-*` and get mispriced.
+        let book = PriceBook::from_models_dev_json(SAMPLE);
+        assert_eq!(book.lookup("claude"), None);
+        // `gpt` must not resolve to `gpt-5-mini` either.
+        assert_eq!(book.lookup("gpt"), None);
     }
 }

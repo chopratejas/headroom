@@ -196,18 +196,14 @@ pub async fn handle_invoke(
     // built here (compression token counts are known now) but recorded only once
     // the upstream result is known, so `requests.failed` reflects connect
     // errors / non-2xx upstreams instead of counting every attempt as a success.
-    let rec_price = state.price_book.lookup(&model_id).unwrap_or_default();
-    let rec_outcome = crate::observability::stats::RequestOutcome {
-        provider: "bedrock".to_string(),
-        model: model_id.clone(),
-        tokens_before: rec_tokens_before,
-        tokens_after: rec_tokens_after,
-        input_cost_per_token: rec_price.input,
-        cache_read_cost_per_token: rec_price.cache_read,
-        cache_write_cost_per_token: rec_price.cache_write,
-        request_id: request_id.clone(),
-        ..Default::default()
-    };
+    let rec_outcome = crate::observability::stats::RequestOutcome::priced(
+        "bedrock",
+        model_id.clone(),
+        rec_tokens_before,
+        rec_tokens_after,
+        request_id.clone(),
+        &state.price_book,
+    );
 
     // Resolve the Bedrock action from the inbound path so `/converse`
     // forwards to the upstream Converse endpoint instead of `/invoke`.

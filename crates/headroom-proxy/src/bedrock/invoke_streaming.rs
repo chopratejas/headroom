@@ -171,18 +171,14 @@ pub async fn handle_invoke_streaming(
     // Phase H: build this Bedrock streaming request's savings outcome now (token
     // counts are known) but record it only once the upstream result is known, so
     // `requests.failed` reflects connect errors / non-2xx upstreams.
-    let rec_price = state.price_book.lookup(&model_id).unwrap_or_default();
-    let rec_outcome = crate::observability::stats::RequestOutcome {
-        provider: "bedrock".to_string(),
-        model: model_id.clone(),
-        tokens_before: rec_tokens_before,
-        tokens_after: rec_tokens_after,
-        input_cost_per_token: rec_price.input,
-        cache_read_cost_per_token: rec_price.cache_read,
-        cache_write_cost_per_token: rec_price.cache_write,
-        request_id: request_id.clone(),
-        ..Default::default()
-    };
+    let rec_outcome = crate::observability::stats::RequestOutcome::priced(
+        "bedrock",
+        model_id.clone(),
+        rec_tokens_before,
+        rec_tokens_after,
+        request_id.clone(),
+        &state.price_book,
+    );
 
     // 2. Resolve the Bedrock streaming action from the inbound path and
     // build the upstream URL.

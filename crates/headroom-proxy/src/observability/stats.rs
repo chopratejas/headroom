@@ -94,6 +94,37 @@ pub struct RequestOutcome {
 }
 
 impl RequestOutcome {
+    /// Build a request-side outcome with per-token USD prices resolved from
+    /// `prices` for `model`. The `failed`, `latency_ms`, and response-side token
+    /// fields default to zero/false; callers set `failed`/`latency_ms` once the
+    /// upstream result is known, then `SavingsStore::record` it.
+    ///
+    /// This is the single place the `ModelPrice → RequestOutcome` price mapping
+    /// lives, shared by every recorder lane (forward_http, Bedrock invoke +
+    /// streaming, Vertex rawPredict).
+    pub fn priced(
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        tokens_before: u64,
+        tokens_after: u64,
+        request_id: impl Into<String>,
+        prices: &crate::observability::pricing::PriceBook,
+    ) -> Self {
+        let model = model.into();
+        let price = prices.lookup(&model).unwrap_or_default();
+        Self {
+            provider: provider.into(),
+            model,
+            tokens_before,
+            tokens_after,
+            input_cost_per_token: price.input,
+            cache_read_cost_per_token: price.cache_read,
+            cache_write_cost_per_token: price.cache_write,
+            request_id: request_id.into(),
+            ..Default::default()
+        }
+    }
+
     /// Saved input tokens (never negative; compression can only remove).
     pub fn tokens_saved(&self) -> u64 {
         self.tokens_before.saturating_sub(self.tokens_after)
@@ -133,6 +164,14 @@ fn norm_label(value: &str) -> &str {
     }
 }
 
+/// Lock a mutex, recovering the guard even if a previous holder panicked.
+/// Savings are best-effort telemetry: a poisoned lock must never propagate a
+/// panic onto the request path (which would make every subsequent request fail),
+/// so we keep using the still-valid inner data.
+fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Round to 6 decimals, mapping non-finite input (NaN/±Inf — e.g. from a
 /// garbage price) to 0.0 so corrupt values never poison aggregates or break
 /// JSON serialization (`serde_json` with `arbitrary_precision` rejects
@@ -148,6 +187,13 @@ fn round6(value: f64) -> f64 {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Lifetime {
     pub requests: u64,
+    /// Successful requests where compression actually reduced tokens. Lets the
+    /// dashboard show coverage (`requests_compressed`/`requests`) so the savings
+    /// percentage — which is the reduction over *compressed* input — is read in
+    /// context rather than as an all-traffic figure. `#[serde(default)]` so
+    /// pre-existing persisted files (without the field) still load.
+    #[serde(default)]
+    pub requests_compressed: u64,
     pub tokens_saved: u64,
     pub compression_savings_usd: f64,
     pub cache_savings_usd: f64,
@@ -157,6 +203,9 @@ pub struct Lifetime {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DisplaySession {
     pub requests: u64,
+    /// Successful requests in this session where compression reduced tokens.
+    #[serde(default)]
+    pub requests_compressed: u64,
     pub tokens_saved: u64,
     pub total_input_tokens: u64,
     pub compression_savings_usd: f64,
@@ -192,6 +241,12 @@ pub struct Bucket {
 impl Bucket {
     fn apply(&mut self, o: &RequestOutcome) {
         self.requests += 1;
+        // A failed upstream produced no successful completion, so it accrues no
+        // savings — only the request count above. (Counting its savings would
+        // inflate the totals, and a client retry would double-count.)
+        if o.failed {
+            return;
+        }
         self.tokens_before += o.tokens_before;
         self.tokens_saved += o.tokens_saved();
         self.output_tokens += o.output_tokens;
@@ -299,20 +354,43 @@ impl SavingsState {
     /// from `now`, never from the system clock, so this is fully deterministic
     /// under test.
     pub fn record(&mut self, outcome: &RequestOutcome, now: SystemTime, cfg: &StoreConfig) {
-        let saved = outcome.tokens_saved();
-        let comp_usd = outcome.compression_savings_usd();
-        let cache_usd = outcome.cache_savings_usd().max(0.0);
+        // A failed upstream produced no successful completion: it counts toward
+        // the request/failure totals but accrues NO savings — booking savings on
+        // a failure would inflate the headline numbers, and a client retry would
+        // double-count. Zero the savings contribution here so every aggregate
+        // below excludes failures. (The recent-request feed still logs the real
+        // attempted compression, tagged `failed`.)
+        let failed = outcome.failed;
+        let saved = if failed { 0 } else { outcome.tokens_saved() };
+        let comp_usd = if failed {
+            0.0
+        } else {
+            outcome.compression_savings_usd()
+        };
+        let cache_usd = if failed {
+            0.0
+        } else {
+            outcome.cache_savings_usd().max(0.0)
+        };
+        let input_tokens = if failed { 0 } else { outcome.tokens_after };
+        let output_tokens = if failed { 0 } else { outcome.output_tokens };
+        // Coverage: a "compressed" request is a successful one that actually
+        // reduced tokens (`saved > 0` implies `!failed`).
+        let compressed = saved > 0;
         let now_iso = to_rfc3339(now);
 
         // Lifetime
         self.lifetime.requests += 1;
+        if compressed {
+            self.lifetime.requests_compressed += 1;
+        }
         self.lifetime.tokens_saved += saved;
         self.lifetime.compression_savings_usd =
             round6(self.lifetime.compression_savings_usd + comp_usd);
         self.lifetime.cache_savings_usd = round6(self.lifetime.cache_savings_usd + cache_usd);
-        self.total_input_tokens += outcome.tokens_after;
-        self.total_output_tokens += outcome.output_tokens;
-        if outcome.failed {
+        self.total_input_tokens += input_tokens;
+        self.total_output_tokens += output_tokens;
+        if failed {
             self.requests_failed += 1;
         }
 
@@ -325,8 +403,11 @@ impl SavingsState {
         }
         let session = &mut self.display_session;
         session.requests += 1;
+        if compressed {
+            session.requests_compressed += 1;
+        }
         session.tokens_saved += saved;
-        session.total_input_tokens += outcome.tokens_after;
+        session.total_input_tokens += input_tokens;
         session.compression_savings_usd = round6(session.compression_savings_usd + comp_usd);
         session.cache_savings_usd = round6(session.cache_savings_usd + cache_usd);
         session.last_activity_at = Some(now_iso.clone());
@@ -334,7 +415,8 @@ impl SavingsState {
             session.started_at = Some(now_iso.clone());
         }
 
-        // Per-provider / per-model
+        // Per-provider / per-model (`Bucket::apply` counts the request and
+        // excludes failed requests from its savings).
         self.by_provider
             .entry(outcome.provider_key().to_string())
             .or_default()
@@ -344,7 +426,8 @@ impl SavingsState {
             .or_default()
             .apply(outcome);
 
-        // History checkpoint (only when something was actually saved)
+        // History checkpoint (only when something was actually saved → never on
+        // a failed request, since `saved` is zeroed above).
         if saved > 0 {
             self.history.push(HistoryPoint {
                 timestamp: now_iso,
@@ -356,13 +439,16 @@ impl SavingsState {
             cap_front(&mut self.history, cfg.max_history);
         }
 
-        // Recent-request feed (every request, success or failure). A blank
-        // request id is backfilled from the lifetime counter so the dashboard's
-        // `:key="req.request_id"` never collides.
+        // Recent-request feed (every request, success or failure). A truthful
+        // per-request log: it shows the real attempted compression plus the
+        // `failed` flag, even though the aggregates above excluded failures. A
+        // blank request id is backfilled from the lifetime counter so the
+        // dashboard's `:key="req.request_id"` never collides.
+        let recent_saved = outcome.tokens_saved();
         let savings_percent = if outcome.tokens_before == 0 {
             0.0
         } else {
-            (saved as f64 / outcome.tokens_before as f64) * 100.0
+            (recent_saved as f64 / outcome.tokens_before as f64) * 100.0
         };
         let request_id = if outcome.request_id.trim().is_empty() {
             format!("req-{}", self.lifetime.requests)
@@ -376,7 +462,7 @@ impl SavingsState {
             model: outcome.model_key().to_string(),
             input_tokens_original: outcome.tokens_before,
             input_tokens_optimized: outcome.tokens_after,
-            tokens_saved: saved,
+            tokens_saved: recent_saved,
             output_tokens: outcome.output_tokens,
             savings_percent: round2(savings_percent),
             total_latency_ms: outcome.latency_ms,
@@ -473,7 +559,7 @@ impl SavingsStore {
     /// interval task and the shutdown hook (see `proxy::AppState::new`).
     pub fn record(&self, outcome: &RequestOutcome, now: SystemTime) {
         {
-            let mut state = self.state.lock().expect("savings store mutex poisoned");
+            let mut state = lock_recover(&self.state);
             state.record(outcome, now, &self.cfg);
         }
         self.dirty.store(true, Ordering::Release);
@@ -494,10 +580,7 @@ impl SavingsStore {
     pub fn flush(&self) {
         // Serialize concurrent flushers (background interval vs. shutdown hook)
         // so they never write the shared temp file at the same time.
-        let _guard = self
-            .flush_lock
-            .lock()
-            .expect("savings flush mutex poisoned");
+        let _guard = lock_recover(&self.flush_lock);
         // Clear dirty up front so a `record` concurrent with the write re-arms
         // it (its update lands in the next flush). If the write itself fails,
         // re-arm so a transient I/O error is retried by the next flush rather
@@ -509,10 +592,7 @@ impl SavingsStore {
 
     /// Snapshot the current state (clone under the lock).
     pub fn snapshot(&self) -> SavingsState {
-        self.state
-            .lock()
-            .expect("savings store mutex poisoned")
-            .clone()
+        lock_recover(&self.state).clone()
     }
 
     /// Build the dashboard-facing `/stats` JSON for the savings portion.
@@ -590,7 +670,10 @@ fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
 pub fn save_state(path: &Path, state: &SavingsState) -> std::io::Result<()> {
     ensure_parent_dir(path)?;
     let json = serialize_state(state);
-    let tmp = path.with_extension("json.tmp");
+    // Per-process temp name: two proxies pointed at the same `--savings-path`
+    // must not write the same temp file (the per-store `flush_lock` only
+    // serializes within one process). The rename target is still atomic.
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     std::fs::write(&tmp, &json)?;
     let _ = std::fs::File::open(&tmp).and_then(|f| f.sync_all());
     std::fs::rename(&tmp, path)?;
@@ -642,6 +725,9 @@ fn build_history_json(state: &SavingsState) -> Value {
 /// Build the savings JSON contract from a state snapshot.
 fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) -> Value {
     let session = session_view(state, now, cfg);
+    // Serialized once; surfaced at both the top level and under
+    // `persistent_savings` for the dashboard contract (compute it a single time).
+    let session_json = display_session_json(&session);
     let total_before = state.total_input_tokens + state.lifetime.tokens_saved;
     let savings_percent = if total_before == 0 {
         0.0
@@ -689,6 +775,10 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
         "requests": {
             "total": state.lifetime.requests,
             "failed": state.requests_failed,
+            // Coverage: how many requests actually got compressed. `savings_percent`
+            // is the reduction over *compressed* input, so `compressed`/`total`
+            // tells the reader how much of the traffic that figure applies to.
+            "compressed": state.lifetime.requests_compressed,
             "by_provider": by_provider_requests,
             "by_model": by_model_requests,
         },
@@ -722,9 +812,9 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
                 "tokens_saved": state.lifetime.tokens_saved,
                 "compression_savings_usd": round6(state.lifetime.compression_savings_usd),
             },
-            "display_session": display_session_json(&session),
+            "display_session": session_json.clone(),
         },
-        "display_session": display_session_json(&session),
+        "display_session": session_json,
         "history_points": state.history.len(),
         "recent_requests": recent_requests_json(state),
     })
@@ -764,6 +854,7 @@ fn recent_requests_json(state: &SavingsState) -> Value {
 fn display_session_json(s: &DisplaySession) -> Value {
     json!({
         "requests": s.requests,
+        "requests_compressed": s.requests_compressed,
         "tokens_saved": s.tokens_saved,
         "total_input_tokens": s.total_input_tokens,
         "compression_savings_usd": round6(s.compression_savings_usd),
@@ -872,14 +963,40 @@ mod tests {
     }
 
     #[test]
-    fn failed_request_counts_failure() {
+    fn failed_request_counts_but_accrues_no_savings() {
         let mut s = SavingsState::default();
         let cfg = StoreConfig::default();
-        let mut o = outcome("bedrock", "claude", 100, 80);
+        let mut o = outcome("bedrock", "claude", 100, 80); // would save 20 if it succeeded
         o.failed = true;
         s.record(&o, at(T0), &cfg);
-        assert_eq!(s.requests_failed, 1);
+        // Counted as a request + a failure...
         assert_eq!(s.lifetime.requests, 1);
+        assert_eq!(s.requests_failed, 1);
+        // ...but no savings booked anywhere (lifetime, buckets, history, coverage).
+        assert_eq!(s.lifetime.tokens_saved, 0);
+        assert_eq!(s.lifetime.compression_savings_usd, 0.0);
+        assert_eq!(s.lifetime.requests_compressed, 0);
+        assert_eq!(s.total_input_tokens, 0);
+        assert_eq!(s.by_provider["bedrock"].requests, 1);
+        assert_eq!(s.by_provider["bedrock"].tokens_saved, 0);
+        assert!(s.history.is_empty());
+        // The recent feed still logs the attempt, tagged failed, with the real
+        // attempted savings.
+        assert_eq!(s.recent.len(), 1);
+        assert!(s.recent[0].failed);
+        assert_eq!(s.recent[0].tokens_saved, 20);
+    }
+
+    #[test]
+    fn requests_compressed_tracks_coverage() {
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig::default();
+        // One request that actually compressed, one passthrough (no reduction).
+        s.record(&outcome("anthropic", "claude", 100, 60), at(T0), &cfg);
+        s.record(&outcome("anthropic", "claude", 100, 100), at(T0), &cfg);
+        assert_eq!(s.lifetime.requests, 2);
+        assert_eq!(s.lifetime.requests_compressed, 1);
+        assert_eq!(s.display_session.requests_compressed, 1);
     }
 
     #[test]
@@ -1076,14 +1193,15 @@ mod tests {
 
     #[test]
     fn save_state_errors_when_temp_path_is_blocked() {
-        // The atomic write goes to `<path>.json.tmp`. If a directory already
-        // occupies that temp path, the temp-file write fails → exercises the
-        // write `?` error path (distinct from the rename and mkdir edges).
+        // The atomic write goes to `<path>.json.tmp.<pid>`. If a directory
+        // already occupies that temp path, the temp-file write fails → exercises
+        // the write `?` error path (distinct from the rename and mkdir edges).
         let dir = std::env::temp_dir().join(format!("hr-stats-tmpblock-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("savings.json");
         // Pre-create a directory exactly where the temp file would be written.
-        std::fs::create_dir_all(path.with_extension("json.tmp")).unwrap();
+        std::fs::create_dir_all(path.with_extension(format!("json.tmp.{}", std::process::id())))
+            .unwrap();
         assert!(save_state(&path, &SavingsState::default()).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1209,6 +1327,20 @@ mod tests {
         // No path → flush is a no-op even though dirty; snapshot still reflects
         // the record.
         store.flush();
+        assert_eq!(store.snapshot().lifetime.requests, 1);
+    }
+
+    #[test]
+    fn lock_recovers_from_a_poisoned_mutex() {
+        // A panic while holding the state lock must not wedge the request path:
+        // record()/snapshot() recover the poisoned guard instead of panicking.
+        let store = SavingsStore::in_memory();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = store.state.lock().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(store.state.is_poisoned());
+        store.record(&outcome("anthropic", "claude", 100, 50), at(T0));
         assert_eq!(store.snapshot().lifetime.requests, 1);
     }
 

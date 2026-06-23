@@ -554,3 +554,33 @@ async fn background_flusher_persists_off_the_request_path() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn stats_records_connect_error_as_failed() {
+    // A transport error (dead upstream) on the forward_http lane must be recorded
+    // as a failed request — consistent with the Bedrock/Vertex handlers — not
+    // dropped silently, so OpenAI/Anthropic outages stay visible in /stats.
+    let proxy = start_proxy_with("http://127.0.0.1:1", |c| c.compression = true).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.url()))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"max_tokens":10}"#)
+        .send()
+        .await
+        .expect("POST /v1/messages");
+    assert!(resp.status().is_server_error(), "got {}", resp.status());
+
+    let stats: serde_json::Value = reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json");
+    assert_eq!(stats["requests"]["total"], 1);
+    assert_eq!(stats["requests"]["failed"], 1);
+
+    proxy.shutdown().await;
+}
