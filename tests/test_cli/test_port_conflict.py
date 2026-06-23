@@ -6,7 +6,6 @@ import pytest
 
 from headroom.cli.wrap import _find_available_port
 
-
 # ---------------------------------------------------------------------------
 # _find_available_port — unit tests
 # ---------------------------------------------------------------------------
@@ -20,17 +19,13 @@ class TestFindAvailablePort:
 
     def test_first_port_occupied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When port 8787 is in use, return 8788."""
-        monkeypatch.setattr(
-            "headroom.cli.wrap._check_proxy", lambda p: p == 8787
-        )
+        monkeypatch.setattr("headroom.cli.wrap._check_proxy", lambda p: p == 8787)
         assert _find_available_port(8787) == 8788
 
     def test_multiple_ports_occupied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When ports 8787 and 8788 are occupied, return 8789."""
         occupied = {8787, 8788}
-        monkeypatch.setattr(
-            "headroom.cli.wrap._check_proxy", lambda p: p in occupied
-        )
+        monkeypatch.setattr("headroom.cli.wrap._check_proxy", lambda p: p in occupied)
         assert _find_available_port(8787) == 8789
 
     def test_no_skip_when_free(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,7 +92,8 @@ class TestIntegrationPoints:
 
     def test_launch_tool_uses_find_available_port(self) -> None:
         """_launch_tool calls _find_available_port before _ensure_proxy."""
-        import ast, inspect
+        import inspect
+
         from headroom.cli.wrap import _launch_tool
 
         source = inspect.getsource(_launch_tool)
@@ -110,7 +106,8 @@ class TestIntegrationPoints:
 
     def test_run_proxy_only_watcher_uses_find_available_port(self) -> None:
         """_run_proxy_only_watcher calls _find_available_port before _ensure_proxy."""
-        import ast, inspect
+        import inspect
+
         from headroom.cli.wrap import _run_proxy_only_watcher
 
         source = inspect.getsource(_run_proxy_only_watcher)
@@ -122,8 +119,8 @@ class TestIntegrationPoints:
 
     def test_claude_uses_find_available_port(self) -> None:
         """claude() function source code contains _find_available_port before _ensure_proxy."""
-        from pathlib import Path
         from importlib import import_module
+        from pathlib import Path
 
         wrap_mod = import_module("headroom.cli.wrap")
         wrap_path = Path(wrap_mod.__file__)
@@ -141,9 +138,10 @@ class TestIntegrationPoints:
 
     def test_all_three_paths_have_gated_by_no_proxy(self) -> None:
         """Each path only runs port conflict detection when not --no-proxy."""
-        import ast, inspect
-        from pathlib import Path
+        import inspect
         from importlib import import_module
+        from pathlib import Path
+
         from headroom.cli.wrap import _launch_tool, _run_proxy_only_watcher
 
         wrap_mod = import_module("headroom.cli.wrap")
@@ -153,16 +151,22 @@ class TestIntegrationPoints:
         # Path A: _launch_tool
         fn_source = inspect.getsource(_launch_tool)
         assert "not no_proxy" in fn_source, "Path A: _launch_tool missing no_proxy guard"
-        assert "_find_available_port" in fn_source, "Path A: _launch_tool missing _find_available_port"
+        assert "_find_available_port" in fn_source, (
+            "Path A: _launch_tool missing _find_available_port"
+        )
 
         # Path B: _run_proxy_only_watcher
         fn_source = inspect.getsource(_run_proxy_only_watcher)
         assert "not no_proxy" in fn_source, "Path B: _run_proxy_only_watcher missing no_proxy guard"
-        assert "_find_available_port" in fn_source, "Path B: _run_proxy_only_watcher missing _find_available_port"
+        assert "_find_available_port" in fn_source, (
+            "Path B: _run_proxy_only_watcher missing _find_available_port"
+        )
 
         # Path C: claude() — Click Command, use file search
         claude_start = source.index("def claude(")
         next_def = source.index("\ndef ", claude_start + 1)
         claude_body = source[claude_start:next_def]
         assert "not no_proxy" in claude_body, "Path C: claude() missing no_proxy guard"
-        assert "_find_available_port" in claude_body, "Path C: claude() missing _find_available_port"
+        assert "_find_available_port" in claude_body, (
+            "Path C: claude() missing _find_available_port"
+        )
