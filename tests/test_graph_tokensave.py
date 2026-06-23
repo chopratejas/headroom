@@ -121,11 +121,14 @@ def test_download_tokensave_tarball(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(ts, "TOKENSAVE_BIN_DIR", tmp_path)
     monkeypatch.setattr(ts.platform, "system", lambda: "linux")
     monkeypatch.setattr(ts.platform, "machine", lambda: "x86_64")
+    # Synthetic archive bytes won't match the pinned digest; this test covers
+    # extraction, not integrity, so opt out of verification explicitly.
+    monkeypatch.setenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", "1")
     monkeypatch.setattr(ts, "urlopen", lambda url, timeout=60: FakeResponse(_tar_archive()))
     monkeypatch.setattr(
         "subprocess.run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="tokensave 6\n")
     )
-    path = ts.download_tokensave(version="v6.4.4")
+    path = ts.download_tokensave(version="v0.0.0-test")
     assert path == tmp_path / ts.TOKENSAVE_BIN_NAME
     assert path.exists()
 
@@ -134,11 +137,12 @@ def test_download_tokensave_zip_windows(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(ts, "TOKENSAVE_BIN_DIR", tmp_path)
     monkeypatch.setattr(ts.platform, "system", lambda: "windows")
     monkeypatch.setattr(ts.platform, "machine", lambda: "amd64")
+    monkeypatch.setenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", "1")
     monkeypatch.setattr(ts, "urlopen", lambda url, timeout=60: FakeResponse(_zip_archive()))
     monkeypatch.setattr(
         "subprocess.run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="tokensave 6\n")
     )
-    path = ts.download_tokensave(version="v6.4.4")
+    path = ts.download_tokensave(version="v0.0.0-test")
     assert path == tmp_path / "tokensave.exe"
     assert path.exists()
 
@@ -148,7 +152,7 @@ def test_download_raises_for_unsupported_platform(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(ts.platform, "system", lambda: "darwin")
     monkeypatch.setattr(ts.platform, "machine", lambda: "x86_64")
     with pytest.raises(RuntimeError, match="no prebuilt tokensave asset"):
-        ts.download_tokensave(version="v6.4.4")
+        ts.download_tokensave(version="v7.0.0")
 
 
 def test_download_wraps_network_failure(monkeypatch, tmp_path: Path) -> None:
@@ -161,7 +165,7 @@ def test_download_wraps_network_failure(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(ts, "urlopen", _boom)
     with pytest.raises(RuntimeError, match="Failed to download tokensave"):
-        ts.download_tokensave(version="v6.4.4")
+        ts.download_tokensave(version="v7.0.0")
 
 
 def test_download_raises_when_binary_missing_from_tarball(monkeypatch, tmp_path: Path) -> None:
@@ -169,39 +173,87 @@ def test_download_raises_when_binary_missing_from_tarball(monkeypatch, tmp_path:
     monkeypatch.setattr(ts.platform, "system", lambda: "linux")
     monkeypatch.setattr(ts.platform, "machine", lambda: "x86_64")
     # Archive contains an unrelated member, not the tokensave binary.
+    monkeypatch.setenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", "1")
     monkeypatch.setattr(
         ts, "urlopen", lambda url, timeout=60: FakeResponse(_tar_archive("README.md"))
     )
     with pytest.raises(RuntimeError, match="binary not found in archive"):
-        ts.download_tokensave(version="v6.4.4")
+        ts.download_tokensave(version="v0.0.0-test")
 
 
 def test_download_raises_when_binary_missing_from_zip(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(ts, "TOKENSAVE_BIN_DIR", tmp_path)
     monkeypatch.setattr(ts.platform, "system", lambda: "windows")
     monkeypatch.setattr(ts.platform, "machine", lambda: "amd64")
+    monkeypatch.setenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", "1")
     monkeypatch.setattr(
         ts, "urlopen", lambda url, timeout=60: FakeResponse(_zip_archive("notes.txt"))
     )
     with pytest.raises(RuntimeError, match="binary not found in archive"):
-        ts.download_tokensave(version="v6.4.4")
+        ts.download_tokensave(version="v0.0.0-test")
 
 
 def test_download_tolerates_failed_version_check(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(ts, "TOKENSAVE_BIN_DIR", tmp_path)
     monkeypatch.setattr(ts.platform, "system", lambda: "linux")
     monkeypatch.setattr(ts.platform, "machine", lambda: "x86_64")
+    monkeypatch.setenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", "1")
     monkeypatch.setattr(ts, "urlopen", lambda url, timeout=60: FakeResponse(_tar_archive()))
     # Non-zero return code and a raising probe must both be non-fatal.
     monkeypatch.setattr(
         "subprocess.run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="x")
     )
-    assert ts.download_tokensave(version="v6.4.4") == tmp_path / ts.TOKENSAVE_BIN_NAME
+    assert ts.download_tokensave(version="v0.0.0-test") == tmp_path / ts.TOKENSAVE_BIN_NAME
 
     monkeypatch.setattr(
         "subprocess.run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("probe boom"))
     )
-    assert ts.download_tokensave(version="v6.4.4") == tmp_path / ts.TOKENSAVE_BIN_NAME
+    assert ts.download_tokensave(version="v0.0.0-test") == tmp_path / ts.TOKENSAVE_BIN_NAME
+
+
+def test_verify_asset_digest_accepts_matching_hash(monkeypatch) -> None:
+    import hashlib
+
+    data = b"some-release-bytes"
+    digest = hashlib.sha256(data).hexdigest()
+    monkeypatch.setattr(ts, "TOKENSAVE_ASSET_DIGESTS", {"asset.tar.gz": digest})
+    # No exception => verification passed.
+    ts._verify_asset_digest("asset.tar.gz", data)
+
+
+def test_verify_asset_digest_rejects_mismatch(monkeypatch) -> None:
+    monkeypatch.setattr(ts, "TOKENSAVE_ASSET_DIGESTS", {"asset.tar.gz": "00" * 32})
+    with pytest.raises(RuntimeError, match="failed integrity check"):
+        ts._verify_asset_digest("asset.tar.gz", b"tampered")
+
+
+def test_verify_asset_digest_refuses_unpinned_without_optout(monkeypatch) -> None:
+    monkeypatch.setattr(ts, "TOKENSAVE_ASSET_DIGESTS", {})
+    monkeypatch.delenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", raising=False)
+    with pytest.raises(RuntimeError, match="no pinned SHA-256 digest"):
+        ts._verify_asset_digest("unknown.tar.gz", b"bytes")
+
+
+def test_verify_asset_digest_allows_unpinned_with_optout(monkeypatch) -> None:
+    monkeypatch.setattr(ts, "TOKENSAVE_ASSET_DIGESTS", {})
+    monkeypatch.setenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", "1")
+    ts._verify_asset_digest("unknown.tar.gz", b"bytes")  # no exception
+
+
+def test_download_aborts_on_digest_mismatch(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(ts, "TOKENSAVE_BIN_DIR", tmp_path)
+    monkeypatch.setattr(ts.platform, "system", lambda: "linux")
+    monkeypatch.setattr(ts.platform, "machine", lambda: "x86_64")
+    monkeypatch.delenv("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED", raising=False)
+    # Pin a digest that the synthetic archive cannot match.
+    monkeypatch.setattr(
+        ts, "TOKENSAVE_ASSET_DIGESTS", {"tokensave-v7.0.0-x86_64-linux.tar.gz": "00" * 32}
+    )
+    monkeypatch.setattr(ts, "urlopen", lambda url, timeout=60: FakeResponse(_tar_archive()))
+    with pytest.raises(RuntimeError, match="failed integrity check"):
+        ts.download_tokensave(version="v7.0.0")
+    # The unverified binary must not have been written.
+    assert not (tmp_path / ts.TOKENSAVE_BIN_NAME).exists()
 
 
 def test_download_honors_invalid_url_scheme(monkeypatch, tmp_path: Path) -> None:
@@ -210,7 +262,7 @@ def test_download_honors_invalid_url_scheme(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(ts.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(ts, "GITHUB_RELEASE_URL", "ftp://example.test/releases")
     with pytest.raises(RuntimeError, match="Failed to download tokensave"):
-        ts.download_tokensave(version="v6.4.4")
+        ts.download_tokensave(version="v7.0.0")
 
 
 def test_ensure_returns_none_when_download_fails(monkeypatch, tmp_path: Path) -> None:

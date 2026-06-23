@@ -14,14 +14,29 @@ When no prebuilt asset exists for the platform (e.g. x86_64 macOS, which
 tokensave does not currently publish) or the download fails, this module
 returns ``None`` and the caller falls back to Serena, the backup compressor.
 
+Supply-chain integrity:
+    Because ``headroom wrap`` downloads and then *executes* this binary by
+    default, every release asset is pinned to a SHA-256 digest in
+    ``TOKENSAVE_ASSET_DIGESTS`` below. The downloaded bytes are verified
+    against the pinned digest before the archive is unpacked; a mismatch
+    aborts the install (→ Serena fallback) rather than running unverified
+    code. When ``HEADROOM_TOKENSAVE_VERSION`` overrides the pinned tag there
+    is no pinned digest, so the download is refused unless the operator
+    explicitly opts out of verification via
+    ``HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED=1``.
+
 Env vars:
-    HEADROOM_BINARIES_OFFLINE  if set, never reach the network (returns the
-                               already-installed binary or ``None``).
-    HEADROOM_TOKENSAVE_VERSION override the pinned release tag.
+    HEADROOM_BINARIES_OFFLINE        if set, never reach the network (returns
+                                     the already-installed binary or ``None``).
+    HEADROOM_TOKENSAVE_VERSION       override the pinned release tag.
+    HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED  permit installing an asset that has
+                                     no pinned digest (only relevant when the
+                                     version is overridden).
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
@@ -36,12 +51,31 @@ from urllib.request import urlopen
 logger = logging.getLogger(__name__)
 
 #: Pinned release. Override with HEADROOM_TOKENSAVE_VERSION.
-TOKENSAVE_VERSION = "v6.4.4"
+TOKENSAVE_VERSION = "v7.0.0"
 TOKENSAVE_REPO = "aovestdipaperino/tokensave"
 TOKENSAVE_BIN_DIR = Path.home() / ".local" / "bin"
 TOKENSAVE_BIN_NAME = "tokensave"
 
 GITHUB_RELEASE_URL = f"https://github.com/{TOKENSAVE_REPO}/releases/download"
+
+#: SHA-256 of each pinned release asset, keyed by asset filename. The binary
+#: is downloaded and executed by default, so its bytes are verified against
+#: this map before extraction. Regenerate when bumping TOKENSAVE_VERSION:
+#:   for f in <assets>; do curl -sL <url>/$f | shasum -a 256; done
+TOKENSAVE_ASSET_DIGESTS: dict[str, str] = {
+    "tokensave-v7.0.0-aarch64-macos.tar.gz": (
+        "1d1737d16d5449f1127268383115fcbfe6d63d93b50275be99f158479a3cd38a"
+    ),
+    "tokensave-v7.0.0-aarch64-linux.tar.gz": (
+        "5b154e2e2f36ba2e31607f1c037ad062552b56d4bd3e62858478158f616aa53f"
+    ),
+    "tokensave-v7.0.0-x86_64-linux.tar.gz": (
+        "3f26229842ee0028d7b0228f874ae0c3276c7e40ebbbb739a1402e60fa2136e3"
+    ),
+    "tokensave-v7.0.0-x86_64-windows.zip": (
+        "bcb1b73a9b99d852dfdb665af42ce641ee9e47bba6d0002e05c54ecfc8006257"
+    ),
+}
 
 
 def _pinned_version() -> str:
@@ -71,6 +105,35 @@ def _detect_asset(version: str) -> tuple[str, str] | None:
         return f"tokensave-{version}-x86_64-windows.zip", "zip"
 
     return None
+
+
+def _verify_asset_digest(filename: str, data: bytes) -> None:
+    """Verify downloaded bytes against the pinned SHA-256 digest.
+
+    Raises ``RuntimeError`` on a digest mismatch, or when the asset has no
+    pinned digest (i.e. a version override) unless the operator has set
+    ``HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED``.
+    """
+    expected = TOKENSAVE_ASSET_DIGESTS.get(filename)
+    if expected is None:
+        if os.environ.get("HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED"):
+            logger.warning(
+                "tokensave asset %s has no pinned digest; installing unverified "
+                "(HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED is set)",
+                filename,
+            )
+            return
+        raise RuntimeError(
+            f"no pinned SHA-256 digest for tokensave asset {filename!r}; refusing to "
+            "install unverified. Set HEADROOM_TOKENSAVE_ALLOW_UNVERIFIED=1 to override."
+        )
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != expected:
+        raise RuntimeError(
+            f"tokensave asset {filename!r} failed integrity check: "
+            f"expected sha256 {expected}, got {actual}"
+        )
+    logger.debug("Verified tokensave asset %s (sha256 %s)", filename, actual)
 
 
 def get_tokensave_path() -> Path | None:
@@ -117,6 +180,8 @@ def download_tokensave(version: str | None = None) -> Path:
             data = response.read()
     except Exception as e:
         raise RuntimeError(f"Failed to download tokensave from {url}: {e}") from e
+
+    _verify_asset_digest(filename, data)
 
     try:
         if kind == "tar.gz":
