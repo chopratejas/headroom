@@ -15,6 +15,7 @@ never paraphrased; it selects, it does not rewrite.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from headroom._core import TextCrusher as _RustTextCrusher
 from headroom._core import TextCrusherConfig as _RustTextCrusherConfig
@@ -51,7 +52,7 @@ class TextCrusher:
             )
         )
 
-    def compress(self, content: str, context: str = "", target_ratio: float | None = None):
+    def compress(self, content: str, context: str = "", target_ratio: float | None = None) -> Any:
         """Returns a ``TextCrusherResult`` (Rust pyclass) with ``.compressed``,
         ``.original_tokens``, ``.compressed_tokens``, ``.compression_ratio``,
         ``.kept_segments``, ``.total_segments``."""
