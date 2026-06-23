@@ -116,13 +116,7 @@ class TestProxyPeriodicTOINStatsEnv:
         assert requested is False
 
     def test_lifespan_schedules_periodic_toin_stats_when_enabled(self, monkeypatch):
-        """Periodic TOIN stats loop is scheduled when enabled (positive control).
-
-        Pairs with test_lifespan_skips_periodic_toin_stats_when_disabled to
-        prove the gate in server.py fires in both directions — without this,
-        the negative test cannot distinguish "gate worked" from "startup failed
-        before reaching the gate".
-        """
+        """Enabled periodic TOIN stats schedules the stats loop at startup."""
         monkeypatch.setenv("HEADROOM_SKIP_UPSTREAM_CHECK", "1")
         requested = False
 
