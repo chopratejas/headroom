@@ -55,7 +55,12 @@ SCENARIOS: list[tuple[str, str, str, float | None]] = [
     ("redundant", _redundant(), "", 0.9),
     ("salient_heavy", _salient(), "authentication tokens errors", 0.4),
     ("short_passthrough", "one thing. two thing. three thing.", "", None),
-    ("unicode", " ".join(f"句子 {i} 描述了系统在主题 {i} 上的行为细节。" for i in range(12)), "系统", 0.4),
+    (
+        "unicode",
+        " ".join(f"句子 {i} 描述了系统在主题 {i} 上的行为细节。" for i in range(12)),
+        "系统",
+        0.4,
+    ),
 ]
 
 

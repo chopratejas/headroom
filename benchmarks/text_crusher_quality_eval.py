@@ -112,11 +112,17 @@ def eval_squad(path: str, n: int = 200, n_distract: int = 40, ratio: float = 0.3
         hit["random"] += a in norm(random_keep(haystack, ratio, seed))
         tc_ratios.append(len(out_tc) / max(1, len(haystack)))
     nn = len(examples)
-    print(f"\n=== Part A: SQuAD answer-retention (n={nn}, distractors={n_distract}, target_ratio={ratio}) ===")
-    print(f"  TextCrusher (query-aware): {hit['text_crusher'] / nn:6.1%}  answer survives compression")
+    print(
+        f"\n=== Part A: SQuAD answer-retention (n={nn}, distractors={n_distract}, target_ratio={ratio}) ==="
+    )
+    print(
+        f"  TextCrusher (query-aware): {hit['text_crusher'] / nn:6.1%}  answer survives compression"
+    )
     print(f"  Truncate (keep recent):    {hit['truncate'] / nn:6.1%}")
     print(f"  Random keep:               {hit['random'] / nn:6.1%}")
-    print(f"  TextCrusher mean char-ratio: {sum(tc_ratios) / nn:.2f}  (kept ~{sum(tc_ratios)/nn:.0%} of bytes)")
+    print(
+        f"  TextCrusher mean char-ratio: {sum(tc_ratios) / nn:.2f}  (kept ~{sum(tc_ratios) / nn:.0%} of bytes)"
+    )
     print("  reference: kompress published must_keep_recall = 0.977 (its own labeled set)")
 
 
@@ -133,7 +139,9 @@ def _block_texts(jsonl_path: str, min_words: int, limit: int) -> list[str]:
             parts = (
                 [c]
                 if isinstance(c, str)
-                else [p["text"] for p in c if isinstance(p, dict) and isinstance(p.get("text"), str)]
+                else [
+                    p["text"] for p in c if isinstance(p, dict) and isinstance(p.get("text"), str)
+                ]
                 if isinstance(c, list)
                 else []
             )
@@ -148,7 +156,9 @@ def _block_texts(jsonl_path: str, min_words: int, limit: int) -> list[str]:
 def eval_transcript(jsonl_path: str, ratio: float = 0.4, min_words: int = 1500, limit: int = 40):
     blocks = _block_texts(jsonl_path, min_words, limit)
     if not blocks:
-        print(f"\n=== Part B: no text blocks >= {min_words} words in {os.path.basename(jsonl_path)} ===")
+        print(
+            f"\n=== Part B: no text blocks >= {min_words} words in {os.path.basename(jsonl_path)} ==="
+        )
         return
     tc = TextCrusher()
     ratios: list[float] = []
@@ -163,11 +173,17 @@ def eval_transcript(jsonl_path: str, ratio: float = 0.4, min_words: int = 1500, 
         retentions.append(len(sal_before & sal_after) / max(1, len(sal_before)))
         ratios.append(len(out.split()) / max(1, len(b.split())))
     n = len(blocks)
-    print(f"\n=== Part B: real transcript fidelity (n={n} large blocks, anonymized, target_ratio={ratio}) ===")
+    print(
+        f"\n=== Part B: real transcript fidelity (n={n} large blocks, anonymized, target_ratio={ratio}) ==="
+    )
     print(f"  mean token-ratio kept:       {sum(ratios) / n:.2f}")
     print(f"  mean speed:                  {sum(times) / n:.1f} ms/block")
-    print(f"  salient-token retention:     {sum(retentions) / n:6.1%}  (identifiers/numbers/errors kept)")
-    print(f"  -> keeps salient info at {sum(retentions)/n:.0%} while dropping to {sum(ratios)/n:.0%} of tokens")
+    print(
+        f"  salient-token retention:     {sum(retentions) / n:6.1%}  (identifiers/numbers/errors kept)"
+    )
+    print(
+        f"  -> keeps salient info at {sum(retentions) / n:.0%} while dropping to {sum(ratios) / n:.0%} of tokens"
+    )
 
 
 def eval_speed(scale_words: int = 250_000):
