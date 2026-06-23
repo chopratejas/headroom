@@ -218,7 +218,10 @@
                 <div class="mt-1 text-xs text-gray-600 leading-relaxed">
                     <span x-text="'Reduction on compressed input: ' + (stats.tokens?.savings_percent || 0).toFixed(2) + '%'" title="Input-token reduction over the requests that were actually compressed — not over all traffic; passthrough requests are not tokenized."></span>
                 </div>
-                <div class="mt-1 text-xs text-gray-600 leading-relaxed">
+                <!-- `compressed` is a Rust-proxy field; hide this coverage line when it's
+                     absent (the retiring Python proxy) rather than show a misleading 0%.
+                     `!= null` still shows a genuine 0 (Rust traffic that compressed nothing). -->
+                <div class="mt-1 text-xs text-gray-600 leading-relaxed" x-show="stats.requests?.compressed != null">
                     <span x-text="'Compressed ' + formatNumber(stats.requests?.compressed || 0) + ' of ' + formatNumber(stats.requests?.total || 0) + ' requests' + ((stats.requests?.total || 0) > 0 ? ' (' + ((stats.requests?.compressed || 0) / (stats.requests?.total || 1) * 100).toFixed(0) + '%)' : '')" title="Coverage: how much of the traffic the reduction above applies to."></span>
                 </div>
                 <div class="mt-2 h-8">
