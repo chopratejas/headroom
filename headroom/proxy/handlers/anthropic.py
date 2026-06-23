@@ -1895,8 +1895,12 @@ class AnthropicHandlerMixin:
 
                         cr_tokens = usage.get("cache_read_input_tokens", 0)
                         cw_tokens = usage.get("cache_creation_input_tokens", 0)
-                        cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(usage)
-                        uncached_input_tokens = max(0, attempted_input_tokens - cr_tokens - cw_tokens)
+                        cw_5m_tokens, cw_1h_tokens = self._extract_anthropic_cache_ttl_metrics(
+                            usage
+                        )
+                        uncached_input_tokens = max(
+                            0, attempted_input_tokens - cr_tokens - cw_tokens
+                        )
 
                         await self._record_request_outcome(
                             RequestOutcome(
