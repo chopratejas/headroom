@@ -164,6 +164,7 @@ class TestDeepSeekAnthropicProviderFallback:
 
     def test_deepseek_v4_flash_fallback(self):
         from headroom.providers.anthropic import AnthropicProvider
+
         provider = AnthropicProvider()
         pricing = provider._get_pricing("deepseek-v4-flash")
         assert pricing is not None
@@ -173,6 +174,7 @@ class TestDeepSeekAnthropicProviderFallback:
 
     def test_deepseek_v4_pro_fallback(self):
         from headroom.providers.anthropic import AnthropicProvider
+
         provider = AnthropicProvider()
         pricing = provider._get_pricing("deepseek-v4-pro")
         assert pricing is not None
@@ -182,12 +184,14 @@ class TestDeepSeekAnthropicProviderFallback:
 
     def test_deepseek_unknown_model_returns_none(self):
         from headroom.providers.anthropic import AnthropicProvider
+
         provider = AnthropicProvider()
         pricing = provider._get_pricing("deepseek-unknown-model")
         assert pricing is None
 
     def test_deepseek_partial_match_v4_flash_alias(self):
         from headroom.providers.anthropic import AnthropicProvider
+
         provider = AnthropicProvider()
         # Should match via partial match (flash in v4-flash)
         pricing = provider._get_pricing("deepseek-v4-flash-v1")
@@ -195,6 +199,7 @@ class TestDeepSeekAnthropicProviderFallback:
 
     def test_estimate_cost_deepseek_v4_flash(self):
         from headroom.providers.anthropic import AnthropicProvider
+
         provider = AnthropicProvider()
         cost = provider.estimate_cost(
             input_tokens=1_000_000,
@@ -206,6 +211,7 @@ class TestDeepSeekAnthropicProviderFallback:
 
     def test_estimate_cost_deepseek_v4_flash_with_cache(self):
         from headroom.providers.anthropic import AnthropicProvider
+
         provider = AnthropicProvider()
         cost = provider.estimate_cost(
             input_tokens=1_000_000,
