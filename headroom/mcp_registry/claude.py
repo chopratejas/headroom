@@ -118,7 +118,9 @@ class ClaudeRegistrar(MCPRegistrar):
         cmd += ["--", spec.command, *spec.args]
 
         result = run(
-            cmd, capture_output=True, text=True,
+            cmd,
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return RegisterResult(RegisterStatus.REGISTERED, "via `claude mcp add` (scope: user)")

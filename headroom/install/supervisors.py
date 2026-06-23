@@ -443,7 +443,9 @@ def remove_supervisor(manifest: DeploymentManifest) -> None:
             cron_path.unlink()
             return
         current = run(
-            ["crontab", "-l"], capture_output=True, text=True,
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
         )
         if current.returncode != 0:
             return
