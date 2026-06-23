@@ -531,7 +531,8 @@ async fn background_flusher_persists_off_the_request_path() {
     let path = dir.join("s.json");
 
     let store = Arc::new(SavingsStore::with_path(&path, StoreConfig::default()));
-    headroom_proxy::spawn_savings_flusher(store.clone(), std::time::Duration::from_millis(40));
+    let _flusher =
+        headroom_proxy::spawn_savings_flusher(store.clone(), std::time::Duration::from_millis(40));
 
     // record() only marks dirty — the file does not exist yet.
     store.record(

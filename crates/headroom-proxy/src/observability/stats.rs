@@ -475,8 +475,12 @@ impl SavingsState {
         cap_front(&mut self.recent, cfg.max_response_history);
     }
 
-    /// Coerce a deserialized state into a known-good shape (clamps version,
-    /// drops nothing destructively). Tolerant of older/garbled files.
+    /// Normalize a freshly-deserialized state. Today it just stamps the current
+    /// `schema_version`; it is the single hook where a future schema bump adds
+    /// real migration (read the old version, transform, then stamp). The version
+    /// field is persisted deliberately — a durable file must carry its own format
+    /// version so a later binary can detect and migrate it, which can't be
+    /// retrofitted onto files already on disk.
     fn sanitize(mut self) -> Self {
         self.schema_version = SCHEMA_VERSION;
         self

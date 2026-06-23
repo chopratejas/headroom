@@ -183,17 +183,20 @@ impl AppState {
 /// On the request path, `SavingsStore::record` only marks the store dirty — it
 /// never touches disk. This task performs the actual filesystem write on the
 /// blocking pool every `interval`, keeping disk I/O off the async request
-/// workers under slow/stalled/network filesystems. It runs until the process
-/// exits; the shutdown hook performs a final flush so the last sub-interval
-/// window is not lost. No-op for in-memory stores.
+/// workers under slow/stalled/network filesystems.
+///
+/// Returns the task handle (or `None` for in-memory stores, where no task is
+/// spawned) so the caller can `abort()` it on shutdown before the final flush —
+/// an explicit lifecycle rather than a detached task left to the runtime drop.
+#[must_use]
 pub fn spawn_savings_flusher(
     store: Arc<crate::observability::stats::SavingsStore>,
     interval: std::time::Duration,
-) {
+) -> Option<tokio::task::JoinHandle<()>> {
     if !store.is_persistent() {
-        return;
+        return None;
     }
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -202,7 +205,7 @@ pub fn spawn_savings_flusher(
             // Filesystem I/O on the blocking pool, never an async request worker.
             let _ = tokio::task::spawn_blocking(move || store.flush()).await;
         }
-    });
+    }))
 }
 
 pub fn build_app(state: AppState) -> Router {
