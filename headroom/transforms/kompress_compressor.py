@@ -1254,7 +1254,9 @@ class KompressCompressor(Transform):
             )
 
             if self.config.enable_ccr and comp_ratio < 0.8:
-                ccr_source = ccr_sources[text_idx] if ccr_sources[text_idx] is not None else content
+                ccr_source = ccr_sources[text_idx]
+                if ccr_source is None:
+                    ccr_source = content
                 ccr_source_tokens = len(ccr_source.split())
                 cache_key = self._store_in_ccr(ccr_source, compressed, ccr_source_tokens)
                 if cache_key:
