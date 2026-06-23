@@ -72,7 +72,9 @@ pub struct RequestOutcome {
     pub tokens_before: u64,
     /// Input tokens after compression (what is forwarded upstream).
     pub tokens_after: u64,
-    /// Output tokens, when known (`0` means "not measured").
+    /// Output tokens, when known (`0` means "not measured"). Like the cache-token
+    /// fields, no recorder lane populates this yet — it is `0` in production today
+    /// (forward-schema for the response-side token-capture follow-up).
     pub output_tokens: u64,
     /// Provider prefix-cache read tokens, when reported. NOTE: no recorder lane
     /// populates the cache-token fields yet — they (and the `cache_savings_usd`
@@ -818,6 +820,15 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
             "all_layers_saved": state.lifetime.tokens_saved,
             "total_before_compression": total_before,
             "savings_percent": round2(savings_percent),
+            // The dashboard headline reads these. Our `savings_percent` already
+            // measures reduction over the input we tokenized = the input we
+            // attempted to compress, so the "active" ratio equals it and
+            // `proxy_attempted_tokens` is the pre-compression input (`total_before`).
+            // Emitting them keeps the shared template's headline non-zero under the
+            // Rust proxy (it falls back to 0 when these are absent).
+            "active_savings_percent": round2(savings_percent),
+            "proxy_savings_percent": round2(savings_percent),
+            "proxy_attempted_tokens": total_before,
         },
         "cost": {
             "compression_savings_usd": round6(state.lifetime.compression_savings_usd),
@@ -1257,6 +1268,14 @@ mod tests {
         assert_eq!(v["persistent_savings"]["lifetime"]["tokens_saved"], 600);
         assert_eq!(v["cost"]["per_model"]["claude"]["requests"], 2);
         assert_eq!(v["display_session"]["requests"], 2);
+
+        // Headline fields the shared dashboard template reads — must be emitted
+        // and non-zero so the "Token Savings %" headline isn't stuck at 0 under
+        // the Rust proxy. savings_percent = 600/(900+600) = 40%.
+        assert_eq!(v["tokens"]["savings_percent"], 40.0);
+        assert_eq!(v["tokens"]["active_savings_percent"], 40.0);
+        assert_eq!(v["tokens"]["proxy_savings_percent"], 40.0);
+        assert_eq!(v["tokens"]["proxy_attempted_tokens"], 1500); // total_before
     }
 
     #[test]
