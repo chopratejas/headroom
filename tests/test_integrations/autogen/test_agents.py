@@ -58,7 +58,7 @@ class TestToolCompressionMetrics:
     """Tests for ToolCompressionMetrics dataclass."""
 
     def test_create_metrics(self):
-        from integrations.autogen.agents import ToolCompressionMetrics
+        from headroom.integrations.autogen.agents import ToolCompressionMetrics
 
         metrics = ToolCompressionMetrics(
             tool_name="search",
@@ -76,7 +76,7 @@ class TestToolCompressionMetrics:
         assert metrics.was_compressed is True
 
     def test_metrics_all_fields_required(self):
-        from integrations.autogen.agents import ToolCompressionMetrics
+        from headroom.integrations.autogen.agents import ToolCompressionMetrics
 
         with pytest.raises(TypeError):
             ToolCompressionMetrics()  # type: ignore[call-arg]
@@ -86,7 +86,7 @@ class TestToolMetricsCollector:
     """Tests for ToolMetricsCollector."""
 
     def test_empty_summary(self):
-        from integrations.autogen.agents import ToolMetricsCollector
+        from headroom.integrations.autogen.agents import ToolMetricsCollector
 
         collector = ToolMetricsCollector()
         summary = collector.get_summary()
@@ -94,7 +94,7 @@ class TestToolMetricsCollector:
         assert summary["total_compressions"] == 0
 
     def test_add_and_summary(self):
-        from integrations.autogen.agents import (
+        from headroom.integrations.autogen.agents import (
             ToolCompressionMetrics,
             ToolMetricsCollector,
         )
@@ -123,7 +123,7 @@ class TestGlobalMetrics:
     """Tests for global metrics functions."""
 
     def test_get_and_reset(self):
-        from integrations.autogen.agents import get_tool_metrics, reset_tool_metrics
+        from headroom.integrations.autogen.agents import get_tool_metrics, reset_tool_metrics
 
         metrics = get_tool_metrics()
         assert metrics is not None
@@ -134,9 +134,9 @@ class TestGlobalMetrics:
 class TestHeadroomToolWrapper:
     """Tests for HeadroomToolWrapper."""
 
-    @patch("integrations.autogen.agents.compress_tool_result")
+    @patch("headroom.integrations.autogen.agents.compress_tool_result")
     def test_skips_short_output(self, mock_compress):
-        from integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         tool = FunctionTool(small_lookup, description="Small", name="small_lookup")
         collector = ToolMetricsCollector()
@@ -147,9 +147,9 @@ class TestHeadroomToolWrapper:
         mock_compress.assert_not_called()
         assert collector.get_summary()["total_compressions"] == 0
 
-    @patch("integrations.autogen.agents.compress_tool_result")
+    @patch("headroom.integrations.autogen.agents.compress_tool_result")
     def test_compresses_large_output(self, mock_compress):
-        from integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         mock_compress.return_value = "compressed"
         tool = FunctionTool(big_lookup, description="Big", name="big_lookup")
@@ -162,11 +162,11 @@ class TestHeadroomToolWrapper:
         assert collector.get_summary()["total_compressions"] == 1
 
     @patch(
-        "integrations.autogen.agents.compress_tool_result",
+        "headroom.integrations.autogen.agents.compress_tool_result",
         side_effect=RuntimeError("boom"),
     )
     def test_passes_through_on_error(self, mock_compress):
-        from integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         large = _make_large_output()
         tool = FunctionTool(big_lookup, description="Big", name="big_lookup")
@@ -178,7 +178,7 @@ class TestHeadroomToolWrapper:
         assert collector.get_summary()["total_compressions"] == 0
 
     def test_preserves_tool_metadata(self):
-        from integrations.autogen.agents import HeadroomToolWrapper
+        from headroom.integrations.autogen.agents import HeadroomToolWrapper
 
         tool = FunctionTool(big_lookup, description="Look up data", name="big_lookup")
         wrapper = HeadroomToolWrapper(tool)
@@ -186,9 +186,9 @@ class TestHeadroomToolWrapper:
         assert wrapper.description == "Look up data"
         assert wrapper.wrapped_tool.name == "big_lookup"
 
-    @patch("integrations.autogen.agents.compress_tool_result")
+    @patch("headroom.integrations.autogen.agents.compress_tool_result")
     def test_wraps_async_tool(self, mock_compress):
-        from integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.autogen.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         mock_compress.return_value = "compressed"
         tool = FunctionTool(async_lookup, description="Async", name="async_lookup")
@@ -203,9 +203,9 @@ class TestHeadroomToolWrapper:
 class TestWrapToolsWithHeadroom:
     """Tests for wrap_tools_with_headroom convenience function."""
 
-    @patch("integrations.autogen.agents.compress_tool_result")
+    @patch("headroom.integrations.autogen.agents.compress_tool_result")
     def test_wraps_multiple_tools(self, mock_compress):
-        from integrations.autogen.agents import wrap_tools_with_headroom
+        from headroom.integrations.autogen.agents import wrap_tools_with_headroom
 
         tool1 = FunctionTool(big_lookup, description="Big", name="big_lookup")
         tool2 = FunctionTool(small_lookup, description="Small", name="small_lookup")
@@ -215,9 +215,9 @@ class TestWrapToolsWithHeadroom:
         assert wrapped[0].name == "big_lookup"
         assert wrapped[1].name == "small_lookup"
 
-    @patch("integrations.autogen.agents.compress_tool_result")
+    @patch("headroom.integrations.autogen.agents.compress_tool_result")
     def test_shared_metrics(self, mock_compress):
-        from integrations.autogen.agents import (
+        from headroom.integrations.autogen.agents import (
             ToolMetricsCollector,
             wrap_tools_with_headroom,
         )

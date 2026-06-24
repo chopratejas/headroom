@@ -50,7 +50,7 @@ class TestToolCompressionMetrics:
     """Tests for ToolCompressionMetrics dataclass."""
 
     def test_create_metrics(self):
-        from integrations.crewai.agents import ToolCompressionMetrics
+        from headroom.integrations.crewai.agents import ToolCompressionMetrics
 
         metrics = ToolCompressionMetrics(
             tool_name="search",
@@ -68,7 +68,7 @@ class TestToolCompressionMetrics:
         assert metrics.was_compressed is True
 
     def test_metrics_all_fields_required(self):
-        from integrations.crewai.agents import ToolCompressionMetrics
+        from headroom.integrations.crewai.agents import ToolCompressionMetrics
 
         with pytest.raises(TypeError):
             ToolCompressionMetrics()  # type: ignore[call-arg]
@@ -78,7 +78,7 @@ class TestToolMetricsCollector:
     """Tests for ToolMetricsCollector."""
 
     def test_empty_summary(self):
-        from integrations.crewai.agents import ToolMetricsCollector
+        from headroom.integrations.crewai.agents import ToolMetricsCollector
 
         collector = ToolMetricsCollector()
         summary = collector.get_summary()
@@ -86,7 +86,7 @@ class TestToolMetricsCollector:
         assert summary["total_compressions"] == 0
 
     def test_add_and_summary(self):
-        from integrations.crewai.agents import (
+        from headroom.integrations.crewai.agents import (
             ToolCompressionMetrics,
             ToolMetricsCollector,
         )
@@ -111,7 +111,7 @@ class TestToolMetricsCollector:
         assert "search" in summary["by_tool"]
 
     def test_caps_at_1000(self):
-        from integrations.crewai.agents import (
+        from headroom.integrations.crewai.agents import (
             ToolCompressionMetrics,
             ToolMetricsCollector,
         )
@@ -136,7 +136,7 @@ class TestGlobalMetrics:
     """Tests for global metrics functions."""
 
     def test_get_and_reset(self):
-        from integrations.crewai.agents import get_tool_metrics, reset_tool_metrics
+        from headroom.integrations.crewai.agents import get_tool_metrics, reset_tool_metrics
 
         metrics = get_tool_metrics()
         assert metrics is not None
@@ -147,9 +147,9 @@ class TestGlobalMetrics:
 class TestHeadroomToolWrapper:
     """Tests for HeadroomToolWrapper."""
 
-    @patch("integrations.crewai.agents.compress_tool_result")
+    @patch("headroom.integrations.crewai.agents.compress_tool_result")
     def test_skips_short_output(self, mock_compress):
-        from integrations.crewai.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.crewai.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         @crewai_tool
         def small_tool(query: str) -> str:
@@ -168,9 +168,9 @@ class TestHeadroomToolWrapper:
         mock_compress.assert_not_called()
         assert collector.get_summary()["total_compressions"] == 0
 
-    @patch("integrations.crewai.agents.compress_tool_result")
+    @patch("headroom.integrations.crewai.agents.compress_tool_result")
     def test_compresses_large_output(self, mock_compress):
-        from integrations.crewai.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.crewai.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         large = _make_large_output()
         mock_compress.return_value = "compressed"
@@ -193,11 +193,11 @@ class TestHeadroomToolWrapper:
         assert collector.get_summary()["total_compressions"] == 1
 
     @patch(
-        "integrations.crewai.agents.compress_tool_result",
+        "headroom.integrations.crewai.agents.compress_tool_result",
         side_effect=RuntimeError("boom"),
     )
     def test_passes_through_on_error(self, mock_compress):
-        from integrations.crewai.agents import HeadroomToolWrapper, ToolMetricsCollector
+        from headroom.integrations.crewai.agents import HeadroomToolWrapper, ToolMetricsCollector
 
         large = _make_large_output()
 
@@ -218,7 +218,7 @@ class TestHeadroomToolWrapper:
         assert collector.get_summary()["total_compressions"] == 0
 
     def test_preserves_tool_metadata(self):
-        from integrations.crewai.agents import HeadroomToolWrapper
+        from headroom.integrations.crewai.agents import HeadroomToolWrapper
 
         @crewai_tool
         def my_fn(x: int) -> str:
@@ -233,9 +233,9 @@ class TestHeadroomToolWrapper:
 class TestWrapToolsWithHeadroom:
     """Tests for wrap_tools_with_headroom convenience function."""
 
-    @patch("integrations.crewai.agents.compress_tool_result")
+    @patch("headroom.integrations.crewai.agents.compress_tool_result")
     def test_wraps_multiple_tools(self, mock_compress):
-        from integrations.crewai.agents import wrap_tools_with_headroom
+        from headroom.integrations.crewai.agents import wrap_tools_with_headroom
 
         @crewai_tool
         def tool_a(q: str) -> str:
@@ -252,9 +252,9 @@ class TestWrapToolsWithHeadroom:
         assert wrapped[0].name == "tool_a"
         assert wrapped[1].name == "tool_b"
 
-    @patch("integrations.crewai.agents.compress_tool_result")
+    @patch("headroom.integrations.crewai.agents.compress_tool_result")
     def test_shared_metrics(self, mock_compress):
-        from integrations.crewai.agents import (
+        from headroom.integrations.crewai.agents import (
             ToolMetricsCollector,
             wrap_tools_with_headroom,
         )
