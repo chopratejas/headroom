@@ -58,6 +58,12 @@ def test_hnsw_availability_check_returns_false_without_hnswlib() -> None:
 
 def test_proxy_imports_without_hnswlib() -> None:
     """The proxy server must import without hnswlib present."""
+    pytest = importlib.import_module("pytest")
+    try:
+        importlib.import_module("fastapi")
+    except ImportError:
+        pytest.skip("proxy extra (fastapi) not installed; skipping proxy import test")
+
     # This is the critical path: headroom proxy starts → must not crash
     with patch.dict(sys.modules, {"hnswlib": None}):
         import headroom.proxy.server as server  # noqa: F401
