@@ -1798,3 +1798,129 @@ class TestAgyGracefulFailures:
         assert len(stop_calls) >= 1, (
             "_stop_agy_servers must run in finally even when startup raises"
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: unwrap agy removes ALL Headroom-added agy config entries
+# ---------------------------------------------------------------------------
+
+
+class TestUnwrapAgyRemovesAllHeadroomConfig:
+    """unwrap agy removes every entry Headroom wrote; user entries survive."""
+
+    def test_unwrap_agy_removes_all_headroom_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All Headroom-added entries gone after unwrap; user entry preserved.
+
+        Arrange a temp HOME with:
+        - GEMINI.md containing a headroom-marked block (plus user content)
+        - AgyRegistrar config with the per-run "headroom" retrieve entry
+        - AgyRegistrar config with a ledger-recorded serena entry
+        - AgyRegistrar config with a ledger-recorded lean-ctx entry
+        - AgyRegistrar config with a user-managed "my-tool" entry (no ledger)
+
+        Act: run `unwrap agy` via CliRunner.
+
+        Assert:
+        - GEMINI.md headroom block is removed; user content survives
+        - "headroom" retrieve entry is gone
+        - serena entry is gone (was ledger-recorded)
+        - lean-ctx entry is gone (was ledger-recorded)
+        - "my-tool" entry is preserved (never in ledger)
+        - ~/.headroom/ca directory is NOT removed (shared CA is headroom state,
+          not reverted by unwrap — by design)
+        """
+        from headroom.cli.wrap import _AGY_GEMINI_BLOCK_END, _AGY_GEMINI_BLOCK_START
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+        from headroom.mcp_registry.install import build_lean_ctx_spec, build_serena_spec
+        from headroom.mcp_registry.ledger import record_install
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        # --- Arrange GEMINI.md with headroom block + user content ---
+        gemini_md = tmp_path / ".gemini" / "GEMINI.md"
+        gemini_md.parent.mkdir(parents=True, exist_ok=True)
+        gemini_md.write_text(
+            f"# User Instructions\nKeep this.\n\n"
+            f"{_AGY_GEMINI_BLOCK_START}\n## Headroom\nContext.\n{_AGY_GEMINI_BLOCK_END}\n"
+        )
+
+        # --- Arrange AgyRegistrar entries ---
+        reg = AgyRegistrar(home_dir=tmp_path)
+
+        # Per-run "headroom" retrieve entry (left by a killed session).
+        headroom_spec = ServerSpec(
+            name="headroom",
+            command="headroom",
+            args=("mcp", "serve"),
+            env={"HEADROOM_PROXY_URL": "http://127.0.0.1:9999"},
+        )
+        reg.register_server(headroom_spec)
+
+        # Headroom-installed serena entry (recorded in ledger).
+        serena_spec = build_serena_spec("ide-assistant")
+        reg.register_server(serena_spec)
+        record_install("agy", serena_spec)
+
+        # Headroom-installed lean-ctx entry (recorded in ledger).
+        lean_ctx_spec = build_lean_ctx_spec("/usr/bin/lean-ctx", "/x/data")
+        reg.register_server(lean_ctx_spec)
+        record_install("agy", lean_ctx_spec)
+
+        # User-managed entry: NOT in ledger — must survive.
+        user_spec = ServerSpec(name="my-tool", command="/opt/my-tool", args=(), env={})
+        reg.register_server(user_spec)
+
+        # Arrange a fake ~/.headroom/ca dir to prove unwrap does NOT touch it.
+        ca_dir = tmp_path / ".headroom" / "ca"
+        ca_dir.mkdir(parents=True, exist_ok=True)
+        (ca_dir / "ca.crt").write_text("fake cert")
+
+        # --- Act ---
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0, f"unwrap agy failed:\n{result.output}"
+
+        # --- Assert: GEMINI.md ---
+        gemini_text = gemini_md.read_text()
+        assert _AGY_GEMINI_BLOCK_START not in gemini_text, (
+            "headroom block START marker must be removed from GEMINI.md"
+        )
+        assert _AGY_GEMINI_BLOCK_END not in gemini_text, (
+            "headroom block END marker must be removed from GEMINI.md"
+        )
+        assert "# User Instructions" in gemini_text, (
+            "user content must survive GEMINI.md cleanup"
+        )
+        assert "Keep this." in gemini_text, (
+            "user content body must survive GEMINI.md cleanup"
+        )
+
+        # --- Assert: AgyRegistrar entries removed ---
+        reg2 = AgyRegistrar(home_dir=tmp_path)
+        assert reg2.get_server("headroom") is None, (
+            "the per-run 'headroom' retrieve entry must be removed by unwrap"
+        )
+        assert reg2.get_server("serena") is None, (
+            "the Headroom-installed serena MCP entry must be removed by unwrap"
+        )
+        assert reg2.get_server("lean-ctx") is None, (
+            "the Headroom-installed lean-ctx MCP entry must be removed by unwrap"
+        )
+
+        # --- Assert: user-managed entry preserved ---
+        survived = reg2.get_server("my-tool")
+        assert survived is not None, (
+            "user-managed 'my-tool' entry must survive unwrap"
+        )
+        assert survived.command == "/opt/my-tool"
+
+        # --- Assert: CA directory intentionally NOT removed (by design) ---
+        assert ca_dir.exists(), (
+            "unwrap must NOT remove ~/.headroom/ca (shared headroom CA state)"
+        )
+        assert (ca_dir / "ca.crt").exists(), (
+            "CA certificate must remain intact after unwrap"
+        )

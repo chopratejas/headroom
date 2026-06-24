@@ -476,6 +476,114 @@ def test_fail_open_on_compression_pipeline_exception(
 
 
 # ---------------------------------------------------------------------------
+# 10. FAIL-OPEN BODY IDENTITY — compression raises → original body forwarded
+#     byte-for-byte (no mutation, no gzip, no truncation).
+# ---------------------------------------------------------------------------
+
+
+def test_fail_open_compression_degrades_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compression pipeline raises → request completes successfully (degrade open).
+
+    Complementary to test_fail_open_on_compression_pipeline_exception which
+    verifies status-200 + exactly-one upstream call + warning log.  This test
+    pins the BODY IDENTITY guarantee: the body forwarded upstream when
+    compression explodes is identical to the original request body — no
+    tokens modified, no gzip wrapping, no partial writes.
+
+    Also verifies the agy session is not crashed: a second request in the
+    same session after the first fail-open also completes with status 200.
+    """
+    received_bodies: list[dict[str, Any]] = []
+
+    async def _fake_stream(
+        proxy_self: Any, url: str, headers: dict, body: dict, *args: Any, **kwargs: Any
+    ) -> JSONResponse:
+        received_bodies.append(dict(body))
+        return JSONResponse({"ok": True})
+
+    monkeypatch.setattr(HeadroomProxy, "_stream_response", _fake_stream)
+
+    def _exploding_apply(*_args: Any, **_kw: Any) -> None:
+        raise RuntimeError("Simulated compression pipeline failure — body identity check")
+
+    warning_messages: list[str] = []
+
+    class _CapturingHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.levelno >= logging.WARNING:
+                warning_messages.append(record.getMessage())
+
+    proxy_logger = logging.getLogger("headroom.proxy")
+    cap_handler = _CapturingHandler()
+    proxy_logger.addHandler(cap_handler)
+
+    try:
+        with TestClient(create_app(ProxyConfig(optimize=True))) as client:
+            proxy: HeadroomProxy = client.app.state.proxy  # type: ignore[attr-defined]
+            proxy.openai_pipeline.apply = _exploding_apply  # type: ignore[method-assign]
+
+            # First request — fails compression, must degrade open.
+            response1 = client.post(
+                "/v1internal:streamGenerateContent",
+                params={"alt": "sse"},
+                headers={"User-Agent": "antigravity/1.0.5"},
+                json=_LARGE_AGY_BODY,
+            )
+
+            # Second request in same session — session must still be alive.
+            response2 = client.post(
+                "/v1internal:streamGenerateContent",
+                params={"alt": "sse"},
+                headers={"User-Agent": "antigravity/1.0.5"},
+                json=_LARGE_AGY_BODY,
+            )
+    finally:
+        proxy_logger.removeHandler(cap_handler)
+
+    # Both requests must degrade open (200).
+    assert response1.status_code == 200, (
+        f"First fail-open request must return 200, got {response1.status_code}: {response1.text}"
+    )
+    assert response2.status_code == 200, (
+        f"Second request proves session not crashed; got {response2.status_code}: {response2.text}"
+    )
+
+    # Both requests must have reached upstream — session not aborted.
+    assert len(received_bodies) == 2, (
+        f"Expected 2 upstream calls (one per request); got {len(received_bodies)}"
+    )
+
+    # Body identity: every upstream call received the original (uncompressed) body.
+    for i, body in enumerate(received_bodies):
+        assert body.get("model") == _LARGE_AGY_BODY["model"], (
+            f"Request {i + 1}: model field mutated — body identity broken: {body.get('model')!r}"
+        )
+        assert body.get("project") == _LARGE_AGY_BODY["project"], (
+            f"Request {i + 1}: project field mutated — body identity broken: {body.get('project')!r}"
+        )
+        contents = body.get("request", {}).get("contents", [])
+        assert len(contents) == 1, (
+            f"Request {i + 1}: contents list mutated — expected 1 item, got {len(contents)}"
+        )
+        text = contents[0].get("parts", [{}])[0].get("text", "")
+        assert text == _REPEAT_UNIT, (
+            f"Request {i + 1}: text body mutated or truncated — body identity broken"
+        )
+
+    # Fail-open is observable: at least one warning logged per fail.
+    assert len(warning_messages) >= 2, (
+        f"Expected at least 2 warnings (one per fail-open); got {len(warning_messages)}: "
+        + "\n".join(warning_messages)
+    )
+    for msg in warning_messages:
+        assert "optimization failed" in msg.lower() or "cloud code assist" in msg.lower(), (
+            f"Warning message does not mention compression failure: {msg!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # CROSS-AGENT REGRESSION: aider wrap-env byte-identity
 #
 # test_cli/test_wrap_aider.py already covers the aider env builder:
