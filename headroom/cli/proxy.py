@@ -873,6 +873,7 @@ def proxy(
     try:
         from headroom.proxy.server import (
             ProxyConfig,
+            _parse_csv_tools,
             _parse_exclude_tools,
             _parse_tool_profiles,
             run_server,
@@ -994,7 +995,7 @@ def proxy(
         min_tokens_to_crush=_get_env_int_optional("HEADROOM_MIN_TOKENS") or 500,
         max_items_after_crush=_get_env_int_optional("HEADROOM_MAX_ITEMS") or 50,
         exclude_tools=_parse_exclude_tools(None) or None,
-        protect_tool_results=frozenset(_parse_exclude_tools(protect_tool_results))
+        protect_tool_results=frozenset(_parse_csv_tools(protect_tool_results))
         if protect_tool_results
         else frozenset(),
         tool_profiles=_parse_tool_profiles([]) or None,

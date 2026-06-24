@@ -3,7 +3,7 @@
 Three behavioral tests:
 1. protect_tool_results merges into the exclude set so named tools are never
    lossy-compressed.
-2. _parse_exclude_tools parses CSV strings (shared with --exclude-tools).
+2. _parse_csv_tools parses CSV strings without merging HEADROOM_EXCLUDE_TOOLS.
 3. ContentRouter with Bash in exclude_tools passes Bash tool_result verbatim.
 """
 
@@ -15,7 +15,7 @@ from headroom.config import DEFAULT_EXCLUDE_TOOLS
 from headroom.proxy.server import (
     HeadroomProxy,
     ProxyConfig,
-    _parse_exclude_tools,
+    _parse_csv_tools,
 )
 
 
@@ -65,9 +65,9 @@ def test_protect_tool_results_merges_into_exclude_set() -> None:
 
 
 def test_protect_tool_results_env_var_csv() -> None:
-    """_parse_exclude_tools parses a comma-separated value into both original-case
-    and lowercase entries, base-fails / head-passes."""
-    result = _parse_exclude_tools("Bash,WebFetch")
+    """_parse_csv_tools parses a comma-separated value into both original-case
+    and lowercase entries without merging HEADROOM_EXCLUDE_TOOLS."""
+    result = _parse_csv_tools("Bash,WebFetch")
 
     assert "Bash" in result
     assert "bash" in result

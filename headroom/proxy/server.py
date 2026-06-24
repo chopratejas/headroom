@@ -661,6 +661,8 @@ class HeadroomProxy(
         if is_token_mode(config.mode):
             router_config.protect_recent_reads_fraction = 0.3
             router_config.search_group_by_file = True
+        if config.protect_tool_results:
+            router_config.protect_recent_reads_fraction = 0.0
         # `--compress-user-messages` flips the router's default skip rule.
         # Off by default for prefix-cache safety; enabled for workloads where
         # user-message content dominates input (OpenAI/Azure chat with pasted
@@ -4125,6 +4127,19 @@ def _parse_exclude_tools(cli_excludes: str | None) -> set[str]:
     return names
 
 
+def _parse_csv_tools(raw: str | None) -> set[str]:
+    """Parse a bare CSV tool-name string without merging HEADROOM_EXCLUDE_TOOLS."""
+    names: set[str] = set()
+    if not raw:
+        return names
+    for entry in raw.split(","):
+        name = entry.strip()
+        if name:
+            names.add(name)
+            names.add(name.lower())
+    return names
+
+
 def _parse_tool_profiles(cli_profiles: list[str]) -> dict[str, Any]:
     """Parse tool profiles from CLI args and HEADROOM_TOOL_PROFILES env var.
 
@@ -4424,7 +4439,7 @@ if __name__ == "__main__":
     tool_profiles = _parse_tool_profiles(args.tool_profile)
     # Parse extra never-compress tools from CLI and env var
     exclude_tools = _parse_exclude_tools(args.exclude_tools)
-    protect_tool_results = _parse_exclude_tools(
+    protect_tool_results = _parse_csv_tools(
         args.protect_tool_results or os.environ.get("HEADROOM_PROTECT_TOOL_RESULTS")
     )
 
