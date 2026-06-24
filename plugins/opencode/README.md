@@ -64,12 +64,12 @@ const retrieve = createHeadroomRetrieveTool({
 });
 
 const result = await retrieve.execute({
-  ref: "0123456789abcdef01234567",
+  hash: "0123456789abcdef01234567",
   query: "needle",
 });
 ```
 
-The tool calls `/v1/retrieve/<ref>` on the Headroom proxy.
+The tool calls `/v1/retrieve/<hash>` on the Headroom proxy.
 
 ## Compression Helper
 
@@ -78,8 +78,7 @@ import { compressWithHeadroom } from "headroom-opencode";
 
 const result = await compressWithHeadroom(
   [{ role: "user", content: "Summarize this file" }],
-  "gpt-4o",
-  "http://127.0.0.1:8787",
+  { model: "gpt-4o", proxyUrl: "http://127.0.0.1:8787" },
 );
 
 console.log(`Saved ${result.tokensSaved} tokens`);
