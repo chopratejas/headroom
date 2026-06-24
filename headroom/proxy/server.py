@@ -646,6 +646,15 @@ class HeadroomProxy(
         # ContentRouter, so merge rather than assign.
         if config.exclude_tools:
             router_config.exclude_tools = set(DEFAULT_EXCLUDE_TOOLS) | config.exclude_tools
+        # protect_tool_results: force-merge named tools into the exclude set
+        # so their results are never lossy-compressed, regardless of mode.
+        if config.protect_tool_results:
+            base = (
+                router_config.exclude_tools
+                if router_config.exclude_tools is not None
+                else set(DEFAULT_EXCLUDE_TOOLS)
+            )
+            router_config.exclude_tools = base | config.protect_tool_results
         # Token mode: allow compression of older excluded-tool results,
         # and emit search results grouped by file (path once per file
         # instead of repeated on every match line).
@@ -4336,6 +4345,13 @@ if __name__ == "__main__":
         "Entries may use glob patterns, e.g. 'mcp__*' to exclude every MCP tool. "
         "Also settable via HEADROOM_EXCLUDE_TOOLS env var.",
     )
+    parser.add_argument(
+        "--protect-tool-results",
+        default=None,
+        help="Comma-separated tool names whose results are never lossy-compressed, "
+        "merged with the built-in defaults (e.g. Bash,WebFetch). "
+        "Also settable via HEADROOM_PROTECT_TOOL_RESULTS env var.",
+    )
 
     # Caching
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
@@ -4408,6 +4424,9 @@ if __name__ == "__main__":
     tool_profiles = _parse_tool_profiles(args.tool_profile)
     # Parse extra never-compress tools from CLI and env var
     exclude_tools = _parse_exclude_tools(args.exclude_tools)
+    protect_tool_results = _parse_exclude_tools(
+        args.protect_tool_results or os.environ.get("HEADROOM_PROTECT_TOOL_RESULTS")
+    )
 
     config = ProxyConfig(
         host=_get_env_str("HEADROOM_HOST", args.host),
@@ -4463,6 +4482,9 @@ if __name__ == "__main__":
         ),
         tool_profiles=tool_profiles if tool_profiles else None,
         exclude_tools=exclude_tools if exclude_tools else None,
+        protect_tool_results=frozenset(protect_tool_results)
+        if protect_tool_results
+        else frozenset(),
         mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
         compress_user_messages=args.compress_user_messages
         or _get_env_bool("HEADROOM_COMPRESS_USER_MESSAGES", False),

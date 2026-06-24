@@ -237,6 +237,16 @@ def dashboard(port: int, no_open: bool) -> None:
 @click.option("--no-cache", is_flag=True, help="Disable semantic caching")
 @click.option("--no-rate-limit", is_flag=True, help="Disable rate limiting")
 @click.option(
+    "--protect-tool-results",
+    default=None,
+    envvar="HEADROOM_PROTECT_TOOL_RESULTS",
+    help=(
+        "Comma-separated tool names whose results are never lossy-compressed, "
+        "merged with the built-in defaults (e.g. Bash,WebFetch). "
+        "Env: HEADROOM_PROTECT_TOOL_RESULTS."
+    ),
+)
+@click.option(
     "--no-ccr-inject-tool",
     is_flag=True,
     envvar="HEADROOM_NO_CCR_INJECT_TOOL",
@@ -781,6 +791,7 @@ def proxy(
     no_optimize: bool,
     no_cache: bool,
     no_rate_limit: bool,
+    protect_tool_results: str | None,
     no_ccr_inject_tool: bool,
     no_ccr_marker: bool,
     no_ccr_proactive_expansion: bool,
@@ -983,6 +994,9 @@ def proxy(
         min_tokens_to_crush=_get_env_int_optional("HEADROOM_MIN_TOKENS") or 500,
         max_items_after_crush=_get_env_int_optional("HEADROOM_MAX_ITEMS") or 50,
         exclude_tools=_parse_exclude_tools(None) or None,
+        protect_tool_results=frozenset(_parse_exclude_tools(protect_tool_results))
+        if protect_tool_results
+        else frozenset(),
         tool_profiles=_parse_tool_profiles([]) or None,
         smart_crusher_with_compaction=_get_env_bool_optional("HEADROOM_SMART_CRUSHER_COMPACTION"),
         savings_profile=os.environ.get("HEADROOM_SAVINGS_PROFILE") or None,
