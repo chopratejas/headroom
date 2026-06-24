@@ -239,11 +239,11 @@ def _windows_trust_pem() -> bytes:
     result is run through the same ``_parse_ca_certs_from_pem`` CA:TRUE filter
     used for corporate bundles — never trust a non-CA cert as an anchor.
     """
-    pem = b""
+    blocks: list[bytes] = []
     for store in ("ROOT", "CA"):
         for der, _enc, _trust in ssl.enum_certificates(store):  # type: ignore[attr-defined,unused-ignore]
-            pem += ssl.DER_cert_to_PEM_cert(der).encode("ascii")
-    return b"".join(_parse_ca_certs_from_pem(pem))
+            blocks.append(ssl.DER_cert_to_PEM_cert(der).encode("ascii"))
+    return b"".join(_parse_ca_certs_from_pem(b"".join(blocks)))
 
 
 def _system_trust_pem() -> tuple[bytes, str]:
