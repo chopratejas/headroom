@@ -716,7 +716,7 @@ jobs:
             venv_pip="/tmp/venv/Scripts/pip"
             venv_python="/tmp/venv/Scripts/python"
           fi
-          "$venv_pip" install --quiet --upgrade pip
+          "$venv_python" -m pip install --quiet --upgrade pip
           "$venv_pip" install --quiet "$whl"
           "$venv_python" "${RUNNER_TEMP}/smoke_import.py"
 
