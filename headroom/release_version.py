@@ -226,6 +226,8 @@ def list_release_tags(root: Path) -> list[str]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return [tag.strip() for tag in result.stdout.splitlines() if tag.strip()]
 
@@ -245,6 +247,8 @@ def list_release_commits(root: Path, previous_tag: str) -> list[CommitInfo]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     commits: list[CommitInfo] = []
@@ -268,6 +272,8 @@ def commit_height_since(root: Path, previous_tag: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return result.stdout.strip() or "0"
 
