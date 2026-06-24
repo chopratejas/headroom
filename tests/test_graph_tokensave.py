@@ -52,6 +52,7 @@ class FakeResponse:
         ("linux", "arm64", ("tokensave-v9-aarch64-linux.tar.gz", "tar.gz")),
         ("linux", "x86_64", ("tokensave-v9-x86_64-linux.tar.gz", "tar.gz")),
         ("windows", "amd64", ("tokensave-v9-x86_64-windows.zip", "zip")),
+        ("windows", "arm64", ("tokensave-v9-aarch64-windows.zip", "zip")),
     ],
 )
 def test_detect_asset_variants(monkeypatch, system, machine, expected) -> None:

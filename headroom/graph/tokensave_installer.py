@@ -50,7 +50,7 @@ from urllib.request import urlopen
 logger = logging.getLogger(__name__)
 
 #: Pinned release. Override with HEADROOM_TOKENSAVE_VERSION.
-TOKENSAVE_VERSION = "v7.0.0"
+TOKENSAVE_VERSION = "v7.0.2"
 TOKENSAVE_REPO = "aovestdipaperino/tokensave"
 TOKENSAVE_BIN_DIR = Path.home() / ".local" / "bin"
 TOKENSAVE_BIN_NAME = "tokensave"
@@ -62,17 +62,20 @@ GITHUB_RELEASE_URL = f"https://github.com/{TOKENSAVE_REPO}/releases/download"
 #: this map before extraction. Regenerate when bumping TOKENSAVE_VERSION:
 #:   for f in <assets>; do curl -sL <url>/$f | shasum -a 256; done
 TOKENSAVE_ASSET_DIGESTS: dict[str, str] = {
-    "tokensave-v7.0.0-aarch64-macos.tar.gz": (
-        "1d1737d16d5449f1127268383115fcbfe6d63d93b50275be99f158479a3cd38a"
+    "tokensave-v7.0.2-aarch64-macos.tar.gz": (
+        "6d0e07aba5b63df278409feabea54bdd0da82ec63d633cd975ea353773c4efee"
     ),
-    "tokensave-v7.0.0-aarch64-linux.tar.gz": (
-        "5b154e2e2f36ba2e31607f1c037ad062552b56d4bd3e62858478158f616aa53f"
+    "tokensave-v7.0.2-aarch64-linux.tar.gz": (
+        "69c88d0617036d44f2620f5779cd8578fad77664c2373d64de632b8e346ad334"
     ),
-    "tokensave-v7.0.0-x86_64-linux.tar.gz": (
-        "3f26229842ee0028d7b0228f874ae0c3276c7e40ebbbb739a1402e60fa2136e3"
+    "tokensave-v7.0.2-x86_64-linux.tar.gz": (
+        "d35519fe698a24d2e2bb5622e94b3bdb4794dc1e36acffc980260b50afb40460"
     ),
-    "tokensave-v7.0.0-x86_64-windows.zip": (
-        "bcb1b73a9b99d852dfdb665af42ce641ee9e47bba6d0002e05c54ecfc8006257"
+    "tokensave-v7.0.2-x86_64-windows.zip": (
+        "85f90d358c5f4713b5ac7274f4fa46e985fabc5b76c843ea8456b0d74e1cdd02"
+    ),
+    "tokensave-v7.0.2-aarch64-windows.zip": (
+        "8706d0d64f429ba7fe58deec9fef319956306797bded476cab4132e71705e8b0"
     ),
 }
 
@@ -101,7 +104,8 @@ def _detect_asset(version: str) -> tuple[str, str] | None:
         arch = "aarch64" if machine in ("aarch64", "arm64") else "x86_64"
         return f"tokensave-{version}-{arch}-linux.tar.gz", "tar.gz"
     if system == "windows":
-        return f"tokensave-{version}-x86_64-windows.zip", "zip"
+        arch = "aarch64" if machine in ("aarch64", "arm64") else "x86_64"
+        return f"tokensave-{version}-{arch}-windows.zip", "zip"
 
     return None
 
