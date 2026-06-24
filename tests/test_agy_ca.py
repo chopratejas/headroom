@@ -422,6 +422,39 @@ def test_windows_trust_pem_filters_non_ca(monkeypatch: pytest.MonkeyPatch) -> No
     assert leaf_cert.serial_number not in present, "leaf cert must be filtered out"
 
 
+def test_windows_trust_pem_enum_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure reading the Windows trust store surfaces as a clear RuntimeError.
+
+    Without this, an ssl.enum_certificates OSError would propagate raw through
+    _system_trust_pem (which only guards RuntimeError) and crash `wrap agy`.
+    """
+
+    def boom(store: str) -> list[tuple[bytes, str, bool]]:
+        raise OSError("simulated cert-store failure")
+
+    monkeypatch.setattr("ssl.enum_certificates", boom, raising=False)
+    with pytest.raises(RuntimeError, match="Windows system trust store"):
+        _windows_trust_pem()
+
+
+def test_windows_trust_pem_empty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty CA set after filtering must fail loud, not return b''.
+
+    A silent empty system-trust component would leave the combined bundle
+    trusting only the headroom MITM root.
+    """
+    leaf_der = x509.load_pem_x509_certificate(_make_cert(is_ca=False)).public_bytes(
+        serialization.Encoding.DER
+    )
+
+    def only_leaf(store: str) -> list[tuple[bytes, str, bool]]:
+        return [(leaf_der, "x509_asn", True)] if store == "ROOT" else []
+
+    monkeypatch.setattr("ssl.enum_certificates", only_leaf, raising=False)
+    with pytest.raises(RuntimeError, match="no CA anchors"):
+        _windows_trust_pem()
+
+
 def test_bundle_not_in_os_trust_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Bundle path must not reside under any known OS trust store location."""
     sys_bundle = _fake_system_bundle(tmp_path)

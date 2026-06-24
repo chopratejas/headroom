@@ -240,10 +240,28 @@ def _windows_trust_pem() -> bytes:
     used for corporate bundles — never trust a non-CA cert as an anchor.
     """
     blocks: list[bytes] = []
-    for store in ("ROOT", "CA"):
-        for der, _enc, _trust in ssl.enum_certificates(store):  # type: ignore[attr-defined,unused-ignore]
-            blocks.append(ssl.DER_cert_to_PEM_cert(der).encode("ascii"))
-    return b"".join(_parse_ca_certs_from_pem(b"".join(blocks)))
+    try:
+        for store in ("ROOT", "CA"):
+            for der, _enc, _trust in ssl.enum_certificates(store):  # type: ignore[attr-defined,unused-ignore]
+                try:
+                    blocks.append(ssl.DER_cert_to_PEM_cert(der).encode("ascii"))
+                except ValueError:
+                    # A single malformed DER entry must not abort the whole store.
+                    logger.debug("event=windows_der_skip reason=bad_der")
+    except OSError as exc:
+        # ssl.enum_certificates wraps the Win32 cert-store API; surface a clear
+        # cause instead of an opaque traceback at `wrap agy` launch.
+        raise RuntimeError("could not read the Windows system trust store") from exc
+    ca_pem = b"".join(_parse_ca_certs_from_pem(b"".join(blocks)))
+    if not ca_pem:
+        # An empty system-trust component would silently leave the combined
+        # bundle trusting only the headroom MITM root — fail loud, never ship a
+        # trust bundle with no system anchors.
+        raise RuntimeError(
+            "Windows system trust store yielded no CA anchors; refusing to build "
+            "a trust bundle with no system anchors"
+        )
+    return ca_pem
 
 
 def _system_trust_pem() -> tuple[bytes, str]:
