@@ -780,41 +780,6 @@ const SSE_PARSER_QUEUE_DEPTH: usize = 256;
 ///
 /// 3. **Direct Anthropic SSE** (future / test path) — `{"type":
 ///    "message_delta","usage":{"input_tokens":N,...}}` at the top level.
-/// Minimal standard base64 (RFC 4648) decoder. Used to unwrap the
-/// `{"bytes":"BASE64"}` envelope in InvokeModel streaming responses
-/// without adding the `base64` crate as a direct dependency.
-fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    const TABLE: [u8; 256] = {
-        let mut t = [255u8; 256];
-        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut i = 0usize;
-        while i < 64 {
-            t[chars[i] as usize] = i as u8;
-            i += 1;
-        }
-        t
-    };
-    let s = s.trim_end_matches('=');
-    let n = s.len();
-    let mut out = Vec::with_capacity(n * 3 / 4 + 1);
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i + 3 < n {
-        let (a, b0, c, d) = (TABLE[b[i] as usize], TABLE[b[i+1] as usize], TABLE[b[i+2] as usize], TABLE[b[i+3] as usize]);
-        if a | b0 | c | d == 255 { return None; }
-        out.push((a << 2) | (b0 >> 4));
-        out.push((b0 << 4) | (c >> 2));
-        out.push((c << 6) | d);
-        i += 4;
-    }
-    match n - i {
-        2 => { let (a, b0) = (TABLE[b[i] as usize], TABLE[b[i+1] as usize]); if a | b0 == 255 { return None; } out.push((a << 2) | (b0 >> 4)); }
-        3 => { let (a, b0, c) = (TABLE[b[i] as usize], TABLE[b[i+1] as usize], TABLE[b[i+2] as usize]); if a | b0 | c == 255 { return None; } out.push((a << 2) | (b0 >> 4)); out.push((b0 << 4) | (c >> 2)); }
-        _ => {}
-    }
-    Some(out)
-}
-
 fn accumulate_stream_usage(data: &[u8], input: &mut u64, output: &mut u64, cache_read: &mut u64) {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else {
         return;
@@ -864,7 +829,9 @@ fn accumulate_stream_usage(data: &[u8], input: &mut u64, output: &mut u64, cache
 
     // --- Format 1: InvokeModel wrapped: {"bytes":"BASE64","p":"..."} ---
     if let Some(b64) = v.get("bytes").and_then(|b| b.as_str()) {
-        if let Some(decoded) = b64_decode(b64) {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        if let Ok(decoded) = STANDARD.decode(b64) {
             // Recurse once — the inner payload is either message_start or
             // message_delta (Anthropic format), handled by format 3 above.
             accumulate_stream_usage(&decoded, input, output, cache_read);
