@@ -138,6 +138,23 @@ def test_openai_responses_tool_results_for_learning_coerces_bash_command_lists()
     ]
 
 
+def test_openai_responses_tool_results_for_learning_skips_unpaired_outputs() -> None:
+    input_items: list[dict[str, Any]] = [
+        {
+            "type": "function_call_output",
+            "call_id": "missing_call",
+            "output": "No such file or directory",
+        },
+        {
+            "type": "custom_tool_call_output",
+            "call_id": "another_missing_call",
+            "output": "done",
+        },
+    ]
+
+    assert _openai_responses_tool_results_for_learning(input_items) == []
+
+
 def test_openai_responses_tool_results_for_learning_handles_bad_args_and_errors() -> None:
     input_items: list[dict[str, Any]] = [
         {

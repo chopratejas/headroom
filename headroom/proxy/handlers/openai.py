@@ -489,6 +489,11 @@ def _openai_responses_tool_results_for_learning(
     if not isinstance(input_data, list):
         return []
 
+    try:
+        from headroom.memory.traffic_learner import _is_error as output_is_error
+    except Exception:
+        output_is_error = None
+
     calls_by_id: dict[str, dict[str, Any]] = {}
     for item in input_data:
         if not isinstance(item, dict):
@@ -517,20 +522,22 @@ def _openai_responses_tool_results_for_learning(
         if item.get("type") not in _RESPONSES_OUTPUT_ITEM_TYPES:
             continue
         call_id = item.get("call_id")
-        call = calls_by_id.get(call_id if isinstance(call_id, str) else "", {})
+        call = calls_by_id.get(call_id if isinstance(call_id, str) else "")
+        if call is None:
+            continue
         output = _responses_part_text(item.get("output"))
         if not output and item.get("output") is not None:
             output = json.dumps(item.get("output"), ensure_ascii=False, default=str)
-        try:
-            from headroom.memory.traffic_learner import _is_error
-
-            is_error = bool(item.get("is_error")) or _is_error(output)
-        except Exception:
-            is_error = bool(item.get("is_error"))
+        is_error = bool(item.get("is_error"))
+        if output_is_error is not None:
+            try:
+                is_error = is_error or output_is_error(output)
+            except Exception:
+                pass
         results.append(
             {
-                "tool_name": call.get("tool_name", "unknown"),
-                "input": call.get("input", {}),
+                "tool_name": call["tool_name"],
+                "input": call["input"],
                 "output": output,
                 "is_error": is_error,
             }
