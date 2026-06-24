@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import ssl
-import tempfile
 
 import pytest
 from cryptography import x509
@@ -75,10 +74,7 @@ def _build_client_ssl_context(ca_cert_pem: bytes) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
-    with tempfile.NamedTemporaryFile(suffix=".pem", delete=True, mode="wb") as tf:
-        tf.write(ca_cert_pem)
-        tf.flush()
-        ctx.load_verify_locations(tf.name)
+    ctx.load_verify_locations(cadata=ca_cert_pem.decode("ascii"))
     ctx.set_alpn_protocols(["h2", "http/1.1"])
     return ctx
 

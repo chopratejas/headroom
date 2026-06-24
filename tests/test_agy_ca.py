@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -542,6 +543,7 @@ def test_load_cert_chain_in_memory_loads_usable_ctx() -> None:
     load_cert_chain_in_memory(ctx, cert_pem, key_pem)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires /proc/self/fd")
 def test_load_cert_chain_in_memory_no_fd_leak() -> None:
     """After load, the memfd (or temp file) is closed — no leaked descriptors."""
     import ssl
@@ -584,7 +586,7 @@ def test_load_cert_chain_in_memory_no_tmpfile_on_linux(monkeypatch: pytest.Monke
     monkeypatch.setattr(_tempfile, "mkstemp", _spy_mkstemp)
     monkeypatch.setattr(_tempfile, "NamedTemporaryFile", _spy_named)
 
-    if hasattr(os, "memfd_create"):
+    if sys.platform == "linux" and hasattr(os, "memfd_create"):
         load_cert_chain_in_memory(ctx, cert_pem, key_pem)
         assert not mkstemp_called[0], "mkstemp must NOT be called when memfd_create is available"
         assert not named_tmp_called[0], (
@@ -704,8 +706,9 @@ def test_load_cert_chain_in_memory_fallback_0600(monkeypatch: pytest.MonkeyPatch
     load_cert_chain_in_memory(ctx, cert_pem, key_pem)
 
     assert observed_modes, "Fallback must call mkstemp"
-    for mode in observed_modes:
-        assert mode == 0o600, f"Temp file mode must be 0600, got {oct(mode)}"
+    if sys.platform != "win32":
+        for mode in observed_modes:
+            assert mode == 0o600, f"Temp file mode must be 0600, got {oct(mode)}"
 
 
 def test_load_cert_chain_in_memory_fallback_unlinks_on_load_exception(

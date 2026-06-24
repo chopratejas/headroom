@@ -21,7 +21,6 @@ import datetime
 import json
 import logging
 import ssl
-import tempfile
 from typing import Any
 
 import pytest
@@ -86,10 +85,7 @@ def _build_client_ssl_ctx(ca_cert_pem: bytes) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
-    with tempfile.NamedTemporaryFile(suffix=".pem", delete=True, mode="wb") as f:
-        f.write(ca_cert_pem)
-        f.flush()
-        ctx.load_verify_locations(f.name)
+    ctx.load_verify_locations(cadata=ca_cert_pem.decode("ascii"))
     return ctx
 
 
@@ -496,10 +492,7 @@ async def _try_tls_connect(
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ssl_ctx.check_hostname = server_hostname is not None
     ssl_ctx.verify_mode = ssl.CERT_REQUIRED if server_hostname is not None else ssl.CERT_NONE
-    with tempfile.NamedTemporaryFile(suffix=".pem", delete=True, mode="wb") as f:
-        f.write(ca_cert_pem)
-        f.flush()
-        ssl_ctx.load_verify_locations(f.name)
+    ssl_ctx.load_verify_locations(cadata=ca_cert_pem.decode("ascii"))
     try:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(

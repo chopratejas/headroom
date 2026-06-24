@@ -22,6 +22,7 @@ import logging
 import os
 import ssl
 import stat
+import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -111,9 +112,17 @@ def _write_secure(path: Path, data: bytes) -> None:
 
     The temp file is created with mode 0o600 from the start via ``os.open``
     so there is never a world-readable window while data is on disk.
+
+    ``O_BINARY`` (a no-op 0 on POSIX, defined only on Windows) prevents the
+    Windows text-mode ``\n``->``\r\n`` translation that would otherwise corrupt
+    the PEM bytes written here (CA key/cert and the combined trust bundle).
     """
     tmp = path.with_suffix(".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(
+        str(tmp),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
     try:
         os.write(fd, data)
     finally:
@@ -474,7 +483,7 @@ def load_cert_chain_in_memory(
     """
     combined = cert_pem + key_pem
 
-    if hasattr(os, "memfd_create"):
+    if sys.platform == "linux" and hasattr(os, "memfd_create"):
         fd = os.memfd_create("hr_leaf")  # type: ignore[attr-defined]
         try:
             _write_all_fd(fd, combined)
