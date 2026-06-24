@@ -226,13 +226,27 @@ to `AgyRetrieveServer`. Revisit only if agy deprecates stdio MCP support.
 
 ## Cross-platform status
 
-The CA lifecycle and CONNECT terminator code is **Windows-safe** as of the agy hardening
-pass:
-- `_assert_perms` is a no-op on non-POSIX platforms (no `os.chmod`/`stat` crash on Windows).
-- Atomic bundle writes use `os.replace` (cross-platform) rather than POSIX `rename`.
-- No POSIX-only syscall causes a hard crash on Windows.
+The agy slice runs on Windows and is **CI-gated** on it: the `agy-windows` job
+(`.github/workflows/ci.yml`, `windows-latest`) runs the full agy suite plus
+`test_wrap_agy.py` on every code change.
 
-**Native-Windows E2E CI is not yet enabled.** The `wrap-native-e2e.yml` and
-`install-native-e2e.yml` workflows exclude native-Windows pending an upstream CRT issue.
-The code is safe to run on Windows; it is not yet CI-gated on Windows. Over-claiming
-"Windows fully supported" would be inaccurate.
+Platform specifics:
+- `_assert_perms` is a no-op on non-POSIX platforms (no `os.chmod`/`stat` crash on Windows).
+- Atomic bundle writes use `os.replace`; `_write_secure` ORs in `os.O_BINARY`
+  (0 on POSIX) so PEM bytes are written verbatim, not CRLF-translated, on Windows.
+- System trust source: POSIX/macOS read the detected on-disk CA bundle; Windows has
+  no single bundle file, so `_system_trust_pem()` enumerates the ROOT+CA cert stores
+  via stdlib `ssl.enum_certificates`, run through the same CA:TRUE filter (no leaf
+  trusted as an anchor; no `certifi` dependency).
+- Loopback sockets set `SO_REUSEADDR` only on POSIX; on Windows that flag would let
+  another local process bind the same port and intercept decrypted traffic, so Windows
+  uses `SO_EXCLUSIVEADDRUSE` instead.
+
+**Leaf private-key posture differs by platform (security-relevant):**
+- **Linux:** the leaf key is loaded from an anonymous `memfd` and **never touches the
+  filesystem**.
+- **Windows / macOS (no `memfd`):** the leaf key is written to a `mkstemp` file and
+  unlinked immediately after `load_cert_chain`. On POSIX the file is `0600`; on Windows
+  POSIX mode bits are not enforceable, so the guarantee is "per-user `%TEMP%` + immediate
+  unlink", **not** the Linux "never on disk" invariant. This is a deliberate, documented
+  degradation — the key is briefly on disk on non-Linux platforms.

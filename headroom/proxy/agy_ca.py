@@ -541,7 +541,13 @@ def _write_all_fd(fd: int, data: bytes) -> None:
 
 
 def _load_via_mkstemp(ctx: ssl.SSLContext, combined: bytes) -> None:
-    """Write *combined* to a 0600 mkstemp file, load it, then unlink."""
+    """Write *combined* to a 0600 mkstemp file, load it, then unlink.
+
+    Fallback for platforms without ``memfd_create`` (Windows, macOS). Unlike the
+    Linux memfd path, the leaf key is briefly on disk here. On POSIX it is 0600;
+    on Windows mode bits are not enforceable, so the protection is the per-user
+    temp dir + immediate unlink. See docs/adr/0001 "Leaf private-key posture".
+    """
     fd, path = tempfile.mkstemp(prefix="hr_leaf_", suffix=".pem")
     try:
         _write_all_fd(fd, combined)
