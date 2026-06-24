@@ -365,18 +365,36 @@ def test_retry_request_without_override_uses_client_default_timeout():
         proxy = client.app.state.proxy
         captured: list[dict[str, object]] = []
 
-        async def _spy_post(*args, **kwargs):  # noqa: ANN002, ANN003
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
             captured.append(kwargs)
-            return httpx.Response(200, json={"ok": True})
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                },
+            )
 
-        proxy.http_client.post = _spy_post
+        proxy._retry_request = _fake_retry  # type: ignore[assignment]
 
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(
-            proxy._retry_request("POST", "http://test/v1/chat", {}, {"model": "m"})
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key", "content-type": "application/json"},
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
         )
 
+    assert response.status_code == 200, response.text
     assert len(captured) == 1
     assert "timeout" not in captured[0], (
         "_retry_request without an override must not pass timeout=None to httpx"
