@@ -341,12 +341,11 @@ pub async fn handle_invoke_streaming(
 
     let status =
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    // Record now that the upstream status is known.
-    if let Some(o) = rec_outcome {
-        state
-            .savings
-            .record_finalized(o, !status.is_success(), rec_start);
-    }
+    // For the SSE translation path, defer record_finalized into the stream
+    // task so it picks up usage tokens extracted from the final EventStream
+    // chunk. The early-record path below is only for non-EventStream bodies
+    // (errors, passthrough) where no stream task runs.
+    let deferred_record = rec_outcome.map(|o| (o, state.savings.clone(), rec_start, !status.is_success()));
     let upstream_content_type = upstream_resp
         .headers()
         .get(http::header::CONTENT_TYPE)
@@ -383,9 +382,10 @@ pub async fn handle_invoke_streaming(
 
     if !upstream_is_eventstream {
         // Upstream isn't binary EventStream — pass through verbatim.
-        // Even here we drop content-length: the proxy streams the
-        // body and reqwest's transparent decompression may already
-        // have changed the byte length on the way in.
+        // No stream task will run, so record now.
+        if let Some((o, savings, started, failed)) = deferred_record {
+            savings.record_finalized(o, failed, started);
+        }
         resp_headers.remove(http::header::CONTENT_LENGTH);
         let stream = upstream_resp
             .bytes_stream()
@@ -408,16 +408,17 @@ pub async fn handle_invoke_streaming(
 
     match output_mode {
         OutputMode::EventStream => {
-            // Passthrough — bytes flow byte-equal to the client.
+            // Passthrough — bytes flow byte-equal to the client. No SSE
+            // translation runs, so record now (no usage extraction possible
+            // from raw EventStream without parsing).
+            if let Some((o, savings, started, failed)) = deferred_record {
+                savings.record_finalized(o, failed, started);
+            }
             tracing::info!(
                 event = "bedrock_eventstream_passthrough",
                 request_id = %request_id,
                 "passing upstream eventstream bytes through verbatim"
             );
-            // Set the response Content-Type to match the upstream so
-            // the client knows it's still EventStream. The
-            // `filter_response_headers` already preserves it; this
-            // is defensive in case a future filter strips it.
             if !resp_headers.contains_key(http::header::CONTENT_TYPE) {
                 if let Ok(v) = http::HeaderValue::from_str("application/vnd.amazon.eventstream") {
                     resp_headers.insert(http::header::CONTENT_TYPE, v);
@@ -427,9 +428,8 @@ pub async fn handle_invoke_streaming(
             finish(status, resp_headers, body_out, &request_id)
         }
         OutputMode::Sse => {
-            // Translation mode. Override the response content-type to
-            // text/event-stream; emit SSE frames; tee them into the
-            // existing AnthropicStreamState for telemetry.
+            // Translation mode. Defer record_finalized into the stream task
+            // so usage tokens from the final EventStream chunk are captured.
             resp_headers.remove(http::header::CONTENT_TYPE);
             if let Ok(v) = http::HeaderValue::from_str("text/event-stream") {
                 resp_headers.insert(http::header::CONTENT_TYPE, v);
@@ -442,7 +442,8 @@ pub async fn handle_invoke_streaming(
                 model_id.clone(),
                 region.clone(),
             );
-            let translated = tee_to_anthropic_state(translated, request_id.clone());
+            let translated =
+                tee_to_anthropic_state(translated, request_id.clone(), deferred_record);
             let body_out = Body::from_stream(translated);
             finish(status, resp_headers, body_out, &request_id)
         }
@@ -719,13 +720,25 @@ where
     )
 }
 
+type DeferredRecord = Option<(
+    crate::observability::stats::RequestOutcome,
+    std::sync::Arc<crate::observability::stats::SavingsStore>,
+    std::time::Instant,
+    bool,
+)>;
+
 /// Tee the translated SSE stream into an `AnthropicStreamState` task
 /// so usage telemetry is captured. The byte path is independent of
 /// the parser — if the parser falls behind, the channel `try_send`
 /// drops chunks rather than blocking.
+///
+/// `deferred_record` carries the `RequestOutcome` + savings store so
+/// the state machine can fill response usage and call `record_finalized`
+/// after the stream ends, giving accurate token counts.
 fn tee_to_anthropic_state<S>(
     upstream: S,
     request_id: String,
+    deferred_record: DeferredRecord,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>>
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
@@ -733,7 +746,7 @@ where
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(SSE_PARSER_QUEUE_DEPTH);
     let parser_request_id = request_id.clone();
     tokio::spawn(async move {
-        run_anthropic_state_machine(rx, parser_request_id).await;
+        run_anthropic_state_machine(rx, parser_request_id, deferred_record).await;
     });
 
     upstream.map(move |r| {
@@ -753,34 +766,143 @@ where
 
 const SSE_PARSER_QUEUE_DEPTH: usize = 256;
 
-/// Dedicated state-machine task. Mirrors the
-/// `run_sse_state_machine(SseStreamKind::Anthropic, ...)` arm in
-/// `proxy.rs` so usage extraction works identically for direct
-/// `/v1/messages` and Bedrock-on-`Accept: text/event-stream`.
+/// Scan one SSE `data` field (raw bytes) for token usage, accumulating
+/// into `input`, `output`, `cache_read`.  Handles three wire formats:
+///
+/// 1. **InvokeModel streaming** — each SSE event wraps the Anthropic JSON
+///    in base64: `{"bytes":"BASE64(anthropic_json)","p":"..."}`.
+///    Anthropic usage lives at `.message.usage` (message_start) or
+///    `.usage` (message_delta) inside the decoded bytes.
+///
+/// 2. **Converse streaming** — the final `metadata` EventStream event
+///    carries `{"usage":{"inputTokens":N,"outputTokens":N,...}}` directly
+///    in the SSE data field.
+///
+/// 3. **Direct Anthropic SSE** (future / test path) — `{"type":
+///    "message_delta","usage":{"input_tokens":N,...}}` at the top level.
+/// Minimal standard base64 (RFC 4648) decoder. Used to unwrap the
+/// `{"bytes":"BASE64"}` envelope in InvokeModel streaming responses
+/// without adding the `base64` crate as a direct dependency.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    const TABLE: [u8; 256] = {
+        let mut t = [255u8; 256];
+        let chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0usize;
+        while i < 64 {
+            t[chars[i] as usize] = i as u8;
+            i += 1;
+        }
+        t
+    };
+    let s = s.trim_end_matches('=');
+    let n = s.len();
+    let mut out = Vec::with_capacity(n * 3 / 4 + 1);
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 3 < n {
+        let (a, b0, c, d) = (TABLE[b[i] as usize], TABLE[b[i+1] as usize], TABLE[b[i+2] as usize], TABLE[b[i+3] as usize]);
+        if a | b0 | c | d == 255 { return None; }
+        out.push((a << 2) | (b0 >> 4));
+        out.push((b0 << 4) | (c >> 2));
+        out.push((c << 6) | d);
+        i += 4;
+    }
+    match n - i {
+        2 => { let (a, b0) = (TABLE[b[i] as usize], TABLE[b[i+1] as usize]); if a | b0 == 255 { return None; } out.push((a << 2) | (b0 >> 4)); }
+        3 => { let (a, b0, c) = (TABLE[b[i] as usize], TABLE[b[i+1] as usize], TABLE[b[i+2] as usize]); if a | b0 | c == 255 { return None; } out.push((a << 2) | (b0 >> 4)); out.push((b0 << 4) | (c >> 2)); }
+        _ => {}
+    }
+    Some(out)
+}
+
+fn accumulate_stream_usage(data: &[u8], input: &mut u64, output: &mut u64, cache_read: &mut u64) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else {
+        return;
+    };
+
+    // --- Format 2: Converse metadata: {"usage":{"inputTokens":N,...}} ---
+    if let Some(usage) = v.get("usage") {
+        let get = |k: &str| usage.get(k).and_then(|t| t.as_u64()).unwrap_or(0);
+        let it = get("inputTokens");
+        let ot = get("outputTokens");
+        let cr = get("cacheReadInputTokens");
+        if it > 0 {
+            *input = it;
+        }
+        if ot > 0 {
+            *output = ot;
+        }
+        if cr > 0 {
+            *cache_read = cr;
+        }
+        // Also Anthropic snake_case at top level (format 3 / message_delta)
+        let it2 = get("input_tokens");
+        let ot2 = get("output_tokens");
+        let cr2 = get("cache_read_input_tokens");
+        if it2 > 0 {
+            *input = it2;
+        }
+        if ot2 > 0 {
+            *output = ot2;
+        }
+        if cr2 > 0 {
+            *cache_read = cr2;
+        }
+    }
+    // message_start has usage nested under .message.usage (Anthropic format)
+    if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+        let get = |k: &str| usage.get(k).and_then(|t| t.as_u64()).unwrap_or(0);
+        let it = get("input_tokens");
+        let cr = get("cache_read_input_tokens");
+        if it > 0 && *input == 0 {
+            *input = it;
+        }
+        if cr > 0 {
+            *cache_read = cr;
+        }
+    }
+
+    // --- Format 1: InvokeModel wrapped: {"bytes":"BASE64","p":"..."} ---
+    if let Some(b64) = v.get("bytes").and_then(|b| b.as_str()) {
+        if let Some(decoded) = b64_decode(b64) {
+            // Recurse once — the inner payload is either message_start or
+            // message_delta (Anthropic format), handled by format 3 above.
+            accumulate_stream_usage(&decoded, input, output, cache_read);
+        }
+    }
+}
+
+/// Dedicated task: consume the tee'd translated-SSE byte stream, scan each
+/// SSE data field for token usage, then call `record_finalized` once the
+/// stream closes.  Replaces the previous `AnthropicStreamState` approach
+/// which only handled direct Anthropic SSE, not InvokeModel-wrapped or
+/// Converse formats.
 async fn run_anthropic_state_machine(
     mut rx: tokio::sync::mpsc::Receiver<Bytes>,
     request_id: String,
+    deferred_record: DeferredRecord,
 ) {
-    use crate::sse::anthropic::AnthropicStreamState;
     use crate::sse::framing::SseFramer;
 
     let mut framer = SseFramer::new();
-    let mut state = AnthropicStreamState::new();
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut cache_read_tokens: u64 = 0;
+
     while let Some(chunk) = rx.recv().await {
         framer.push(&chunk);
         while let Some(ev_result) = framer.next_event() {
             match ev_result {
                 Ok(ev) => {
-                    if let Err(e) = state.apply(ev) {
-                        tracing::warn!(
-                            request_id = %request_id,
-                            error = %e,
-                            "bedrock translated stream: anthropic state-machine apply error"
-                        );
-                    }
+                    accumulate_stream_usage(
+                        &ev.data,
+                        &mut input_tokens,
+                        &mut output_tokens,
+                        &mut cache_read_tokens,
+                    );
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::debug!(
                         request_id = %request_id,
                         error = %e,
                         "bedrock translated stream: sse framer error"
@@ -789,17 +911,25 @@ async fn run_anthropic_state_machine(
             }
         }
     }
+
     tracing::info!(
         request_id = %request_id,
-        provider = "bedrock_anthropic",
-        input_tokens = state.usage.input_tokens,
-        output_tokens = state.usage.output_tokens,
-        cache_creation_input_tokens = state.usage.cache_creation_input_tokens,
-        cache_read_input_tokens = state.usage.cache_read_input_tokens,
-        stop_reason = state.stop_reason.as_deref().unwrap_or(""),
-        blocks = state.blocks.len(),
+        provider = "bedrock_streaming",
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
         "bedrock translated stream: closed"
     );
+
+    if let Some((mut outcome, savings, started, failed)) = deferred_record {
+        if outcome.tokens_before == 0 {
+            outcome.tokens_before = input_tokens;
+            outcome.tokens_after = input_tokens;
+        }
+        outcome.output_tokens = output_tokens;
+        outcome.cache_read_tokens = cache_read_tokens;
+        savings.record_finalized(outcome, failed, started);
+    }
 }
 
 /// True when the content-type is `application/vnd.amazon.eventstream`

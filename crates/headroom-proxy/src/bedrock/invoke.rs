@@ -616,8 +616,12 @@ fn collect_signed_headers(headers: &HeaderMap, upstream_url: &Url) -> Vec<(Strin
     out
 }
 
-/// Populate `outcome` with token counts from a Bedrock InvokeModel JSON
-/// response body. Silently no-ops on parse failures or absent fields.
+/// Populate `outcome` with token counts from a Bedrock response body.
+/// Silently no-ops on parse failures or absent fields.
+///
+/// Handles two Bedrock response shapes:
+/// - InvokeModel (Anthropic): `input_tokens`, `output_tokens`, `cache_read_input_tokens`
+/// - Converse: `inputTokens`, `outputTokens`, `cacheReadInputTokens`
 ///
 /// When compression didn't run (`tokens_before == 0`), the billed input count
 /// fills both slots so savings_percent stays 0 instead of dividing by zero.
@@ -629,14 +633,20 @@ fn apply_bedrock_response_usage(
         return;
     };
     let Some(usage) = v.get("usage") else { return };
-    let get = |key: &str| usage.get(key).and_then(|t| t.as_u64()).unwrap_or(0);
-    let input_tokens = get("input_tokens");
+    let get = |snake: &str, camel: &str| {
+        usage
+            .get(snake)
+            .or_else(|| usage.get(camel))
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0)
+    };
+    let input_tokens = get("input_tokens", "inputTokens");
     if outcome.tokens_before == 0 {
         outcome.tokens_before = input_tokens;
         outcome.tokens_after = input_tokens;
     }
-    outcome.output_tokens = get("output_tokens");
-    outcome.cache_read_tokens = get("cache_read_input_tokens");
+    outcome.output_tokens = get("output_tokens", "outputTokens");
+    outcome.cache_read_tokens = get("cache_read_input_tokens", "cacheReadInputTokens");
 }
 
 fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
@@ -843,6 +853,20 @@ mod tests {
         assert_eq!(o.tokens_before, 1000); // preserved
         assert_eq!(o.tokens_after, 600);   // preserved
         assert_eq!(o.output_tokens, 50);
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_handles_converse_camelcase() {
+        use crate::observability::stats::RequestOutcome;
+        use crate::observability::pricing::PriceBook;
+        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 0, 0, "r", &PriceBook::empty());
+        // Converse API uses camelCase keys
+        let resp = br#"{"output":{"message":{"role":"assistant","content":[{"text":"OK"}]}},"stopReason":"end_turn","usage":{"inputTokens":15,"outputTokens":4,"totalTokens":19,"cacheReadInputTokens":0,"cacheWriteInputTokens":0}}"#;
+        apply_bedrock_response_usage(resp, &mut o);
+        assert_eq!(o.tokens_before, 15);
+        assert_eq!(o.tokens_after, 15);
+        assert_eq!(o.output_tokens, 4);
+        assert_eq!(o.cache_read_tokens, 0);
     }
 
     #[test]
