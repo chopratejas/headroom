@@ -125,7 +125,9 @@ class OpenCodePlugin(LearnPlugin, ConversationScanner):
 
         return projects
 
-    def scan_project(self, project: ProjectInfo, max_workers: int = 1) -> list[SessionData]:
+    def scan_project(
+        self, project: ProjectInfo, max_workers: int = 1, include_subagents: bool = True
+    ) -> list[SessionData]:
         """Scan all sessions for a project and return normalized tool calls."""
         if not self.detect():
             return []
