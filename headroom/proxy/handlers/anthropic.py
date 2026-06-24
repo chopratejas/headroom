@@ -2119,7 +2119,7 @@ class AnthropicHandlerMixin:
                     await _finalize_pre_upstream()
                     session_key = self._get_session_key(
                         body,
-                        session_header=request.headers.get("x-headroom-session"),
+                        session_header=request.headers.get("x-headroom-session-id"),
                     )
                     if session_key in self._active_streams:
                         from fastapi.responses import JSONResponse
