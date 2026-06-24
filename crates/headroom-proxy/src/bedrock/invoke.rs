@@ -231,7 +231,7 @@ pub async fn handle_invoke(
                 path = %uri.path(),
                 "bedrock invoke: unrecognized action path"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::BAD_REQUEST,
                 "bedrock_invoke_action_invalid",
                 "Unsupported Bedrock action path",
@@ -250,7 +250,7 @@ pub async fn handle_invoke(
                 error = %msg,
                 "bedrock invoke: failed to construct upstream URL"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_endpoint_invalid",
                 &msg,
@@ -268,7 +268,7 @@ pub async fn handle_invoke(
                 model_id = %model_id,
                 "bedrock invoke: refusing to forward without AWS credentials"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_credentials_missing",
                 "AWS credentials not configured; refusing to forward unsigned",
@@ -278,7 +278,7 @@ pub async fn handle_invoke(
 
     // Build the headers we sign + forward. Start from the inbound
     // headers, drop the ones the upstream client manages, then sign.
-    let extra_signed: Vec<(String, String)> = collect_signed_headers(&headers, &upstream_url);
+    let extra_signed: Vec<(String, String)> = super::collect_signed_headers(&headers, &upstream_url);
     let extra_signed_refs: Vec<(&str, &str)> = extra_signed
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -303,7 +303,7 @@ pub async fn handle_invoke(
                 error = %e,
                 "bedrock invoke: SigV4 signing failed; refusing to forward"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_sigv4_failed",
                 &e.to_string(),
@@ -344,7 +344,7 @@ pub async fn handle_invoke(
                 error = %e,
                 "bedrock invoke: invalid HTTP method"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::BAD_REQUEST,
                 "bedrock_invalid_method",
                 &e.to_string(),
@@ -378,7 +378,7 @@ pub async fn handle_invoke(
             } else {
                 StatusCode::BAD_GATEWAY
             };
-            return error_response(status, "bedrock_upstream_error", &e.to_string());
+            return super::error_response(status, "bedrock_upstream_error", &e.to_string());
         }
     };
 
@@ -567,55 +567,6 @@ fn build_bedrock_upstream(
 }
 
 /// Build the list of headers to sign + forward. Drops hop-by-hop,
-/// `host`, `content-length` (reqwest manages those), `authorization`
-/// (we replace it with the SigV4 output). Lower-cases names for
-/// canonical-request consistency.
-fn collect_signed_headers(headers: &HeaderMap, upstream_url: &Url) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::with_capacity(headers.len() + 1);
-    for (name, value) in headers.iter() {
-        let n = name.as_str().to_ascii_lowercase();
-        if matches!(
-            n.as_str(),
-            "host"
-                | "content-length"
-                | "connection"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailers"
-                | "transfer-encoding"
-                | "upgrade"
-                | "authorization"
-                | "x-amz-date"
-                | "x-amz-content-sha256"
-        ) {
-            // Drop client-managed + signer-managed headers.
-            continue;
-        }
-        if n.starts_with("x-headroom-") {
-            // Internal headers are stripped from upstream traffic
-            // (PR-A5). The Bedrock route inherits the same default.
-            continue;
-        }
-        if let Ok(v) = value.to_str() {
-            out.push((n, v.to_string()));
-        }
-    }
-    // Signer requires `host` in the canonical request. Add it
-    // explicitly from the upstream URL — the inbound `host` header
-    // (the proxy's listening hostname) is wrong for the canonical
-    // request.
-    if let Some(host) = upstream_url.host_str() {
-        let host_value = match upstream_url.port() {
-            Some(p) => format!("{host}:{p}"),
-            None => host.to_string(),
-        };
-        out.push(("host".to_string(), host_value));
-    }
-    out
-}
-
 /// Populate `outcome` with token counts from a Bedrock response body.
 /// Silently no-ops on parse failures or absent fields.
 ///
@@ -647,26 +598,6 @@ fn apply_bedrock_response_usage(
     }
     outcome.output_tokens = get("output_tokens", "outputTokens");
     outcome.cache_read_tokens = get("cache_read_input_tokens", "cacheReadInputTokens");
-}
-
-fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
-    let body = serde_json::json!({
-        "error": {
-            "type": event,
-            "message": msg,
-        }
-    })
-    .to_string();
-    let _ = event;
-    let mut resp = Response::builder()
-        .status(status)
-        .body(Body::from(body))
-        .expect("static error response");
-    resp.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("application/json"),
-    );
-    resp.into_response()
 }
 
 #[cfg(test)]
@@ -813,7 +744,7 @@ mod tests {
         headers.insert("accept", "application/json".parse().unwrap());
         let upstream =
             Url::parse("https://bedrock-runtime.us-east-1.amazonaws.com/model/x/invoke").unwrap();
-        let out = collect_signed_headers(&headers, &upstream);
+        let out = super::super::collect_signed_headers(&headers, &upstream);
         let names: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
         assert!(names.contains(&"content-type"));
         assert!(names.contains(&"accept"));

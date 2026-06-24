@@ -195,7 +195,7 @@ pub async fn handle_invoke_streaming(
                 path = %uri.path(),
                 "bedrock invoke-streaming: unrecognized streaming action path"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::BAD_REQUEST,
                 "bedrock_streaming_action_invalid",
                 "Unsupported Bedrock streaming action path",
@@ -212,7 +212,7 @@ pub async fn handle_invoke_streaming(
                 error = %msg,
                 "bedrock invoke-streaming: failed to construct upstream URL"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_endpoint_invalid",
                 &msg,
@@ -230,7 +230,7 @@ pub async fn handle_invoke_streaming(
                 model_id = %model_id,
                 "bedrock invoke-streaming: refusing to forward without AWS credentials"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_credentials_missing",
                 "AWS credentials not configured; refusing to forward unsigned",
@@ -239,7 +239,7 @@ pub async fn handle_invoke_streaming(
     };
 
     // 4. Build the headers we sign + forward.
-    let extra_signed: Vec<(String, String)> = collect_signed_headers(&headers, &upstream_url);
+    let extra_signed: Vec<(String, String)> = super::collect_signed_headers(&headers, &upstream_url);
     let extra_signed_refs: Vec<(&str, &str)> = extra_signed
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -264,7 +264,7 @@ pub async fn handle_invoke_streaming(
                 error = %e,
                 "bedrock invoke-streaming: SigV4 signing failed"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_sigv4_failed",
                 &e.to_string(),
@@ -301,7 +301,7 @@ pub async fn handle_invoke_streaming(
                 error = %e,
                 "bedrock invoke-streaming: invalid HTTP method"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::BAD_REQUEST,
                 "bedrock_invalid_method",
                 &e.to_string(),
@@ -335,7 +335,7 @@ pub async fn handle_invoke_streaming(
             } else {
                 StatusCode::BAD_GATEWAY
             };
-            return error_response(status, "bedrock_upstream_error", &e.to_string());
+            return super::error_response(status, "bedrock_upstream_error", &e.to_string());
         }
     };
 
@@ -947,25 +947,6 @@ fn finish(status: StatusCode, headers: HeaderMap, body: Body, request_id: &str) 
     })
 }
 
-fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
-    let body = serde_json::json!({
-        "error": {
-            "type": event,
-            "message": msg,
-        }
-    })
-    .to_string();
-    let mut resp = Response::builder()
-        .status(status)
-        .body(Body::from(body))
-        .expect("static error response");
-    resp.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("application/json"),
-    );
-    resp.into_response()
-}
-
 /// Same compression-dispatch logic as PR-D1 — duplicated rather than
 /// shared because the streaming handler runs in a slightly different
 /// flow (no body buffering required at the caller, the handler always
@@ -1078,45 +1059,6 @@ fn extract_streaming_action(path: &str) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn collect_signed_headers(headers: &HeaderMap, upstream_url: &Url) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::with_capacity(headers.len() + 1);
-    for (name, value) in headers.iter() {
-        let n = name.as_str().to_ascii_lowercase();
-        if matches!(
-            n.as_str(),
-            "host"
-                | "content-length"
-                | "connection"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailers"
-                | "transfer-encoding"
-                | "upgrade"
-                | "authorization"
-                | "x-amz-date"
-                | "x-amz-content-sha256"
-        ) {
-            continue;
-        }
-        if n.starts_with("x-headroom-") {
-            continue;
-        }
-        if let Ok(v) = value.to_str() {
-            out.push((n, v.to_string()));
-        }
-    }
-    if let Some(host) = upstream_url.host_str() {
-        let host_value = match upstream_url.port() {
-            Some(p) => format!("{host}:{p}"),
-            None => host.to_string(),
-        };
-        out.push(("host".to_string(), host_value));
-    }
-    out
 }
 
 // Keep the unused-import lints happy on rare failure-only branches.
