@@ -1076,20 +1076,22 @@
             <div class="bg-surface rounded-lg border border-border overflow-hidden mb-6">
                 <div class="px-4 py-3 border-b border-border flex justify-between items-center">
                     <span class="text-sm font-medium text-gray-300">Per-Model Token Savings</span>
-                    <span class="text-xs text-gray-500">Exact tokens saved per model</span>
+                    <span class="text-xs text-gray-500">Exact tokens saved per model — grouped by upstream provider</span>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm" style="table-layout:fixed">
                         <colgroup>
-                            <col style="width:34%">
+                            <col style="width:14%">
+                            <col style="width:30%">
+                            <col style="width:9%">
+                            <col style="width:13%">
+                            <col style="width:13%">
+                            <col style="width:11%">
                             <col style="width:10%">
-                            <col style="width:14%">
-                            <col style="width:14%">
-                            <col style="width:14%">
-                            <col style="width:14%">
                         </colgroup>
                         <thead>
                             <tr class="text-xs text-gray-500 uppercase tracking-wide">
+                                <th class="px-4 py-3 font-medium text-left">Provider</th>
                                 <th class="px-4 py-3 font-medium text-left">Model</th>
                                 <th class="px-4 py-3 font-medium text-right">Requests</th>
                                 <th class="px-4 py-3 font-medium text-right">Tokens Saved</th>
@@ -1101,6 +1103,11 @@
                         <tbody class="divide-y divide-border">
                             <template x-for="[model, info] in Object.entries(stats.cost?.per_model || {})" :key="model">
                                 <tr class="hover:bg-border/30 transition-colors">
+                                    <td class="px-4 py-3 text-left">
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono"
+                                              :class="providerChipClass(providerFor(model))"
+                                              x-text="providerFor(model)"></span>
+                                    </td>
                                     <td class="px-4 py-3 text-left">
                                         <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(model)"></span>
                                     </td>
@@ -2523,6 +2530,73 @@
                 getProviderPercent(count) {
                     const total = this.stats.requests?.total || 1;
                     return Math.min((count / total) * 100, 100);
+                },
+
+                // --- Provider classification (per-model chip in tables) ---
+
+                // Resolve the upstream provider name for a model string. Used
+                // in the Per-Model Token Savings table to surface which
+                // upstream billed the request. Substring rules are kept
+                // conservative — anything we don't recognise falls into
+                // "other" so we never mis-classify a real provider.
+                providerFor(model) {
+                    if (!model) return 'other';
+                    const m = model.toLowerCase();
+                    // Bedrock / AWS — uses region-prefixed model ids like
+                    // "us.anthropic.claude-3-5-sonnet-...". The "anthropic."
+                    // substring BEFORE "claude" is the giveaway.
+                    if (/^(us|eu|apac|ap|ca|sa)\.anthropic\./.test(m)
+                        || m.startsWith('anthropic.')) {
+                        return 'bedrock';
+                    }
+                    // Anthropic direct
+                    if (m.startsWith('claude') || m.includes('claude-')) {
+                        return 'anthropic';
+                    }
+                    // OpenAI
+                    if (m.startsWith('gpt-') || m.startsWith('o1-')
+                        || m.startsWith('o3-') || m.startsWith('o4-')
+                        || m.startsWith('chatgpt-')) {
+                        return 'openai';
+                    }
+                    // Google Gemini
+                    if (m.startsWith('gemini-') || m.includes('/gemini')) {
+                        return 'gemini';
+                    }
+                    // MiniMax M3 / M2.x wire-compatible models. Accept
+                    // both bare ("MiniMax-M3") and prefixed
+                    // ("minimax/MiniMax-M3") forms.
+                    if (m.startsWith('minimax-m') || m.includes('minimax-m')
+                        || m.includes('minimax/')) {
+                        return 'minimax';
+                    }
+                    // Mistral
+                    if (m.startsWith('mistral') || m.startsWith('mixtral')
+                        || m.includes('codestral')) {
+                        return 'mistral';
+                    }
+                    // DeepSeek
+                    if (m.startsWith('deepseek-')) {
+                        return 'deepseek';
+                    }
+                    return 'other';
+                },
+
+                // Tailwind-friendly colour tokens for each provider chip.
+                // Kept low-saturation so the table reads as a list, not a
+                // rainbow. Unknown providers fall back to neutral grey.
+                providerChipClass(provider) {
+                    const map = {
+                        anthropic: 'bg-orange-900/40 text-orange-300 border border-orange-700/50',
+                        openai: 'bg-emerald-900/40 text-emerald-300 border border-emerald-700/50',
+                        gemini: 'bg-blue-900/40 text-blue-300 border border-blue-700/50',
+                        bedrock: 'bg-purple-900/40 text-purple-300 border border-purple-700/50',
+                        minimax: 'bg-cyan-900/40 text-cyan-300 border border-cyan-700/50',
+                        mistral: 'bg-amber-900/40 text-amber-300 border border-amber-700/50',
+                        deepseek: 'bg-pink-900/40 text-pink-300 border border-pink-700/50',
+                        other: 'bg-gray-800 text-gray-400 border border-gray-700',
+                    };
+                    return map[provider] || map.other;
                 },
 
                 getSparkline(data) {
