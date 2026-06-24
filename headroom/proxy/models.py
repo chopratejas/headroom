@@ -107,6 +107,7 @@ class ProxyConfig:
     # proxy routes MiniMax-M* traffic through it.
     minimax_api_url: str | None = None
     minimax_api_key: str | None = None
+    minimax_session_token: str | None = None  # JWT for the Mavis Code gateway
 
     # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     backend: str = "anthropic"

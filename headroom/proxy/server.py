@@ -1664,7 +1664,11 @@ class HeadroomProxy(
                 outbound_headers.pop("x-api-key", None)
         else:
             # Direct MiniMax API (api.minimaxi.com): inject subscription key.
-            minimax_api_key = os.environ.get("MINIMAX_API_KEY") or self.config.minimax_api_key
+            # Use getattr with default so SimpleNamespace test doubles don't
+            # blow up when they only model a subset of ProxyConfig fields.
+            minimax_api_key = os.environ.get("MINIMAX_API_KEY") or getattr(
+                self.config, "minimax_api_key", None
+            )
             if minimax_api_key:
                 outbound_headers["x-api-key"] = minimax_api_key
 

@@ -789,7 +789,6 @@ class CostTracker:
         try:
             from headroom.providers.minimax import (
                 MODEL_INPUT_COST as _MINIMAX_INPUT,
-                MODEL_OUTPUT_COST as _MINIMAX_OUTPUT,
             )
 
             normalised = model.split("/")[-1]
@@ -805,7 +804,11 @@ class CostTracker:
 
         litellm = _get_litellm_module()
         if litellm is None:
-            return None
+            # Python 3.14 path: litellm is unavailable (the headroom-ai
+            # fork pins requires-python<3.14). Fall back to a small
+            # hardcoded pricing table so the dashboard still shows real
+            # costs for Anthropic Claude and OpenAI gpt-*/o-* models.
+            return self._get_cache_prices_fallback(model)
         try:
             from headroom.pricing.litellm_pricing import resolve_litellm_model
 
@@ -819,6 +822,91 @@ class CostTracker:
             return (cache_read, cache_write, uncached)
         except Exception:
             return None
+
+    def _get_cache_prices_fallback(self, model: str) -> tuple[float, float, float] | None:
+        """Provider fallback pricing when litellm is unavailable.
+
+        On Python 3.14 the headroom-ai fork skips litellm (it pins
+        ``requires-python<3.14``), so without a fallback CostTracker
+        silently returns ``None`` for every Claude / gpt-* / o-series
+        model. This helper plugs a small hardcoded pricing table so the
+        dashboard shows real numbers instead of $0.
+
+        Returns ``(cache_read, cache_write, uncached)`` per-token costs,
+        or ``None`` if the model is not in the fallback table.
+        """
+        import re as _re
+
+        normalised = model.split("/")[-1]
+
+        # Anthropic Claude — match both Claude 4.x
+        # (claude-sonnet-4-5, claude-opus-4-20250514) and Claude 3.x
+        # (claude-3-5-sonnet-20241022, claude-3-5-sonnet-20). Numeric
+        # prefix is 1 token ("claude-sonnet-4") or 2 tokens
+        # ("claude-3-5-sonnet"). Trailing datestamp / version is 1 to 8
+        # digits (e.g. "-5", "-20241022") and is optional.
+        claude_match = _re.match(
+            r"claude-(?:\d+-)*(opus|sonnet|haiku)(?:[-.](\d+))?(?:-\d{1,8})?$",
+            normalised,
+        )
+        if claude_match:
+            family = claude_match.group(1)
+            # Conservative list prices (per 1M INPUT tokens, USD):
+            #   opus $15, sonnet $3, haiku $0.80 (Claude 4) / $0.25 (Claude 3)
+            if family == "opus":
+                uncached_per_m = 15.0
+            elif family == "sonnet":
+                uncached_per_m = 3.0
+            elif family == "haiku":
+                if "claude-3" in normalised:
+                    uncached_per_m = 0.25
+                else:
+                    uncached_per_m = 0.80
+            else:
+                uncached_per_m = 3.0
+            uncached_per_token = uncached_per_m / 1_000_000
+            # Anthropic: 90% off cache reads, 25% premium on writes.
+            cache_read = uncached_per_token * 0.10
+            cache_write = uncached_per_token * 1.25
+            return (cache_read, cache_write, uncached_per_token)
+
+        # OpenAI gpt-* / o1-* / o3-* / o4-*
+        if _re.match(r"^(gpt-5|gpt-4|gpt-3\.5|o1|o3|o4)", normalised):
+            if normalised.startswith("gpt-5-nano"):
+                uncached_per_m = 0.10
+            elif normalised.startswith("gpt-5-mini"):
+                uncached_per_m = 0.25
+            elif normalised.startswith("gpt-5"):
+                uncached_per_m = 5.00
+            elif normalised.startswith("gpt-4o-mini"):
+                uncached_per_m = 0.15
+            elif normalised.startswith("gpt-4o"):
+                uncached_per_m = 2.50
+            elif normalised.startswith("gpt-4-turbo"):
+                uncached_per_m = 10.00
+            elif normalised.startswith("gpt-4"):
+                uncached_per_m = 10.00
+            elif normalised.startswith("gpt-3.5"):
+                uncached_per_m = 0.50
+            elif normalised.startswith("o1-mini"):
+                uncached_per_m = 3.00
+            elif normalised.startswith("o1"):
+                uncached_per_m = 15.00
+            elif normalised.startswith("o3-mini"):
+                uncached_per_m = 1.10
+            elif normalised.startswith("o3") or normalised.startswith("o4-mini"):
+                uncached_per_m = 1.10
+            elif normalised.startswith("o4"):
+                uncached_per_m = 10.00
+            else:
+                return None
+            uncached_per_token = uncached_per_m / 1_000_000
+            # OpenAI: 50% off cache reads, no explicit write premium.
+            cache_read = uncached_per_token * 0.50
+            cache_write = uncached_per_token * 1.00
+            return (cache_read, cache_write, uncached_per_token)
+
+        return None
 
     def stats(self) -> dict:
         """Get token statistics per model."""

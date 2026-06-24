@@ -15,8 +15,6 @@ import pytest
 
 from headroom.providers.minimax import (
     MODEL_INPUT_COST,
-    MODEL_MAX_OUTPUT,
-    MiniMaxProvider,
 )
 
 
@@ -77,6 +75,66 @@ class TestGetCachePricesMiniMaxFallback:
             cache_read, _cache_write, uncached = prices
             # Sanity: not the M3 uncached price.
             assert uncached != pytest.approx(1.0 / 1_000_000, rel=1e-9)
+
+    @pytest.mark.parametrize(
+        "model,expected_per_m",
+        [
+            # Claude 4 family
+            ("claude-opus-4-20250514", 15.0),
+            ("claude-sonnet-4-5", 3.0),
+            ("claude-sonnet-4-20250514", 3.0),
+            ("claude-haiku-4-5", 0.80),
+            # Claude 3.x family — including the variant with truncated
+            # datestamp that exposed the original group(2) bug.
+            ("claude-3-5-sonnet-20241022", 3.0),
+            ("claude-3-5-sonnet-20", 3.0),
+            ("claude-3-haiku-20240307", 0.25),
+            ("claude-3-opus-20240229", 15.0),
+        ],
+    )
+    def test_anthropic_claude_fallback_when_litellm_missing(
+        self, model: str, expected_per_m: float
+    ) -> None:
+        """Hardcoded Anthropic fallback covers Claude 4.x and 3.x."""
+        tracker = self._make_tracker()
+        prices = tracker._get_cache_prices(model)
+        if prices is None:
+            # litellm is installed → fallback not exercised; skip.
+            pytest.skip("litellm available — fallback path not exercised")
+        cache_read, cache_write, uncached = prices
+        assert uncached == pytest.approx(expected_per_m / 1_000_000, rel=1e-9)
+        # Anthropic: 90% off cache reads, 25% write premium.
+        assert cache_read == pytest.approx(uncached * 0.10, rel=1e-9)
+        assert cache_write == pytest.approx(uncached * 1.25, rel=1e-9)
+
+    @pytest.mark.parametrize(
+        "model,expected_per_m",
+        [
+            ("gpt-5", 5.0),
+            ("gpt-5-mini", 0.25),
+            ("gpt-5-nano", 0.10),
+            ("gpt-4o", 2.50),
+            ("gpt-4o-mini", 0.15),
+            ("gpt-4-turbo", 10.0),
+            ("gpt-3.5-turbo", 0.50),
+            ("o1", 15.0),
+            ("o1-mini", 3.0),
+            ("o3-mini", 1.10),
+        ],
+    )
+    def test_openai_gpt_fallback_when_litellm_missing(
+        self, model: str, expected_per_m: float
+    ) -> None:
+        """Hardcoded OpenAI fallback covers gpt-*, o1-*, o3-*, o4-*."""
+        tracker = self._make_tracker()
+        prices = tracker._get_cache_prices(model)
+        if prices is None:
+            pytest.skip("litellm available — fallback path not exercised")
+        cache_read, cache_write, uncached = prices
+        assert uncached == pytest.approx(expected_per_m / 1_000_000, rel=1e-9)
+        # OpenAI: 50% off cache reads, no explicit write premium.
+        assert cache_read == pytest.approx(uncached * 0.50, rel=1e-9)
+        assert cache_write == pytest.approx(uncached * 1.00, rel=1e-9)
 
 
 class TestGetListPriceMiniMaxFallback:
