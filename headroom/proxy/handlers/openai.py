@@ -44,6 +44,7 @@ import httpx
 
 from headroom.agent_savings import proxy_pipeline_kwargs
 from headroom.copilot_auth import apply_copilot_api_auth, build_copilot_upstream_url
+from headroom.learn._shared import normalize_tool_name
 from headroom.pipeline import PipelineStage, summarize_routing_markers
 from headroom.proxy.auth_mode import (
     classify_auth_mode,
@@ -449,6 +450,39 @@ def _responses_function_args(arguments: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _responses_command_arg_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return ""
+        parts = [str(part) for part in value if part is not None]
+        if len(parts) >= 3 and parts[-2] in {"-c", "-lc"}:
+            return parts[-1]
+        return " ".join(parts)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _normalize_responses_tool_for_learning(
+    name: Any,
+    input_args: Any,
+) -> tuple[str, dict[str, Any]]:
+    tool_name = name if isinstance(name, str) and name else "unknown"
+    normalized_name = normalize_tool_name(tool_name)
+    parsed = _responses_function_args(input_args)
+
+    if normalized_name == "Bash":
+        parsed = dict(parsed)
+        command = parsed.pop("cmd", None)
+        if "command" in parsed:
+            command = parsed["command"]
+        parsed["command"] = _responses_command_arg_text(command)
+
+    return normalized_name, parsed
+
+
 def _openai_responses_tool_results_for_learning(
     input_data: Any,
 ) -> list[dict[str, Any]]:
@@ -470,9 +504,10 @@ def _openai_responses_tool_results_for_learning(
             continue
         name = item.get("name")
         input_args = item.get("arguments") if item_type == "function_call" else item.get("input")
+        tool_name, tool_input = _normalize_responses_tool_for_learning(name, input_args)
         calls_by_id[call_id] = {
-            "tool_name": name if isinstance(name, str) and name else "unknown",
-            "input": _responses_function_args(input_args),
+            "tool_name": tool_name,
+            "input": tool_input,
         }
 
     results: list[dict[str, Any]] = []

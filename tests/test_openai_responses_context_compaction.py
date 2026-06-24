@@ -103,9 +103,36 @@ def test_openai_responses_tool_results_for_learning_pairs_custom_tool_calls() ->
 
     assert results == [
         {
-            "tool_name": "shell",
-            "input": {"cmd": "python --version"},
+            "tool_name": "Bash",
+            "input": {"command": "python --version"},
             "output": "Python 3.12.13",
+            "is_error": False,
+        }
+    ]
+
+
+def test_openai_responses_tool_results_for_learning_coerces_bash_command_lists() -> None:
+    input_items: list[dict[str, Any]] = [
+        {
+            "type": "function_call",
+            "call_id": "call_exec",
+            "name": "exec_command",
+            "arguments": '{"cmd": ["bash", "-lc", "uv run pytest"]}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_exec",
+            "output": "passed",
+        },
+    ]
+
+    results = _openai_responses_tool_results_for_learning(input_items)
+
+    assert results == [
+        {
+            "tool_name": "Bash",
+            "input": {"command": "uv run pytest"},
+            "output": "passed",
             "is_error": False,
         }
     ]
@@ -130,7 +157,7 @@ def test_openai_responses_tool_results_for_learning_handles_bad_args_and_errors(
 
     assert results[0] == {
         "tool_name": "Bash",
-        "input": {},
+        "input": {"command": ""},
         "output": "No such file or directory",
         "is_error": True,
     }
