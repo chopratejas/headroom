@@ -91,6 +91,19 @@ class StreamingMixin:
         self._mid_turn_queues[session_key].put_nowait(body)
         return {"status": 202, "event": "headroom_queued"}
 
+    def _cleanup_mid_turn_stream(
+        self, session_key: str, *, drain_pending_messages: bool = False
+    ) -> list[dict]:
+        """Clear active mid-turn state, optionally returning queued messages."""
+        self._active_streams.discard(session_key)
+        queue = self._mid_turn_queues.pop(session_key, None)
+        if not drain_pending_messages or queue is None or queue.empty():
+            return []
+        pending_messages: list[dict] = []
+        while not queue.empty():
+            pending_messages.append(queue.get_nowait())
+        return pending_messages
+
     @staticmethod
     def _extract_anthropic_cache_ttl_metrics(usage: dict[str, Any] | None) -> tuple[int, int]:
         """Extract observed Anthropic cache-write TTL bucket usage."""
@@ -1052,8 +1065,7 @@ class StreamingMixin:
                 }
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
 
-            self._active_streams.discard(session_key)
-            self._mid_turn_queues.pop(session_key, None)
+            self._cleanup_mid_turn_stream(session_key)
             return StreamingResponse(_error_gen(), media_type="text/event-stream")
 
         # Capture Codex rate-limit window data from the upstream response
@@ -1151,8 +1163,7 @@ class StreamingMixin:
                 client=client,
                 waste_signals=waste_signals,
             )
-            self._active_streams.discard(session_key)
-            self._mid_turn_queues.pop(session_key, None)
+            self._cleanup_mid_turn_stream(session_key)
             return Response(
                 content=error_content,
                 status_code=upstream_response.status_code,
@@ -1188,6 +1199,8 @@ class StreamingMixin:
             # corrupted strings.
             full_sse_bytes = bytearray()
             parsed_response = None  # Set by memory block; used by CCR + prefix tracker
+            completed_normally = False
+            pending_messages: list[dict] = []
 
             try:
                 async with contextlib.aclosing(upstream_response) as response:
@@ -1358,6 +1371,7 @@ class StreamingMixin:
                         status_code=upstream_response.status_code,
                         metadata={"total_bytes": stream_state["total_bytes"]},
                     )
+                completed_normally = True
 
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
                 logger.error(f"[{request_id}] Connection error to upstream API: {e}")
@@ -1381,6 +1395,10 @@ class StreamingMixin:
                 }
                 yield f"event: error\ndata: {json.dumps(error_event)}\n\n".encode()
             finally:
+                pending_messages = self._cleanup_mid_turn_stream(
+                    session_key,
+                    drain_pending_messages=completed_normally,
+                )
                 # PR-A8 / P1-8: best-effort decode for downstream
                 # finalization. This runs in `finally` so it must not
                 # raise — if the upstream sent invalid bytes mid-stream
@@ -1424,15 +1442,9 @@ class StreamingMixin:
                     client=client,
                     waste_signals=waste_signals,
                 )
-                # Drain any mid-turn messages queued while this stream was active.
-                self._active_streams.discard(session_key)
-                queue = self._mid_turn_queues.pop(session_key, None)
-                if queue is not None and not queue.empty():
-                    pending: list[dict] = []
-                    while not queue.empty():
-                        pending.append(queue.get_nowait())
+                if pending_messages:
                     pending_event = json.dumps(
-                        {"type": "headroom_pending_messages", "messages": pending}
+                        {"type": "headroom_pending_messages", "messages": pending_messages}
                     )
                     yield f"event: headroom_pending_messages\ndata: {pending_event}\n\n".encode()
 
