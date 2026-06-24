@@ -1160,6 +1160,81 @@ mod tests {
     }
 
     #[test]
+    fn accumulate_stream_usage_converse_camelcase() {
+        let mut i = 0u64;
+        let mut o = 0u64;
+        let mut c = 0u64;
+        // Converse-stream metadata event
+        let data = br#"{"usage":{"inputTokens":12,"outputTokens":7,"cacheReadInputTokens":3}}"#;
+        accumulate_stream_usage(data, &mut i, &mut o, &mut c);
+        assert_eq!(i, 12);
+        assert_eq!(o, 7);
+        assert_eq!(c, 3);
+    }
+
+    #[test]
+    fn accumulate_stream_usage_anthropic_snake_case() {
+        let mut i = 0u64;
+        let mut o = 0u64;
+        let mut c = 0u64;
+        // Direct Anthropic SSE: message_delta usage
+        let data = br#"{"type":"message_delta","usage":{"input_tokens":9,"output_tokens":15,"cache_read_input_tokens":0}}"#;
+        accumulate_stream_usage(data, &mut i, &mut o, &mut c);
+        assert_eq!(i, 9);
+        assert_eq!(o, 15);
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn accumulate_stream_usage_anthropic_message_start() {
+        let mut i = 0u64;
+        let mut o = 0u64;
+        let mut c = 0u64;
+        // Anthropic SSE message_start carries input_tokens in .message.usage
+        let data = br#"{"type":"message_start","message":{"usage":{"input_tokens":20,"cache_read_input_tokens":5}}}"#;
+        accumulate_stream_usage(data, &mut i, &mut o, &mut c);
+        assert_eq!(i, 20);
+        assert_eq!(c, 5);
+    }
+
+    #[test]
+    fn accumulate_stream_usage_invoke_streaming_base64_wrapped() {
+        use base64::Engine as _;
+        let mut i = 0u64;
+        let mut o = 0u64;
+        let mut c = 0u64;
+        // InvokeModel streaming wraps events as {"bytes":"<base64>","p":"..."}
+        let inner = br#"{"usage":{"inputTokens":5,"outputTokens":8}}"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(inner);
+        let envelope = format!(r#"{{"bytes":"{b64}","p":"abcd"}}"#);
+        accumulate_stream_usage(envelope.as_bytes(), &mut i, &mut o, &mut c);
+        assert_eq!(i, 5);
+        assert_eq!(o, 8);
+    }
+
+    #[test]
+    fn accumulate_stream_usage_noop_on_non_json() {
+        let mut i = 1u64;
+        let mut o = 2u64;
+        let mut c = 3u64;
+        accumulate_stream_usage(b"not json", &mut i, &mut o, &mut c);
+        assert_eq!(i, 1);
+        assert_eq!(o, 2);
+        assert_eq!(c, 3);
+    }
+
+    #[test]
+    fn accumulate_stream_usage_does_not_reset_with_zero_update() {
+        let mut i = 9u64;
+        let mut o = 0u64;
+        let mut c = 0u64;
+        // A delta event with no usage should leave existing counts alone
+        let data = br#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}"#;
+        accumulate_stream_usage(data, &mut i, &mut o, &mut c);
+        assert_eq!(i, 9); // unchanged
+    }
+
+    #[test]
     fn extract_streaming_action_supports_both_bedrock_paths() {
         assert_eq!(
             extract_streaming_action(
