@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import errno
 import importlib.util
 import io
 import json
@@ -5916,9 +5917,10 @@ def agy(
     # Resolve binary first — fast exit if not installed.
     agy_bin = shutil.which("agy")
     if not agy_bin:
-        click.echo("Error: 'agy' not found in PATH.")
-        click.echo("Install agy: https://github.com/google/agy (or via your package manager)")
-        raise SystemExit(1)
+        raise click.ClickException(
+            "'agy' not found in PATH.  "
+            "Install agy: https://github.com/google/agy (or via your package manager)"
+        )
 
     # Rust backend is Python-only for agy (T11 deferred).
     effective_backend = backend or os.environ.get("HEADROOM_BACKEND")
@@ -6212,7 +6214,22 @@ def agy(
     except SystemExit:
         raise
     except Exception as e:
-        click.echo(f"  Error starting agy MITM transport: {e}")
+        # Walk the exception chain to surface a specific port-in-use message.
+        cause: BaseException | None = e
+        _port_in_use = False
+        while cause is not None:
+            if isinstance(cause, OSError) and cause.errno == errno.EADDRINUSE:
+                _port_in_use = True
+                break
+            cause = cause.__cause__ or cause.__context__
+        if _port_in_use:
+            click.echo(
+                f"Error: a required proxy port is already in use ({cause}).  "
+                "Stop the conflicting process and retry.",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: agy MITM transport failed to start: {e}", err=True)
         raise SystemExit(1) from e
     finally:
         # Revert the per-run retrieve MCP entry FIRST — its URL points at the

@@ -1629,3 +1629,172 @@ class TestPrintModePurgesStaleHeadroomEntry:
         assert result.exit_code == 0
         survived = AgyRegistrar(home_dir=tmp_path).get_server("my-tool")
         assert survived is not None, "user-managed entries must not be removed by print-mode purge"
+
+
+# ---------------------------------------------------------------------------
+# WU s04.4: graceful failure modes
+# ---------------------------------------------------------------------------
+
+
+class TestAgyGracefulFailures:
+    """agy launch must fail loud and clean on every expected error path.
+
+    WU s04.4: watchdog, preflight, port-in-use, terminal restore.
+    """
+
+    # ------------------------------------------------------------------
+    # Shared CA stubs (avoid real cert generation in every test).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _patch_ca(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "headroom.proxy.agy_ca.ensure_root_ca",
+            lambda base_dir=None: (object(), object(), None, None),
+        )
+        monkeypatch.setattr(
+            "headroom.proxy.agy_ca.build_combined_bundle",
+            lambda base_dir=None, corp_env_vars=None: "/tmp/fake-bundle.pem",
+        )
+
+    # ------------------------------------------------------------------
+    # 1. agy-not-installed: clear, actionable error — no raw traceback.
+    # ------------------------------------------------------------------
+
+    def test_agy_not_installed_clear_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """agy binary unresolvable → click.ClickException, nonzero exit, no traceback."""
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["wrap", "agy"])
+        # Must exit non-zero.
+        assert result.exit_code != 0
+        output = result.output
+        # Discriminating: this exact text is produced ONLY by the binary
+        # preflight (ClickException). If the preflight were removed, the run
+        # would fail elsewhere without this message and the test would fail —
+        # so it is NOT satisfied by the wrap banner or downstream errors.
+        assert "'agy' not found in PATH" in output
+        assert "github.com/google/agy" in output
+        # click.ClickException formats with an "Error: " prefix.
+        assert "error" in output.lower()
+        # Must NOT contain a raw Python traceback.
+        assert "Traceback" not in output
+        assert "FileNotFoundError" not in output
+
+    # ------------------------------------------------------------------
+    # 2. Watchdog: MITM thread death → abort before subprocess, clear message.
+    # ------------------------------------------------------------------
+
+    def test_agy_mitm_thread_death_aborts_launch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MITM server startup failure → subprocess NOT invoked, clear error message."""
+        import headroom.cli.wrap as wrap_mod
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/agy" if name == "agy" else None)
+        self._patch_ca(monkeypatch)
+
+        # Simulate _start_agy_servers failing (e.g. the daemon thread dies).
+        def _fail_startup(*a, **kw):
+            raise RuntimeError("agy MITM server startup failed: connection refused on dispatch bind")
+
+        monkeypatch.setattr(wrap_mod, "_start_agy_servers", _fail_startup)
+
+        subprocess_called: list[list[str]] = []
+
+        def _capture_run(cmd, *a, **kw):
+            subprocess_called.append(list(cmd))
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr("subprocess.run", _capture_run)
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["wrap", "agy"])
+
+        # Subprocess (agy) must NOT have been invoked.
+        assert subprocess_called == [], (
+            "agy subprocess must NOT be launched when the MITM servers fail to start; "
+            f"got calls: {subprocess_called}"
+        )
+        # Must exit non-zero.
+        assert result.exit_code != 0
+        # Must produce a clear, human-readable message — not a raw exception chain.
+        output = result.output.lower()
+        assert "error" in output or "failed" in output
+        assert "Traceback" not in result.output
+
+    # ------------------------------------------------------------------
+    # 3. Port-in-use: OSError(EADDRINUSE) → explicit "port" mention in error.
+    # ------------------------------------------------------------------
+
+    def test_agy_port_in_use_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """MITM bind failure (EADDRINUSE) → message explicitly names port-in-use problem."""
+        import errno
+
+        import headroom.cli.wrap as wrap_mod
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/agy" if name == "agy" else None)
+        self._patch_ca(monkeypatch)
+
+        bind_error = OSError(errno.EADDRINUSE, "Address already in use")
+
+        def _fail_with_bind_error(*a, **kw):
+            # Simulate what _start_agy_servers raises when the async bind fails.
+            raise RuntimeError(f"agy MITM server startup failed: {bind_error}") from bind_error
+
+        monkeypatch.setattr(wrap_mod, "_start_agy_servers", _fail_with_bind_error)
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["wrap", "agy"])
+
+        assert result.exit_code != 0
+        output = result.output.lower()
+        # The error message must name the problem as a port conflict, not just
+        # re-echo the raw OSError.  The word "port" must appear in isolation
+        # (i.e., not just as part of "transport").
+        import re
+        assert re.search(r"\bport\b", output), (
+            f"Expected 'port' (as a word) in output; got: {output!r}"
+        )
+        # And must still mention that it's in use / unavailable.
+        assert "in use" in output or "unavailable" in output or "address already in use" in output
+        # Must not be a raw traceback.
+        assert "Traceback" not in result.output
+
+    # ------------------------------------------------------------------
+    # 4. Terminal/env restore: _stop_agy_servers called in finally on error.
+    # ------------------------------------------------------------------
+
+    def test_agy_server_stop_called_on_error_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_stop_agy_servers is called in the finally block even when startup raises."""
+        import headroom.cli.wrap as wrap_mod
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/agy" if name == "agy" else None)
+        self._patch_ca(monkeypatch)
+
+        monkeypatch.setattr(
+            wrap_mod,
+            "_start_agy_servers",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        stop_calls: list[object] = []
+        original_stop = wrap_mod._stop_agy_servers
+
+        def _spy_stop(servers: object) -> None:
+            stop_calls.append(servers)
+            original_stop(servers)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(wrap_mod, "_stop_agy_servers", _spy_stop)
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
+
+        runner = CliRunner()
+        runner.invoke(_get_main(), ["wrap", "agy"])
+
+        # The finally block must have called _stop_agy_servers.
+        assert len(stop_calls) >= 1, (
+            "_stop_agy_servers must run in finally even when startup raises"
+        )
