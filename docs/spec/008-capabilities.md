@@ -220,6 +220,12 @@ class AnchorConfig:
 - Tool use tracking
 - Multi-modal support (images)
 
+### CodeBuddy
+
+- Session branch comparison
+- Token headroom mode
+- Tool use tracking
+
 ### Codex
 
 - Rate limit handling

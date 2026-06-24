@@ -533,6 +533,14 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     async def openai_chat(request: Request):
         return await proxy.handle_openai_chat(request)
 
+    @app.post("/v2/chat/completions")
+    async def codebuddy_v2_chat(request: Request):
+        """CodeBuddy uses /v2/chat/completions (not /v1). Rewrite to the
+        upstream /v2 path and delegate to the standard OpenAI chat handler
+        with a custom upstream path injected via request state."""
+        request.state.upstream_path = "/v2/chat/completions"
+        return await proxy.handle_openai_chat(request)
+
     @app.post("/v1/responses")
     async def openai_responses(request: Request):
         return await proxy.handle_openai_responses(request)

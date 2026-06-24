@@ -12,7 +12,7 @@ A session represents a conversation context between a user and an AI agent.
 - `session_id: UUID` — Unique identifier
 - `created_at: datetime` — Creation time
 - `updated_at: datetime` — Last modification
-- `agent_type: str` — "claude", "codex", "gemini", etc.
+- `agent_type: str` — "claude", "codebuddy", "codex", "gemini", etc.
 - `messages: list[Message]` — Conversation history
 - `metadata: dict` — Agent-specific metadata
 
@@ -241,7 +241,7 @@ Claude Code Relay context tracking.
 **Fields:**
 - `context_id: UUID` — Unique identifier
 - `session_id: UUID` — Associated session
-- `agent_type: str` — "claude", "claude-desktop", etc.
+- `agent_type: str` — "claude", "codebuddy", "claude-desktop", etc.
 - `window_start: datetime` — Context window start
 - `window_end: datetime` — Context window end
 - `messages_tracked: int` — Number of messages
