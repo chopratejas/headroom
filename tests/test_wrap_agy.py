@@ -948,7 +948,9 @@ class TestAgyLeanCtxMcpWiring:
         assert result.exit_code == 0
         spec = AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx")
         assert spec is not None, "interactive lean-ctx must register an MCP entry"
-        assert spec.command == "/usr/bin/lean-ctx"
+        # Path() comparison: command is str(Path(...))-normalized, so it uses OS
+        # separators (backslashes on Windows).
+        assert Path(spec.command) == Path("/usr/bin/lean-ctx")
         assert spec.args == ("mcp",), "must register 'lean-ctx mcp', not a bare command"
         assert "LEAN_CTX_DATA_DIR" in spec.env
 
@@ -1359,7 +1361,8 @@ class TestAgyCodeGraphFlag:
         assert result.exit_code == 0
         spec = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
         assert spec is not None, "interactive --code-graph must register the cbm MCP entry"
-        assert spec.command == "/usr/local/bin/cbm"
+        # Path() comparison: command is str(Path(...))-normalized (OS separators).
+        assert Path(spec.command) == Path("/usr/local/bin/cbm")
 
     def test_code_graph_interactive_calls_smoke_verify(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
