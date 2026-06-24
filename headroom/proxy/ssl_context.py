@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import ssl
+from typing import Any, cast
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -226,8 +227,10 @@ def apply_global_tls_relaxation() -> bool:
 
     _orig = _u3ssl.create_urllib3_context
 
-    def _relaxed_create_urllib3_context(*args: object, **kwargs: object) -> ssl.SSLContext:
-        ctx = _orig(*args, **kwargs)
+    def _relaxed_create_urllib3_context(*args: Any, **kwargs: Any) -> ssl.SSLContext:
+        # urllib3's create_urllib3_context signature varies across versions;
+        # forward verbatim and cast the (Any-typed) result back to SSLContext.
+        ctx = cast(ssl.SSLContext, _orig(*args, **kwargs))
         if ctx.verify_flags & strict_flag:
             ctx.verify_flags &= ~strict_flag
         return ctx
