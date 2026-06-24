@@ -50,6 +50,59 @@ def test_default_enables_kompress_and_shares_one_router() -> None:
     assert anthropic is openai
 
 
+def test_token_mode_keeps_excluded_tool_outputs_protected(monkeypatch) -> None:
+    anthropic, openai = _routers(_build(mode="token"))
+    assert anthropic is openai
+    assert anthropic.config.search_group_by_file is True
+    assert anthropic.config.protect_recent_reads_fraction == 0.0
+
+    def fail_if_compressed(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("excluded tool output reached compression")
+
+    monkeypatch.setattr(anthropic, "compress", fail_if_compressed)
+
+    from headroom.providers import OpenAIProvider
+    from headroom.tokenizer import Tokenizer
+
+    provider = OpenAIProvider()
+    tokenizer = Tokenizer(provider.get_token_counter("gpt-4o"), "gpt-4o")
+    old_tool_content = "\n".join(
+        f"src/module_{i}.py:{i}: important exact grep match" for i in range(120)
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_grep_old",
+                    "name": "Grep",
+                    "input": {"pattern": "important"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_grep_old",
+                    "content": old_tool_content,
+                }
+            ],
+        },
+        *(
+            {"role": "assistant" if i % 2 else "user", "content": f"filler turn {i}"}
+            for i in range(30)
+        ),
+    ]
+
+    result = anthropic.apply(messages, tokenizer)
+
+    assert result.messages[1]["content"][0]["content"] == old_tool_content
+    assert "router:excluded:tool" in result.transforms_applied
+
+
 def test_global_disable_respected_by_both() -> None:
     anthropic, openai = _routers(_build(disable_kompress=True))
     assert anthropic.config.enable_kompress is False
