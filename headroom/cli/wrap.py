@@ -2405,19 +2405,45 @@ def _ensure_proxy(
                         f"Persistent deployment '{manifest.profile}' on port {port} "
                         f"is running stale Headroom {running_version} and could not be restarted."
                     )
-                click.echo(f"  Proxy already running on port {port}")
-                click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
-                return None
-            if helpers._recover_persistent_proxy(port):
-                return None
-            if helpers._check_proxy(port):
-                raise click.ClickException(
-                    f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
+                # Check if the running proxy has the features we need.
+                # Without this, a persistent deployment started for one use case
+                # (e.g. --backend anthropic) would be silently reused for another
+                # (e.g. --subscription --provider-type openai) causing auth failures.
+                running_config = helpers._proxy_health_config(health_payload)
+                if running_config is None:
+                    running_config = helpers._query_proxy_config(port)
+                if running_config is not None:
+                    missing = []
+                    if memory and not running_config.get("memory"):
+                        missing.append("memory")
+                    if learn and not running_config.get("learn"):
+                        missing.append("learn")
+                    if code_graph and not running_config.get("code_graph"):
+                        missing.append("code_graph")
+                    if openai_api_url:
+                        running_openai_url = _normalize_proxy_api_url(
+                            running_config.get("openai_api_url")
+                        )
+                        requested_openai_url = _normalize_proxy_api_url(openai_api_url)
+                        if running_openai_url != requested_openai_url:
+                            missing.append("openai-api-url")
+                    if not missing:
+                        click.echo(f"  Proxy already running on port {port}")
+                        click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
+                        return None
+                # Features mismatch or config unavailable — fall through to
+                # the non-persistent path which handles proxy restart.
+            else:
+                if helpers._recover_persistent_proxy(port):
+                    return None
+                if helpers._check_proxy(port):
+                    raise click.ClickException(
+                        f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
+                    )
+                click.echo(
+                    f"  Warning: persistent deployment '{manifest.profile}' on port {port} "
+                    "is stale; starting a fresh proxy instead."
                 )
-            click.echo(
-                f"  Warning: persistent deployment '{manifest.profile}' on port {port} "
-                "is stale; starting a fresh proxy instead."
-            )
 
         if helpers._check_proxy(port):
             # Proxy is running — check if it has the features we need
