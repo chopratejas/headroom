@@ -789,3 +789,244 @@ def test_resolve_1m_model_falls_back_to_default_when_unset() -> None:
     """With no model selected, fall back to the default Opus carrying [1m]."""
     assert wrap_mod._resolve_1m_model(None) == "claude-opus-4-8[1m]"
     assert wrap_mod._resolve_1m_model("  ") == "claude-opus-4-8[1m]"
+
+
+class TestEnsurePortFree:
+    """Tests for _ensure_port_free and its helper functions."""
+
+    def test_ensure_port_free_port_is_free(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the port is free, _ensure_port_free returns True immediately."""
+        monkeypatch.setattr(wrap_mod, "_port_bind_error", lambda port: None)
+        assert wrap_mod._ensure_port_free(8787) is True
+
+    def test_ensure_port_free_stale_headroom(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A stale headroom proxy is killed and the port becomes free."""
+        killed = []
+        bind_calls = []
+
+        def _mock_bind(port):
+            bind_calls.append(port)
+            # First call: occupied; second call (after kill): free
+            if len(bind_calls) == 1:
+                return OSError(98, "Address in use")
+            return None
+
+        monkeypatch.setattr(wrap_mod, "_port_bind_error", _mock_bind)
+        monkeypatch.setattr(wrap_mod, "_find_process_on_port", lambda port: 12345)
+        monkeypatch.setattr(wrap_mod, "_is_headroom_proxy", lambda pid: True)
+        monkeypatch.setattr(wrap_mod, "_kill_process", lambda pid: killed.append(pid))
+
+        assert wrap_mod._ensure_port_free(8787) is True
+        assert killed == [12345]
+
+    def test_ensure_port_free_non_headroom(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-headroom process on the port returns False."""
+        monkeypatch.setattr(wrap_mod, "_port_bind_error", lambda port: OSError(98, "Address in use"))
+        monkeypatch.setattr(wrap_mod, "_find_process_on_port", lambda port: 12345)
+        monkeypatch.setattr(wrap_mod, "_is_headroom_proxy", lambda pid: False)
+
+        assert wrap_mod._ensure_port_free(8787) is False
+
+    def test_linux_find_process_on_port_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When /proc/net/tcp has no matching entry, returns None."""
+        fake_tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+
+        def _mock_open(path, *args, **kwargs):
+            if path == "/proc/net/tcp":
+                from io import StringIO
+                return StringIO(fake_tcp)
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr("builtins.open", _mock_open)
+        assert wrap_mod._linux_find_process_on_port(8787) is None
+
+    def test_linux_find_process_on_port_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When /proc/net/tcp has a matching port, resolves and returns PID."""
+        # Port 8787 = 0x2253
+        fake_tcp = (
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+            "   0: 00000000:2253 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 123456 1 0000000000000000 100 0 0 10 0\n"
+        )
+
+        def _mock_open(path, *args, **kwargs):
+            if path == "/proc/net/tcp":
+                from io import StringIO
+                return StringIO(fake_tcp)
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr("builtins.open", _mock_open)
+
+        # Mock _resolve_inode_to_pid to return a known PID
+        monkeypatch.setattr(wrap_mod, "_resolve_inode_to_pid", lambda inode: 99999)
+
+        assert wrap_mod._linux_find_process_on_port(8787) == 99999
+
+    def test_is_headroom_proxy_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A process with 'headroom' and 'proxy' in cmdline is identified as headroom."""
+        monkeypatch.setattr(
+            "pathlib.Path.read_bytes",
+            lambda self: b"headroom\x00proxy\x00--port\x008787\x00",
+        )
+        assert wrap_mod._is_headroom_proxy(12345) is True
+
+    def test_is_headroom_proxy_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A process without 'headroom' is not identified as such."""
+        monkeypatch.setattr(
+            "pathlib.Path.read_bytes",
+            lambda self: b"nginx\x00",
+        )
+        assert wrap_mod._is_headroom_proxy(12345) is False
+
+    def test_read_process_cmdline_linux_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Linux /proc/<pid>/cmdline path returns the decoded cmdline."""
+        monkeypatch.setattr(
+            "pathlib.Path.read_bytes",
+            lambda self: b"headroom\x00proxy\x00--port\x008787\x00",
+        )
+        result = wrap_mod._read_process_cmdline(12345)
+        assert result is not None
+        assert "headroom" in result
+        assert "proxy" in result
+
+    def test_read_process_cmdline_macos_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When /proc is unavailable, falls back to ps command (macOS/BSD)."""
+        # Make /proc path fail
+        monkeypatch.setattr("pathlib.Path.read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+
+        import subprocess as _subprocess
+
+        def _mock_run(cmd, *a, **kw):
+            assert cmd[0] == "ps"
+            assert "-p" in cmd
+            assert str(12345) in cmd
+            return _subprocess.CompletedProcess(cmd, 0, "headroom proxy --port 8787\n", "")
+
+        monkeypatch.setattr(wrap_mod.subprocess, "run", _mock_run)
+        result = wrap_mod._read_process_cmdline(12345)
+        assert result == "headroom proxy --port 8787"
+
+    def test_read_process_cmdline_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When both paths fail, returns None."""
+        monkeypatch.setattr("pathlib.Path.read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(wrap_mod.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError))
+        assert wrap_mod._read_process_cmdline(12345) is None
+
+    def test_kill_process_terminates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_kill_process sends SIGTERM and returns when process dies."""
+        calls = []
+
+        def _mock_kill(pid, sig):
+            calls.append((pid, sig))
+            if sig == 15:  # SIGTERM — die after first check
+                raise OSError(3, "No such process")
+
+        monkeypatch.setattr(os, "kill", _mock_kill)
+        wrap_mod._kill_process(12345)
+        assert calls == [(12345, 15)]  # Only SIGTERM, no SIGKILL needed
+
+    def test_kill_process_force_kill(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When SIGTERM doesn't work, _kill_process escalates (SIGKILL on Unix, SIGTERM on Windows)."""
+        import signal as _signal
+        ESCALATION = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+
+        calls = []
+
+        def _mock_kill(pid, sig):
+            calls.append((pid, sig))
+            if sig == ESCALATION:  # escalation signal — let it die
+                raise OSError(3, "No such process")
+            # SIGTERM and liveness probes succeed (process stays alive)
+
+        monkeypatch.setattr(os, "kill", _mock_kill)
+        monkeypatch.setattr(wrap_mod.time, "sleep", lambda s: None)
+        wrap_mod._kill_process(12345)
+        assert len(calls) >= 2
+        assert calls[0] == (12345, 15)  # SIGTERM first
+        assert calls[-1] == (12345, ESCALATION)  # escalation signal last
+
+    def test_resolve_inode_to_pid_matches_symlink(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_resolve_inode_to_pid matches the exact socket:[inode] symlink format."""
+        inode = 123456
+
+        # Mock Path.iterdir to return a fake /proc/<pid> structure
+        class FakeFd:
+            def __init__(self, name, link):
+                self.name = name
+                self._link = link
+                self.parent = self
+
+            def is_symlink(self):
+                return True
+
+            def __truediv__(self, other):
+                return self
+
+        itercount = [0]
+
+        def _patched_iterdir(self):
+            itercount[0] += 1
+            if itercount[0] == 1:
+                # First call: /proc/ — return one PID dir
+                pid_dir = FakePath("99999", Path("/proc"))
+                return iter([pid_dir])
+            return iter([])
+
+        class FakePath:
+            def __init__(self, name, parent=None):
+                self.name = name
+                self._parent = parent or self
+
+            @property
+            def parent(self):
+                return self._parent
+
+            def iterdir(self):
+                if self.name == "99999":
+                    # Return fd dir
+                    fd_dir = FakePath("fd", self)
+                    fd_dir._links = [FakePath("3", self)]
+                    return iter([fd_dir])
+                # Return socket links
+                fd = FakePath("3", self)
+                fd._link = f"socket:[{inode}]"
+                return iter([fd])
+
+            def is_symlink(self):
+                return True
+
+            def __truediv__(self, other):
+                return FakePath(str(other), self)
+
+        def _mock_readlink(fd_obj):
+            return f"socket:[{inode}]"
+
+        monkeypatch.setattr(Path, "iterdir", lambda self: _patched_iterdir(self))
+        monkeypatch.setattr(os, "readlink", _mock_readlink)
+
+        result = wrap_mod._resolve_inode_to_pid(inode)
+        assert result == 99999, f"Expected PID 99999, got {result!r}"
+
+    def test_linux_find_process_on_port_tcp6(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When port is only in /proc/net/tcp6 (IPv6), it should still be found."""
+        inode = 654321
+        # Port 18888 = 0x49C8, in tcp6 format (IPv6 addr)
+        fake_tcp6 = (
+            "  sl  local_address                         rem_address                          "
+            "st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+            f"   0: 00000000000000000000000000000000:49C8 00000000000000000000000000000000:0000 "
+            f"0A 00000000:00000000 00:00000000 00000000  1000        0 {inode} 1 0000000000000000 100 0 0 10 0\n"
+        )
+
+        def _mock_open(path, *args, **kwargs):
+            if path == "/proc/net/tcp":
+                raise FileNotFoundError(path)  # not in tcp
+            if path == "/proc/net/tcp6":
+                from io import StringIO
+                return StringIO(fake_tcp6)
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr("builtins.open", _mock_open)
+        monkeypatch.setattr(wrap_mod, "_resolve_inode_to_pid", lambda ino: 88888)
+
+        result = wrap_mod._linux_find_process_on_port(18888)
+        assert result == 88888, f"Expected PID 88888 from tcp6, got {result!r}"
