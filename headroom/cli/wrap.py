@@ -376,6 +376,188 @@ def _get_proxy_stdio_log_path() -> Path:
     return _get_log_path().with_name("proxy-stdio.log")
 
 
+def _find_process_on_port(port: int) -> int | None:
+    """Find PID of process listening on a TCP port.
+
+    Linux: parse /proc/net/tcp for the port, resolve socket inode to PID
+    via /proc/*/fd/.
+    Fallback: ``lsof -ti tcp:{port}`` for macOS / other POSIX.
+
+    Returns ``None`` when the port is free or resolution fails.
+    """
+    if sys.platform == "linux":
+        pid = _linux_find_process_on_port(port)
+        if pid is not None:
+            return pid
+    # Fallback: lsof (macOS, other POSIX)
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip().splitlines()[0])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _linux_find_process_on_port(port: int) -> int | None:
+    """Parse /proc/net/tcp and /proc/net/tcp6 to find the PID owning ``port``.
+
+    Returns ``None`` when no listening socket is found on that port.
+    """
+    for net_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(net_path) as f:
+                # Skip header line
+                next(f, None)
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) < 10:
+                        continue
+                    # local_address column: "00000000:2251" (hex)
+                    local_addr = parts[1]
+                    if ":" not in local_addr:
+                        continue
+                    # Only match listening sockets (state 0A)
+                    st = parts[3] if len(parts) > 3 else ""
+                    if st != "0A":
+                        continue
+                    _, hex_port = local_addr.rsplit(":", 1)
+                    try:
+                        if int(hex_port, 16) != port:
+                            continue
+                    except ValueError:
+                        continue
+                    inode = parts[9]
+                    if inode and inode.isdigit():
+                        return _resolve_inode_to_pid(int(inode))
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_inode_to_pid(inode: int) -> int | None:
+    """Search /proc/*/fd/* for a socket symlink whose inode matches.
+
+    Returns the PID or ``None``.
+    """
+    try:
+        for proc_dir in Path("/proc").iterdir():
+            if not proc_dir.name.isdigit():
+                continue
+            try:
+                fd_dir = proc_dir / "fd"
+                for fd in fd_dir.iterdir():
+                    try:
+                        link = os.readlink(fd)
+                        if link == f"socket:[{inode}]":
+                            return int(proc_dir.name)
+                    except OSError:
+                        continue
+            except (PermissionError, OSError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def _is_headroom_proxy(pid: int) -> bool:
+    """Check whether *pid* is a headroom proxy process (by its cmdline).
+
+    Uses ``/proc/<pid>/cmdline`` (Linux) or ``ps -p <pid> -o command=``
+    (macOS/BSD fallback) so ``_find_process_on_port`` via ``lsof`` can
+    work on macOS.
+
+    Returns ``False`` when the cmdline can't be read.
+    """
+    cmdline = _read_process_cmdline(pid)
+    if cmdline is None:
+        return False
+    return "headroom" in cmdline and "proxy" in cmdline
+
+
+def _read_process_cmdline(pid: int) -> str | None:
+    """Read the command-line of *pid*, cross-platform.
+
+    Linux: reads ``/proc/<pid>/cmdline`` (null-byte separated).
+    macOS/BSD: ``ps -p <pid> -o command=`` (no args).
+
+    Returns ``None`` when the cmdline can't be read.
+    """
+    # Linux path — /proc/<pid>/cmdline
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        pass
+    # macOS / BSD fallback — ps -p <pid> -o command=
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _kill_process(pid: int) -> None:
+    """Gracefully terminate *pid*, then escalate if it does not exit within 3s.
+
+    Uses ``signal.SIGKILL`` on Unix; falls back to ``signal.SIGTERM`` on
+    platforms where ``SIGKILL`` is not available (Windows).
+    """
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(3):
+            time.sleep(1)
+            try:
+                os.kill(pid, 0)  # probe liveness — raises if gone
+            except OSError:
+                return
+        # Escalate — SIGKILL on Unix, SIGTERM (harmless re-send) on Windows
+        force = getattr(signal, "SIGKILL", signal.SIGTERM)
+        os.kill(pid, force)
+    except OSError:
+        pass
+
+
+def _ensure_port_free(port: int) -> bool:
+    """Ensure *port* is available for the proxy.
+
+    Uses the existing ``_port_bind_error`` for a fast socket.bind probe.
+    When the port is occupied and the owning process is a stale headroom
+    proxy, it is killed automatically.  Other processes are left alone and
+    the caller is expected to raise a user-facing error.
+
+    Returns ``True`` when the port is (now) free, ``False`` when it is
+    held by a non-headroom process.
+    """
+    bind_error = _port_bind_error(port)
+    if bind_error is None:
+        return True  # port is free
+
+    pid = _find_process_on_port(port)
+    if pid is None:
+        # Port became free between check and now
+        return True
+
+    if not _is_headroom_proxy(pid):
+        return False  # non-headroom process — let caller decide
+
+    _kill_process(pid)
+    # Verify port is now free
+    bind_error = _port_bind_error(port)
+    return bind_error is None
+
+
 def _start_proxy(
     port: int,
     *,
@@ -396,6 +578,12 @@ def _start_proxy(
     `~/.headroom/logs/proxy-stdio.log`, to avoid pipe deadlock risk without
     competing with the rotating `proxy.log` runtime log.
     """
+    if not _ensure_port_free(port):
+        raise click.ClickException(
+            f"Port {port} is in use by a non-headroom process. "
+            f"Please free it manually or use --port to specify a different port."
+        )
+
     cmd = [sys.executable, "-m", "headroom.cli", "proxy", "--port", str(port)]
 
     # Forward HEADROOM_MODE env var so the proxy respects the user's mode choice
