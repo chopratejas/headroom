@@ -2407,8 +2407,13 @@ class OpenAIHandlerMixin:
                     },
                 )
 
-        # Direct OpenAI API (no backend configured)
-        url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/chat/completions")
+        # Direct OpenAI API (no backend configured). The proxy route remains
+        # /v1/chat/completions, but non-standard OpenAI-compatible upstreams
+        # may serve that operation under a different deployment/path prefix.
+        chat_path = getattr(self.config, "openai_chat_path", "/v1/chat/completions")
+        if not chat_path.startswith("/"):
+            chat_path = f"/{chat_path}"
+        url = build_copilot_upstream_url(self.OPENAI_API_URL, chat_path)
 
         try:
             if stream:

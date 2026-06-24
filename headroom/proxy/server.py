@@ -3822,6 +3822,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         host=_get_env_str("HEADROOM_HOST", "127.0.0.1"),
         port=_get_env_int("HEADROOM_PORT", 8787),
         openai_api_url=os.environ.get("OPENAI_TARGET_API_URL"),
+        openai_chat_path=_get_env_str("HEADROOM_OPENAI_CHAT_PATH", "/v1/chat/completions"),
         anthropic_api_url=os.environ.get("ANTHROPIC_TARGET_API_URL"),
         anthropic_buffered_request_timeout_seconds=_get_env_int(
             "HEADROOM_ANTHROPIC_BUFFERED_REQUEST_TIMEOUT_SECONDS",
@@ -4139,6 +4140,14 @@ if __name__ == "__main__":
         "--openai-api-url", help=f"Custom OpenAI API URL (default: {DEFAULT_OPENAI_API_URL})"
     )
     parser.add_argument(
+        "--openai-chat-path",
+        default="/v1/chat/completions",
+        help=(
+            "Upstream path for OpenAI chat completions "
+            "(default: /v1/chat/completions; env: HEADROOM_OPENAI_CHAT_PATH)"
+        ),
+    )
+    parser.add_argument(
         "--anthropic-api-url",
         help=f"Custom Anthropic API URL (default: {DEFAULT_ANTHROPIC_API_URL})",
     )
@@ -4387,6 +4396,7 @@ if __name__ == "__main__":
         host=_get_env_str("HEADROOM_HOST", args.host),
         port=_get_env_int("HEADROOM_PORT", args.port),
         openai_api_url=_get_env_str("OPENAI_TARGET_API_URL", args.openai_api_url),
+        openai_chat_path=_get_env_str("HEADROOM_OPENAI_CHAT_PATH", args.openai_chat_path),
         anthropic_api_url=_get_env_str("ANTHROPIC_TARGET_API_URL", args.anthropic_api_url),
         anthropic_buffered_request_timeout_seconds=_get_env_int(
             "HEADROOM_ANTHROPIC_BUFFERED_REQUEST_TIMEOUT_SECONDS",

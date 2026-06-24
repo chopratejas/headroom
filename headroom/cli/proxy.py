@@ -679,6 +679,15 @@ def dashboard(port: int, no_open: bool) -> None:
     help="Custom OpenAI API URL for passthrough endpoints (env: OPENAI_TARGET_API_URL)",
 )
 @click.option(
+    "--openai-chat-path",
+    default=None,
+    envvar="HEADROOM_OPENAI_CHAT_PATH",
+    help=(
+        "Upstream path for OpenAI chat completions "
+        "(default: /v1/chat/completions, env: HEADROOM_OPENAI_CHAT_PATH)"
+    ),
+)
+@click.option(
     "--gemini-api-url",
     default=None,
     help="Custom Gemini API URL for passthrough endpoints (env: GEMINI_TARGET_API_URL)",
@@ -815,6 +824,7 @@ def proxy(
     anyllm_provider: str,
     anthropic_api_url: str | None,
     openai_api_url: str | None,
+    openai_chat_path: str | None,
     gemini_api_url: str | None,
     cloudcode_api_url: str | None,
     vertex_api_url: str | None,
@@ -958,6 +968,7 @@ def proxy(
         port=port,
         anthropic_api_url=provider_api_overrides.anthropic,
         openai_api_url=provider_api_overrides.openai,
+        openai_chat_path=openai_chat_path or "/v1/chat/completions",
         gemini_api_url=provider_api_overrides.gemini,
         cloudcode_api_url=provider_api_overrides.cloudcode,
         vertex_api_url=provider_api_overrides.vertex,

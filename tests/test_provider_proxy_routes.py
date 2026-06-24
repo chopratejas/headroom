@@ -18,6 +18,7 @@ def _app() -> Any:
             optimize=False,
             cache_enabled=False,
             rate_limit_enabled=False,
+            http2=False,
             anthropic_api_url="https://api.anthropic.test",
             openai_api_url="https://api.openai.test",
             gemini_api_url="https://api.gemini.test",
@@ -25,6 +26,40 @@ def _app() -> Any:
             vertex_api_url="https://vertex.test",
         )
     )
+
+
+class _RecordingOpenAIChatClient:
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    async def post(self, url, **kwargs):  # type: ignore[no-untyped-def]
+        self.urls.append(str(url))
+        request = httpx.Request("POST", url, headers=kwargs.get("headers"))
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "application/json"},
+            json={
+                "id": "chatcmpl_path_probe",
+                "object": "chat.completion",
+                "model": "gpt-4o-mini",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    async def aclose(self) -> None:
+        return None
 
 
 def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> None:
@@ -386,6 +421,33 @@ def test_openai_response_websocket_aliases_delegate_to_openai_ws_handler(monkeyp
         "/backend-api/responses",
         "/backend-api/codex/responses",
     ]
+
+
+def test_openai_chat_forwards_to_custom_upstream_path() -> None:
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            http2=False,
+            openai_api_url="https://open.bigmodel.cn/api/coding/paas",
+            openai_chat_path="v4/chat/completions",
+        )
+    )
+
+    with TestClient(app) as client:
+        fake_http = _RecordingOpenAIChatClient()
+        client.app.state.proxy.http_client = fake_http
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert fake_http.urls == ["https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"]
 
 
 def test_openai_response_subpath_passthrough_returns_502_on_http_failure() -> None:

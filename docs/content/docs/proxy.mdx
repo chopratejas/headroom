@@ -42,6 +42,7 @@ Telemetry is **off by default** (opt-in). Opt in with `HEADROOM_TELEMETRY=on` or
 | `--log-messages` | `false` | Store full request/response content for the live feed |
 | `--budget` | None | Daily budget limit in USD |
 | `--openai-api-url` | `https://api.openai.com` | Custom OpenAI API URL |
+| `--openai-chat-path` | `/v1/chat/completions` | Custom upstream path for OpenAI chat completions |
 | `--anthropic-api-url` | Anthropic default | Custom Anthropic API URL |
 | `--gemini-api-url` | Gemini default | Custom Gemini API URL |
 | `--backend` | `anthropic` | Backend: `anthropic`, `bedrock`, `openrouter`, `anyllm`, or `litellm-<provider>` |
@@ -272,6 +273,9 @@ export HEADROOM_BUDGET=100.0
 
 # Route OpenAI passthrough requests to a custom endpoint
 export OPENAI_TARGET_API_URL=https://custom.openai.endpoint.com
+
+# Use a non-standard OpenAI-compatible chat-completions path
+export HEADROOM_OPENAI_CHAT_PATH=/v4/chat/completions
 
 # Route Anthropic passthrough requests to a custom endpoint
 export ANTHROPIC_TARGET_API_URL=https://litellm.company.internal

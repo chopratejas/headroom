@@ -99,6 +99,7 @@ class ProxyConfig:
     port: int = 8787
     anthropic_api_url: str | None = None  # Custom Anthropic API URL override
     openai_api_url: str | None = None  # Custom OpenAI API URL override
+    openai_chat_path: str = "/v1/chat/completions"  # Upstream path for chat completions
     gemini_api_url: str | None = None  # Custom Gemini API URL override
     cloudcode_api_url: str | None = None  # Custom Cloud Code Assist API URL override
     vertex_api_url: str | None = None  # Custom Vertex AI regional API URL override

@@ -203,6 +203,24 @@ shows an **Output Tokens Saved** card next to input compression, labelled
 
 Any OpenAI-compatible client works via `headroom proxy`. MCP-native: `headroom mcp install`.
 
+Some OpenAI-compatible gateways serve chat completions under a provider-specific
+path instead of `/v1/chat/completions`. Keep the client pointed at Headroom's
+stable `/v1/chat/completions` route, and configure the upstream path separately:
+
+```bash
+headroom proxy \
+  --openai-api-url https://open.bigmodel.cn/api/coding/paas \
+  --openai-chat-path /v4/chat/completions
+```
+
+Environment equivalent:
+
+```bash
+export OPENAI_TARGET_API_URL=https://open.bigmodel.cn/api/coding/paas
+export HEADROOM_OPENAI_CHAT_PATH=/v4/chat/completions
+headroom proxy
+```
+
 ### GitHub Copilot CLI subscription mode
 
 Headroom can route GitHub Copilot CLI subscription traffic through the local proxy:
