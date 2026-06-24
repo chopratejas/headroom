@@ -80,7 +80,12 @@ _BUNDLE_NAME = "combined-ca-bundle.pem"
 
 
 def _assert_perms(path: Path, expected_mode: int) -> None:
-    """Raise PermissionError if *path* does not have exactly *expected_mode* bits."""
+    """Raise PermissionError if *path* does not have exactly *expected_mode* bits.
+
+    No-op on non-POSIX platforms (Windows) where mode bits are not meaningful.
+    """
+    if os.name != "posix":
+        return
     actual = stat.S_IMODE(path.stat().st_mode)
     if actual != expected_mode:
         raise PermissionError(
@@ -113,7 +118,7 @@ def _write_secure(path: Path, data: bytes) -> None:
         os.write(fd, data)
     finally:
         os.close(fd)
-    tmp.rename(path)
+    os.replace(tmp, path)
     _assert_perms(path, 0o600)
 
 
@@ -317,10 +322,13 @@ def ensure_root_ca(
             existing_cert = None
 
         if existing_cert is not None and not _cert_near_expiry(existing_cert):
-            key_bytes = key_path.read_bytes()
-            existing_key = serialization.load_pem_private_key(key_bytes, password=None)
-            logger.info("event=ca_reused path=%s", cert_path)
-            return existing_key, existing_cert, key_path, cert_path  # type: ignore[return-value]
+            try:
+                key_bytes = key_path.read_bytes()
+                existing_key = serialization.load_pem_private_key(key_bytes, password=None)
+                logger.info("event=ca_reused path=%s", cert_path)
+                return existing_key, existing_cert, key_path, cert_path  # type: ignore[return-value]
+            except Exception as exc:
+                logger.warning("event=ca_key_load_failed reason=%s; regenerating", exc)
 
         # Regenerate — delete stale artifacts.
         logger.info("event=ca_regenerate reason=expired_or_corrupt path=%s", cert_path)

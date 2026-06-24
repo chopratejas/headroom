@@ -822,3 +822,72 @@ def test_load_cert_chain_in_memory_bad_cert_propagates_without_disk(
         load_cert_chain_in_memory(ctx, b"-----BEGIN CERTIFICATE-----\nnope\n", b"not-a-key")
 
     assert not mkstemp_called[0], "bad cert must NOT trigger the disk fallback"
+
+
+# ---------------------------------------------------------------------------
+# ensure_root_ca: corrupt CA key → regenerate (not crash)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_root_ca_corrupt_key_regenerates(tmp_path: Path) -> None:
+    """Valid cert + corrupt key file → ensure_root_ca regenerates, not raises."""
+    # First call creates a valid CA on disk.
+    _, cert1, key_path, cert_path = ensure_root_ca(base_dir=tmp_path)
+
+    # Overwrite the key with garbage so the parse fails.
+    key_path.write_bytes(b"-----BEGIN RSA PRIVATE KEY-----\nGARBAGE\n-----END RSA PRIVATE KEY-----\n")
+
+    # Must not raise; must produce a fresh (different serial) CA.
+    key2, cert2, _, _ = ensure_root_ca(base_dir=tmp_path)
+    assert cert2.serial_number != cert1.serial_number, (
+        "corrupt key must trigger regeneration, yielding a new cert"
+    )
+    # Returned key must be usable (public_bytes does not raise).
+    key2.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+
+# ---------------------------------------------------------------------------
+# _assert_perms: skipped on non-POSIX
+# ---------------------------------------------------------------------------
+
+
+def test_assert_perms_skipped_on_non_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On non-POSIX platforms _assert_perms must be a no-op (never raise)."""
+    p = tmp_path / "file.bin"
+    p.write_bytes(b"x")
+    # Monkeypatch os.name inside the module under test.
+    monkeypatch.setattr("headroom.proxy.agy_ca.os.name", "nt")
+    # Any expected_mode value; on real POSIX the mode would differ and raise.
+    _assert_perms(p, 0o600)  # must not raise
+    _assert_perms(p, 0o700)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _write_secure: uses os.replace (atomic cross-platform rename)
+# ---------------------------------------------------------------------------
+
+
+def test_write_secure_uses_os_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_write_secure must call os.replace instead of Path.rename."""
+    import headroom.proxy.agy_ca as _mod
+
+    replace_calls: list[tuple[object, object]] = []
+    original_replace = os.replace
+
+    def _spy_replace(src: object, dst: object) -> None:
+        replace_calls.append((src, dst))
+        original_replace(src, dst)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_mod.os, "replace", _spy_replace)
+
+    dest = tmp_path / "out.key"
+    _mod._write_secure(dest, b"hello")
+
+    assert replace_calls, "os.replace must have been called by _write_secure"
+    assert dest.read_bytes() == b"hello"
