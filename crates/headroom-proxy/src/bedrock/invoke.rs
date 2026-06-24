@@ -278,7 +278,8 @@ pub async fn handle_invoke(
 
     // Build the headers we sign + forward. Start from the inbound
     // headers, drop the ones the upstream client manages, then sign.
-    let extra_signed: Vec<(String, String)> = super::collect_signed_headers(&headers, &upstream_url);
+    let extra_signed: Vec<(String, String)> =
+        super::collect_signed_headers(&headers, &upstream_url);
     let extra_signed_refs: Vec<(&str, &str)> = extra_signed
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -397,7 +398,9 @@ pub async fn handle_invoke(
         if status.is_success() {
             apply_bedrock_response_usage(&resp_bytes, &mut o);
         }
-        state.savings.record_finalized(o, !status.is_success(), rec_start);
+        state
+            .savings
+            .record_finalized(o, !status.is_success(), rec_start);
     }
 
     tracing::info!(
@@ -762,9 +765,16 @@ mod tests {
 
     #[test]
     fn apply_bedrock_response_usage_extracts_all_fields() {
-        use crate::observability::stats::RequestOutcome;
         use crate::observability::pricing::PriceBook;
-        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 0, 0, "r", &PriceBook::empty());
+        use crate::observability::stats::RequestOutcome;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            0,
+            0,
+            "r",
+            &PriceBook::empty(),
+        );
         let resp = br#"{"id":"msg_01","type":"message","content":[],"usage":{"input_tokens":215,"output_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":0}}"#;
         apply_bedrock_response_usage(resp, &mut o);
         assert_eq!(o.tokens_before, 215);
@@ -775,22 +785,37 @@ mod tests {
 
     #[test]
     fn apply_bedrock_response_usage_preserves_compression_tokens() {
-        use crate::observability::stats::RequestOutcome;
         use crate::observability::pricing::PriceBook;
+        use crate::observability::stats::RequestOutcome;
         // When compression ran, tokens_before > 0 — must not be overwritten.
-        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 1000, 600, "r", &PriceBook::empty());
-        let resp = br#"{"usage":{"input_tokens":600,"output_tokens":50,"cache_read_input_tokens":0}}"#;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            1000,
+            600,
+            "r",
+            &PriceBook::empty(),
+        );
+        let resp =
+            br#"{"usage":{"input_tokens":600,"output_tokens":50,"cache_read_input_tokens":0}}"#;
         apply_bedrock_response_usage(resp, &mut o);
         assert_eq!(o.tokens_before, 1000); // preserved
-        assert_eq!(o.tokens_after, 600);   // preserved
+        assert_eq!(o.tokens_after, 600); // preserved
         assert_eq!(o.output_tokens, 50);
     }
 
     #[test]
     fn apply_bedrock_response_usage_handles_converse_camelcase() {
-        use crate::observability::stats::RequestOutcome;
         use crate::observability::pricing::PriceBook;
-        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 0, 0, "r", &PriceBook::empty());
+        use crate::observability::stats::RequestOutcome;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            0,
+            0,
+            "r",
+            &PriceBook::empty(),
+        );
         // Converse API uses camelCase keys
         let resp = br#"{"output":{"message":{"role":"assistant","content":[{"text":"OK"}]}},"stopReason":"end_turn","usage":{"inputTokens":15,"outputTokens":4,"totalTokens":19,"cacheReadInputTokens":0,"cacheWriteInputTokens":0}}"#;
         apply_bedrock_response_usage(resp, &mut o);
@@ -802,9 +827,16 @@ mod tests {
 
     #[test]
     fn apply_bedrock_response_usage_noop_on_non_json() {
-        use crate::observability::stats::RequestOutcome;
         use crate::observability::pricing::PriceBook;
-        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 0, 0, "r", &PriceBook::empty());
+        use crate::observability::stats::RequestOutcome;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            0,
+            0,
+            "r",
+            &PriceBook::empty(),
+        );
         apply_bedrock_response_usage(b"not json", &mut o);
         assert_eq!(o.tokens_before, 0);
         assert_eq!(o.output_tokens, 0);

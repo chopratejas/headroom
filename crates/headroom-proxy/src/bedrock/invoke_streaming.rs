@@ -239,7 +239,8 @@ pub async fn handle_invoke_streaming(
     };
 
     // 4. Build the headers we sign + forward.
-    let extra_signed: Vec<(String, String)> = super::collect_signed_headers(&headers, &upstream_url);
+    let extra_signed: Vec<(String, String)> =
+        super::collect_signed_headers(&headers, &upstream_url);
     let extra_signed_refs: Vec<(&str, &str)> = extra_signed
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -345,7 +346,8 @@ pub async fn handle_invoke_streaming(
     // task so it picks up usage tokens extracted from the final EventStream
     // chunk. The early-record path below is only for non-EventStream bodies
     // (errors, passthrough) where no stream task runs.
-    let deferred_record = rec_outcome.map(|o| (o, state.savings.clone(), rec_start, !status.is_success()));
+    let deferred_record =
+        rec_outcome.map(|o| (o, state.savings.clone(), rec_start, !status.is_success()));
     let upstream_content_type = upstream_resp
         .headers()
         .get(http::header::CONTENT_TYPE)
