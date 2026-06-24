@@ -3,7 +3,7 @@
 //! Bedrock model IDs are `<vendor>.<model>-<date>-<rev>` (e.g.
 //! `anthropic.claude-3-haiku-20240307-v1:0`). Cross-region inference
 //! profiles prepend a geo routing token before the vendor
-//! (`eu.anthropic.…`, `us.anthropic.…`, `apac.anthropic.…`,
+//! (`eu.anthropic.…`, `us.anthropic.…`, `au.anthropic.…`,
 //! `global.anthropic.…`). Matching the bare `anthropic.` prefix alone
 //! silently skips compression for those profiles, so we strip a known
 //! geo prefix first, then take the leading dot-segment as the vendor.
@@ -13,7 +13,7 @@
 /// vendor segment. Stripped (once) before vendor resolution. Kept to a
 /// closed, known set so an unrelated `something.anthropic.x` id is not
 /// mistaken for an Anthropic inference profile.
-const GEO_PREFIXES: [&str; 4] = ["eu.", "us.", "apac.", "global."];
+const GEO_PREFIXES: [&str; 5] = ["eu.", "us.", "au.", "jp.", "global."];
 
 /// Resolve the canonical vendor of a Bedrock model id, stripping a
 /// cross-region inference-profile geo prefix first.
@@ -68,7 +68,10 @@ mod tests {
             "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
         ));
         assert!(is_anthropic_model_id(
-            "apac.anthropic.claude-3-5-sonnet-20240620-v1:0"
+            "au.anthropic.claude-3-5-sonnet-20240620-v1:0"
+        ));
+        assert!(is_anthropic_model_id(
+            "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
         ));
         assert!(is_anthropic_model_id(
             "global.anthropic.claude-haiku-4-5-20251001-v1:0"

@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
-    let mut state = AppState::new(config.clone())?;
+    let mut state = AppState::new(config.clone()).await?;
 
     // PR-D1: resolve AWS credentials at startup via the `aws-config`
     // default chain. Loaded once so per-request signing is cheap.

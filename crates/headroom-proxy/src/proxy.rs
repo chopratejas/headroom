@@ -77,24 +77,120 @@ pub struct AppState {
     /// proxy serves, so the dashboard is unified across all of them. Defaults
     /// to in-memory; a persistent path is wired from config when set.
     pub savings: Arc<crate::observability::stats::SavingsStore>,
-    /// Phase H: per-model price book used to value token savings in USD. Loaded
-    /// from a models.dev JSON file (`--pricebook` / `HEADROOM_PROXY_PRICEBOOK`)
-    /// when set; empty otherwise, in which case savings are reported in tokens
-    /// with USD at zero.
+    /// Phase H: per-model price book used to value token savings in USD. Resolved
+    /// once at startup from `--pricebook` / `HEADROOM_PROXY_PRICEBOOK` — an
+    /// `http(s)://` URL (defaulting to the models.dev catalog) fetched and cached
+    /// here, or a local file path. Empty when disabled/unreachable, in which case
+    /// savings are reported in tokens with USD at zero.
+    ///
+    /// ponytail: this `Arc` *is* the cache — load once, hold for the process
+    /// lifetime. No periodic refresh; a restart re-fetches. Add a refresh task
+    /// only if prices need to update without a redeploy (they rarely do).
     pub price_book: Arc<crate::observability::pricing::PriceBook>,
 }
 
-/// Load the per-model price book from `Config::pricebook_path` (a path to a
-/// models.dev JSON file). Returns an empty book when unset or unreadable —
-/// savings still report in tokens, just with USD at zero.
-fn load_price_book(path: Option<&std::path::Path>) -> crate::observability::pricing::PriceBook {
-    match path {
-        Some(p) => match std::fs::read_to_string(p) {
-            Ok(json) => crate::observability::pricing::PriceBook::from_models_dev_json(&json),
-            Err(_) => crate::observability::pricing::PriceBook::empty(),
-        },
-        None => crate::observability::pricing::PriceBook::empty(),
+/// Cap on the price-book body we'll buffer from a URL. The live models.dev
+/// catalog is ~2.4 MiB; 16 MiB leaves generous headroom while still bounding a
+/// misbehaving (or chunked, content-length-less) source so it can't OOM us.
+const MAX_PRICEBOOK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Startup is allowed to block on this fetch (it runs once, off the request
+/// path), but not indefinitely — fail-open to an empty book past the deadline.
+const PRICEBOOK_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Resolve the per-model price book from `Config::pricebook_source`:
+///
+/// - `None` (the flag is unset) → the compiled-in models.dev snapshot
+///   ([`PriceBook::vendored`]); USD valuation works out of the box, no network.
+/// - `Some("")` (explicit opt-out) → an empty book; savings report tokens-only.
+/// - `Some(url)` (`http(s)://`) → fetched once and cached in the returned book,
+///   for operators who want live prices instead of the vendored snapshot.
+/// - `Some(path)` → read from a local file.
+///
+/// Any override failure — unreachable URL, unreadable file, malformed JSON —
+/// fails open to an empty book rather than erroring. Pricing is best-effort.
+async fn load_price_book(
+    source: Option<&str>,
+    client: &reqwest::Client,
+) -> crate::observability::pricing::PriceBook {
+    use crate::observability::pricing::PriceBook;
+    let source = match source {
+        None => return PriceBook::vendored(),
+        Some(s) => s.trim(),
+    };
+    if source.is_empty() {
+        return PriceBook::empty();
     }
+    if source.starts_with("http://") || source.starts_with("https://") {
+        // Use a dedicated client that FOLLOWS redirects for this one-time fetch.
+        // The proxy's own `client` is built with `redirect::Policy::none()` so it
+        // forwards proxied redirects verbatim — but a CDN-fronted price URL may
+        // answer with a 3xx, which `none()` would surface as a non-2xx and fail
+        // open to an empty book. Following redirects matches `curl -L` in
+        // scripts/refresh_model_limits.sh. Falls back to the proxy client if the
+        // builder somehow fails.
+        let fetch_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .unwrap_or_else(|_| client.clone());
+        match fetch_price_book_json(&fetch_client, source).await {
+            Some(json) => PriceBook::from_models_dev_json(&json),
+            None => {
+                tracing::warn!(
+                    event = "pricebook_fetch_failed",
+                    url = %source,
+                    "could not fetch the models.dev price book; USD savings will read 0 \
+                     (set --pricebook to a reachable URL/file, or \"\" to silence this)"
+                );
+                PriceBook::empty()
+            }
+        }
+    } else {
+        match std::fs::read_to_string(source) {
+            Ok(json) => PriceBook::from_models_dev_json(&json),
+            Err(_) => {
+                tracing::warn!(
+                    event = "pricebook_read_failed",
+                    path = %source,
+                    "could not read the price book file; USD savings will read 0"
+                );
+                PriceBook::empty()
+            }
+        }
+    }
+}
+
+/// Bounded GET: fetch `url` and return the response body, or `None` on any error
+/// (unreachable, non-2xx, timed out, or larger than `max_bytes`). The body is
+/// read in streaming chunks with the cap checked *before* each chunk is buffered
+/// — a declared Content-Length is unreliable, so this is the only safe bound — so
+/// a misbehaving source can't OOM us. Shared by the price-book and supplemental
+/// `/stats` fetches; each caller parses the bytes its own way.
+async fn bounded_get(
+    client: &reqwest::Client,
+    url: &str,
+    timeout: std::time::Duration,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    let mut resp = client.get(url).timeout(timeout).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if bytes.len() + chunk.len() > max_bytes {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(bytes)
+}
+
+/// Fetch a models.dev-shaped price book JSON, or `None` on any error
+/// (unreachable, non-2xx, oversized, timed out, non-UTF-8).
+async fn fetch_price_book_json(client: &reqwest::Client, url: &str) -> Option<String> {
+    let bytes = bounded_get(client, url, PRICEBOOK_FETCH_TIMEOUT, MAX_PRICEBOOK_BYTES).await?;
+    String::from_utf8(bytes).ok()
 }
 
 /// PR-E6: maximum number of sessions tracked by the drift detector
@@ -106,7 +202,7 @@ fn load_price_book(path: Option<&std::path::Path>) -> crate::observability::pric
 const DRIFT_DETECTOR_CAPACITY: usize = 1000;
 
 impl AppState {
-    pub fn new(config: Config) -> Result<Self, ProxyError> {
+    pub async fn new(config: Config) -> Result<Self, ProxyError> {
         let client = reqwest::Client::builder()
             .connect_timeout(config.upstream_connect_timeout)
             .timeout(config.upstream_timeout)
@@ -138,7 +234,18 @@ impl AppState {
         // dirty; `spawn_savings_flusher` (wired in `main`) does the disk I/O on a
         // background interval. Kept out of this constructor so building an
         // `AppState` never silently spawns a task.
-        let price_book = Arc::new(load_price_book(config.pricebook_path.as_deref()));
+        // Resolved once here and cached in the `Arc` for the process lifetime.
+        // Reuses the proxy's `client` so the fetch shares its connection pool.
+        let price_book =
+            Arc::new(load_price_book(config.pricebook_source.as_deref(), &client).await);
+        // Surface whether pricing is actually active: an empty book means USD
+        // savings silently read 0, so make that visible at startup.
+        tracing::info!(
+            event = "pricebook_loaded",
+            models = price_book.len(),
+            source = config.pricebook_source.as_deref().unwrap_or("(vendored)"),
+            "price book ready"
+        );
 
         Ok(Self {
             config: Arc::new(config),
@@ -164,11 +271,11 @@ impl AppState {
     /// Test helper: build an `AppState` with an explicit token source.
     /// Lets the integration tests substitute a `StaticTokenSource` so
     /// the test suite never hits real GCP.
-    pub fn with_token_source(
+    pub async fn with_token_source(
         config: Config,
         token_source: Arc<dyn crate::vertex::TokenSource>,
     ) -> Result<Self, ProxyError> {
-        let mut s = Self::new(config)?;
+        let mut s = Self::new(config).await?;
         s.vertex_token_source = token_source;
         Ok(s)
     }
@@ -411,27 +518,16 @@ const MAX_SUPPLEMENTAL_BYTES: usize = 1024 * 1024;
 /// (unreachable, non-2xx, unparseable) — the caller treats `None` as "no
 /// supplemental blocks this poll".
 async fn fetch_upstream_stats(client: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
-    let resp = client
-        .get(url)
-        .timeout(SUPPLEMENTAL_STATS_TIMEOUT)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    // Bounded streaming read so a misbehaving upstream can't OOM us via a huge
-    // response (a declared content-length is also unreliable). Parse via
-    // `serde_json` rather than `Response::json` so we don't need reqwest's `json`
-    // feature enabled.
-    let mut resp = resp;
-    let mut bytes: Vec<u8> = Vec::new();
-    while let Some(chunk) = resp.chunk().await.ok()? {
-        if bytes.len() + chunk.len() > MAX_SUPPLEMENTAL_BYTES {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+    // Bounded streaming read (see `bounded_get`) so a misbehaving upstream can't
+    // OOM us. Parse via `serde_json` rather than `Response::json` so we don't
+    // need reqwest's `json` feature enabled.
+    let bytes = bounded_get(
+        client,
+        url,
+        SUPPLEMENTAL_STATS_TIMEOUT,
+        MAX_SUPPLEMENTAL_BYTES,
+    )
+    .await?;
     serde_json::from_slice::<serde_json::Value>(&bytes).ok()
 }
 
@@ -1879,5 +1975,130 @@ mod tests {
         let uri: Uri = "/".parse().unwrap();
         let out = build_upstream_url(&base, &uri).unwrap();
         assert_eq!(out.as_str(), "http://up:8080/");
+    }
+
+    // ---- price book source resolution -------------------------------------- #
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap()
+    }
+
+    const PRICEBOOK_JSON: &str = r#"{"anthropic":{"models":{
+        "claude-haiku-4-5":{"cost":{"input":1.0,"output":5.0}}
+    }}}"#;
+
+    #[tokio::test]
+    async fn pricebook_none_uses_vendored_snapshot() {
+        // Unset → compiled-in models.dev snapshot, no network.
+        let book = load_price_book(None, &test_client()).await;
+        assert!(!book.is_empty());
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_empty_string_disables_pricing() {
+        let c = test_client();
+        assert!(load_price_book(Some(""), &c).await.is_empty());
+        assert!(load_price_book(Some("   "), &c).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricebook_reads_local_file() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("headroom_pricebook_{}.json", std::process::id()));
+        std::fs::write(&path, PRICEBOOK_JSON).unwrap();
+        let book = load_price_book(Some(path.to_str().unwrap()), &test_client()).await;
+        let _ = std::fs::remove_file(&path);
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_missing_file_fails_open_to_empty() {
+        let book = load_price_book(Some("/no/such/pricebook.json"), &test_client()).await;
+        assert!(book.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricebook_unreachable_url_fails_open_to_empty() {
+        // Closed localhost port → instant connection-refused, so this exercises
+        // the http branch + fail-open without depending on models.dev being up
+        // (and without waiting out a connect timeout on a blackholed address).
+        let book = load_price_book(Some("http://127.0.0.1:1/api.json"), &test_client()).await;
+        assert!(book.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricebook_url_happy_path_fetches_and_parses() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = r#"{"anthropic":{"models":{
+            "claude-haiku-4-5":{"cost":{"input":1.0,"output":5.0}}
+        }}}"#;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let url = format!("{}/api.json", server.uri());
+        let book = load_price_book(Some(&url), &test_client()).await;
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_url_follows_redirects() {
+        // A CDN-fronted price URL may 3xx; the fetch must follow it (the proxy's
+        // own client uses redirect::none, so this exercises the dedicated
+        // redirect-following client in load_price_book).
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = r#"{"a":{"models":{"claude-haiku-4-5":{"cost":{"input":1.0}}}}}"#;
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/api.json"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let url = format!("{}/redirect", server.uri());
+        let book = load_price_book(Some(&url), &test_client()).await;
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_non_2xx_fails_open_to_empty() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let book = load_price_book(Some(&server.uri()), &test_client()).await;
+        assert!(book.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bounded_get_enforces_byte_cap() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(100)))
+            .mount(&server)
+            .await;
+        // Cap below the body → rejected (the OOM guard that protects the 16MiB
+        // pricebook / 1MiB supplemental fetches, exercised cheaply here).
+        let over = bounded_get(&test_client(), &server.uri(), PRICEBOOK_FETCH_TIMEOUT, 10).await;
+        assert!(over.is_none());
+        // Cap above the body → accepted in full.
+        let under = bounded_get(&test_client(), &server.uri(), PRICEBOOK_FETCH_TIMEOUT, 1000).await;
+        assert_eq!(under.unwrap().len(), 100);
     }
 }

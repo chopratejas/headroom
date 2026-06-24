@@ -483,11 +483,16 @@ pub struct CliArgs {
     #[arg(long = "upstream-stats-url", env = "HEADROOM_PROXY_UPSTREAM_STATS_URL")]
     pub upstream_stats_url: Option<String>,
 
-    /// Phase H: path to a models.dev-shaped JSON price book used to value token
-    /// savings in USD. When unset (or unreadable), savings are reported in tokens
-    /// with USD left at zero.
+    /// Phase H: source of the models.dev-shaped JSON price book used to value
+    /// token savings in USD. When unset, the proxy uses the compiled-in
+    /// models.dev snapshot (refreshed via `scripts/refresh_model_limits.sh`), so
+    /// USD valuation works out of the box with no startup network call. Override
+    /// with an `http(s)://` URL to fetch live prices once at startup, or a local
+    /// file path. Pass an empty string to disable pricing entirely (savings then
+    /// report in tokens with USD at zero). Fail-open: an unreachable URL /
+    /// unreadable file yields USD zero rather than blocking startup.
     #[arg(long = "pricebook", env = "HEADROOM_PROXY_PRICEBOOK")]
-    pub pricebook_path: Option<std::path::PathBuf>,
+    pub pricebook_source: Option<String>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -574,9 +579,10 @@ pub struct Config {
     /// Transitional Python `/stats` URL for supplemental blocks (see
     /// `CliArgs::upstream_stats_url`).
     pub upstream_stats_url: Option<String>,
-    /// Phase H: models.dev price-book path for USD valuation (see
-    /// `CliArgs::pricebook_path`).
-    pub pricebook_path: Option<std::path::PathBuf>,
+    /// Phase H: models.dev price-book source for USD valuation (see
+    /// `CliArgs::pricebook_source`). `None` → compiled-in vendored snapshot;
+    /// `Some("")` → pricing disabled; `Some(url|path)` → override.
+    pub pricebook_source: Option<String>,
 }
 
 impl Config {
@@ -636,7 +642,10 @@ impl Config {
             vertex_adc_scope: args.vertex_adc_scope,
             savings_path: args.savings_path,
             upstream_stats_url: args.upstream_stats_url,
-            pricebook_path: args.pricebook_path,
+            // Passed through verbatim: `None` (unset) → vendored snapshot,
+            // `Some("")` → disabled, `Some(url|path)` → override. The loader
+            // (`proxy::load_price_book`) interprets these.
+            pricebook_source: args.pricebook_source,
         }
     }
 
@@ -693,7 +702,10 @@ impl Config {
             vertex_adc_scope: "https://www.googleapis.com/auth/cloud-platform".to_string(),
             savings_path: None,
             upstream_stats_url: None,
-            pricebook_path: None,
+            // Pricing disabled in tests (`Some("")`, not `None` → vendored):
+            // keeps the suite isolated from the vendored snapshot's contents and
+            // its periodic refresh, so no test depends on a specific USD value.
+            pricebook_source: Some(String::new()),
         }
     }
 }

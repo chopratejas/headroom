@@ -77,7 +77,7 @@ where
     let upstream_url: Url = upstream.parse().expect("valid upstream url");
     let mut config = Config::for_test(upstream_url);
     customize(&mut config);
-    let state = AppState::new(config.clone()).expect("app state");
+    let state = AppState::new(config.clone()).await.expect("app state");
     let state = customize_state(state);
     let savings = state.savings.clone();
     let app = build_app(state).into_make_service_with_connect_info::<SocketAddr>();

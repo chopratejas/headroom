@@ -48,7 +48,8 @@ pub const DEFAULT_SESSION_INACTIVITY: Duration = Duration::from_secs(60 * 60);
 /// first so a long-running proxy never grows the file without bound.
 pub const DEFAULT_MAX_HISTORY: usize = 5000;
 
-/// Default cap on the number of history points returned to the dashboard.
+/// Default cap on the recent-request feed ring (the per-request `/stats`
+/// `recent_requests` rows), evicting oldest-first.
 pub const DEFAULT_MAX_RESPONSE_HISTORY: usize = 500;
 
 /// Sentinel used when a provider/model label is missing, so savings are never
@@ -160,10 +161,15 @@ impl RequestOutcome {
         // header); truncate them here, at the single construction point, so every
         // downstream sink (breakdown-map keys, the recent ring, the persisted
         // file, the `/stats` payload) inherits the bound.
+        let provider = truncate_chars(provider.into(), MAX_LABEL_LEN);
         let model = truncate_chars(model.into(), MAX_LABEL_LEN);
-        let price = prices.lookup(&model).unwrap_or_default();
+        // Value the request at its own route's exact price (provider-aware), with
+        // a consensus fallback when the provider doesn't list the model.
+        let price = prices
+            .lookup_with_provider(&provider, &model)
+            .unwrap_or_default();
         Self {
-            provider: truncate_chars(provider.into(), MAX_LABEL_LEN),
+            provider,
             model,
             tokens_before,
             tokens_after,
@@ -233,6 +239,25 @@ fn round6(value: f64) -> f64 {
     (value * 1_000_000.0).round() / 1_000_000.0
 }
 
+/// Add a USD increment to a running accumulator, keeping full f64 precision but
+/// **preserving the accumulator** if the sum would be non-finite (a garbage
+/// NaN/±Inf increment from a corrupt price must drop just itself, never wipe the
+/// legitimately accumulated headline total — best-effort telemetry). `acc` is
+/// always finite by induction (starts at 0, only finite sums are stored).
+///
+/// Quantization to 6 decimals happens only at the JSON read boundary (`round6`).
+/// Rounding the *accumulator* each request would drop every sub-microdollar
+/// increment permanently — a stream of sub-5e-7 USD savings (cache-read deltas,
+/// tiny savings on cheap models) would never carry, reporting $0 forever.
+fn accumulate(acc: f64, delta: f64) -> f64 {
+    let sum = acc + delta;
+    if sum.is_finite() {
+        sum
+    } else {
+        acc
+    }
+}
+
 /// Cumulative all-time counters.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)] // tolerate older/partial persisted files: missing fields default
@@ -265,12 +290,14 @@ pub struct DisplaySession {
 
 impl DisplaySession {
     fn savings_percent(&self) -> f64 {
-        let before = self.tokens_saved + self.total_input_tokens;
-        if before == 0 {
-            0.0
-        } else {
-            (self.tokens_saved as f64 / before as f64) * 100.0
+        // Mirror the `total_input_tokens == 0` guard from `build_stats_json`: a
+        // session with savings but no recorded forwarded input is a foreign/corrupt
+        // state (e.g. an old Python proxy_savings.json), not a real 100% session.
+        if self.total_input_tokens == 0 {
+            return 0.0;
         }
+        let before = self.tokens_saved.saturating_add(self.total_input_tokens);
+        (self.tokens_saved as f64 / before as f64) * 100.0
     }
 }
 
@@ -304,8 +331,8 @@ impl Bucket {
         self.cache_read_tokens += o.cache_read_tokens;
         self.cache_write_tokens += o.cache_write_tokens;
         self.compression_savings_usd =
-            round6(self.compression_savings_usd + o.compression_savings_usd());
-        self.cache_savings_usd = round6(self.cache_savings_usd + o.cache_savings_usd().max(0.0));
+            accumulate(self.compression_savings_usd, o.compression_savings_usd());
+        self.cache_savings_usd = accumulate(self.cache_savings_usd, o.cache_savings_usd().max(0.0));
     }
 
     fn reduction_pct(&self) -> f64 {
@@ -362,6 +389,12 @@ pub struct SavingsState {
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
     pub requests_failed: u64,
+    /// Set to `true` the first time `history` overflows `max_history` and the
+    /// oldest checkpoint is dropped. `build_history_json` uses this to avoid
+    /// emitting a spurious giant per-day delta for the oldest *surviving* point
+    /// (whose cumulative would otherwise be subtracted from zero). Persisted so
+    /// the flag survives restarts.
+    pub history_evicted: bool,
 }
 
 impl Default for SavingsState {
@@ -377,6 +410,7 @@ impl Default for SavingsState {
             total_input_tokens: 0,
             total_output_tokens: 0,
             requests_failed: 0,
+            history_evicted: false,
         }
     }
 }
@@ -438,8 +472,8 @@ impl SavingsState {
         }
         self.lifetime.tokens_saved += saved;
         self.lifetime.compression_savings_usd =
-            round6(self.lifetime.compression_savings_usd + comp_usd);
-        self.lifetime.cache_savings_usd = round6(self.lifetime.cache_savings_usd + cache_usd);
+            accumulate(self.lifetime.compression_savings_usd, comp_usd);
+        self.lifetime.cache_savings_usd = accumulate(self.lifetime.cache_savings_usd, cache_usd);
         self.total_input_tokens += input_tokens;
         self.total_output_tokens += output_tokens;
         if failed {
@@ -460,8 +494,8 @@ impl SavingsState {
         }
         session.tokens_saved += saved;
         session.total_input_tokens += input_tokens;
-        session.compression_savings_usd = round6(session.compression_savings_usd + comp_usd);
-        session.cache_savings_usd = round6(session.cache_savings_usd + cache_usd);
+        session.compression_savings_usd = accumulate(session.compression_savings_usd, comp_usd);
+        session.cache_savings_usd = accumulate(session.cache_savings_usd, cache_usd);
         session.last_activity_at = Some(now_iso.clone());
         if session.started_at.is_none() {
             session.started_at = Some(now_iso.clone());
@@ -486,12 +520,15 @@ impl SavingsState {
         // a failed request, since `saved` is zeroed above).
         if saved > 0 {
             self.history.push(HistoryPoint {
-                timestamp: now_iso,
+                timestamp: now_iso.clone(),
                 provider: outcome.provider_key().to_string(),
                 model: outcome.model_key().to_string(),
                 total_tokens_saved: self.lifetime.tokens_saved,
                 compression_savings_usd: self.lifetime.compression_savings_usd,
             });
+            if self.history.len() > cfg.max_history {
+                self.history_evicted = true;
+            }
             cap_front(&mut self.history, cfg.max_history);
         }
 
@@ -513,7 +550,7 @@ impl SavingsState {
         };
         self.recent.push(RecentRequest {
             request_id,
-            timestamp: to_rfc3339(now),
+            timestamp: now_iso,
             provider: outcome.provider_key().to_string(),
             model: outcome.model_key().to_string(),
             input_tokens_original: outcome.tokens_before,
@@ -543,10 +580,15 @@ impl SavingsState {
 /// activity counts as expired, so the first request opens a fresh session.
 fn session_expired(session: &DisplaySession, now: SystemTime, cfg: &StoreConfig) -> bool {
     match session.last_activity_at.as_deref().and_then(parse_rfc3339) {
-        Some(last) => now
-            .duration_since(last)
-            .map(|d| d > cfg.session_inactivity)
-            .unwrap_or(false),
+        Some(last) => match now.duration_since(last) {
+            Ok(elapsed) => elapsed > cfg.session_inactivity,
+            // `last` is in the future: clock skew, or a persisted file from a
+            // faster clock. Tolerate small skew (sub-window) as still-active, but
+            // treat a large future offset as expired so a stale session rolls
+            // over instead of pinning the dashboard's "this session" open until
+            // the wall clock catches up.
+            Err(e) => e.duration() > cfg.session_inactivity,
+        },
         None => true,
     }
 }
@@ -600,7 +642,18 @@ impl SavingsStore {
     /// Create a store backed by `path`, loading any existing state.
     pub fn with_path(path: impl Into<PathBuf>, cfg: StoreConfig) -> Self {
         let path = path.into();
-        let state = load_state(&path);
+        let mut state = load_state(&path);
+        // Migration for old binaries (field absent → serde default false): if the
+        // loaded history is at or above the current cap, we can't tell whether
+        // eviction had occurred before the field existed — conservatively set the
+        // flag so `build_history_json` doesn't emit a spurious first-day spike.
+        //
+        // A cap raise (max_history increased) does NOT reset the flag: raising the
+        // cap doesn't restore previously evicted checkpoints, so the baseline is
+        // still lost and the flag must stay true.
+        if state.history.len() >= cfg.max_history && !state.history_evicted {
+            state.history_evicted = true;
+        }
         Self {
             state: Mutex::new(state),
             path: Some(path),
@@ -688,7 +741,7 @@ impl SavingsStore {
     /// Historical view reads `lifetime`, `history`, and `series.daily`.
     pub fn history_json(&self) -> Value {
         let state = self.snapshot();
-        build_history_json(&state)
+        build_history_json(&state, &self.cfg)
     }
 
     /// Snapshot and write to disk. Returns `true` on success (or when there is
@@ -718,8 +771,11 @@ pub fn load_state(path: &Path) -> SavingsState {
 /// Serialize the state to pretty JSON bytes — infallibly.
 ///
 /// `SavingsState` contains only plain scalars, strings, vecs and string-keyed
-/// maps, and every `f64` is sanitized to a finite value at every write (see
-/// [`round6`]), so `to_vec_pretty` cannot fail in practice. `unwrap_or_default`
+/// maps, and every USD `f64` accumulator is kept finite at every write (each
+/// accrual goes through [`accumulate`], which drops a non-finite increment and
+/// preserves the prior finite total), so `to_vec_pretty` cannot emit a non-finite
+/// float and cannot fail in practice. (Any new USD accumulator MUST route through
+/// [`accumulate`] to preserve this.) `unwrap_or_default`
 /// keeps this a single executed line (no closure) so line coverage is 100% on
 /// stable; the unreachable error arm lives in std, and `#[coverage(off)]` (a
 /// no-op unless the nightly coverage run sets `cfg(coverage_nightly)`) makes the
@@ -771,29 +827,67 @@ pub fn save_state(path: &Path, state: &SavingsState) -> std::io::Result<()> {
 /// Build the `/stats-history` JSON from a state snapshot.
 ///
 /// `history` is cumulative and appended in chronological order, so a per-day
-/// rollup is just the last checkpoint seen for each calendar day (the running
-/// totals at end of that day). Dates are the `YYYY-MM-DD` prefix of each
-/// checkpoint's RFC3339 timestamp.
-fn build_history_json(state: &SavingsState) -> Value {
-    let mut daily: Vec<Value> = Vec::new();
+/// rollup is the last checkpoint seen for each calendar day (the running totals
+/// at end of that day). Dates are the `YYYY-MM-DD` prefix of each checkpoint's
+/// RFC3339 timestamp.
+///
+/// Each emitted day carries the field names the dashboard's daily detail rows
+/// read: `timestamp` + cumulative `total_tokens_saved`/`compression_savings_usd`,
+/// and the per-day `tokens_saved`/`compression_savings_usd_delta` (this day's
+/// cumulative minus the previous day's).
+fn build_history_json(state: &SavingsState, cfg: &StoreConfig) -> Value {
+    // First collapse to one end-of-day cumulative per calendar day (last wins).
+    let mut days: Vec<(String, u64, f64)> = Vec::new(); // (date, cum_tokens, cum_usd)
     for pt in &state.history {
-        let date = pt.timestamp.get(0..10).unwrap_or("");
-        let same_day = daily
-            .last()
-            .and_then(|d| d.get("date"))
-            .and_then(Value::as_str)
-            == Some(date);
-        let entry = json!({
-            "date": date,
-            "tokens_saved": pt.total_tokens_saved,
-            "compression_savings_usd": round6(pt.compression_savings_usd),
-        });
-        if same_day {
-            *daily.last_mut().expect("same_day implies non-empty") = entry;
+        let date = pt.timestamp.get(0..10).unwrap_or("").to_string();
+        let row = (
+            date.clone(),
+            pt.total_tokens_saved,
+            pt.compression_savings_usd,
+        );
+        if days.last().map(|(d, ..)| d == &date).unwrap_or(false) {
+            *days.last_mut().expect("same-day implies non-empty") = row;
         } else {
-            daily.push(entry);
+            days.push(row);
         }
     }
+    // Then emit each day with both the cumulative and the per-day delta. The
+    // delta seeds from 0, so the very first day's delta equals its cumulative —
+    // correct normally, but if `history` has been evicted oldest-first (it is
+    // count-capped at `cfg.max_history`), the pre-eviction baseline is lost and
+    // the first *surviving* day's delta would overstate that day's true increment
+    // (a spurious giant bar on the dashboard). When the ring is at capacity
+    // (eviction has occurred or is imminent) we therefore seed `prev` from the
+    // FIRST surviving day's own cumulative, so that day reports a 0 per-day delta
+    // ("baseline — increment before this point is unknown") rather than a wrong
+    // spike. The cumulative `total_tokens_saved` the dashboard also shows stays
+    // correct either way.
+    // Primary signal: `history_evicted` is set by `record()` before `cap_front` and
+    // by `with_path()` on load when `len >= max_history`, so it is always true when
+    // the baseline has been lost in production code paths. The `|| len > max_history`
+    // term is a secondary guard for directly-constructed states (tests, future callers)
+    // that bypass `with_path()` — belt-and-suspenders at negligible cost.
+    let evicted = state.history_evicted || state.history.len() > cfg.max_history;
+    let (mut prev_tokens, mut prev_usd) = match (evicted, days.first()) {
+        (true, Some((_, cum_tokens, cum_usd))) => (*cum_tokens, *cum_usd),
+        _ => (0u64, 0.0),
+    };
+    let daily: Vec<Value> = days
+        .iter()
+        .map(|(date, cum_tokens, cum_usd)| {
+            let delta_tokens = cum_tokens.saturating_sub(prev_tokens);
+            let delta_usd = (cum_usd - prev_usd).max(0.0);
+            prev_tokens = *cum_tokens;
+            prev_usd = *cum_usd;
+            json!({
+                "timestamp": date,
+                "total_tokens_saved": cum_tokens,
+                "tokens_saved": delta_tokens,
+                "compression_savings_usd": round6(*cum_usd),
+                "compression_savings_usd_delta": round6(delta_usd),
+            })
+        })
+        .collect();
     // `to_value` over a Vec of all-finite scalar/string records cannot fail in
     // practice; `unwrap_or_default` keeps this one executed line (100% line
     // coverage on stable) rather than a panicking `unwrap`.
@@ -807,6 +901,14 @@ fn build_history_json(state: &SavingsState) -> Value {
         },
         "history": history,
         "series": { "daily": daily },
+        // The dashboard's retention readout reads these. Rust evicts by COUNT
+        // (newest `max_history` checkpoints / `max_response_history` recent rows),
+        // not by age — there is no age-based cap, so the dashboard's
+        // `max_history_age_days` is left to its `|| 0` default.
+        "retention": {
+            "max_history_points": cfg.max_history,
+            "max_response_history_points": cfg.max_response_history,
+        },
     })
 }
 
@@ -816,24 +918,24 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
     // Serialized once; surfaced at both the top level and under
     // `persistent_savings` for the dashboard contract (compute it a single time).
     let session_json = display_session_json(&session);
-    let total_before = state.total_input_tokens + state.lifetime.tokens_saved;
-    let savings_percent = if total_before == 0 {
+    let total_before = state
+        .total_input_tokens
+        .saturating_add(state.lifetime.tokens_saved);
+    // `savings_percent` = reduction over original input. Anchor on the recorded
+    // forwarded-input total: every recorded request contributes forwarded input,
+    // so `total_input_tokens == 0` with non-zero savings is an inconsistent state
+    // only reachable from a foreign/corrupt persisted file (e.g. an old Python
+    // proxy_savings.json, which stored input tokens under a different key). Report
+    // 0 there rather than a misleading ~100% headline.
+    let savings_percent = if state.total_input_tokens == 0 {
         0.0
     } else {
-        (state.lifetime.tokens_saved as f64 / total_before as f64) * 100.0
+        round2((state.lifetime.tokens_saved as f64 / total_before as f64) * 100.0)
     };
-    let savings_percent = round2(savings_percent);
 
-    let by_provider_requests: HashMap<&String, u64> = state
-        .by_provider
-        .iter()
-        .map(|(k, b)| (k, b.requests))
-        .collect();
-    let by_model_requests: HashMap<&String, u64> = state
-        .by_model
-        .iter()
-        .map(|(k, b)| (k, b.requests))
-        .collect();
+    let request_counts = |m: &HashMap<String, Bucket>| -> HashMap<String, u64> {
+        m.iter().map(|(k, b)| (k.clone(), b.requests)).collect()
+    };
 
     let per_model: Value = state
         .by_model
@@ -865,11 +967,12 @@ fn build_stats_json(state: &SavingsState, now: SystemTime, cfg: &StoreConfig) ->
             "total": state.lifetime.requests,
             "failed": state.requests_failed,
             // Coverage: how many requests actually got compressed. `savings_percent`
-            // is the reduction over *compressed* input, so `compressed`/`total`
+            // is the reduction over *original* input (see its definition above), and
+            // only compressed requests contribute savings, so `compressed`/`total`
             // tells the reader how much of the traffic that figure applies to.
             "compressed": state.lifetime.requests_compressed,
-            "by_provider": by_provider_requests,
-            "by_model": by_model_requests,
+            "by_provider": request_counts(&state.by_provider),
+            "by_model": request_counts(&state.by_model),
         },
         "tokens": {
             "input": state.total_input_tokens,
@@ -1121,6 +1224,33 @@ mod tests {
     }
 
     #[test]
+    fn priced_threads_book_price_into_usd_and_stats() {
+        // The price-book → priced() → USD link. Integration tests run with an
+        // empty book and `stats_json_shape_and_values` sets the price directly via
+        // the `outcome` helper, so this specific lookup-into-priced path (a real
+        // book populating `input_cost_per_token`, then surfacing as non-zero USD
+        // through /stats) was otherwise untested.
+        let json = r#"{"openai":{"models":{"gpt-4o":{"cost":{"input":2.5,"output":10.0}}}}}"#;
+        let book = crate::observability::pricing::PriceBook::from_models_dev_json(json);
+        let o = RequestOutcome::priced("openai", "gpt-4o", 1000, 600, "r", &book);
+        // $2.5 / 1e6 tokens = 2.5e-6 per token, threaded from the book (not 0).
+        assert!((o.input_cost_per_token - 2.5e-6).abs() < 1e-15);
+        // 400 saved tokens * 2.5e-6 = $0.001.
+        assert!((o.compression_savings_usd() - 0.001).abs() < 1e-12);
+        // And it surfaces through the store's /stats JSON as non-zero USD.
+        let store = SavingsStore::in_memory();
+        store.record(&o, at(T0));
+        let v = store.stats_json(at(T0));
+        assert!(v["cost"]["compression_savings_usd"].as_f64().unwrap() > 0.0);
+        assert!(
+            v["cost"]["per_model"]["gpt-4o"]["compression_savings_usd"]
+                .as_f64()
+                .unwrap()
+                > 0.0
+        );
+    }
+
+    #[test]
     fn breakdown_map_cardinality_is_capped() {
         // The `model` key is attacker-controlled; distinct ids past the cap must
         // fold into the UNKNOWN bucket instead of growing the map without bound.
@@ -1203,19 +1333,105 @@ mod tests {
             hp("2026-06-18T05:30:00Z", 300, 0.007), // same day -> collapses, last wins
             hp("2026-06-19T01:00:00Z", 600, 0.012), // new day
         ];
-        let v = build_history_json(&s);
+        let v = build_history_json(&s, &StoreConfig::default());
         assert_eq!(v["lifetime"]["requests"], 3);
+        assert_eq!(v["retention"]["max_history_points"], DEFAULT_MAX_HISTORY);
         assert_eq!(v["lifetime"]["tokens_saved"], 600);
         assert_eq!(v["lifetime"]["cache_savings_usd"], 0.004);
         // raw checkpoints preserved
         assert_eq!(v["history"].as_array().unwrap().len(), 3);
-        // daily rollup: 06-18 collapses to its last point (300), then 06-19
+        // daily rollup: 06-18 collapses to its last point (cum 300), then 06-19
+        // (cum 600). The dashboard reads `timestamp` + cumulative
+        // `total_tokens_saved` and the per-day delta `tokens_saved`.
         let daily = v["series"]["daily"].as_array().unwrap();
         assert_eq!(daily.len(), 2);
-        assert_eq!(daily[0]["date"], "2026-06-18");
-        assert_eq!(daily[0]["tokens_saved"], 300);
-        assert_eq!(daily[1]["date"], "2026-06-19");
-        assert_eq!(daily[1]["tokens_saved"], 600);
+        assert_eq!(daily[0]["timestamp"], "2026-06-18");
+        assert_eq!(daily[0]["total_tokens_saved"], 300); // cumulative
+        assert_eq!(daily[0]["tokens_saved"], 300); // per-day delta (300 - 0)
+        assert_eq!(daily[1]["timestamp"], "2026-06-19");
+        assert_eq!(daily[1]["total_tokens_saved"], 600); // cumulative
+        assert_eq!(daily[1]["tokens_saved"], 300); // per-day delta (600 - 300)
+        assert_eq!(daily[1]["compression_savings_usd_delta"], 0.005); // 0.012 - 0.007
+    }
+
+    #[test]
+    fn daily_first_delta_intact_at_cap_but_zeroed_after_eviction() {
+        let s = SavingsState {
+            history: vec![
+                hp("2026-06-18T00:00:00Z", 100, 0.001),
+                hp("2026-06-19T00:00:00Z", 300, 0.003),
+                hp("2026-06-20T00:00:00Z", 600, 0.006),
+            ],
+            ..SavingsState::default()
+        };
+        // len(3) == max(3): NOT yet evicted (cap_front evicts on `>`), so the
+        // first day's real delta-from-zero (100) must be reported, not zeroed.
+        let at_cap = StoreConfig {
+            max_history: 3,
+            ..StoreConfig::default()
+        };
+        let v = build_history_json(&s, &at_cap);
+        assert_eq!(v["series"]["daily"][0]["tokens_saved"], 100);
+
+        // len(3) > max(2): eviction has occurred, baseline lost → first day 0.
+        let evicted = StoreConfig {
+            max_history: 2,
+            ..StoreConfig::default()
+        };
+        let v = build_history_json(&s, &evicted);
+        let daily = v["series"]["daily"].as_array().unwrap();
+        assert_eq!(daily[0]["tokens_saved"], 0); // baseline unknown
+        assert_eq!(daily[1]["tokens_saved"], 200); // 300 - 100
+        assert_eq!(daily[0]["total_tokens_saved"], 100); // cumulative still correct
+
+        // Eviction via persistent flag (the production path): history.len() == max
+        // after cap_front runs, so len > max is false — only history_evicted catches it.
+        let s_flagged = SavingsState {
+            history: vec![
+                hp("2026-06-18T00:00:00Z", 100, 0.001),
+                hp("2026-06-19T00:00:00Z", 300, 0.003),
+                hp("2026-06-20T00:00:00Z", 600, 0.006),
+            ],
+            history_evicted: true,
+            ..SavingsState::default()
+        };
+        let at_cap_flag = StoreConfig {
+            max_history: 3, // len == max, but flag says eviction happened
+            ..StoreConfig::default()
+        };
+        let v = build_history_json(&s_flagged, &at_cap_flag);
+        let daily = v["series"]["daily"].as_array().unwrap();
+        assert_eq!(daily[0]["tokens_saved"], 0); // evicted flag → zero baseline
+        assert_eq!(daily[1]["tokens_saved"], 200); // 300 - 100
+    }
+
+    #[test]
+    fn display_session_savings_percent_zero_on_foreign_file() {
+        // An old Python proxy_savings.json has tokens_saved but no total_input_tokens
+        // (defaults to 0). The session block must report 0% instead of 100%.
+        let session = DisplaySession {
+            tokens_saved: 500,
+            total_input_tokens: 0,
+            ..DisplaySession::default()
+        };
+        assert_eq!(session.savings_percent(), 0.0);
+    }
+
+    #[test]
+    fn history_evicted_flag_set_on_overflow() {
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig {
+            max_history: 2,
+            ..StoreConfig::default()
+        };
+        assert!(!s.history_evicted);
+        s.record(&outcome("a", "m", 10, 5), at(T0), &cfg); // len 1, no eviction
+        assert!(!s.history_evicted);
+        s.record(&outcome("a", "m", 10, 5), at(T0 + 1), &cfg); // len 2, at cap
+        assert!(!s.history_evicted);
+        s.record(&outcome("a", "m", 10, 5), at(T0 + 2), &cfg); // len would be 3 > 2 → evicted
+        assert!(s.history_evicted);
+        assert_eq!(s.history.len(), 2); // cap_front trimmed it
     }
 
     #[test]
@@ -1271,7 +1487,7 @@ mod tests {
 
     #[test]
     fn history_json_empty_is_well_formed() {
-        let v = build_history_json(&SavingsState::default());
+        let v = build_history_json(&SavingsState::default(), &StoreConfig::default());
         assert_eq!(v["lifetime"]["requests"], 0);
         assert_eq!(v["history"].as_array().unwrap().len(), 0);
         assert_eq!(v["series"]["daily"].as_array().unwrap().len(), 0);
@@ -1332,6 +1548,62 @@ mod tests {
     }
 
     #[test]
+    fn poison_increment_preserves_prior_accumulated_savings() {
+        // A single non-finite increment must drop only itself — never wipe the
+        // legitimately accumulated headline total.
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig::default();
+        // A good request accrues real savings.
+        s.record(&outcome("anthropic", "claude", 1000, 400), at(T0), &cfg);
+        let good = s.lifetime.compression_savings_usd;
+        assert!(good > 0.0);
+        // Then a garbage (Inf-priced) request arrives.
+        let mut bad = outcome("anthropic", "claude", 1000, 400);
+        bad.input_cost_per_token = f64::INFINITY;
+        s.record(&bad, at(T0), &cfg);
+        // The prior total is preserved (not reset to 0), and stays finite.
+        assert_eq!(s.lifetime.compression_savings_usd, good);
+        assert!(s.lifetime.compression_savings_usd.is_finite());
+    }
+
+    #[test]
+    fn sub_microdollar_savings_accumulate_without_quantization_loss() {
+        // Regression: rounding the running USD accumulator each request (round6)
+        // dropped every sub-5e-7 USD increment, so cheap-model / cache-read
+        // savings reported $0 forever. The accumulator must keep full precision;
+        // quantization happens only at the JSON read boundary.
+        let mut s = SavingsState::default();
+        let cfg = StoreConfig::default();
+        let mut o = outcome("vendor", "cheap-model", 2, 1); // saves 1 token
+        o.input_cost_per_token = 0.000_000_1; // $0.10/M → 1e-7 USD per request
+        for _ in 0..1000 {
+            s.record(&o, at(T0), &cfg);
+        }
+        // 1000 × 1e-7 = 1e-4; the old per-request round6 accumulated 0.0.
+        assert!(
+            (s.lifetime.compression_savings_usd - 1e-4).abs() < 1e-9,
+            "expected ~1e-4, got {}",
+            s.lifetime.compression_savings_usd
+        );
+    }
+
+    #[test]
+    fn session_expires_under_large_future_clock_skew() {
+        // A persisted last_activity_at far in the future (faster clock / skew)
+        // must not pin "this session" open forever; large future skew rolls over.
+        let cfg = StoreConfig::default(); // session_inactivity = 1h
+        let now = at(T0);
+        let mut session = DisplaySession {
+            last_activity_at: Some(to_rfc3339(now + Duration::from_secs(7200))),
+            ..Default::default()
+        };
+        assert!(session_expired(&session, now, &cfg));
+        // Small future skew (within the window) is tolerated as still-active.
+        session.last_activity_at = Some(to_rfc3339(now + Duration::from_secs(60)));
+        assert!(!session_expired(&session, now, &cfg));
+    }
+
+    #[test]
     fn save_state_errors_when_temp_path_is_blocked() {
         // The atomic write goes to `<path>.json.tmp.<pid>`. If a directory
         // already occupies that temp path, the temp-file write fails → exercises
@@ -1377,6 +1649,19 @@ mod tests {
         assert_eq!(v["tokens"]["active_savings_percent"], 40.0);
         assert_eq!(v["tokens"]["proxy_savings_percent"], 40.0);
         assert_eq!(v["tokens"]["proxy_attempted_tokens"], 1500); // total_before
+    }
+
+    #[test]
+    fn savings_percent_zero_when_input_tokens_absent_but_savings_present() {
+        // Inconsistent state reachable only from a foreign/corrupt persisted file
+        // (e.g. an old Python savings file): tokens_saved > 0 but no recorded
+        // forwarded input. Must report 0%, not a misleading ~100%.
+        let mut s = SavingsState::default();
+        s.lifetime.tokens_saved = 1000;
+        s.lifetime.requests = 5;
+        // s.total_input_tokens stays 0 (the absent/foreign-schema field).
+        let v = build_stats_json(&s, at(T0), &StoreConfig::default());
+        assert_eq!(v["tokens"]["savings_percent"], 0.0);
     }
 
     #[test]
@@ -1586,6 +1871,62 @@ mod tests {
         let err = save_state(&under_file, &SavingsState::default());
         assert!(err.is_err());
         std::fs::remove_file(&base).ok();
+    }
+
+    #[test]
+    fn with_path_recalibrates_evicted_flag_on_load() {
+        let dir = std::env::temp_dir().join(format!("hr-stats-evict-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("savings.json");
+
+        // Case 1 — upgrade migration: history at cap, history_evicted absent (serde
+        // defaults to false). Must be conservatively set to true.
+        let old_state = SavingsState {
+            history: vec![
+                hp("2026-06-18T00:00:00Z", 100, 0.001),
+                hp("2026-06-19T00:00:00Z", 300, 0.003),
+            ],
+            history_evicted: false,
+            ..SavingsState::default()
+        };
+        save_state(&path, &old_state).unwrap();
+        let store = SavingsStore::with_path(
+            &path,
+            StoreConfig {
+                max_history: 2,
+                ..StoreConfig::default()
+            },
+        );
+        assert!(
+            store.snapshot().history_evicted,
+            "at-cap load: upgrade migration must set history_evicted=true"
+        );
+
+        // Case 2 — cap raised: flag was true from a prior eviction under the old
+        // (smaller) cap. Raising the cap doesn't restore evicted checkpoints —
+        // the baseline is still lost. Flag must stay true.
+        let prior_evicted = SavingsState {
+            history: vec![
+                hp("2026-06-18T00:00:00Z", 100, 0.001),
+                hp("2026-06-19T00:00:00Z", 300, 0.003),
+            ],
+            history_evicted: true, // was evicted under old cap of 2
+            ..SavingsState::default()
+        };
+        save_state(&path, &prior_evicted).unwrap();
+        let store = SavingsStore::with_path(
+            &path,
+            StoreConfig {
+                max_history: 10,
+                ..StoreConfig::default()
+            }, // raised
+        );
+        assert!(
+            store.snapshot().history_evicted,
+            "raised cap: history_evicted must stay true — evicted checkpoints are not restored"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
