@@ -160,6 +160,9 @@ def test_wrap_opencode_no_mcp_skips_mcp_injection(
     env = captured["env"]
     config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     assert "mcp" not in config
+    config_file = tmp_path / ".config" / "opencode" / "opencode.json"
+    persisted_config = json.loads(config_file.read_text())
+    assert "headroom" not in persisted_config.get("mcp", {})
 
 
 def test_wrap_opencode_injects_mcp_by_default(
@@ -186,7 +189,12 @@ def test_wrap_opencode_injects_mcp_by_default(
     env = captured["env"]
     config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     assert "mcp" in config
-    assert config["mcp"]["headroom"]["type"] == "remote"
+    assert config["mcp"]["headroom"] == {
+        "type": "local",
+        "command": ["headroom", "mcp", "serve"],
+        "enabled": True,
+        "environment": {"HEADROOM_PROXY_URL": "http://127.0.0.1:9000"},
+    }
 
 
 def test_wrap_opencode_injects_rtk_into_agents_md(
