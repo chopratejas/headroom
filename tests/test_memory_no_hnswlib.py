@@ -9,8 +9,8 @@ a compiler.  The code already handles hnswlib absence gracefully (lazy import).
 
 from __future__ import annotations
 
-import sys
 import importlib
+import sys
 from unittest.mock import patch
 
 
