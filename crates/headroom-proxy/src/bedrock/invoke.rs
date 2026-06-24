@@ -45,7 +45,6 @@ use axum::extract::{ConnectInfo, Extension, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use futures_util::StreamExt as _;
 use http::HeaderName;
 use url::Url;
 
@@ -385,14 +384,21 @@ pub async fn handle_invoke(
 
     let status =
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    // Record now that the upstream status is known: a non-2xx upstream counts
-    // toward `requests.failed`.
-    if let Some(o) = rec_outcome {
-        state
-            .savings
-            .record_finalized(o, !status.is_success(), rec_start);
-    }
     let resp_headers = filter_response_headers(upstream_resp.headers());
+
+    // Buffer the response body to extract token usage before recording.
+    // InvokeModel responses are complete JSON objects (not streams), so
+    // buffering doesn't hurt TTFB. The streaming counterpart
+    // (`invoke-with-response-stream`) is handled separately.
+    let resp_bytes = upstream_resp.bytes().await.unwrap_or_default();
+
+    // Extract usage from the Bedrock/Anthropic response body and record it.
+    if let Some(mut o) = rec_outcome {
+        if status.is_success() {
+            apply_bedrock_response_usage(&resp_bytes, &mut o);
+        }
+        state.savings.record_finalized(o, !status.is_success(), rec_start);
+    }
 
     tracing::info!(
         event = "bedrock_invoke_forwarded",
@@ -403,11 +409,7 @@ pub async fn handle_invoke(
         "bedrock invoke: response forwarded"
     );
 
-    // Stream the response body back without buffering.
-    let stream = upstream_resp
-        .bytes_stream()
-        .map(|r| r.map_err(std::io::Error::other));
-    let body_out = Body::from_stream(stream);
+    let body_out = Body::from(resp_bytes);
 
     let mut builder = Response::builder().status(status);
     if let Some(h) = builder.headers_mut() {
@@ -614,6 +616,29 @@ fn collect_signed_headers(headers: &HeaderMap, upstream_url: &Url) -> Vec<(Strin
     out
 }
 
+/// Populate `outcome` with token counts from a Bedrock InvokeModel JSON
+/// response body. Silently no-ops on parse failures or absent fields.
+///
+/// When compression didn't run (`tokens_before == 0`), the billed input count
+/// fills both slots so savings_percent stays 0 instead of dividing by zero.
+fn apply_bedrock_response_usage(
+    resp_bytes: &[u8],
+    outcome: &mut crate::observability::stats::RequestOutcome,
+) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(resp_bytes) else {
+        return;
+    };
+    let Some(usage) = v.get("usage") else { return };
+    let get = |key: &str| usage.get(key).and_then(|t| t.as_u64()).unwrap_or(0);
+    let input_tokens = get("input_tokens");
+    if outcome.tokens_before == 0 {
+        outcome.tokens_before = input_tokens;
+        outcome.tokens_after = input_tokens;
+    }
+    outcome.output_tokens = get("output_tokens");
+    outcome.cache_read_tokens = get("cache_read_input_tokens");
+}
+
 fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
     let body = serde_json::json!({
         "error": {
@@ -792,5 +817,41 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .unwrap();
         assert_eq!(host, "bedrock-runtime.us-east-1.amazonaws.com");
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_extracts_all_fields() {
+        use crate::observability::stats::RequestOutcome;
+        use crate::observability::pricing::PriceBook;
+        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 0, 0, "r", &PriceBook::empty());
+        let resp = br#"{"id":"msg_01","type":"message","content":[],"usage":{"input_tokens":215,"output_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":0}}"#;
+        apply_bedrock_response_usage(resp, &mut o);
+        assert_eq!(o.tokens_before, 215);
+        assert_eq!(o.tokens_after, 215); // no compression → before == after
+        assert_eq!(o.output_tokens, 100);
+        assert_eq!(o.cache_read_tokens, 50);
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_preserves_compression_tokens() {
+        use crate::observability::stats::RequestOutcome;
+        use crate::observability::pricing::PriceBook;
+        // When compression ran, tokens_before > 0 — must not be overwritten.
+        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 1000, 600, "r", &PriceBook::empty());
+        let resp = br#"{"usage":{"input_tokens":600,"output_tokens":50,"cache_read_input_tokens":0}}"#;
+        apply_bedrock_response_usage(resp, &mut o);
+        assert_eq!(o.tokens_before, 1000); // preserved
+        assert_eq!(o.tokens_after, 600);   // preserved
+        assert_eq!(o.output_tokens, 50);
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_noop_on_non_json() {
+        use crate::observability::stats::RequestOutcome;
+        use crate::observability::pricing::PriceBook;
+        let mut o = RequestOutcome::priced("bedrock", "anthropic.claude-haiku", 0, 0, "r", &PriceBook::empty());
+        apply_bedrock_response_usage(b"not json", &mut o);
+        assert_eq!(o.tokens_before, 0);
+        assert_eq!(o.output_tokens, 0);
     }
 }
