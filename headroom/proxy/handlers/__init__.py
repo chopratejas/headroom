@@ -9,6 +9,7 @@ from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
 from headroom.proxy.handlers.batch import BatchHandlerMixin
 from headroom.proxy.handlers.bedrock import BedrockHandlerMixin
 from headroom.proxy.handlers.gemini import GeminiHandlerMixin
+from headroom.proxy.handlers.minimax import MiniMaxHandlerMixin
 from headroom.proxy.handlers.openai import OpenAIHandlerMixin
 from headroom.proxy.handlers.streaming import StreamingMixin
 
@@ -17,6 +18,7 @@ __all__ = [
     "BatchHandlerMixin",
     "BedrockHandlerMixin",
     "GeminiHandlerMixin",
+    "MiniMaxHandlerMixin",
     "OpenAIHandlerMixin",
     "StreamingMixin",
 ]
