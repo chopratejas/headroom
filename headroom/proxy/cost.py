@@ -292,7 +292,9 @@ def build_prefix_cache_stats(
     # so the dashboard can show "of N expected-cache misses, X were TTL lapses
     # vs Y prefix changes" — the signal a user needs to decide 5m vs 1h TTL.
     _miss_by_provider: dict[str, dict[str, int]] = {}
-    _miss_totals: dict[str, int] = {
+    # Holds integer counts AND float percentages (ttl_expiry_pct etc.), so the
+    # value type is float — ints coerce cleanly and the counts stay whole.
+    _miss_totals: dict[str, float] = {
         "ttl_expiry": 0,
         "prefix_change": 0,
         "unknown": 0,
