@@ -587,9 +587,9 @@ class ContextTracker:
                 else:
                     parts.append(str(exp["content"]))
 
-        parts.append("\n[End Proactive Expansion]")
-
-        return "\n".join(parts)
+        parts.append("[End Proactive Expansion]")
+        body = "\n".join(parts)
+        return f"<headroom_proactive_expansion>\n{body}\n</headroom_proactive_expansion>"
 
     def get_tracked_hashes(self) -> list[str]:
         """Get list of currently tracked hashes."""

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- Proactive expansion blocks injected into user turns are now wrapped in
+  `<headroom_proactive_expansion>` XML tags, giving downstream consumers
+  (LLMs, loggers, attribution parsers) a machine-readable provenance
+  boundary and preventing misattribution in multi-agent threads.
 
 ### Changed
 

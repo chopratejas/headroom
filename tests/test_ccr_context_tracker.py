@@ -546,6 +546,8 @@ class TestExpansionFormatting:
         assert "[Proactive Context Expansion" in formatted
         assert "Expanded from earlier" in formatted
         assert '[{"id": 1}, {"id": 2}]' in formatted
+        assert formatted.startswith("<headroom_proactive_expansion>\n")
+        assert formatted.endswith("\n</headroom_proactive_expansion>")
 
     def test_format_search_expansion(self):
         """Format search expansion for LLM context."""
@@ -565,6 +567,8 @@ class TestExpansionFormatting:
         formatted = tracker.format_expansions_for_context(expansions)
 
         assert "Search results for 'authentication'" in formatted
+        assert formatted.startswith("<headroom_proactive_expansion>\n")
+        assert formatted.endswith("\n</headroom_proactive_expansion>")
 
     def test_format_empty_expansions(self):
         """Empty expansions return empty string."""
@@ -573,6 +577,57 @@ class TestExpansionFormatting:
         formatted = tracker.format_expansions_for_context([])
 
         assert formatted == ""
+
+    def test_format_expansion_xml_wrapper(self):
+        """Expansion output is wrapped in machine-readable XML provenance tag."""
+        tracker = ContextTracker()
+        expansions = [
+            {
+                "hash": "h1",
+                "type": "full",
+                "content": "expanded content",
+                "item_count": 1,
+                "reason": "high relevance",
+            }
+        ]
+        result = tracker.format_expansions_for_context(expansions)
+        assert result.startswith("<headroom_proactive_expansion>\n")
+        assert result.endswith("\n</headroom_proactive_expansion>")
+        assert "[Proactive Context Expansion" in result
+        assert result.count("[End Proactive Expansion]") == 1
+
+    def test_proactive_expansion_identifiable_after_injection(self):
+        """Injected expansion carries XML provenance tag after full injection chain."""
+        from headroom.ccr.context_tracker import ContextTracker
+        from headroom.proxy.handlers.anthropic import AnthropicHandlerMixin
+
+        tracker = ContextTracker()
+        expansions = [
+            {
+                "hash": "h1",
+                "type": "full",
+                "content": "expanded context",
+                "item_count": 1,
+                "reason": "high relevance",
+            }
+        ]
+        expansion_text = tracker.format_expansions_for_context(expansions)
+
+        # Simulate a user turn that contains peer_turn markup
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "<peer_turn from='AgentX'>some content</peer_turn>"}],
+            }
+        ]
+        result = AnthropicHandlerMixin._append_context_to_latest_non_frozen_user_turn(
+            messages, expansion_text, frozen_message_count=0
+        )
+        injected = result[0]["content"][0]["text"]
+        # Headroom-injected content is identifiable by XML tag, distinct from peer content
+        assert "<headroom_proactive_expansion>" in injected
+        assert "</headroom_proactive_expansion>" in injected
+        assert "<peer_turn from='AgentX'>" in injected  # peer content unchanged
 
 
 class TestGlobalTracker:
