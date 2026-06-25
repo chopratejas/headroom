@@ -48,10 +48,15 @@ def test_memory_adapters_init_importable_without_hnswlib() -> None:
 def test_hnsw_availability_check_returns_false_without_hnswlib() -> None:
     """_HNSW_AVAILABLE must be False when hnswlib is not installed."""
     import headroom.memory.adapters as adapters
+
     # If hnswlib is installed on this machine, simulate its absence
     with patch.dict(sys.modules, {"hnswlib": None}):
         # Re-evaluate availability check
-        available = adapters._check_hnsw_available() if hasattr(adapters, "_check_hnsw_available") else False
+        available = (
+            adapters._check_hnsw_available()
+            if hasattr(adapters, "_check_hnsw_available")
+            else False
+        )
         # Either the function returns False, or hnswlib was never loaded
         assert not available or not hasattr(adapters, "_check_hnsw_available")
 
@@ -67,4 +72,5 @@ def test_proxy_imports_without_hnswlib() -> None:
     # This is the critical path: headroom proxy starts → must not crash
     with patch.dict(sys.modules, {"hnswlib": None}):
         import headroom.proxy.server as server  # noqa: F401
+
         assert server is not None
