@@ -1011,3 +1011,34 @@ def test_resolve_copilot_api_url_ignores_user_info_and_never_calls_network(
     with patch.object(copilot_auth, "_fetch_copilot_user_info") as fetch:
         assert copilot_auth.resolve_copilot_api_url("gho-real") == "https://pin.example.com"
     fetch.assert_not_called()
+
+
+def test_inject_rtk_instructions_handles_utf8_with_typographic_quotes(
+    tmp_path: Path,
+) -> None:
+    """_inject_rtk_instructions must not crash on UTF-8 files with smart quotes.
+
+    Regression test for #1126: on Windows the default codec (cp1252) could
+    not decode typographic quotes (e.g. \u201c, \u201d) in a .copilot-instructions
+    file, raising UnicodeDecodeError.
+    """
+    from headroom.cli.wrap import _RTK_MARKER, _inject_rtk_instructions
+
+    instructions = tmp_path / ".github" / "copilot-instructions.md"
+    instructions.parent.mkdir(parents=True)
+    # File containing typographic (smart) quotes — common when copying from
+    # formatted docs. These bytes are valid UTF-8 but invalid cp1252.
+    instructions.write_text(
+        "# Project Instructions\n\nUse \u201chappy places\u201d for error handling.\n",
+        encoding="utf-8",
+    )
+
+    assert _inject_rtk_instructions(instructions) is True
+    content = instructions.read_text(encoding="utf-8")
+    assert _RTK_MARKER in content
+    # Existing content preserved
+    assert "\u201chappy places\u201d" in content
+
+    # Idempotent — running again does not duplicate
+    assert _inject_rtk_instructions(instructions) is True
+    assert content.count(_RTK_MARKER) == 1
