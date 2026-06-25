@@ -247,6 +247,20 @@ def dashboard(port: int, no_open: bool) -> None:
     ),
 )
 @click.option(
+    "--rpm",
+    default=None,
+    type=click.IntRange(min=1),
+    envvar="HEADROOM_RPM",
+    help="Max requests per minute. Env: HEADROOM_RPM. Default: 60.",
+)
+@click.option(
+    "--tpm",
+    default=None,
+    type=click.IntRange(min=1),
+    envvar="HEADROOM_TPM",
+    help="Max tokens per minute. Env: HEADROOM_TPM. Default: 100000.",
+)
+@click.option(
     "--no-ccr-inject-tool",
     is_flag=True,
     envvar="HEADROOM_NO_CCR_INJECT_TOOL",
@@ -792,6 +806,8 @@ def proxy(
     no_cache: bool,
     no_rate_limit: bool,
     protect_tool_results: str | None,
+    rpm: int | None,
+    tpm: int | None,
     no_ccr_inject_tool: bool,
     no_ccr_marker: bool,
     no_ccr_proactive_expansion: bool,
@@ -991,6 +1007,8 @@ def proxy(
         optimize=not no_optimize,
         cache_enabled=not no_cache,
         rate_limit_enabled=not no_rate_limit,
+        rate_limit_requests_per_minute=rpm if rpm is not None else 60,
+        rate_limit_tokens_per_minute=tpm if tpm is not None else 100_000,
         compress_user_messages=_get_env_bool("HEADROOM_COMPRESS_USER_MESSAGES", False),
         min_tokens_to_crush=_get_env_int_optional("HEADROOM_MIN_TOKENS") or 500,
         max_items_after_crush=_get_env_int_optional("HEADROOM_MAX_ITEMS") or 50,
