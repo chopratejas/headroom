@@ -118,6 +118,7 @@ def test_mcp_retrieve_missing_hash_still_errors(fresh_store) -> None:
 
 def test_handle_stats_session_output_is_window_scoped() -> None:
     """window-scoped stats output should be explicitly labeled after this change."""
+
     async def fetch_stats() -> dict[str, object]:
         return {
             "summary": {
@@ -163,6 +164,7 @@ def test_handle_stats_includes_lifetime_totals_from_persistent_savings() -> None
 
 def test_handle_stats_falls_back_gracefully_without_persistent_lifetime() -> None:
     """Missing lifetime data should still return a valid session summary."""
+
     async def fetch_stats() -> dict[str, object]:
         return {
             "summary": {
@@ -192,9 +194,7 @@ def test_handle_stats_shows_zero_lifetime_totals_when_present() -> None:
                 "api_requests": 3,
                 "compression": {},
             },
-            "persistent_savings": {
-                "lifetime": {"tokens_saved": 0, "compression_savings_usd": 0.0}
-            },
+            "persistent_savings": {"lifetime": {"tokens_saved": 0, "compression_savings_usd": 0.0}},
         }
 
     server = mcp_server.HeadroomMCPServer(check_proxy=True)
