@@ -34,6 +34,20 @@ from .main import main
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
+# Corporate TLS-inspection support (issue #1308). When HEADROOM_TLS_STRICT=0,
+# strip OpenSSL's RFC 5280 strict CA-constraint check from urllib3's context
+# builder *before* huggingface_hub / requests import and cache it — otherwise
+# model downloads (huggingface.co) fail with "Basic Constraints of CA cert not
+# marked critical" behind Zscaler/Netskope on Python 3.13+. The proxy's own
+# httpx upstream client is handled separately in proxy/server.py via
+# build_httpx_verify(). No-op unless the toggle is set.
+try:  # pragma: no cover - exercised via integration, not unit-importable cheaply
+    from headroom.proxy.ssl_context import apply_global_tls_relaxation as _apply_tls_relax
+
+    _apply_tls_relax()
+except Exception:  # never let TLS relaxation wiring break startup
+    pass
+
 # Logger-level suppression: httpx HEAD/GET manifest checks + HF advisory msgs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
@@ -310,6 +324,17 @@ def dashboard(port: int, no_open: bool) -> None:
     ),
 )
 @click.option(
+    "--anthropic-buffered-request-timeout-seconds",
+    type=click.IntRange(min=1),
+    default=None,
+    envvar="HEADROOM_ANTHROPIC_BUFFERED_REQUEST_TIMEOUT_SECONDS",
+    help=(
+        "Buffered Anthropic read timeout in seconds for non-streaming "
+        "message and batch paths (default: 600). "
+        "Env: HEADROOM_ANTHROPIC_BUFFERED_REQUEST_TIMEOUT_SECONDS."
+    ),
+)
+@click.option(
     "--anthropic-pre-upstream-concurrency",
     type=int,
     default=None,
@@ -427,6 +452,16 @@ def dashboard(port: int, no_open: bool) -> None:
     ),
 )
 @click.option(
+    "--disable-kompress-fallback",
+    is_flag=True,
+    envvar="HEADROOM_DISABLE_KOMPRESS_FALLBACK",
+    help=(
+        "With --disable-kompress, route fall-through content to PASSTHROUGH instead of "
+        "the default KOMPRESS fallback (restores legacy --disable-kompress behaviour). "
+        "Env: HEADROOM_DISABLE_KOMPRESS_FALLBACK=1."
+    ),
+)
+@click.option(
     "--disable-kompress-anthropic/--enable-kompress-anthropic",
     "disable_kompress_anthropic",
     default=None,
@@ -463,6 +498,41 @@ def dashboard(port: int, no_open: bool) -> None:
     "--no-read-lifecycle",
     is_flag=True,
     help="Disable Read lifecycle management (stale/superseded Read compression)",
+)
+# Read maturation (Mechanism B) — experimental, OFF by default
+@click.option(
+    "--read-maturation",
+    is_flag=True,
+    envvar="HEADROOM_READ_MATURATION",
+    help=(
+        "EXPERIMENTAL: activity-based read maturation — hold fresh Reads "
+        "out of the provider prefix cache and compress them once their "
+        "file quiesces (env: HEADROOM_READ_MATURATION=1)"
+    ),
+)
+@click.option(
+    "--read-maturation-quiesce-turns",
+    type=int,
+    default=5,
+    show_default=True,
+    envvar="HEADROOM_READ_MATURATION_QUIESCE_TURNS",
+    help="Read maturation: mature a held Read once its file is quiet this many assistant turns.",
+)
+@click.option(
+    "--read-maturation-max-hold-turns",
+    type=int,
+    default=25,
+    show_default=True,
+    envvar="HEADROOM_READ_MATURATION_MAX_HOLD_TURNS",
+    help="Read maturation: force-mature a Read held this many turns even if its file stays active.",
+)
+@click.option(
+    "--read-maturation-min-size-bytes",
+    type=int,
+    default=2048,
+    show_default=True,
+    envvar="HEADROOM_READ_MATURATION_MIN_SIZE_BYTES",
+    help="Read maturation: only hold/mature Read outputs at least this many bytes.",
 )
 # Memory System (Multi-Provider Support)
 @click.option(
@@ -720,6 +790,7 @@ def proxy(
     retry_max_attempts: int | None,
     request_timeout_seconds: int | None,
     connect_timeout_seconds: int | None,
+    anthropic_buffered_request_timeout_seconds: int | None,
     anthropic_pre_upstream_concurrency: int | None,
     anthropic_pre_upstream_acquire_timeout_seconds: float | None,
     anthropic_pre_upstream_memory_context_timeout_seconds: float | None,
@@ -731,10 +802,15 @@ def proxy(
     budget_period: str,
     code_aware_flag: bool | None,
     disable_kompress: bool,
+    disable_kompress_fallback: bool,
     disable_kompress_anthropic: bool | None,
     disable_kompress_openai: bool | None,
     code_graph: bool,
     no_read_lifecycle: bool,
+    read_maturation: bool,
+    read_maturation_quiesce_turns: int,
+    read_maturation_max_hold_turns: int,
+    read_maturation_min_size_bytes: int,
     memory: bool,
     memory_db_path: str,
     memory_storage: str,
@@ -939,6 +1015,11 @@ def proxy(
         connect_timeout_seconds=connect_timeout_seconds
         if connect_timeout_seconds is not None
         else 10,
+        anthropic_buffered_request_timeout_seconds=(
+            anthropic_buffered_request_timeout_seconds
+            if anthropic_buffered_request_timeout_seconds is not None
+            else 600
+        ),
         max_connections=max_connections,
         max_keepalive_connections=max_keepalive_connections,
         keepalive_expiry=keepalive_expiry,
@@ -959,12 +1040,18 @@ def proxy(
             in ("true", "1", "yes", "on")
         ),
         disable_kompress=disable_kompress,
+        disable_kompress_fallback=disable_kompress_fallback,
         disable_kompress_anthropic=disable_kompress_anthropic,
         disable_kompress_openai=disable_kompress_openai,
         # Code graph: live file watcher for incremental reindexing
         code_graph_watcher=code_graph,
         # Read lifecycle: ON by default (use --no-read-lifecycle to disable)
         read_lifecycle=not no_read_lifecycle,
+        # Read maturation (Mechanism B): experimental, OFF by default
+        read_maturation=read_maturation,
+        read_maturation_quiesce_turns=read_maturation_quiesce_turns,
+        read_maturation_max_hold_turns=read_maturation_max_hold_turns,
+        read_maturation_min_size_bytes=read_maturation_min_size_bytes,
         # Memory System (Multi-Provider with auto-detection)
         # --learn implies --memory (need backend for storing patterns)
         # Stateless mode disables memory (requires SQLite on disk)
@@ -1217,9 +1304,13 @@ Press Ctrl+C to stop.
 
         import asyncio as _asyncio
 
-        from headroom.memory.adapters.watchdog import EmbeddingServerWatchdog
-
         async def _start_embed_watchdog() -> Any:
+            # Import lazily inside the guarded coroutine. The sidecar module is
+            # optional and may be absent; keeping the import here lets the
+            # try/except below fall back to the per-worker embedder instead of
+            # crashing the proxy at startup with ModuleNotFoundError.
+            from headroom.memory.adapters.watchdog import EmbeddingServerWatchdog
+
             wd = EmbeddingServerWatchdog(socket_path=_embed_socket)
             await wd.start()
             ok = await wd.wait_until_healthy(timeout=30.0)
