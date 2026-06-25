@@ -178,8 +178,7 @@ class TestHeadroomRetrieveExemptionAnthropic:
         # Either the content changed (compressed) or tokens went down
         tool_result_block = result.messages[1]["content"][0]
         assert (
-            tool_result_block["content"] != content
-            or result.tokens_after <= result.tokens_before
+            tool_result_block["content"] != content or result.tokens_after <= result.tokens_before
         )
 
     def test_mixed_retrieve_and_normal_only_normal_compressed(self):
