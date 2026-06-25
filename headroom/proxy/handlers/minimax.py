@@ -1,35 +1,33 @@
 """MiniMax handler mixin for HeadroomProxy.
 
-Provides a thin provider-specific wrapper around the Anthropic
-handler so MiniMax traffic is recorded with ``provider="minimax"``
-instead of ``provider="anthropic"``. The wire format is identical to
-Anthropic (MiniMax exposes an Anthropic-compatible /v1/messages API),
-so we delegate the heavy lifting to the existing AnthropicHandlerMixin.
+Routes MiniMax traffic (model names matching ``MiniMax-M*`` or
+``minimax/MiniMax-M*``) to a dedicated upstream URL — independent of
+the Anthropic upstream — so the two providers don't accidentally share
+quota when only one is configured.
 
-Why this exists:
-- Headroom's cost tracker keys everything on ``provider``. Without
-  this shim, M3/M2.7 traffic buckets under Anthropic and the per-model
-  breakdown in the dashboard is wrong.
-- SmartCrusher and cache alignment work the same on MiniMax wire
-  format, but their billing-side accounting needs the right provider.
+Wire format: MiniMax exposes an Anthropic-compatible /v1/messages API,
+so the heavy lifting is delegated to AnthropicHandlerMixin. What this
+mixin adds:
 
-Differences from AnthropicProvider:
-- Auth: MiniMax accepts a per-session JWT via the ``Token:`` header
-  (Mavis Code managed provider). Handled by Mavis Code at the client
-  side; Headroom passes the header through.
-- Pricing: MiniMax has its own price table in
-  ``headroom/providers/minimax.py`` (``MODEL_INPUT_COST`` /
-  ``MODEL_OUTPUT_COST``).
-- Default base URL: ``https://api.minimaxi.com/anthropic`` for the
-  direct Anthropic-compat API, or
-  ``https://agent.minimax.io/mavis/api/v1/llm`` for the Mavis Code
-  gateway.
+- **Upstream URL resolution**: prefers the explicit
+  ``upstream_base_url`` arg, then ``ProxyConfig.minimax_api_url``, then
+  the ``MINIMAX_TARGET_API_URL`` env var, then falls back to
+  ``self.ANTHROPIC_API_URL``. The fallback is the legacy behaviour —
+  pin a dedicated URL via ProxyConfig or env to route MiniMax traffic
+  independently of Anthropic traffic.
+- **Provider stamp**: forces ``provider_name="minimax"`` so the
+  cost tracker and dashboard per-model breakdown attribute savings
+  to MiniMax, not Anthropic.
+- **Prefix strip**: removes the ``minimax/`` prefix from the model
+  name before forwarding upstream, since the MiniMax gateway expects
+  bare model names (``MiniMax-M3``, not ``minimax/MiniMax-M3``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,8 +44,10 @@ class MiniMaxHandlerMixin:
     """Mixin providing MiniMax-specific proxy handler for HeadroomProxy.
 
     Routes traffic to the Anthropic handler (wire-compatible) but
-    overrides the provider name and cost table so M3/M2.7 traffic
-    is bucketed correctly in the dashboard.
+    overrides the provider name, cost table, and upstream URL so
+    M3/M2.7 traffic is bucketed correctly in the dashboard AND can
+    be sent to a MiniMax-specific endpoint without disturbing the
+    Anthropic upstream.
     """
 
     @staticmethod
@@ -76,6 +76,38 @@ class MiniMaxHandlerMixin:
                 return tail
         return model
 
+    def _resolve_minimax_upstream_url(
+        self, override: str | None = None
+    ) -> str:
+        """Resolve the upstream base URL for MiniMax traffic.
+
+        Priority (first match wins):
+            1. ``override`` argument — caller-supplied URL.
+            2. ``self.config.minimax_api_url`` — ProxyConfig field.
+            3. ``MINIMAX_TARGET_API_URL`` env var.
+            4. ``self.ANTHROPIC_API_URL`` — legacy fallback (used when
+               the operator hasn't configured a separate MiniMax
+               upstream; this is the historical default).
+
+        Returns the resolved URL string, never empty.
+        """
+        if override:
+            return override
+        cfg_url = getattr(self.config, "minimax_api_url", None)
+        if cfg_url:
+            return cfg_url
+        env_url = os.environ.get("MINIMAX_TARGET_API_URL")
+        if env_url:
+            return env_url
+        # Late import: HeadroomProxy lives in headroom.proxy.server which
+        # itself imports MiniMaxHandlerMixin, so a top-level import would
+        # create a cycle.
+        from headroom.proxy.server import HeadroomProxy
+
+        return getattr(
+            HeadroomProxy, "ANTHROPIC_API_URL", "https://api.anthropic.com"
+        )
+
     async def handle_minimax_messages(
         self,
         request: Request,
@@ -96,38 +128,29 @@ class MiniMaxHandlerMixin:
         - Strips the ``minimax/`` prefix from the model name before
           forwarding upstream, since the MiniMax gateway expects
           bare model names (``MiniMax-M3``, not ``minimax/MiniMax-M3``).
+        - Routes to a MiniMax-specific upstream URL when one is
+          configured (via ``ProxyConfig.minimax_api_url`` or the
+          ``MINIMAX_TARGET_API_URL`` env var). Without this, MiniMax
+          traffic would share Anthropic's upstream and any quota or
+          rate-limit applied to that upstream would accidentally
+          throttle MiniMax as well.
 
-        Note on upstream URL resolution:
-            We do NOT pass a default ``upstream_base_url`` here. The
-            delegate falls back to ``self.ANTHROPIC_API_URL``, which is
-            set at proxy construction time from the
-            ``ANTHROPIC_TARGET_API_URL`` env var (or the operator's CLI
-            flag). This keeps a single source of truth for upstream
-            routing — operators pin the Mavis Code gateway URL once,
-            in the LaunchAgent plist, and both Anthropic and MiniMax
-            traffic flow through it. The fork-specific
-            ``MINIMAX_TARGET_API_URL`` env var is intentionally NOT
-            consulted here: it would override the Mavis Code gateway
-            with the direct ``api.minimaxi.com/anthropic`` upstream,
-            which doesn't accept ``Token: <jwt>`` headers.
+        Operators who want MiniMax to share the Anthropic upstream
+        (e.g. to use a single Mavis Code gateway for both providers)
+        can simply leave both env vars unset and the handler falls
+        back to ``self.ANTHROPIC_API_URL``.
         """
         # Strip the prefix from the incoming model name so the upstream
         # gateway recognises it. Use a fresh request body if needed.
         if model_override is None:
             try:
-                # Read body, mutate model, replace request._receive so
-                # downstream readers see the cleaned body. Anthropic
-                # handler reads request.json() lazily — we patch the
-                # cached body if Starlette has already buffered it.
                 body_bytes = await request.body()
                 parsed = json.loads(body_bytes or b"{}")
                 if isinstance(parsed, dict) and "model" in parsed:
-                    parsed["model"] = self._strip_minimax_prefix(parsed["model"])
+                    parsed["model"] = self._strip_minimax_prefix(
+                        parsed["model"]
+                    )
                     new_body = json.dumps(parsed).encode()
-                    # Starlette caches the body; replace the cached value
-                    # via _body. This is the same trick the
-                    # mini-headroom proxy uses for the minimax
-                    # auth shim.
                     try:
                         request._body = new_body  # type: ignore[attr-defined]
                     except AttributeError:
@@ -135,17 +158,18 @@ class MiniMaxHandlerMixin:
                         # body and patching model via model_override.
                         model_override = parsed["model"]
             except (json.JSONDecodeError, ValueError):
-                # Malformed body — let the Anthropic handler surface the
-                # error to the client.
-                logger.warning("minimax: could not parse body for model strip")
+                logger.warning(
+                    "minimax: could not parse body for model strip"
+                )
 
-        # Delegate. We pass model_override so the Anthropic handler
-        # sees the cleaned model name even if the body-patch failed.
-        # upstream_base_url is NOT passed: delegate falls back to
-        # self.ANTHROPIC_API_URL (set from ANTHROPIC_TARGET_API_URL env var).
+        # Resolve the MiniMax-specific upstream URL.
+        resolved_url = self._resolve_minimax_upstream_url(upstream_base_url)
+
+        # Delegate to Anthropic handler with the resolved MiniMax URL.
         return await AnthropicHandlerMixin.handle_anthropic_messages(
             self,
             request,
+            upstream_base_url=resolved_url,
             provider_name=provider_name,  # "minimax" — overrides default
             model_override=model_override,
             force_stream=force_stream,
