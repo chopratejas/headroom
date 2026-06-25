@@ -548,7 +548,6 @@ class AnthropicHandlerMixin:
             else:
                 _pre_upstream_sem_acquired = True
                 _wait_ms = (time.perf_counter() - _wait_started_at) * 1000.0
-            _wait_ms = (time.perf_counter() - _wait_started_at) * 1000.0
             stage_timer.record("pre_upstream_wait", _wait_ms)
             if _wait_ms > 100.0:
                 logger.info(

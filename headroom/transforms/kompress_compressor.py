@@ -134,10 +134,15 @@ def _acquire_execution_slot(
     backend: str,
     device_type: str,
     *,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
 ) -> tuple[threading.BoundedSemaphore | None, float]:
     semaphore = _execution_semaphore(backend, device_type)
     start = time.perf_counter()
+    if timeout_seconds is None:
+        semaphore.acquire()
+        wait_ms = (time.perf_counter() - start) * 1000.0
+        return semaphore, wait_ms
+
     acquired = semaphore.acquire(blocking=False)
     if not acquired and timeout_seconds > 0:
         acquired = semaphore.acquire(timeout=timeout_seconds)
@@ -640,15 +645,8 @@ def _validate_pytorch_device(model: Any, tokenizer: Any, device: str) -> None:
     semaphore, _wait_ms = _acquire_execution_slot(
         "pytorch",
         device,
-        timeout_seconds=_execution_wait_budget_seconds(),
+        timeout_seconds=None,
     )
-    if semaphore is None:
-        logger.warning(
-            "Kompress execution saturation skip for model-validation path on device=%s after %.2fms",
-            device,
-            _wait_ms,
-        )
-        return
     with contextlib.ExitStack() as stack:
         stack.callback(semaphore.release)
         scores = model.get_scores(input_ids, attention_mask)

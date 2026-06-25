@@ -234,3 +234,56 @@ def test_capacity_available_still_compresses(monkeypatch):
     result = KompressCompressor().compress(" ".join(["word"] * 20), allow_download=False)
     assert 0 < result.compression_ratio < 1.0
     assert result.compressed != " ".join(["word"] * 20)
+
+
+def test_validation_probe_waits_for_execution_slot(monkeypatch):
+    """Model-load validation must block for a slot instead of failing open."""
+
+    class _FakeTensor:
+        def to(self, _device):
+            return self
+
+    class _FakeEncoding(dict):
+        def __init__(self):
+            super().__init__()
+            self["input_ids"] = _FakeTensor()
+            self["attention_mask"] = _FakeTensor()
+
+    class _FakeTokenizer:
+        def __call__(self, *_args, **_kwargs):
+            return _FakeEncoding()
+
+    class _FakeScore:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+    class _FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def get_scores(self, input_ids, attention_mask):
+            self.calls += 1
+            return [_FakeScore()]
+
+    semaphore = threading.BoundedSemaphore(1)
+    semaphore.acquire()
+    model = _FakeModel()
+
+    monkeypatch.setattr(kc, "_execution_semaphore", lambda *_args, **_kwargs: semaphore)
+
+    worker = threading.Thread(
+        target=kc._validate_pytorch_device,
+        args=(model, _FakeTokenizer(), "mps"),
+    )
+    worker.start()
+    worker.join(timeout=0.05)
+    assert worker.is_alive(), "validation should wait for an execution slot"
+
+    semaphore.release()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert model.calls == 1
