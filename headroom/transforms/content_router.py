@@ -729,6 +729,18 @@ _JSON_BLOCK_START = re.compile(r"^\s*[\[{]", re.MULTILINE)
 _SEARCH_RESULT_PATTERN = re.compile(r"^\S+:\d+:", re.MULTILINE)
 _PROSE_PATTERN = re.compile(r"[A-Z][a-z]+\s+\w+\s+\w+")
 
+# Domain routing: per-content-type bias multipliers for the kompress ML compressor.
+# Derived from eval_domain_routing.py (ultrawhale/scripts) on kompress-v4 with 20
+# samples per domain; threshold: mk_survival >= 0.95.
+# Values < 1.0 = more aggressive (keep fewer tokens); > 1.0 = more conservative.
+_DOMAIN_BIAS_MULTIPLIERS: dict = {
+    ContentType.BUILD_OUTPUT: 0.50,    # error/build traces: 2.15x ratio, 96.8% mk survival
+    ContentType.SOURCE_CODE: 0.50,     # file reads: 1.99x ratio, 96.8% mk survival
+    ContentType.SEARCH_RESULTS: 0.70,  # search output: 1.45x ratio, 98.9% mk survival
+    # ContentType.JSON_ARRAY → SmartCrusher, not kompress; no adjustment needed
+    # ContentType.PLAIN_TEXT → default bias (1.0), no multiplier
+}
+
 
 def is_mixed_content(content: str) -> bool:
     """Detect if content contains multiple distinct types.
@@ -1186,6 +1198,13 @@ class ContentRouter(Transform):
                         else "content_detection"
                     ),
                 )
+
+            # Domain routing: adjust bias based on detected content type.
+            # Only applied when content type was detected (not force_kompress path).
+            if not force_kompress:
+                domain_mult = _DOMAIN_BIAS_MULTIPLIERS.get(detection.content_type, 1.0)
+                if domain_mult != 1.0:
+                    bias = bias * domain_mult
 
             if strategy == CompressionStrategy.MIXED:
                 result = self._compress_mixed(content, context, question, bias=bias)
