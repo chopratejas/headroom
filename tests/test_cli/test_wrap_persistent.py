@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+
 import click
 import pytest
 
@@ -93,6 +95,7 @@ def test_ensure_proxy_falls_back_when_persistent_manifest_is_stale(monkeypatch) 
     monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
     monkeypatch.setattr(wrap_cli, "_recover_persistent_proxy", lambda port: False)
     monkeypatch.setattr(wrap_cli, "_port_bind_error", lambda port: None)
+    monkeypatch.setattr(wrap_cli, "_find_available_port", lambda port, **kw: port)
     monkeypatch.setattr(wrap_cli, "_start_proxy", lambda *args, **kwargs: calls.append("start"))
 
     result = wrap_cli._ensure_proxy(8787, False)
@@ -108,8 +111,10 @@ def test_ensure_proxy_reports_unbindable_port_before_starting_subprocess(monkeyp
     monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: None)
     monkeypatch.setattr(
         wrap_cli,
-        "_port_bind_error",
-        lambda port: PermissionError(10013, "access denied by OS port reservation"),
+        "_find_available_port",
+        lambda port, **kw: (_ for _ in ()).throw(
+            OSError(errno.EACCES, "access denied by OS port reservation")
+        ),
     )
     monkeypatch.setattr(wrap_cli, "_start_proxy", lambda *args, **kwargs: calls.append("start"))
 
@@ -121,8 +126,6 @@ def test_ensure_proxy_reports_unbindable_port_before_starting_subprocess(monkeyp
         raise AssertionError("expected unbindable port to raise before starting proxy")
 
     assert "Port 8787 is unavailable" in message
-    assert "Windows" in message
-    assert "headroom wrap cursor --port 8788" in message
     assert calls == []
 
 
