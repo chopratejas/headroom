@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+* **litellm:** add the missing `async_post_call_success_hook` to `HeadroomCallback` so litellm's post-call success path no longer raises `AttributeError` ([#1114](https://github.com/chopratejas/headroom/issues/1114)).
 * **rtk:** stop `rtk` hook registration from spuriously timing out during `headroom wrap`. Output is captured to a temp file instead of pipes, and `stdin` is closed, so a background process forked by `rtk init` can no longer hold the pipe open and block `subprocess.run` past its 10s timeout after the hooks were already registered.
 * **ccr:** stop re-compressing `headroom_retrieve` output, which created an infinite retrieval loop, and stop emitting retrieval markers when the `headroom_retrieve` tool is not injected, which silently dropped data ([#1077](https://github.com/chopratejas/headroom/issues/1077), [#1006](https://github.com/chopratejas/headroom/issues/1006)).
 * **dashboard:** include RTK stats in the Historical tab; `/stats-history` now attaches live RTK/CLI-filtering stats the same way the Session tab does, so they survive a proxy restart ([#1177](https://github.com/chopratejas/headroom/issues/1177)).
