@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 use headroom_core::signals::{
     ImportanceCategory, ImportanceContext, KeywordDetector, KeywordRegistry, LineImportanceDetector,
 };
-use headroom_core::transforms::smart_crusher::compaction::DocumentCompactor;
+use headroom_core::transforms::smart_crusher::compaction::{
+    ClassifyConfig, CompactConfig, DocumentCompactor,
+};
 use headroom_core::transforms::smart_crusher::{
     CrushResult as RustCrushResult, SmartCrusher as RustSmartCrusher,
     SmartCrusherConfig as RustSmartCrusherConfig,
@@ -40,8 +42,12 @@ use headroom_core::transforms::{
     SearchCompressionResult as RustSearchResult, SearchCompressor as RustSearchCompressor,
     SearchCompressorConfig as RustSearchConfig, SearchCompressorStats as RustSearchStats,
 };
+use headroom_core::transforms::{
+    TextCrusher as RustTextCrusher, TextCrusherConfig as RustTextCrusherConfig,
+    TextCrusherResult as RustTextCrusherResult,
+};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyString};
+use pyo3::types::{PyBytes, PyDict};
 
 /// Identity stub used by the Python smoke test to verify linkage.
 #[pyfunction]
@@ -75,7 +81,7 @@ fn build_crush_array_dict<'py>(
     compacted: Option<String>,
     compaction_kind: Option<&'static str>,
 ) -> Bound<'py, PyDict> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     dict.set_item("items", kept_json).unwrap();
     dict.set_item("ccr_hash", ccr_hash).unwrap();
     dict.set_item("dropped_summary", dropped_summary).unwrap();
@@ -469,8 +475,14 @@ impl PySmartCrusherConfig {
         first_fraction = 0.3,
         last_fraction = 0.15,
         relevance_threshold = 0.3,
-        lossless_min_savings_ratio = 0.30,
+        lossless_min_savings_ratio = 0.15,
         enable_ccr_marker = true,
+        lossless_only = false,
+        compaction_core_field_fraction = 0.8,
+        compaction_heterogeneous_core_ratio = 0.6,
+        compaction_max_flatten_inner_keys = 6,
+        compaction_min_buckets = 2,
+        compaction_max_buckets = 8,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -492,6 +504,12 @@ impl PySmartCrusherConfig {
         relevance_threshold: f64,
         lossless_min_savings_ratio: f64,
         enable_ccr_marker: bool,
+        lossless_only: bool,
+        compaction_core_field_fraction: f64,
+        compaction_heterogeneous_core_ratio: f64,
+        compaction_max_flatten_inner_keys: usize,
+        compaction_min_buckets: usize,
+        compaction_max_buckets: usize,
     ) -> Self {
         Self {
             inner: RustSmartCrusherConfig {
@@ -513,6 +531,12 @@ impl PySmartCrusherConfig {
                 relevance_threshold,
                 lossless_min_savings_ratio,
                 enable_ccr_marker,
+                lossless_only,
+                compaction_core_field_fraction,
+                compaction_heterogeneous_core_ratio,
+                compaction_max_flatten_inner_keys,
+                compaction_min_buckets,
+                compaction_max_buckets,
             },
         }
     }
@@ -584,6 +608,34 @@ impl PySmartCrusherConfig {
     #[getter]
     fn enable_ccr_marker(&self) -> bool {
         self.inner.enable_ccr_marker
+    }
+    #[getter]
+    fn lossless_only(&self) -> bool {
+        self.inner.lossless_only
+    }
+    #[getter]
+    fn lossless_min_savings_ratio(&self) -> f64 {
+        self.inner.lossless_min_savings_ratio
+    }
+    #[getter]
+    fn compaction_core_field_fraction(&self) -> f64 {
+        self.inner.compaction_core_field_fraction
+    }
+    #[getter]
+    fn compaction_heterogeneous_core_ratio(&self) -> f64 {
+        self.inner.compaction_heterogeneous_core_ratio
+    }
+    #[getter]
+    fn compaction_max_flatten_inner_keys(&self) -> usize {
+        self.inner.compaction_max_flatten_inner_keys
+    }
+    #[getter]
+    fn compaction_min_buckets(&self) -> usize {
+        self.inner.compaction_min_buckets
+    }
+    #[getter]
+    fn compaction_max_buckets(&self) -> usize {
+        self.inner.compaction_max_buckets
     }
 
     fn __repr__(&self) -> String {
@@ -674,6 +726,26 @@ impl PySmartCrusher {
         let cfg = config.map(|c| c.inner.clone()).unwrap_or_default();
         Self {
             inner: RustSmartCrusher::without_compaction(cfg),
+        }
+    }
+
+    /// Construct with the lossless-first compaction stage's formatter
+    /// chosen by name: `"csv-schema"` (the `new()` default), `"json"`,
+    /// or `"markdown-kv"`. Raises `ValueError` on unknown names so a
+    /// misconfigured knob is visible instead of silently falling back.
+    #[staticmethod]
+    #[pyo3(signature = (config = None, format_name = "csv-schema"))]
+    fn with_compaction_format(
+        config: Option<&PySmartCrusherConfig>,
+        format_name: &str,
+    ) -> PyResult<Self> {
+        let cfg = config.map(|c| c.inner.clone()).unwrap_or_default();
+        match RustSmartCrusher::with_compaction_format(cfg, format_name) {
+            Some(inner) => Ok(Self { inner }),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown compaction format {format_name:?}; expected one of: {}",
+                headroom_core::transforms::smart_crusher::compaction::CompactionStage::SUPPORTED_FORMAT_NAMES.join(", ")
+            ))),
         }
     }
 
@@ -791,7 +863,13 @@ impl PySmartCrusher {
         py.allow_threads(|| {
             let parsed: serde_json::Value = serde_json::from_str(&doc_json)
                 .unwrap_or_else(|e| panic!("doc_json must be JSON: {e}"));
-            let mut dc = DocumentCompactor::new();
+            let mut dc = DocumentCompactor::new().with_config(CompactConfig {
+                classify: ClassifyConfig {
+                    emit_opaque_markers: self.inner.config.opaque_markers_enabled(),
+                    ..ClassifyConfig::default()
+                },
+                ..CompactConfig::default()
+            });
             if let Some(store) = self.inner.ccr_store() {
                 dc = dc.with_ccr_store(store.clone());
             }
@@ -859,32 +937,31 @@ impl PyDetectionResult {
     /// the underlying Rust value.
     #[getter]
     fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (k, v) in &self.inner.metadata {
             // Convert each JSON value into the closest Python primitive.
             // Detection metadata is always a flat dict of scalars (ints,
             // bools, strings) so we don't need to recurse.
-            let py_value: PyObject = match v {
-                serde_json::Value::Bool(b) => b.into_py(py),
+            match v {
+                serde_json::Value::Bool(b) => dict.set_item(k, b)?,
                 serde_json::Value::Number(n) => {
                     if let Some(i) = n.as_u64() {
-                        i.into_py(py)
+                        dict.set_item(k, i)?
                     } else if let Some(i) = n.as_i64() {
-                        i.into_py(py)
+                        dict.set_item(k, i)?
                     } else if let Some(f) = n.as_f64() {
-                        f.into_py(py)
+                        dict.set_item(k, f)?
                     } else {
-                        py.None()
+                        dict.set_item(k, py.None())?
                     }
                 }
-                serde_json::Value::String(s) => PyString::new_bound(py, s).into_py(py),
-                serde_json::Value::Null => py.None(),
+                serde_json::Value::String(s) => dict.set_item(k, s)?,
+                serde_json::Value::Null => dict.set_item(k, py.None())?,
                 // Detection never emits arrays / objects in metadata
                 // today; if it ever does, fall through to JSON-string for
                 // visibility rather than silently dropping.
-                other => PyString::new_bound(py, &other.to_string()).into_py(py),
+                other => dict.set_item(k, other.to_string())?,
             };
-            dict.set_item(k, py_value)?;
         }
         Ok(dict)
     }
@@ -1019,7 +1096,7 @@ fn content_has_error_indicators(text: &str) -> bool {
 #[pyfunction]
 fn keyword_registry_snapshot(py: Python<'_>) -> Py<PyDict> {
     let registry = KeywordRegistry::default_set();
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (key, words) in registry.as_map() {
         dict.set_item(key, words).unwrap();
     }
@@ -1061,6 +1138,7 @@ impl PySearchCompressorConfig {
         enable_ccr = true,
         min_matches_for_ccr = 10,
         min_compression_ratio_for_ccr = 0.8,
+        group_by_file = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1074,6 +1152,7 @@ impl PySearchCompressorConfig {
         enable_ccr: bool,
         min_matches_for_ccr: usize,
         min_compression_ratio_for_ccr: f64,
+        group_by_file: bool,
     ) -> Self {
         Self {
             inner: RustSearchConfig {
@@ -1087,6 +1166,7 @@ impl PySearchCompressorConfig {
                 enable_ccr,
                 min_matches_for_ccr,
                 min_compression_ratio_for_ccr,
+                group_by_file,
             },
         }
     }
@@ -1130,7 +1210,7 @@ impl PySearchCompressionResult {
     }
     #[getter]
     fn summaries<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (k, v) in &self.inner.summaries {
             dict.set_item(k, v).unwrap();
         }
@@ -1330,7 +1410,7 @@ impl PyLogCompressionResult {
     }
     #[getter]
     fn stats<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         for (k, v) in &self.inner.stats {
             dict.set_item(k, v).unwrap();
         }
@@ -1522,7 +1602,7 @@ fn compress_openai_responses_live_zone(
                 .collect();
             let reason = rust_summarize_openai_responses_no_change_reason(&manifest).to_string();
             (
-                PyBytes::new_bound(py, body).unbind(),
+                PyBytes::new(py, body).unbind(),
                 false,
                 saved,
                 transforms,
@@ -1540,7 +1620,7 @@ fn compress_openai_responses_live_zone(
                 .map(String::from)
                 .collect();
             (
-                PyBytes::new_bound(py, bytes).unbind(),
+                PyBytes::new(py, bytes).unbind(),
                 true,
                 saved,
                 transforms,
@@ -1551,7 +1631,7 @@ fn compress_openai_responses_live_zone(
             // BodyNotJson / NoMessagesArray are non-fatal: nothing to
             // compress, fall through to passthrough byte-for-byte.
             (
-                PyBytes::new_bound(py, body).unbind(),
+                PyBytes::new(py, body).unbind(),
                 false,
                 0,
                 Vec::new(),
@@ -1561,8 +1641,158 @@ fn compress_openai_responses_live_zone(
     }
 }
 
+// --- TextCrusher (Phase 2, #1171): fast extractive prose compressor ---
+
+#[pyclass(name = "TextCrusherConfig", module = "headroom._core")]
+#[derive(Clone)]
+struct PyTextCrusherConfig {
+    inner: RustTextCrusherConfig,
+}
+
+#[pymethods]
+impl PyTextCrusherConfig {
+    #[new]
+    #[pyo3(signature = (
+        target_ratio = 0.5,
+        w_recency = 1.0,
+        w_relevance = 2.0,
+        w_salience = 1.5,
+        min_segment_chars = 12,
+        near_dup_threshold = 0.85,
+        min_segments_for_crush = 6,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        target_ratio: f64,
+        w_recency: f64,
+        w_relevance: f64,
+        w_salience: f64,
+        min_segment_chars: usize,
+        near_dup_threshold: f64,
+        min_segments_for_crush: usize,
+    ) -> Self {
+        Self {
+            inner: RustTextCrusherConfig {
+                target_ratio,
+                w_recency,
+                w_relevance,
+                w_salience,
+                min_segment_chars,
+                near_dup_threshold,
+                min_segments_for_crush,
+            },
+        }
+    }
+
+    #[getter]
+    fn target_ratio(&self) -> f64 {
+        self.inner.target_ratio
+    }
+    #[getter]
+    fn near_dup_threshold(&self) -> f64 {
+        self.inner.near_dup_threshold
+    }
+    #[getter]
+    fn min_segments_for_crush(&self) -> usize {
+        self.inner.min_segments_for_crush
+    }
+    #[getter]
+    fn w_recency(&self) -> f64 {
+        self.inner.w_recency
+    }
+    #[getter]
+    fn w_relevance(&self) -> f64 {
+        self.inner.w_relevance
+    }
+    #[getter]
+    fn w_salience(&self) -> f64 {
+        self.inner.w_salience
+    }
+    #[getter]
+    fn min_segment_chars(&self) -> usize {
+        self.inner.min_segment_chars
+    }
+}
+
+#[pyclass(name = "TextCrusherResult", module = "headroom._core")]
+struct PyTextCrusherResult {
+    inner: RustTextCrusherResult,
+}
+
+#[pymethods]
+impl PyTextCrusherResult {
+    #[getter]
+    fn compressed(&self) -> String {
+        self.inner.compressed.clone()
+    }
+    #[getter]
+    fn original_tokens(&self) -> usize {
+        self.inner.original_tokens
+    }
+    #[getter]
+    fn compressed_tokens(&self) -> usize {
+        self.inner.compressed_tokens
+    }
+    #[getter]
+    fn compression_ratio(&self) -> f64 {
+        self.inner.compression_ratio
+    }
+    #[getter]
+    fn kept_segments(&self) -> usize {
+        self.inner.kept_segments
+    }
+    #[getter]
+    fn total_segments(&self) -> usize {
+        self.inner.total_segments
+    }
+}
+
+#[pyclass(name = "TextCrusher", module = "headroom._core")]
+struct PyTextCrusher {
+    inner: RustTextCrusher,
+}
+
+#[pymethods]
+impl PyTextCrusher {
+    #[new]
+    #[pyo3(signature = (config = None))]
+    fn new(config: Option<&PyTextCrusherConfig>) -> Self {
+        let cfg = config.map(|c| c.inner.clone()).unwrap_or_default();
+        Self {
+            inner: RustTextCrusher::new(cfg),
+        }
+    }
+
+    /// `compress(content, context="", target_ratio=None) -> TextCrusherResult`.
+    /// Releases the GIL across the Rust compress call.
+    #[pyo3(signature = (content, context = "", target_ratio = None))]
+    fn compress(
+        &self,
+        py: Python<'_>,
+        content: &str,
+        context: &str,
+        target_ratio: Option<f64>,
+    ) -> PyTextCrusherResult {
+        let content = content.to_string();
+        let context = context.to_string();
+        let inner = py.allow_threads(|| self.inner.compress(&content, &context, target_ratio));
+        PyTextCrusherResult { inner }
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Bridge Rust diagnostics into Python's `logging`. headroom-core emits
+    // `tracing` events (e.g. magika init timeout warnings), but a cdylib has
+    // no tracing subscriber, so they were silently dropped. The workspace
+    // `tracing` dep now enables the `log` compat feature — events become
+    // `log` records when no subscriber is active — and pyo3-log forwards
+    // those to Python loggers (named like
+    // `headroom_core.transforms.magika_detector`), which is what lands in
+    // the proxy's log file. `try_init` because the global logger may
+    // legitimately already be set (re-import, embedders).
+    let _ = pyo3_log::try_init();
+
     m.add_function(wrap_pyfunction!(hello, m)?)?;
     m.add_class::<PyDiffCompressorConfig>()?;
     m.add_class::<PyDiffCompressionResult>()?;
@@ -1575,6 +1805,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySmartCrusherConfig>()?;
     m.add_class::<PyCrushResult>()?;
     m.add_class::<PySmartCrusher>()?;
+    m.add_class::<PyTextCrusherConfig>()?;
+    m.add_class::<PyTextCrusherResult>()?;
+    m.add_class::<PyTextCrusher>()?;
     m.add_class::<PyDetectionResult>()?;
     m.add_class::<PyLogCompressorConfig>()?;
     m.add_class::<PyLogCompressionResult>()?;

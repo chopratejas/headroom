@@ -48,6 +48,11 @@ class RequestLog:
 
     # Request/Response (optional, for debugging)
     request_messages: list[dict] | None = None
+    # Messages after compression, as actually sent upstream. Paired with
+    # `request_messages` (the pre-compression snapshot) so consumers can diff
+    # the two sides of the compression. Governed by the same
+    # `log_full_messages` gate as `request_messages`.
+    compressed_messages: list[dict] | None = None
     response_content: str | None = None
     error: str | None = None
 
@@ -96,11 +101,20 @@ class ProxyConfig:
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
     cloudcode_api_url: str | None = None  # Custom Cloud Code Assist API URL override
+    vertex_api_url: str | None = None  # Custom Vertex AI regional API URL override
 
     # Backend: "anthropic" (direct API), "litellm-*" (via LiteLLM), or "anyllm" (via any-llm)
     backend: str = "anthropic"
     bedrock_region: str = "us-west-2"
     bedrock_profile: str | None = None
+    # Custom upstream for the Bedrock InvokeModel passthrough routes
+    # (`/model/{id}/invoke[-with-response-stream]`). When set, those routes are
+    # registered and compress the request body before forwarding here. Point it
+    # at a re-signing gateway (LiteLLM, LocalStack, a corporate Bedrock
+    # proxy) — NOT raw AWS, since rewriting the body invalidates the caller's
+    # SigV4 signature. Leave unset (default) to keep `--backend bedrock`'s
+    # direct-to-AWS, re-signing behavior unchanged.
+    bedrock_api_url: str | None = None
     anyllm_provider: str = "openai"
 
     # Optimization mode: "token" (rewrite for max compression) or
@@ -112,11 +126,16 @@ class ProxyConfig:
     image_optimize: bool = True
     min_tokens_to_crush: int = 500
     max_items_after_crush: int = 50
+    smart_crusher_with_compaction: bool | None = None
     keep_last_turns: int = 4
 
     # CCR Tool Injection
     ccr_inject_tool: bool = True
     ccr_inject_system_instructions: bool = False
+    # Proxy-level mirror of ContentRouterConfig.ccr_inject_marker, so retrieval
+    # markers can be toggled from the CLI (--no-ccr-marker). Threaded into the
+    # router in server.py; default preserves current behavior.
+    ccr_inject_marker: bool = True
 
     # CCR Response Handling
     ccr_handle_responses: bool = True
@@ -129,6 +148,28 @@ class ProxyConfig:
 
     # Code-aware compression (disabled by default — use code graph tools instead)
     code_aware_enabled: bool = False
+
+    # Disable Kompress ML compression while keeping structural compressors
+    # such as SmartCrusher, log/search/diff, and schema compaction enabled.
+    # CLI: --disable-kompress; env: HEADROOM_DISABLE_KOMPRESS=1.
+    disable_kompress: bool = False
+
+    # With disable_kompress, route fall-through content to PASSTHROUGH instead
+    # of the default KOMPRESS fallback strategy. Restores the legacy
+    # --disable-kompress behaviour for callers that relied on it. No effect
+    # unless disable_kompress is also set.
+    # CLI: --disable-kompress-fallback; env: HEADROOM_DISABLE_KOMPRESS_FALLBACK=1.
+    disable_kompress_fallback: bool = False
+
+    # Per-provider overrides for `disable_kompress`. None inherits the global
+    # value above; True/False force-disable/enable Kompress for that provider's
+    # pipeline only (other compressors and all routing/exclusion are unaffected).
+    # Lets e.g. Anthropic run without lossy text compression while OpenAI/Codex
+    # keeps it. CLI: --disable-kompress-anthropic / --enable-kompress-anthropic
+    # (and -openai); env: HEADROOM_DISABLE_KOMPRESS_ANTHROPIC / _OPENAI
+    # (1 = disable, 0 = enable).
+    disable_kompress_anthropic: bool | None = None
+    disable_kompress_openai: bool | None = None
 
     # Code graph live watcher (triggers incremental reindex on file changes)
     code_graph_watcher: bool = False
@@ -143,6 +184,14 @@ class ProxyConfig:
     # router would otherwise have nothing eligible to compress.
     # CLI: --compress-user-messages; env: HEADROOM_COMPRESS_USER_MESSAGES=1.
     compress_user_messages: bool = False
+    # Named savings policy shared across Claude/Codex/Cursor proxy handlers.
+    # CLI/env: HEADROOM_SAVINGS_PROFILE=agent-90.
+    savings_profile: str | None = None
+    target_ratio: float | None = None
+    compress_system_messages: bool | None = None
+    protect_recent: int | None = None
+    protect_analysis_context: bool | None = None
+    accuracy_guard: str | None = None
 
     # Extra tool names whose outputs are never compressed, merged with the
     # built-in DEFAULT_EXCLUDE_TOOLS. None means built-in defaults only.
@@ -151,6 +200,19 @@ class ProxyConfig:
 
     # Read lifecycle management
     read_lifecycle: bool = True
+
+    # Mechanism B: activity-based read maturation (hold fresh Reads out of
+    # the provider prefix cache; compress once their file quiesces).
+    # Experimental — default off. CLI: --read-maturation;
+    # env: HEADROOM_READ_MATURATION=1
+    read_maturation: bool = False
+    # Read-maturation tuning (only meaningful when read_maturation=True).
+    # Defaults mirror ReadMaturationConfig. CLI: --read-maturation-quiesce-turns,
+    # --read-maturation-max-hold-turns, --read-maturation-min-size-bytes;
+    # env: HEADROOM_READ_MATURATION_QUIESCE_TURNS / _MAX_HOLD_TURNS / _MIN_SIZE_BYTES.
+    read_maturation_quiesce_turns: int = 5
+    read_maturation_max_hold_turns: int = 25
+    read_maturation_min_size_bytes: int = 2048
 
     # Deprecated compatibility argument. ContentRouter is always active in
     # the Python proxy; accepting this avoids breaking old config constructors
@@ -200,10 +262,14 @@ class ProxyConfig:
     # Timeouts
     request_timeout_seconds: int = 300
     connect_timeout_seconds: int = 10
+    # Anthropic buffered reads can legitimately run longer than the generic
+    # proxy request cap. Keep the generic timeout unchanged elsewhere.
+    anthropic_buffered_request_timeout_seconds: int = 600
 
     # Connection pool
     max_connections: int = 500
     max_keepalive_connections: int = 100
+    keepalive_expiry: float = 90.0
     http2: bool = True
 
     # Memory System
@@ -261,6 +327,12 @@ class ProxyConfig:
     subscription_tracking_enabled: bool = True
     subscription_poll_interval_s: int = 300
     subscription_active_window_s: int = 60
+
+    # Periodic TOIN stats logging. Enabled by default for observability, but
+    # operators of long-lived proxies can disable it if TOIN stats collection
+    # causes avoidable memory pressure on their platform.
+    # Env: HEADROOM_PERIODIC_TOIN_STATS=0.
+    periodic_toin_stats_enabled: bool = True
 
     # Stateless mode — disable all filesystem writes for read-only / container deployments
     stateless: bool = False
@@ -323,4 +395,5 @@ class ProxyConfig:
             openai=self.openai_api_url,
             gemini=self.gemini_api_url,
             cloudcode=self.cloudcode_api_url,
+            vertex=self.vertex_api_url,
         )

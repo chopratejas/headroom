@@ -43,6 +43,51 @@ _MODEL_ALIASES: dict[str, str] = {
     "claude-3-sonnet-20240229": "claude-3-haiku-20240307",
 }
 
+_resolved_model_cache: dict[str, str] = {}
+
+
+def resolve_litellm_model(model: str) -> str:
+    """Resolve model name to one LiteLLM recognizes, adding provider prefix if needed.
+    Results are cached per model name to avoid blocking the event loop
+    with repeated synchronous litellm lookups.
+    """
+    if model in _resolved_model_cache:
+        return _resolved_model_cache[model]
+    resolved = _resolve_litellm_model_uncached(model)
+    _resolved_model_cache[model] = resolved
+    return resolved
+
+
+def _resolve_litellm_model_uncached(model: str) -> str:
+    """Uncached resolution — called once per unique model name."""
+    if not LITELLM_AVAILABLE:
+        return model
+    # Try as-is first
+    try:
+        litellm.cost_per_token(model=model, prompt_tokens=1, completion_tokens=0)
+        return model
+    except Exception:
+        pass
+    # Try with provider prefix
+    prefixes = {
+        "claude-": "anthropic/",
+        "gpt-": "openai/",
+        "o1-": "openai/",
+        "o3-": "openai/",
+        "o4-": "openai/",
+        "gemini-": "google/",
+        "deepseek-": "deepseek/",
+    }
+    for pattern, prefix in prefixes.items():
+        if model.startswith(pattern):
+            prefixed = f"{prefix}{model}"
+            try:
+                litellm.cost_per_token(model=prefixed, prompt_tokens=1, completion_tokens=0)
+                return prefixed
+            except Exception:
+                break
+    return model
+
 
 @dataclass
 class LiteLLMModelPricing:
@@ -154,3 +199,56 @@ def list_available_models() -> list[str]:
     if not LITELLM_AVAILABLE:
         return []
     return list(litellm.model_cost.keys())
+
+
+# ============================================================
+# DeepSeek V4 pricing injection
+# ============================================================
+# Vendored LiteLLM JSON predates DeepSeek V4 models. Inject pricing at
+# import time so the primary cost-per-token path resolves them. Once
+# upstream litellm adds these entries, injection becomes a no-op.
+# ============================================================
+
+_DEEPSEEK_V4_PRICING: dict[str, dict[str, float | str | int]] = {
+    "deepseek-v4-flash": {
+        "input_cost_per_token": 0.14 / 1_000_000,
+        "output_cost_per_token": 0.28 / 1_000_000,
+        "cache_read_input_token_cost": 0.0028 / 1_000_000,
+        "input_cost_per_token_cache_hit": 0.0028 / 1_000_000,
+        "litellm_provider": "deepseek",
+        "max_tokens": 384_000,
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
+    },
+    "deepseek-v4-pro": {
+        "input_cost_per_token": 0.435 / 1_000_000,
+        "output_cost_per_token": 0.87 / 1_000_000,
+        "cache_read_input_token_cost": 0.003625 / 1_000_000,
+        "input_cost_per_token_cache_hit": 0.003625 / 1_000_000,
+        "litellm_provider": "deepseek",
+        "max_tokens": 384_000,
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
+    },
+}
+
+
+def _inject_deepseek_pricing() -> None:
+    """Inject DeepSeek V4 pricing into litellm's model_cost dict.
+
+    Only injects entries not already present, so upstream litellm additions
+    (once available) take precedence. Both bare and provider-prefixed keys
+    are added so resolve_litellm_model() catches them via its deepseek/
+    prefix loop.
+    """
+    if not LITELLM_AVAILABLE:
+        return
+    for model_name, pricing in _DEEPSEEK_V4_PRICING.items():
+        if model_name not in litellm.model_cost:
+            litellm.model_cost[model_name] = pricing
+        prefixed = f"deepseek/{model_name}"
+        if prefixed not in litellm.model_cost:
+            litellm.model_cost[prefixed] = pricing
+
+
+_inject_deepseek_pricing()

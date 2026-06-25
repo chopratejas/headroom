@@ -14,6 +14,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -34,6 +35,7 @@ CLINE_PORT = 28892
 CONTINUE_PORT = 28893
 GOOSE_PORT = 28894
 OPENHANDS_PORT = 28895
+OPENCODE_PORT = 28896
 
 
 def log(message: str) -> None:
@@ -224,7 +226,12 @@ def create_shims(shim_dir: Path) -> None:
             "cwd": os.getcwd(),
             "env": {
                 key: os.environ.get(key)
-                for key in ("OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_BASE_URL")
+                for key in (
+                    "OPENAI_BASE_URL",
+                    "OPENAI_API_BASE",
+                    "ANTHROPIC_BASE_URL",
+                    "OPENCODE_CONFIG_CONTENT",
+                )
                 if os.environ.get(key) is not None
             },
         }
@@ -275,7 +282,12 @@ def create_shims(shim_dir: Path) -> None:
             "cwd": os.getcwd(),
             "env": {
                 key: os.environ.get(key)
-                for key in ("OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_BASE_URL")
+                for key in (
+                    "OPENAI_BASE_URL",
+                    "OPENAI_API_BASE",
+                    "ANTHROPIC_BASE_URL",
+                    "OPENCODE_CONFIG_CONTENT",
+                )
                 if os.environ.get(key) is not None
             },
         }
@@ -364,6 +376,7 @@ def create_shims(shim_dir: Path) -> None:
     write_executable(shim_dir / "claude", generic_shim)
     write_executable(shim_dir / "codex", codex_shim)
     write_executable(shim_dir / "aider", generic_shim)
+    write_executable(shim_dir / "opencode", generic_shim)
     write_executable(shim_dir / "rtk", rtk_shim)
 
 
@@ -547,11 +560,12 @@ def verify_codex_wrap(
         cwd=project_dir,
         timeout=120,
     )
-    project_agents = project_dir / "AGENTS.md"
+    # RTK guidance for Codex is global-only (#1240): it is injected into
+    # ~/.codex/AGENTS.md, never a project-level AGENTS.md. A project AGENTS.md is
+    # written only when `wrap codex --memory` is used (for memory guidance), which
+    # this scenario does not exercise.
     global_agents = Path(base_env["HOME"]) / ".codex" / "AGENTS.md"
-    assert_true(project_agents.exists(), "Codex wrap should create project AGENTS.md")
     assert_true(global_agents.exists(), "Codex wrap should create ~/.codex/AGENTS.md")
-    assert_true(RTK_MARKER in project_agents.read_text(encoding="utf-8"), "Missing RTK marker")
     assert_true(
         RTK_MARKER in global_agents.read_text(encoding="utf-8"), "Missing global RTK marker"
     )
@@ -654,19 +668,23 @@ def verify_aider_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path
     entries = read_jsonl(log_dir / "aider.jsonl")
     assert_true(len(entries) > 0, "Aider shim should have been invoked")
     env_vars = entries[-1]["env"]
+    # Aider cannot send custom headers, so its wrap embeds the launch
+    # directory as a /p/<name> base-URL prefix for per-project savings;
+    # the proxy strips it before routing, so the probes still succeed.
+    project_prefix = f"/p/{quote(project_dir.name, safe='')}"
     assert_true(
-        env_vars.get("OPENAI_API_BASE") == f"http://127.0.0.1:{port}/v1",
+        env_vars.get("OPENAI_API_BASE") == f"http://127.0.0.1:{port}{project_prefix}/v1",
         "Aider wrap should set OPENAI_API_BASE",
     )
     assert_true(
-        env_vars.get("ANTHROPIC_BASE_URL") == f"http://127.0.0.1:{port}",
+        env_vars.get("ANTHROPIC_BASE_URL") == f"http://127.0.0.1:{port}{project_prefix}",
         "Aider wrap should set ANTHROPIC_BASE_URL",
     )
     assert_true(
         entries[-1]["probes"]
         == [
-            {"url": f"http://127.0.0.1:{port}/v1/models", "status": 200},
-            {"url": f"http://127.0.0.1:{port}/health", "status": 200},
+            {"url": f"http://127.0.0.1:{port}{project_prefix}/v1/models", "status": 200},
+            {"url": f"http://127.0.0.1:{port}{project_prefix}/health", "status": 200},
         ],
         "Aider shim should prove both configured base URLs point at a live proxy",
     )
@@ -686,8 +704,10 @@ def verify_cursor_wrap(base_env: dict[str, str], project_dir: Path) -> None:
     )
     try:
         output = wait_for_output(proc, "Press Ctrl+C to stop the proxy.", timeout=30)
+        # Cursor setup lines embed the /p/<name> per-project prefix.
+        cursor_prefix = f"/p/{quote(project_dir.name, safe='')}"
         assert_true(
-            f"http://127.0.0.1:{port}/v1" in output,
+            f"http://127.0.0.1:{port}{cursor_prefix}/v1" in output,
             "Cursor wrap should print the OpenAI base URL override",
         )
         assert_true(
@@ -904,6 +924,7 @@ def main() -> None:
             verify_continue_wrap(base_env, project_dir)
             verify_goose_wrap(base_env, project_dir)
             verify_openhands_wrap(base_env, project_dir)
+            verify_opencode_wrap(base_env, project_dir, log_dir)
             local_plugin_dir = prepare_local_openclaw_plugin(base_env, tmp_dir)
             verify_openclaw_wrap(base_env, project_dir, local_plugin_dir)
         finally:
@@ -911,6 +932,55 @@ def main() -> None:
             mock_thread.join(timeout=5)
 
     log("All Docker wrap e2e checks passed.")
+
+
+def verify_opencode_wrap(base_env: dict[str, str], project_dir: Path, log_dir: Path) -> None:
+    port = OPENCODE_PORT
+    run(
+        ["headroom", "wrap", "opencode", "--port", str(port), "--", "--help"],
+        env=base_env,
+        cwd=project_dir,
+        timeout=120,
+    )
+    global_agents = Path(base_env["HOME"]) / ".config" / "opencode" / "AGENTS.md"
+    project_agents = project_dir / "AGENTS.md"
+    assert_true(global_agents.exists(), "Opencode wrap should create ~/.config/opencode/AGENTS.md")
+    assert_true(project_agents.exists(), "Opencode wrap should create project AGENTS.md")
+    assert_true(
+        RTK_MARKER in global_agents.read_text(encoding="utf-8"),
+        "Missing RTK marker in global AGENTS.md",
+    )
+    assert_true(
+        RTK_MARKER in project_agents.read_text(encoding="utf-8"),
+        "Missing RTK marker in project AGENTS.md",
+    )
+
+    entries = read_jsonl(log_dir / "opencode.jsonl")
+    assert_true(len(entries) > 0, "Opencode shim should have been invoked")
+    env_vars = entries[-1]["env"]
+    assert_true(
+        env_vars.get("OPENCODE_CONFIG_CONTENT") is not None,
+        "Opencode wrap should set OPENCODE_CONFIG_CONTENT",
+    )
+    config = json.loads(env_vars["OPENCODE_CONFIG_CONTENT"])
+    assert_true(
+        config["provider"]["headroom"]["options"]["baseURL"] == f"http://127.0.0.1:{port}/v1",
+        "Opencode wrap should inject headroom provider baseURL",
+    )
+
+    run(
+        ["headroom", "unwrap", "opencode", "--port", str(port)],
+        env=base_env,
+        cwd=project_dir,
+        timeout=120,
+    )
+    config_path = Path(base_env["HOME"]) / ".config" / "opencode" / "opencode.json"
+    if config_path.exists():
+        content = config_path.read_text(encoding="utf-8")
+        assert_true(
+            "headroom" not in content,
+            "Opencode unwrap should remove headroom provider from config",
+        )
 
 
 if __name__ == "__main__":

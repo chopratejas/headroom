@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..config import (
     CacheAlignerConfig,
@@ -26,6 +29,36 @@ if TYPE_CHECKING:
     from ..providers.base import Provider
 
 logger = logging.getLogger(__name__)
+
+# Waste-signal detection re-parses the *original* messages for telemetry only
+# (it never changes the compression result). On very large transcripts that
+# extra parse can take tens of seconds and blow the Anthropic compression
+# timeout, making the proxy fail open and discard an already-computed
+# compression (#296). Skip the diagnostic above this size to keep the result
+# on the critical path.
+MAX_WASTE_SIGNAL_DETECTION_TOKENS = 100_000
+
+# A token saving below this is treated as noise — waste-signal detection only
+# runs when compression saved more than this many tokens.
+_MIN_TOKENS_SAVED_FOR_WASTE_SIGNALS = 100
+
+_N = TypeVar("_N", int, float)
+
+
+def _breaker_env(name: str, default: _N, cast: Callable[[str], _N]) -> _N:
+    """Parse a circuit-breaker env var, falling back on bad input.
+
+    The breaker is a safety net — a typo'd value must degrade to the
+    default with a warning, not crash proxy startup.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return cast(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
 
 
 class TransformPipeline:
@@ -64,6 +97,16 @@ class TransformPipeline:
             self.transforms = transforms
         else:
             self.transforms = self._build_default_transforms()
+
+        # Circuit breaker (issue #847): after N consecutive pipeline
+        # failures, pass messages through untouched for a cooldown window
+        # instead of re-running (and re-failing) transforms on every
+        # request. Threshold <= 0 disables the breaker.
+        self._breaker_threshold = _breaker_env("HEADROOM_PIPELINE_BREAKER_THRESHOLD", 3, int)
+        self._breaker_cooldown_s = _breaker_env("HEADROOM_PIPELINE_BREAKER_COOLDOWN_S", 60.0, float)
+        self._breaker_lock = threading.Lock()
+        self._breaker_failures = 0
+        self._breaker_open_until = 0.0
 
     def _build_default_transforms(self) -> list[Transform]:
         """Build default transform pipeline from config."""
@@ -134,6 +177,36 @@ class TransformPipeline:
 
         return self._provider.__class__.__name__.removesuffix("Provider").lower()
 
+    def _breaker_is_open(self) -> bool:
+        """True while the circuit breaker cooldown window is active."""
+        if self._breaker_threshold <= 0:
+            return False
+        with self._breaker_lock:
+            return time.monotonic() < self._breaker_open_until
+
+    def _breaker_record_failure(self) -> None:
+        """Count a pipeline failure; open the breaker at the threshold."""
+        if self._breaker_threshold <= 0:
+            return
+        with self._breaker_lock:
+            self._breaker_failures += 1
+            if self._breaker_failures >= self._breaker_threshold:
+                self._breaker_open_until = time.monotonic() + self._breaker_cooldown_s
+                self._breaker_failures = 0
+                logger.warning(
+                    "Pipeline circuit breaker OPEN after %d consecutive failures; "
+                    "passing messages through for %.0fs",
+                    self._breaker_threshold,
+                    self._breaker_cooldown_s,
+                )
+
+    def _breaker_record_success(self) -> None:
+        """Reset the consecutive-failure count after a clean run."""
+        if self._breaker_threshold <= 0:
+            return
+        with self._breaker_lock:
+            self._breaker_failures = 0
+
     def apply(
         self,
         messages: list[dict[str, Any]],
@@ -151,11 +224,17 @@ class TransformPipeline:
                 - output_buffer: Output buffer override.
                 - tool_profiles: Per-tool compression profiles.
                 - request_id: Optional request ID for diff artifact.
+                - waste_messages: Optional richer conversion of the same request
+                  used for waste-signal detection only (never transformed).
 
         Returns:
             Combined TransformResult.
         """
         record_metrics = kwargs.pop("record_metrics", True)
+        waste_messages = kwargs.pop("waste_messages", None)
+        waste_signal_token_limit = int(
+            kwargs.pop("waste_signal_token_limit", MAX_WASTE_SIGNAL_DETECTION_TOKENS)
+        )
         tokenizer = self._get_tokenizer(model)
         provider_name = self._provider_name()
 
@@ -168,6 +247,16 @@ class TransformPipeline:
             )
 
         # Start with original tokens
+        # Circuit breaker open — pass through untouched (issue #847).
+        if self._breaker_is_open():
+            passthrough_tokens = tokenizer.count_messages(messages)
+            return TransformResult(
+                messages=messages,
+                tokens_before=passthrough_tokens,
+                tokens_after=passthrough_tokens,
+                transforms_applied=["pipeline:circuit_open"],
+            )
+
         t_count = time.perf_counter()
         tokens_before = tokenizer.count_messages(messages)
         count_ms = (time.perf_counter() - t_count) * 1000
@@ -248,7 +337,11 @@ class TransformPipeline:
                 with transform_span_context as transform_span:
                     # Time the transform
                     t0 = time.perf_counter()
-                    result = transform.apply(current_messages, tokenizer, **kwargs)
+                    try:
+                        result = transform.apply(current_messages, tokenizer, **kwargs)
+                    except Exception:
+                        self._breaker_record_failure()
+                        raise
                     duration_ms = (time.perf_counter() - t0) * 1000
 
                     # Update messages for next transform
@@ -316,6 +409,9 @@ class TransformPipeline:
                             )
                         )
 
+            # All transforms ran without raising — reset the breaker.
+            self._breaker_record_success()
+
             # Single final token count — the only full recount in the pipeline.
             # Earlier per-transform counts come from each transform's own result.
             t_final_count = time.perf_counter()
@@ -352,13 +448,40 @@ class TransformPipeline:
                     transforms=transform_diffs,
                 )
 
-            # Detect waste signals in original messages (only when significant compression)
+            # Detect waste signals in original messages (only when significant
+            # compression). Handlers whose wire format carries tool output the
+            # message conversion drops (e.g. Gemini functionResponse parts, #819)
+            # pass a richer waste_messages list that is parsed instead — it is
+            # telemetry-only and never transformed.
             waste_signals: WasteSignals | None = None
-            if tokens_before > tokens_after and (tokens_before - tokens_after) > 100:
+            saved_enough = (
+                tokens_before > tokens_after
+                and (tokens_before - tokens_after) > _MIN_TOKENS_SAVED_FOR_WASTE_SIGNALS
+            )
+            if saved_enough and tokens_before > waste_signal_token_limit:
+                # Telemetry-only re-parse would risk the compression timeout on a
+                # request this large (#296); skip it and keep the result.
+                logger.debug(
+                    "%sSkipping waste-signal detection for %d-token request "
+                    "(limit=%d) to keep the compression result on the critical path",
+                    log_prefix,
+                    tokens_before,
+                    waste_signal_token_limit,
+                )
+            elif saved_enough:
                 try:
                     from ..parser import parse_messages
 
-                    _, _, waste_signals = parse_messages(messages, tokenizer)
+                    # current_messages (the post-transform copy) enables reread
+                    # attribution: repeats whose first serve was markerized by
+                    # this pipeline run count into reread_compressed_tokens
+                    # (#899). The length guard in parse_messages makes the
+                    # waste_messages path (different indexing) a safe no-op.
+                    _, _, waste_signals = parse_messages(
+                        waste_messages or messages,
+                        tokenizer,
+                        compressed_messages=current_messages,
+                    )
                     if waste_signals.total() == 0:
                         waste_signals = None
                 except Exception:

@@ -32,7 +32,7 @@ jobs:
       # `pip install -e .` invokes maturin (declared in pyproject.toml's
       # build-system) which calls cargo to compile the Rust extension.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
@@ -54,6 +54,17 @@ jobs:
           print(f'CCR Round-trip: {result.passed_cases}/{result.total_cases} passed')
           assert result.passed, f'CCR failures: {result.errors}'
           "
+
+      - name: Run tool schema compaction integrity eval (zero cost)
+        run: |
+          python -c "
+          from headroom.evals.runners.compression_only import CompressionOnlyRunner
+          runner = CompressionOnlyRunner()
+          result = runner.evaluate_tool_schema_compaction()
+          print(f'Tool schema compaction: {result.passed_cases}/{result.total_cases} passed, {result.total_tokens_saved} annotation tokens stripped')
+          assert result.passed, f'Schema compaction failures: {result.errors}'
+          "
+
       # OPENAI_API_KEY is intentionally not set in the public OSS repo
       # (the secret list is empty). The CCR round-trip step above is the
       # mandatory gate; this step only runs when an operator has wired
@@ -89,7 +100,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pip-eval-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
@@ -115,6 +126,24 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # Recall-based fidelity report on the production routing path. Zero cost
+      # (synthetic structured cases -> Rust compressors; no model, no API, no
+      # secrets). Non-blocking: surfaces recall trends weekly without gating.
+      # The blocking per-PR fidelity gate lives in
+      # tests/test_compression_fidelity_regression.py (runs in the [dev] shard).
+      - name: Information-retention recall report (zero cost, non-blocking)
+        run: |
+          python -c "
+          from headroom.evals.runners.compression_only import CompressionOnlyRunner
+          runner = CompressionOnlyRunner()
+          cases = runner.generate_info_retention_cases(n=50)
+          result = runner.evaluate_information_retention(cases)
+          print(f'Information retention: {result.passed_cases}/{result.total_cases} cases >=0.9 recall, avg compression {result.avg_compression_ratio:.1%}')
+          if not result.passed:
+              print(f'::warning title=Fidelity recall::{result.failed_cases} case(s) fell below 0.9 recall: {result.errors[:3]}')
+          "
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7

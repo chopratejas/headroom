@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import signal
+import subprocess
+import sys
 from pathlib import Path
 
 from headroom.install.models import DeploymentManifest, InstallPreset
@@ -11,6 +14,7 @@ from headroom.install.runtime import (
     _read_pid,
     _runtime_env,
     _write_pid,
+    acquire_runtime_start_lock,
     build_runtime_command,
     resolve_headroom_command,
     run_foreground,
@@ -88,6 +92,46 @@ def test_build_runtime_command_for_docker_matches_wrapper_parity(
     joined = " ".join(command)
     assert "ANTHROPIC_API_KEY" in joined
     assert "OPENAI_API_KEY" in joined
+
+
+def test_build_runtime_command_for_docker_does_not_duplicate_entrypoint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The image ENTRYPOINT is already ``["headroom", "proxy"]`` (Dockerfile),
+    so the args appended after the image name must NOT re-add ``headroom proxy``
+    or Docker runs ``headroom proxy headroom proxy ...`` and Click aborts with
+    "Got unexpected extra arguments (headroom proxy)" (issue #833)."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    manifest = DeploymentManifest(
+        profile="default",
+        preset="persistent-docker",
+        runtime_kind="docker",
+        supervisor_kind="none",
+        scope="user",
+        provider_mode="manual",
+        targets=["claude"],
+        port=8787,
+        host="127.0.0.1",
+        backend="anthropic",
+        image="ghcr.io/chopratejas/headroom:latest",
+        base_env={"HEADROOM_PORT": "8787"},
+        proxy_args=["--host", "127.0.0.1", "--port", "8787", "--backend", "anthropic"],
+    )
+
+    command = build_runtime_command(manifest)
+
+    # Everything after the image name is what Docker appends to the ENTRYPOINT.
+    image_idx = command.index(manifest.image)
+    container_args = command[image_idx + 1 :]
+    assert "headroom" not in container_args, (
+        f"container args re-add the ENTRYPOINT — got {container_args}"
+    )
+    assert "proxy" not in container_args, (
+        f"container args re-add the ENTRYPOINT — got {container_args}"
+    )
+    # The container must still bind on all interfaces and keep the real flags.
+    assert container_args[:2] == ["--host", "0.0.0.0"]
+    assert container_args[2:] == ["--port", "8787", "--backend", "anthropic"]
 
 
 def test_resolve_headroom_command_prefers_headroom_binary(monkeypatch) -> None:
@@ -204,6 +248,40 @@ def test_write_read_and_clear_pid(monkeypatch, tmp_path: Path) -> None:
     assert _read_pid("default") == 456
     _clear_pid("default")
     assert _read_pid("default") is None
+
+
+def test_runtime_start_lock_is_nonblocking(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    with acquire_runtime_start_lock("default") as first_acquired:
+        assert first_acquired is True
+        with acquire_runtime_start_lock("default") as second_acquired:
+            assert second_acquired is False
+
+    with acquire_runtime_start_lock("default") as acquired_after_release:
+        assert acquired_after_release is True
+
+
+def test_runtime_start_lock_blocks_another_process(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    script = (
+        "from headroom.install.runtime import acquire_runtime_start_lock\n"
+        "with acquire_runtime_start_lock('default') as acquired:\n"
+        "    print(acquired)\n"
+    )
+    env = {**os.environ, "HOME": str(tmp_path), "PYTHONPATH": str(Path.cwd())}
+
+    with acquire_runtime_start_lock("default") as acquired:
+        assert acquired is True
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            check=True,
+            env=env,
+            text=True,
+        )
+
+    assert result.stdout.strip() == "False"
 
 
 def test_run_foreground_and_detached_helpers(monkeypatch, tmp_path: Path) -> None:

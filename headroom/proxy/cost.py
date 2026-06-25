@@ -84,6 +84,31 @@ def _summarize_transforms(transforms: list[str]) -> str:
     return " ".join(parts)
 
 
+def header_safe_transforms(transforms: list[str]) -> list[str]:
+    """Strip enriched detail so each tag is safe in the comma-joined header.
+
+    ``x-headroom-transforms`` is built as ``",".join(transforms_applied)``, so a
+    tag must not itself contain a comma or the header can't be split back into
+    tags. The enriched ``read_lifecycle:<state>:<path>`` and
+    ``smart_crush:<n>:<names>`` tags carry comma-bearing detail (file paths may
+    contain commas; tool-name lists are comma-separated), so collapse them back
+    to their legacy counter shape for the header. Full detail stays in the
+    structured ``transforms_applied`` list (dashboards, request logs, the
+    desktop activity feed) — only the opaque header is normalized.
+    """
+    safe: list[str] = []
+    for t in transforms:
+        if t.startswith("smart_crush:"):
+            parts = t.split(":")
+            safe.append(f"smart_crush:{parts[1]}" if len(parts) >= 2 else t)
+        elif t.startswith("read_lifecycle:"):
+            parts = t.split(":")
+            safe.append(f"read_lifecycle:{parts[1]}" if len(parts) >= 2 else t)
+        else:
+            safe.append(t)
+    return safe
+
+
 def build_prefix_cache_stats(
     metrics: PrometheusMetrics,
     cost_tracker: CostTracker | None,
@@ -262,9 +287,50 @@ def build_prefix_cache_stats(
         ],
     }
 
+    # Cache-miss attribution (#1313): why turns that expected a prompt-cache
+    # hit missed instead. Per-provider reason buckets plus an aggregate total,
+    # so the dashboard can show "of N expected-cache misses, X were TTL lapses
+    # vs Y prefix changes" — the signal a user needs to decide 5m vs 1h TTL.
+    _miss_by_provider: dict[str, dict[str, int]] = {}
+    # Holds integer counts AND float percentages (ttl_expiry_pct etc.), so the
+    # value type is float — ints coerce cleanly and the counts stay whole.
+    _miss_totals: dict[str, float] = {
+        "ttl_expiry": 0,
+        "prefix_change": 0,
+        "unknown": 0,
+        "total": 0,
+    }
+    for _provider, _reasons in metrics.cache_miss_attribution_by_provider.items():
+        provider_reasons = {reason: int(count) for reason, count in _reasons.items()}
+        provider_total = sum(provider_reasons.values())
+        if provider_total == 0:
+            continue
+        provider_reasons["total"] = provider_total
+        _miss_by_provider[_provider] = provider_reasons
+        for reason, count in provider_reasons.items():
+            if reason == "total":
+                continue
+            _miss_totals[reason] = _miss_totals.get(reason, 0) + count
+        _miss_totals["total"] += provider_total
+
+    # Share of misses attributable to TTL lapse vs prefix change — the headline
+    # the dashboard renders. Computed against attributed (non-unknown) misses
+    # so an "unknown" bucket doesn't dilute the actionable split.
+    _attributed = _miss_totals["ttl_expiry"] + _miss_totals["prefix_change"]
+    _miss_totals["ttl_expiry_pct"] = (
+        round(_miss_totals["ttl_expiry"] / _attributed * 100, 1) if _attributed > 0 else 0.0
+    )
+    _miss_totals["prefix_change_pct"] = (
+        round(_miss_totals["prefix_change"] / _attributed * 100, 1) if _attributed > 0 else 0.0
+    )
+
     return {
         "by_provider": by_provider,
         "totals": totals,
+        "miss_attribution": {
+            "totals": _miss_totals,
+            "by_provider": _miss_by_provider,
+        },
         "prefix_freeze": {
             "busts_avoided": metrics.prefix_freeze_busts_avoided,
             "tokens_preserved": metrics.prefix_freeze_tokens_preserved,
@@ -531,7 +597,10 @@ class CostTracker:
     """
 
     MAX_COST_ENTRIES = 100_000
-    COST_RETENTION_HOURS = 24
+    # Used by _prune_old_costs(), called from record_tokens() on every request.
+    # Must be >= the longest budget_period (monthly = up to 31 days), otherwise
+    # get_period_cost() undercounts and check_budget() silently under-enforces.
+    COST_RETENTION_HOURS = 744  # 31 days
 
     def __init__(self, budget_limit_usd: float | None = None, budget_period: str = "daily"):
         self.budget_limit_usd = budget_limit_usd
@@ -566,59 +635,6 @@ class CostTracker:
         self._api_cache_write_1h_by_model.clear()
         self._api_uncached_by_model.clear()
 
-    # Cache resolved model names to avoid repeated litellm lookups.
-    # This is critical: litellm.cost_per_token() is synchronous and can block
-    # the async event loop if it triggers I/O (lazy model info download).
-    _resolved_model_cache: dict[str, str] = {}
-
-    @classmethod
-    def _resolve_litellm_model(cls, model: str) -> str:
-        """Resolve model name to one LiteLLM recognizes, adding provider prefix if needed.
-
-        Results are cached per model name to avoid blocking the event loop
-        with repeated synchronous litellm lookups.
-        """
-        if model in cls._resolved_model_cache:
-            return cls._resolved_model_cache[model]
-
-        resolved = cls._resolve_litellm_model_uncached(model)
-        cls._resolved_model_cache[model] = resolved
-        return resolved
-
-    @staticmethod
-    def _resolve_litellm_model_uncached(model: str) -> str:
-        """Uncached resolution — called once per unique model name."""
-        litellm = _get_litellm_module()
-        if litellm is None:
-            return model
-
-        # Try as-is first
-        try:
-            litellm.cost_per_token(model=model, prompt_tokens=1, completion_tokens=0)
-            return model
-        except Exception:
-            pass
-
-        # Try with provider prefix
-        prefixes = {
-            "claude-": "anthropic/",
-            "gpt-": "openai/",
-            "o1-": "openai/",
-            "o3-": "openai/",
-            "o4-": "openai/",
-            "gemini-": "google/",
-        }
-        for pattern, prefix in prefixes.items():
-            if model.startswith(pattern):
-                prefixed = f"{prefix}{model}"
-                try:
-                    litellm.cost_per_token(model=prefixed, prompt_tokens=1, completion_tokens=0)
-                    return prefixed
-                except Exception:
-                    break
-
-        return model
-
     def estimate_cost(
         self,
         model: str,
@@ -645,7 +661,9 @@ class CostTracker:
             return None
 
         try:
-            resolved_model = self._resolve_litellm_model(model)
+            from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+            resolved_model = resolve_litellm_model(model)
 
             # litellm.cost_per_token handles all token types natively:
             # prompt_tokens at input rate, cache_read at ~10%, cache_creation at ~125%
@@ -693,8 +711,9 @@ class CostTracker:
         cache_write_5m_tokens: int = 0,
         cache_write_1h_tokens: int = 0,
         uncached_tokens: int = 0,
+        output_tokens: int = 0,
     ):
-        """Record token counts per model.
+        """Record token counts per model and accumulate request cost for budget enforcement.
 
         Args:
             model: Model name.
@@ -703,6 +722,7 @@ class CostTracker:
             cache_read_tokens: Cache read tokens from API response usage.
             cache_write_tokens: Cache write tokens from API response usage.
             uncached_tokens: Non-cached input tokens from API response usage.
+            output_tokens: Output tokens from API response usage.
         """
         self._tokens_saved_by_model[model] = (
             self._tokens_saved_by_model.get(model, 0) + tokens_saved
@@ -724,6 +744,24 @@ class CostTracker:
         self._api_uncached_by_model[model] = (
             self._api_uncached_by_model.get(model, 0) + uncached_tokens
         )
+
+        # Populate _costs so check_budget() has real data to enforce against.
+        # When the call site had no API usage breakdown (all cache/uncached
+        # fields are 0), fall back to tokens_sent so input cost isn't
+        # silently dropped from the budget.
+        input_tokens = uncached_tokens
+        if not (uncached_tokens or cache_read_tokens or cache_write_tokens):
+            input_tokens = tokens_sent
+        cost = self.estimate_cost(
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
+        if cost is not None:
+            self._costs.append((datetime.now(), cost))
+            self._prune_old_costs()
 
     def get_period_cost(self) -> float:
         """Get cost for current budget period."""
@@ -753,7 +791,9 @@ class CostTracker:
         if litellm is None:
             return None
         try:
-            resolved = self._resolve_litellm_model(model)
+            from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+            resolved = resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
             cost_per_token = info.get("input_cost_per_token")
             return cost_per_token * 1_000_000 if cost_per_token else None
@@ -770,7 +810,9 @@ class CostTracker:
         if litellm is None:
             return None
         try:
-            resolved = self._resolve_litellm_model(model)
+            from headroom.pricing.litellm_pricing import resolve_litellm_model
+
+            resolved = resolve_litellm_model(model)
             info = litellm.model_cost.get(resolved, {})
             uncached = info.get("input_cost_per_token")
             if not uncached:
@@ -852,4 +894,8 @@ class CostTracker:
             "per_model": per_model,
             "cost_with_headroom_usd": round(cost_with_headroom, 4),
             "savings_usd": round(savings_usd, 4),
+            # Budget config passthrough — surfaces in /stats["cost"] so
+            # `headroom doctor` can report whether a budget is set.
+            "budget_limit_usd": self.budget_limit_usd,
+            "budget_period": self.budget_period,
         }

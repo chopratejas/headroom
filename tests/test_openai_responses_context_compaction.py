@@ -6,6 +6,7 @@ from typing import Any
 from headroom.proxy.handlers.openai import (
     OpenAIHandlerMixin,
     _compact_openai_responses_tools,
+    _ensure_responses_store_for_memory_tools,
     _openai_responses_context_budget,
 )
 from headroom.transforms.content_router import (
@@ -97,6 +98,66 @@ def test_openai_tool_schema_compaction_preserves_invocation_shape() -> None:
     assert tool["parameters"]["properties"]["path"]["type"] == "string"
     assert "examples" not in tool["parameters"]["properties"]["path"]
     assert tool["parameters"]["properties"]["path"]["description"] == " ".join(verbose.split())
+
+
+def test_openai_tool_schema_compaction_preserves_property_named_title() -> None:
+    """Issue #759: drop-key list must not strip property *names* under `properties`.
+
+    Schema annotations like ``title: "ReadFileParameters"`` on a schema object
+    are safe to drop.  But a tool that has a field literally called ``title``
+    (or ``readOnly``, ``deprecated``, etc.) must survive compaction; removing
+    it while leaving ``required: ["title"]`` produces an invalid strict schema
+    that upstream (OpenAI / Codex) rejects.
+    """
+    payload = {
+        "tools": [
+            {
+                "type": "function",
+                "name": "eval",
+                "description": "Evaluate cells.",
+                "parameters": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "title": "EvalParameters",
+                    "type": "object",
+                    "properties": {
+                        "cells": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "title": "CellItem",
+                                "properties": {
+                                    "language": {"type": "string"},
+                                    "code": {"type": "string"},
+                                    "title": {"type": "string"},
+                                },
+                                "required": ["language", "code", "title"],
+                            },
+                        }
+                    },
+                    "required": ["cells"],
+                },
+            }
+        ]
+    }
+
+    compacted, modified, before, after = _compact_openai_responses_tools(payload)
+
+    assert modified is True
+    assert after < before
+
+    params = compacted["tools"][0]["parameters"]
+    # Schema-level annotations are still dropped.
+    assert "title" not in params
+    assert "$schema" not in params
+
+    items = params["properties"]["cells"]["items"]
+    # "title" as a JSON Schema annotation on the items object is dropped.
+    assert "title" not in items
+    # "title" as a *property name* inside properties must be preserved.
+    assert "title" in items["properties"], (
+        "property named 'title' was incorrectly stripped by compaction"
+    )
+    assert items["required"] == ["language", "code", "title"]
 
 
 def test_openai_tool_schema_compaction_is_deterministic() -> None:
@@ -375,3 +436,50 @@ def test_content_router_retries_kompress_when_structured_strategy_noops(monkeypa
     assert compressed_tokens == 2
     # The fallback chain must record both strategies it tried.
     assert strategy_chain == ["smart_crusher", "kompress"]
+
+
+def test_responses_memory_tools_store_false_regression() -> None:
+    """Regression: store=false makes previous_response_id continuations fail."""
+
+    payload = {"model": "gpt-5.5", "input": "remember this", "store": False}
+
+    changed = _ensure_responses_store_for_memory_tools(
+        payload,
+        memory_tools_injected=True,
+    )
+
+    assert changed is True
+    assert payload["store"] is True
+
+
+def test_responses_memory_tools_do_not_change_unrelated_requests() -> None:
+    no_memory_payload = {"model": "gpt-5.5", "input": "plain", "store": False}
+    already_stored_payload = {"model": "gpt-5.5", "input": "plain", "store": True}
+    default_store_payload = {"model": "gpt-5.5", "input": "plain"}
+
+    assert (
+        _ensure_responses_store_for_memory_tools(
+            no_memory_payload,
+            memory_tools_injected=False,
+        )
+        is False
+    )
+    assert no_memory_payload["store"] is False
+
+    assert (
+        _ensure_responses_store_for_memory_tools(
+            already_stored_payload,
+            memory_tools_injected=True,
+        )
+        is False
+    )
+    assert already_stored_payload["store"] is True
+
+    assert (
+        _ensure_responses_store_for_memory_tools(
+            default_store_payload,
+            memory_tools_injected=True,
+        )
+        is False
+    )
+    assert "store" not in default_store_payload

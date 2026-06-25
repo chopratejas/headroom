@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -74,6 +75,31 @@ def test_version_prefers_source_tree_release_history() -> None:
     package_version.assert_not_called()
 
 
+def test_proxy_package_import_does_not_eagerly_load_server() -> None:
+    script = textwrap.dedent(
+        """
+        import json
+        import sys
+
+        import headroom.proxy
+
+        print(json.dumps({
+            "server_loaded": "headroom.proxy.server" in sys.modules,
+        }))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    data = json.loads(result.stdout.strip())
+    assert data["server_loaded"] is False
+
+
 def test_proxy_server_import_skips_litellm_backend() -> None:
     script = textwrap.dedent(
         """
@@ -101,3 +127,89 @@ def test_proxy_server_import_skips_litellm_backend() -> None:
     assert data["litellm_backend_loaded"] is False
     assert data["anyllm_backend_loaded"] is False
     assert data["litellm_loaded"] is False
+
+
+def test_dynamic_detector_import_skips_optional_ml_dependencies(tmp_path: Path) -> None:
+    (tmp_path / "spacy.py").write_text("", encoding="utf-8")
+    (tmp_path / "numpy.py").write_text("", encoding="utf-8")
+    (tmp_path / "torch.py").write_text("", encoding="utf-8")
+    sentence_transformers_dir = tmp_path / "sentence_transformers"
+    sentence_transformers_dir.mkdir()
+    (sentence_transformers_dir / "__init__.py").write_text(
+        "import torch\n\nclass SentenceTransformer:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    script = textwrap.dedent(
+        """
+        import json
+        import sys
+
+        import headroom.cache.dynamic_detector
+
+        print(json.dumps({
+            "spacy_loaded": "spacy" in sys.modules,
+            "sentence_transformers_loaded": "sentence_transformers" in sys.modules,
+            "torch_loaded": "torch" in sys.modules,
+        }))
+        """
+    )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+    )
+
+    data = json.loads(result.stdout.strip())
+    assert data["spacy_loaded"] is False
+    assert data["sentence_transformers_loaded"] is False
+    assert data["torch_loaded"] is False
+
+
+def test_compress_spreadsheet_public_import_survives_ort_pin() -> None:
+    """`from headroom import compress_spreadsheet` stays eagerly exported, and the
+    Windows ORT dylib pin still runs before the `.compress` import.
+
+    The pin (`ensure_ort_dylib_pinned`) was inserted above the eager `.compress`
+    import; restoring `compress_spreadsheet` to that line must not reorder it
+    relative to the pin. The `__dict__` check distinguishes the eager import from
+    the lazy `_LAZY_EXPORTS` fallback, which would also resolve the name.
+    """
+    script = textwrap.dedent(
+        """
+        import json
+
+        import headroom
+        from headroom import compress_spreadsheet
+
+        print(json.dumps({
+            "eager": "compress_spreadsheet" in headroom.__dict__,
+            "callable": callable(compress_spreadsheet),
+        }))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    data = json.loads(result.stdout.strip())
+    assert data["eager"] is True
+    assert data["callable"] is True
+
+    # ORT pin must precede the `.compress` import, which must still list the helper.
+    src = (Path(version_module.__file__).parent / "__init__.py").read_text(encoding="utf-8")
+    pin = src.index("ensure_ort_dylib_pinned()")
+    compress_import = src.index("from .compress import")
+    assert pin < compress_import
+    assert "compress_spreadsheet" in src[compress_import : compress_import + 120]

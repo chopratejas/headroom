@@ -18,6 +18,7 @@ from headroom.install.models import (
 from headroom.install.planner import build_manifest
 from headroom.install.providers import apply_mutations, revert_mutations
 from headroom.install.runtime import (
+    acquire_runtime_start_lock,
     run_foreground,
     runtime_status,
     start_detached_agent,
@@ -157,7 +158,16 @@ def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
     "--mode", "proxy_mode", default="token", show_default=True, help="Proxy optimization mode."
 )
 @click.option("--memory", is_flag=True, help="Enable persistent memory in the proxy runtime.")
-@click.option("--no-telemetry", is_flag=True, help="Disable anonymous telemetry in the runtime.")
+@click.option(
+    "--telemetry",
+    is_flag=True,
+    help="Opt in to anonymous telemetry in the runtime (off by default).",
+)
+@click.option(
+    "--no-telemetry",
+    is_flag=True,
+    help="Force anonymous telemetry off in the runtime (already the default).",
+)
 @click.option(
     "--image",
     default="ghcr.io/chopratejas/headroom:latest",
@@ -177,6 +187,7 @@ def install_apply(
     region: str | None,
     proxy_mode: str,
     memory: bool,
+    telemetry: bool,
     no_telemetry: bool,
     image: str,
 ) -> None:
@@ -198,7 +209,7 @@ def install_apply(
         region=region,
         proxy_mode=proxy_mode,
         memory_enabled=memory,
-        telemetry_enabled=not no_telemetry,
+        telemetry_enabled=telemetry and not no_telemetry,
         image=image,
     )
 
@@ -320,6 +331,9 @@ def install_agent_run(profile: str) -> None:
     raise SystemExit(run_foreground(manifest))
 
 
+_STARTUP_READY_TIMEOUT_SECONDS = 15
+
+
 @install_agent.command("ensure")
 @click.option("--profile", default="default", show_default=True, help="Deployment profile name.")
 def install_agent_ensure(profile: str) -> None:
@@ -329,5 +343,21 @@ def install_agent_ensure(profile: str) -> None:
     if probe_ready(manifest.health_url):
         click.echo(f"Deployment '{profile}' is already healthy.")
         return
-    _start_deployment(manifest)
+    with acquire_runtime_start_lock(manifest.profile) as acquired:
+        if not acquired:
+            click.echo(f"Deployment '{profile}' start is already in progress.")
+            return
+        # Double-check after acquiring the lock — another ensure may have
+        # started the runtime while we waited for the lock.
+        if probe_ready(manifest.health_url):
+            click.echo(f"Deployment '{profile}' is already healthy.")
+            return
+        if runtime_status(manifest) == "running":
+            # Runtime exists but isn't ready yet — give it a grace period
+            # before deciding it's wedged and restarting.
+            if wait_ready(manifest, timeout_seconds=_STARTUP_READY_TIMEOUT_SECONDS):
+                click.echo(f"Deployment '{profile}' is healthy.")
+                return
+            stop_runtime(manifest)
+        _start_deployment(manifest)
     click.echo(f"Deployment '{profile}' is healthy.")
