@@ -76,6 +76,8 @@ proxy = [
     "transformers>=4.30.0,<6.0",  # Tokenizer only (for Kompress)
     "watchdog>=4.0.0",            # File watcher for live code graph reindexing (--code-graph)
     "sqlite-vec>=0.1.6",          # Vector index for memory (--memory). Lightweight, no torch.
+    "cryptography>=42.0.0",       # Root CA + leaf minting for agy TLS-MITM wrap (headroom wrap agy)
+    "hypercorn>=0.16",            # In-process HTTPS dispatch server for agy MITM transport
 ]
 # Production ASGI/WSGI server — Unix-only (gunicorn does not support Windows).
 # Kept separate from [proxy] so that dev, CI, and Windows users are not forced
@@ -257,6 +259,8 @@ dev = [
     "sentence-transformers>=2.2.0,<6.0",
     "numpy>=1.24.0",
     "openpyxl>=3.1.0",  # exercises spreadsheet_ingest (.xlsx) in the test suite
+    "cryptography>=42.0.0",       # agy TLS-MITM CA/leaf minting (tests: test_agy_ca/dispatch/terminator)
+    "hypercorn>=0.16",            # agy in-process HTTPS dispatch server (tests: test_agy_dispatch)
 ]
 # All optional dependencies (everything you need)
 all = [

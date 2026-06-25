@@ -499,6 +499,30 @@ jobs:
       - name: Run native installer wrapper tests
         run: pytest tests/test_install/test_native_installers.py -q
 
+  agy-windows:
+    # agy's TLS-MITM transport is selective-host MITM with a process-scoped CA;
+    # it must run on Windows (a supported developer platform). The main test
+    # shards run on Linux, so this lane is the only Windows coverage for the
+    # agy CA / dispatch / terminator / retrieve slice and the wrap command.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: astral-sh/setup-uv@v5
+      - name: Run agy suite on Windows
+        shell: bash
+        run: |
+          uv run --extra proxy --with pytest --with pytest-asyncio python -m pytest \
+            tests/test_agy_ca.py tests/test_agy_dispatch.py tests/test_agy_terminator.py \
+            tests/test_agy_retrieve.py tests/test_agy_stats.py tests/test_agy_registrar.py \
+            tests/test_proxy_google_cloudcode_route_aliases.py tests/test_wrap_agy.py -q
+
   macos-native-wrapper:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'

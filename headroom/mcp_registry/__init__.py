@@ -13,13 +13,16 @@ without changing the calling code.
 
 from __future__ import annotations
 
+from .agy import AgyRegistrar
 from .base import MCPRegistrar, RegisterResult, RegisterStatus, ServerSpec
 from .claude import ClaudeRegistrar
 from .codex import CodexRegistrar
 from .display import any_succeeded, format_result, format_results
 from .install import (
     DEFAULT_PROXY_URL,
+    build_codegraph_spec,
     build_headroom_spec,
+    build_lean_ctx_spec,
     build_serena_spec,
     get_all_registrars,
     install_everywhere,
@@ -28,6 +31,7 @@ from .opencode import OpencodeRegistrar
 
 __all__ = [
     "DEFAULT_PROXY_URL",
+    "AgyRegistrar",
     "ClaudeRegistrar",
     "CodexRegistrar",
     "MCPRegistrar",
@@ -36,7 +40,9 @@ __all__ = [
     "RegisterStatus",
     "ServerSpec",
     "any_succeeded",
+    "build_codegraph_spec",
     "build_headroom_spec",
+    "build_lean_ctx_spec",
     "build_serena_spec",
     "format_result",
     "format_results",

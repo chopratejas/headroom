@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response
 
+from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST
 from headroom.proxy.handlers.openai import _resolve_codex_routing_headers
 
 logger = logging.getLogger("headroom.proxy.routes")
@@ -49,7 +50,25 @@ def _vertex_target_for_location(proxy: Any, location: str) -> str:
     return f"https://{location}-aiplatform.googleapis.com"
 
 
+def _cloudcode_host_base(host: str) -> str | None:
+    """Passthrough base for an allowlisted Cloud Code host, else ``None``.
+
+    agy (Google Antigravity CLI) reaches the proxy via TLS-MITM that terminates
+    the WHOLE connection to the Cloud Code host it addressed, so every
+    control-plane call (loadCodeAssist / setUserSettings / listExperiments / …)
+    lands on the catch-all. Those paths exist only on the Cloud Code host
+    itself; forward them back to it. Membership in ``DEFAULT_ALLOWLIST`` — not a
+    loose suffix match — is the trust boundary: a forged Host such as
+    ``evilcloudcode-pa.googleapis.com`` returns ``None`` (closing the SSRF) so
+    the caller falls back to the configured default.
+    """
+    return f"https://{host}" if host in DEFAULT_ALLOWLIST else None
+
+
 def _select_passthrough_base_url(proxy: Any, headers: dict[str, str]) -> str:
+    host = headers.get("host", "")
+    if base := _cloudcode_host_base(host):
+        return base
     # Codex CLI subscription mode hits a wide surface under
     # `/backend-api/*` (rate-limit polling, agent identity, JWT
     # refresh, cloud tasks). Without this branch the catchall
@@ -972,10 +991,14 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
             if hasattr(request, "_url"):
                 delattr(request, "_url")
 
-            return await proxy.handle_passthrough(
-                request,
-                _api_target(proxy, "cloudcode"),
-            )
+            # agy's TLS-MITM terminated the connection at the exact Cloud Code
+            # host it addressed (e.g. the `daily-` staging host); forward back to
+            # that host so control-plane onboarding (loadCodeAssist/...) lands on
+            # the right backend. Non-allowlisted hosts fall back to the static
+            # default, so a forged Host cannot steer the passthrough.
+            host = request.headers.get("host", "")
+            cloudcode_base = _cloudcode_host_base(host) or _api_target(proxy, "cloudcode")
+            return await proxy.handle_passthrough(request, cloudcode_base)
 
         return await proxy.handle_passthrough(
             request,
