@@ -572,14 +572,25 @@ impl SavingsState {
         cap_front(&mut self.recent, cfg.max_response_history);
     }
 
-    /// Normalize a freshly-deserialized state. Today it just stamps the current
-    /// `schema_version`; it is the single hook where a future schema bump adds
-    /// real migration (read the old version, transform, then stamp). The version
-    /// field is persisted deliberately — a durable file must carry its own format
-    /// version so a later binary can detect and migrate it, which can't be
-    /// retrofitted onto files already on disk.
+    /// Normalize a freshly-deserialized state. Stamps the current schema_version
+    /// and clamps all USD float fields to 0.0 if non-finite or negative, so a
+    /// corrupt persisted file (hand-edited or filesystem corruption) cannot poison
+    /// future accumulations. `accumulate()` guards non-finite *increments* but not
+    /// a negative *base* already in the accumulator — this is the load-time fix.
     fn sanitize(mut self) -> Self {
         self.schema_version = SCHEMA_VERSION;
+        fn clamp_usd(v: f64) -> f64 {
+            if v.is_finite() && v >= 0.0 {
+                v
+            } else {
+                0.0
+            }
+        }
+        self.lifetime.compression_savings_usd = clamp_usd(self.lifetime.compression_savings_usd);
+        self.lifetime.cache_savings_usd = clamp_usd(self.lifetime.cache_savings_usd);
+        self.display_session.compression_savings_usd =
+            clamp_usd(self.display_session.compression_savings_usd);
+        self.display_session.cache_savings_usd = clamp_usd(self.display_session.cache_savings_usd);
         self
     }
 }

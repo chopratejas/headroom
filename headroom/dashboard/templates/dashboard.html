@@ -2135,10 +2135,14 @@
                 get historyModelSourceSeries() {
                     // Rollup buckets carrying by_model attribution. Raw checkpoints
                     // have no by_model, so the checkpoint view falls back to daily.
+                    // weekly/monthly series may not be emitted by the backend yet;
+                    // in that case fall back to daily so the chart isn't blank.
                     const key = this.historySelectedSeriesKey === 'history'
                         ? 'daily'
                         : this.historySelectedSeriesKey;
-                    return this.historyStats.series?.[key] || [];
+                    return this.historyStats.series?.[key]
+                        || this.historyStats.series?.daily
+                        || [];
                 },
 
                 get historyModelChartSeries() {

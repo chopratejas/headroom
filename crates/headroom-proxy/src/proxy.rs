@@ -2001,9 +2001,12 @@ async fn run_sse_state_machine(
                 incomplete_reason = state.incomplete_reason.as_deref().unwrap_or(""),
                 "sse stream closed"
             );
-            // A `response.failed` terminal event is a stream-level error
-            // regardless of the HTTP status (which was 200).
-            let stream_failed = state.terminal_status() == Some("failed");
+            // Both `response.failed` and `response.incomplete` are stream-level
+            // errors regardless of the HTTP status (which was 200). An incomplete
+            // response is truncated (e.g. hit max_output_tokens) and must not be
+            // counted as a successful billable completion.
+            let stream_failed =
+                matches!(state.terminal_status(), Some("failed") | Some("incomplete"));
             if let Some((mut outcome, savings, started, failed)) = deferred {
                 if let Some(usage) = &state.usage {
                     outcome.output_tokens = usage
