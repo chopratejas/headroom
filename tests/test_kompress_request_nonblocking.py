@@ -222,7 +222,9 @@ def test_capacity_available_still_compresses(monkeypatch):
         def __call__(self, chunk_words, **kwargs):
             return _FakeEncoding(len(chunk_words))
 
-    monkeypatch.setattr(kc, "_execution_semaphore", lambda *_args, **_kwargs: threading.BoundedSemaphore(1))
+    monkeypatch.setattr(
+        kc, "_execution_semaphore", lambda *_args, **_kwargs: threading.BoundedSemaphore(1)
+    )
     monkeypatch.setattr(
         kc,
         "_load_kompress",

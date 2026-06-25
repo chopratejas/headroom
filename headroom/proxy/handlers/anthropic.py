@@ -542,8 +542,7 @@ class AnthropicHandlerMixin:
                     trace_session_id,
                 )
                 logger.info(
-                    "[%s] pre-upstream saturation fail-open; continuing without "
-                    "compression path",
+                    "[%s] pre-upstream saturation fail-open; continuing without compression path",
                     request_id,
                 )
             else:
