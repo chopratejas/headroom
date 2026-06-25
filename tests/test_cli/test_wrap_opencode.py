@@ -368,7 +368,9 @@ def test_wrap_opencode_handles_malformed_config_file(
 
     assert result.exit_code == 0, result.output
     assert backup_file.exists(), "backup must be created before overwriting"
-    assert backup_file.read_text(encoding="utf-8") == malformed, "backup must preserve original byte-for-byte"
+    assert backup_file.read_text(encoding="utf-8") == malformed, (
+        "backup must preserve original byte-for-byte"
+    )
     # The config file is now valid JSON with headroom provider.
     config = json.loads(config_file.read_text(encoding="utf-8"))
     assert "headroom" in config.get("provider", {})
