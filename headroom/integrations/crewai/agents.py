@@ -208,6 +208,8 @@ class HeadroomToolWrapper(BaseTool):  # type: ignore[misc]
         """
         _check_crewai_available()
 
+        original_description = tool.description
+
         super().__init__(
             name=tool.name,
             description=tool.description,
@@ -217,6 +219,9 @@ class HeadroomToolWrapper(BaseTool):  # type: ignore[misc]
             result_as_answer=tool.result_as_answer,
             max_usage_count=tool.max_usage_count,
         )
+        # CrewAI's BaseTool rewrites description during construction
+        # (appends schema text). Restore the original.
+        self.description = original_description
         self._inner = tool
         self._min_chars = min_chars_to_compress
         self._metrics = metrics_collector or _global_metrics
