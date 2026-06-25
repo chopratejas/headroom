@@ -24,18 +24,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CLOUD_URL = "https://api.headroomlabs.ai"
 
 
-try:
-    from litellm.integrations.custom_logger import CustomLogger as _CustomLogger
-except ImportError:  # litellm not installed — fall back to plain object
-    _CustomLogger = object  # type: ignore[assignment,misc]
-
-
-class HeadroomCallback(_CustomLogger):
+class HeadroomCallback:
     """LiteLLM callback that compresses messages before each API call.
 
-    Inherits from litellm.integrations.custom_logger.CustomLogger so that
-    any hook LiteLLM adds in future versions (e.g. async_post_call_success_hook
-    added in 1.89.x) has a no-op default and won't raise AttributeError (#1114).
+    Implements LiteLLM's CustomLogger interface (async_pre_call_hook).
 
     Two modes:
     - Local (default): Compresses in-process using headroom.compress().
@@ -64,7 +56,6 @@ class HeadroomCallback(_CustomLogger):
         api_key: str | None = None,
         api_url: str | None = None,
     ) -> None:
-        super().__init__()
         self._min_tokens = min_tokens
         self._model_limit = model_limit
         self._hooks = hooks
