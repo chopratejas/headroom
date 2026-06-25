@@ -1350,6 +1350,20 @@ def _strip_codex_headroom_blocks(
 _REDIRECTABLE_KEYS: tuple[str, ...] = ("model_provider", "openai_base_url")
 
 
+def _strip_existing_codex_headroom_provider_table(content: str) -> str:
+    """Remove a pre-existing ``[model_providers.headroom]`` table before wrap."""
+    if "[model_providers.headroom]" not in content:
+        return content
+
+    import re  # local import to match surrounding helper convention
+
+    provider_table = re.compile(
+        r"(?ms)^[ \t]*\[model_providers\.headroom\][^\n]*\n.*?(?=^[ \t]*\[|\Z)"
+    )
+    content = provider_table.sub("", content)
+    return content.lstrip("\n").rstrip() + "\n" if content.strip() else ""
+
+
 def _redirect_existing_top_level_keys(content: str, port: int) -> str:
     """Rewrite user-defined top-level keys so wrap does not create duplicates.
 
@@ -1614,6 +1628,7 @@ def _inject_codex_provider_config(port: int) -> None:
             # Remove any prior Headroom-managed blocks before re-injecting so
             # the operation is idempotent and supports port changes.
             content = _strip_codex_headroom_blocks(content)
+            content = _strip_existing_codex_headroom_provider_table(content)
 
             # Bare top-level keys must precede any [section] in TOML, and
             # TOML rejects duplicate top-level keys.  Rewrite any existing
