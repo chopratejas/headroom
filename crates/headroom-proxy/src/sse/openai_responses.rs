@@ -185,6 +185,13 @@ impl ResponseState {
                     {
                         self.incomplete_reason = Some(reason.to_string());
                     }
+                    // Truncated responses are still billed for tokens consumed;
+                    // capture usage so the savings store can record them.
+                    if let Some(usage) = resp.get("usage") {
+                        if !usage.is_null() {
+                            self.usage = Some(usage.clone());
+                        }
+                    }
                 }
                 self.capture_envelope_metadata(&v);
                 Ok(())

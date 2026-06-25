@@ -591,6 +591,17 @@ impl SavingsState {
         self.display_session.compression_savings_usd =
             clamp_usd(self.display_session.compression_savings_usd);
         self.display_session.cache_savings_usd = clamp_usd(self.display_session.cache_savings_usd);
+        for b in self.by_provider.values_mut() {
+            b.compression_savings_usd = clamp_usd(b.compression_savings_usd);
+            b.cache_savings_usd = clamp_usd(b.cache_savings_usd);
+        }
+        for b in self.by_model.values_mut() {
+            b.compression_savings_usd = clamp_usd(b.compression_savings_usd);
+            b.cache_savings_usd = clamp_usd(b.cache_savings_usd);
+        }
+        for pt in &mut self.history {
+            pt.compression_savings_usd = clamp_usd(pt.compression_savings_usd);
+        }
         self
     }
 }
