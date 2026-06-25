@@ -647,6 +647,7 @@ def _validate_pytorch_device(model: Any, tokenizer: Any, device: str) -> None:
         device,
         timeout_seconds=None,
     )
+    assert semaphore is not None
     with contextlib.ExitStack() as stack:
         stack.callback(semaphore.release)
         scores = model.get_scores(input_ids, attention_mask)
