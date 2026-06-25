@@ -202,7 +202,7 @@ class OpenCodePlugin(LearnPlugin, ConversationScanner):
         tool_calls: list[ToolCall] = []
         events: list[SessionEvent] = []
 
-        for idx, (data_raw, _part_time) in enumerate(rows):
+        for idx, (data_raw, part_time) in enumerate(rows):
             try:
                 data = json.loads(data_raw)
             except json.JSONDecodeError:
@@ -246,7 +246,10 @@ class OpenCodePlugin(LearnPlugin, ConversationScanner):
                 output_bytes=len(output.encode()),
             )
             tool_calls.append(tc)
-            events.append(SessionEvent(type="tool_call", msg_index=idx, tool_call=tc))
+            part_ts = str(part_time) if part_time is not None else None
+            events.append(
+                SessionEvent(type="tool_call", msg_index=idx, timestamp=part_ts, tool_call=tc)
+            )
 
         if not tool_calls:
             return None
