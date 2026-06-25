@@ -168,6 +168,8 @@ def _iter_rows(blob: str) -> list[list[tuple[bool, str]]]:
                 buf.append(blob[i])
                 i += 1
             row.append((True, "".join(buf)))
+            if i < n and blob[i] == "\r":  # tolerate CRLF row endings
+                i += 1
             if i < n and blob[i] == ",":
                 i += 1
             elif i < n and blob[i] == "\n":
@@ -178,7 +180,12 @@ def _iter_rows(blob: str) -> list[list[tuple[bool, str]]]:
             j = i
             while j < n and blob[j] not in ",\n":
                 j += 1
-            row.append((False, blob[i:j]))
+            cell = blob[i:j]
+            # A bare cell never legitimately holds '\r' (the formatter quotes
+            # any value containing it), so a trailing '\r' is a CRLF artifact.
+            if cell.endswith("\r"):
+                cell = cell[:-1]
+            row.append((False, cell))
             if j < n and blob[j] == "\n":
                 rows.append(row)
                 row = []
@@ -273,7 +280,9 @@ def factor_values(text: str) -> str:
             was_quoted, value = cells[j]
             if not was_quoted and value in ("", MISSING_SENTINEL):
                 continue  # null / missing stay inline
-            decoded = value if was_quoted else value
+            # _iter_rows already unescaped quoted cells, so the logical string
+            # value is `value` whether or not it was quoted on the wire.
+            decoded = value
             raw_bytes += len(_render_raw(was_quoted, value))
             if decoded not in seen:
                 seen[decoded] = len(order)
@@ -311,8 +320,7 @@ def factor_values(text: str) -> str:
                 break
             was_quoted, value = cells[j]
             if j in index_maps and not (not was_quoted and value in ("", MISSING_SENTINEL)):
-                decoded = value if was_quoted else value
-                rendered.append(str(index_maps[j][decoded]))
+                rendered.append(str(index_maps[j][value]))
             else:
                 rendered.append(_render_raw(was_quoted, value))
         out_rows.append(",".join(rendered))

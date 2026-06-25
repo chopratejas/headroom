@@ -119,3 +119,39 @@ def test_empty_and_passthrough_inputs() -> None:
     assert headroom.densify([]).messages == []
     short = [{"role": "user", "content": "hi"}]
     assert headroom.densify(short).messages == short
+
+
+def test_openai_format_tool_message_is_densified_losslessly() -> None:
+    # Generic harness: OpenAI chat format (role='tool', string content) — not
+    # Anthropic content blocks. Agent mode must handle it the same way.
+    records = [{"id": i, "tag": f"t{i % 4}", "note": f"value padding text {i}"} for i in range(60)]
+    msgs = [
+        {"role": "user", "content": "do it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "q", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": json.dumps(records)},
+    ]
+    res = headroom.densify(msgs)
+    assert res.lossless is True
+    assert res.tokens_saved > 0
+    content = res.messages[2]["content"]
+    assert is_compacted(content)
+    assert expand_compacted(content) == records
+
+
+def test_reverse_helpers_are_public() -> None:
+    # A consumer of densified output must be able to reverse it from the
+    # top-level package, not only a deep submodule path.
+    from headroom import expand_compacted as top_expand
+    from headroom import is_compacted as top_is
+
+    records = [{"id": i, "tag": f"t{i % 3}"} for i in range(30)]
+    res = headroom.densify(_tool_result_messages(records))
+    content = res.messages[2]["content"][0]["content"]
+    assert top_is(content)
+    assert top_expand(content) == records

@@ -133,3 +133,23 @@ def test_non_compacted_text_is_ignored() -> None:
     assert not is_compacted("just some prose, not densified")
     assert expand_compacted("just some prose") is None
     assert factor_values("just some prose") == "just some prose"
+
+
+def test_crlf_line_endings_round_trip() -> None:
+    # A harness that round-trips the block through a Windows text-mode file (or
+    # otherwise normalizes line endings) must still decode. The format is
+    # LF-internal; the decoder tolerates CRLF defensively.
+    records = [{"id": i, "name": f"n{i % 4}", "v": f"val {i}"} for i in range(30)]
+    bare = _crush(records)
+    crlf = bare.replace("\n", "\r\n")
+    assert expand_compacted(crlf) == records
+    assert expand_compacted(crlf) == expand_compacted(bare)
+
+
+def test_value_factoring_handles_comma_and_quote_values() -> None:
+    # Repeated values that need CSV-quoting must still factor losslessly.
+    vals = ["a, b.py", 'has "quotes"', "c/d.py"]
+    records = [{"path": vals[i % len(vals)], "line": i, "content": f"x{i}"} for i in range(30)]
+    factored = factor_values(_crush(records))
+    assert "__dict:" in factored
+    assert expand_compacted(factored) == records

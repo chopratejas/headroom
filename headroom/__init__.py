@@ -175,6 +175,9 @@ __all__ = [
     "compress_spreadsheet",
     "CompressConfig",
     "CompressResult",
+    # Reverse densified tool output (for consumers of mode="agent" output)
+    "expand_compacted",
+    "is_compacted",
     # Hooks
     "CompressionHooks",
     "CompressContext",
@@ -271,6 +274,8 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "compress": ("headroom.compress", "compress"),
     "densify": ("headroom.compress", "densify"),
     "compress_spreadsheet": ("headroom.compress", "compress_spreadsheet"),
+    "expand_compacted": ("headroom.transforms.compaction_codec", "expand_compacted"),
+    "is_compacted": ("headroom.transforms.compaction_codec", "is_compacted"),
     # Hooks
     "CompressionHooks": ("headroom.hooks", "CompressionHooks"),
     "CompressContext": ("headroom.hooks", "CompressContext"),
