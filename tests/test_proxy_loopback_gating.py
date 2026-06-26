@@ -50,7 +50,7 @@ def _seed_ccr_entry() -> str:
     reset_compression_store()
     store = get_compression_store(backend=InMemoryBackend())
     return store.store(
-        "seeded-secret-content",
+        "seeded-ccr-content",
         "<<ccr:seeded>>",
         original_tokens=3,
         compressed_tokens=1,
@@ -96,7 +96,7 @@ def test_ccr_retrieve_hash_route_blocks_valid_hash_for_non_loopback() -> None:
         loopback = _loopback_client()
         loopback_resp = loopback.get(f"/v1/retrieve/{ccr_hash}")
         assert loopback_resp.status_code == 200, loopback_resp.text
-        assert loopback_resp.json()["original_content"] == "seeded-secret-content"
+        assert loopback_resp.json()["original_content"] == "seeded-ccr-content"
 
         network_resp = TestClient(_make_app()).get(f"/v1/retrieve/{ccr_hash}")
         assert network_resp.status_code == 404, network_resp.text
