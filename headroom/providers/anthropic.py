@@ -83,6 +83,8 @@ def sanitize_anthropic_model_metadata(value: Any) -> Any:
 # Anthropic model context limits
 # All Claude 3+ models have 200K context
 ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
+    # Claude 4.8 (Opus 4.8) - 1M context
+    "claude-opus-4-8": 1000000,
     # Claude 4.7 (Opus 4.7) - 1M context
     "claude-opus-4-7": 1000000,
     # Claude 4.6 (Opus 4.6) - 1M context
@@ -112,6 +114,8 @@ ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
 # NOTE: These are ESTIMATES. Always verify against actual Anthropic billing.
 # Last updated: 2025-01-14
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
+    # Claude 4.8 (Opus tier pricing)
+    "claude-opus-4-8": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     # Claude 4.7 (Opus tier pricing)
     "claude-opus-4-7": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     # Claude 4.6 (Opus tier pricing)

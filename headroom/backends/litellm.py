@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -383,6 +384,20 @@ def _parse_tool_arguments(arguments: Any) -> Any:
     return arguments
 
 
+def _apply_anthropic_beta(kwargs: dict[str, Any], headers: dict[str, str]) -> None:
+    """Forward the client's ``anthropic-beta`` header into the LiteLLM call.
+
+    Without this, beta features negotiated by the client (notably the 1M
+    context window ``context-1m-2025-08-07``) never reach the upstream — the
+    Bedrock converse transform reads them from a ``headers`` kwarg, and
+    LiteLLM otherwise drops them. LiteLLM filters betas the provider does not
+    support, so passing the raw value through is safe.
+    """
+    beta = headers.get("anthropic-beta") or headers.get("Anthropic-Beta")
+    if beta:
+        kwargs.setdefault("headers", {})["anthropic-beta"] = beta
+
+
 class LiteLLMBackend(Backend):
     """Backend using LiteLLM for multi-provider support.
 
@@ -449,6 +464,18 @@ class LiteLLMBackend(Backend):
 
         # For Bedrock, try to normalize various input formats
         if self.provider == "bedrock":
+            # Full inference-profile ARNs must use the converse route; the bare
+            # ARN contains "/", so without this it falls through to the generic
+            # "/"-passthrough below and reaches litellm unprefixed (provider=None).
+            # Strip a trailing Claude Code context-window marker (e.g. "[1m]")
+            # in case a client forwards it on the model id rather than the
+            # anthropic-beta header.
+            if anthropic_model.startswith("arn:aws:bedrock:"):
+                arn = re.sub(r"\[[0-9]+m\]$", "", anthropic_model)
+                return f"bedrock/converse/{arn}"
+            if anthropic_model.startswith("bedrock/converse/"):
+                return anthropic_model
+
             normalized = _normalize_bedrock_profile_id(anthropic_model)
             if normalized and normalized in self._model_map:
                 return self._model_map[normalized]
@@ -695,6 +722,7 @@ class LiteLLMBackend(Backend):
             logger.debug(f"LiteLLM request: model={litellm_model}")
 
             # Make the call
+            _apply_anthropic_beta(kwargs, headers)
             response = await acompletion(**kwargs)
 
             # Convert to Anthropic format
@@ -817,6 +845,7 @@ class LiteLLMBackend(Backend):
             )
 
             # Stream content — blocks emitted dynamically based on response
+            _apply_anthropic_beta(kwargs, headers)
             response = await acompletion(**kwargs)
             output_tokens = 0
             current_block_index = -1
@@ -1023,6 +1052,7 @@ class LiteLLMBackend(Backend):
             logger.debug(f"LiteLLM OpenAI request: model={litellm_model}")
 
             # Make the call
+            _apply_anthropic_beta(kwargs, headers)
             response = await acompletion(**kwargs)
 
             # Build the usage block. LiteLLM normalizes prompt-cache stats from
@@ -1195,6 +1225,7 @@ class LiteLLMBackend(Backend):
                 elif headers.get("x-api-key"):
                     kwargs["api_key"] = headers["x-api-key"]
 
+            _apply_anthropic_beta(kwargs, headers)
             response = await acompletion(**kwargs)
 
             async for chunk in response:

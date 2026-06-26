@@ -1,0 +1,43 @@
+# Overlay: route Headroom at any Anthropic-compatible upstream (GLM/z.ai,
+# DeepSeek, Moonshot, or your own gateway) instead of api.anthropic.com.
+#
+# These providers speak the Anthropic Messages wire format, so Headroom just
+# forwards to a different base URL — no translation needed (that's the litellm
+# path, see docker-compose.bedrock.yml). The client still sends its own auth
+# token (ANTHROPIC_AUTH_TOKEN) which Headroom forwards upstream.
+#
+# Usage:
+#   1. Copy .env.example to .env and set HEADROOM_PROVIDER_TARGET_URL (+ port).
+#   2. docker compose -f docker-compose.yml -f docker-compose.provider.yml up -d
+#   3. Point your client at the proxy:
+#        ANTHROPIC_BASE_URL=http://localhost:${HEADROOM_PROVIDER_PORT}
+#        ANTHROPIC_AUTH_TOKEN=<your provider key>
+#        ANTHROPIC_MODEL=<provider model, e.g. glm-5.2 or deepseek-v4-pro>
+#
+# Examples for HEADROOM_PROVIDER_TARGET_URL:
+#   GLM (z.ai):  https://api.z.ai/api/anthropic
+#   DeepSeek:    https://api.deepseek.com/anthropic
+#
+# Custom context limits / pricing for non-Anthropic models: mount a
+# models.json (see README) — the named volume already persists ~/.headroom.
+services:
+  headroom-proxy-provider:
+    build: .
+    command: ["--host", "0.0.0.0", "--memory"]
+    environment:
+      - HEADROOM_HOST=0.0.0.0
+      # Upstream Anthropic-compatible endpoint (required). Set in .env.
+      - ANTHROPIC_TARGET_API_URL=${HEADROOM_PROVIDER_TARGET_URL:?set HEADROOM_PROVIDER_TARGET_URL in .env}
+    ports:
+      - "${HEADROOM_PROVIDER_PORT:-8788}:8787"
+    volumes:
+      - headroom_workspace:/home/nonroot/.headroom
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - qdrant
+      - neo4j

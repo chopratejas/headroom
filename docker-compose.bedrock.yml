@@ -1,0 +1,65 @@
+# Overlay: compress traffic to AWS Bedrock (Claude models) with Headroom.
+#
+# Unlike GLM/DeepSeek (Anthropic-compatible — see docker-compose.provider.yml),
+# Bedrock is a different API: SigV4 auth + the converse request shape. Headroom
+# translates and signs via its litellm backend (HEADROOM_BACKEND=bedrock), so
+# the proxy itself needs working AWS credentials.
+#
+# Credentials: this overlay bind-mounts your host ~/.aws into the container so
+# botocore can use whatever you already have — static keys, `aws sso login`, or
+# `aws login`. Because that bind mount is owned by your host user, the proxy
+# runs as root (user "0:0") and HOME points at the mount root so botocore finds
+# ~/.aws there. (The base/provider overlays don't need this — they use a named
+# volume with no host-UID coupling.)
+#
+# Prerequisites:
+#   - Build with the bedrock extra so boto3 + botocore[crt] are present:
+#       HEADROOM_EXTRAS=proxy,code,bedrock   (or build the image with [all])
+#   - Valid AWS credentials on the host (`aws sts get-caller-identity` works).
+#   - For `aws login`/SSO, keep the host session alive; the container reads the
+#     shared token cache from the mounted ~/.aws.
+#
+# Usage:
+#   1. Set AWS_REGION (+ optional AWS_PROFILE, HEADROOM_BEDROCK_PORT) in .env.
+#   2. docker compose -f docker-compose.yml -f docker-compose.bedrock.yml up -d
+#   3. Point your client at the proxy:
+#        ANTHROPIC_BASE_URL=http://localhost:${HEADROOM_BEDROCK_PORT}
+#        ANTHROPIC_MODEL=<bedrock model id or inference-profile ARN>
+#      (do NOT set CLAUDE_CODE_USE_BEDROCK — that bypasses the proxy and talks
+#       to AWS directly, so nothing gets compressed.)
+#
+# Model id may be a short Claude id (claude-sonnet-4-...), a region/global
+# inference profile, or a full inference-profile ARN. Append [1m] to the model
+# id to request the 1M context window (forwarded as the context-1m beta).
+services:
+  headroom-proxy-bedrock:
+    build:
+      context: .
+      args:
+        HEADROOM_EXTRAS: proxy,code,bedrock
+    # Root + HOME at the mount root so botocore reads the bind-mounted ~/.aws.
+    user: "0:0"
+    command: ["--host", "0.0.0.0", "--memory", "--backend", "bedrock"]
+    environment:
+      - HEADROOM_HOST=0.0.0.0
+      - HEADROOM_BACKEND=bedrock
+      - HEADROOM_BEDROCK_REGION=${AWS_REGION:?set AWS_REGION in .env}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_PROFILE=${AWS_PROFILE:-default}
+      - HOME=/home/nonroot
+    ports:
+      - "${HEADROOM_BEDROCK_PORT:-8789}:8787"
+    volumes:
+      - headroom_workspace:/home/nonroot/.headroom
+      # Host AWS credentials (read-only mount; the SSO/login cache is refreshed
+      # on the host, the container only reads it).
+      - ${HOME}/.aws:/home/nonroot/.aws:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      - qdrant
+      - neo4j

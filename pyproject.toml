@@ -222,6 +222,10 @@ evals = [
 # AWS Bedrock backend
 bedrock = [
     "boto3>=1.28.0",
+    # `botocore[crt]` is required for the `aws login` (console-login / DPoP)
+    # credential provider; without awscrt botocore raises
+    # MissingDependencyException when resolving those credentials.
+    "botocore[crt]>=1.28.0",
 ]
 # HTML content extraction
 html = [
@@ -260,7 +264,7 @@ dev = [
 ]
 # All optional dependencies (everything you need)
 all = [
-    "headroom-ai[proxy,code,ml,memory,relevance,image,reports,otel,evals,voice,html,benchmark,mcp,spreadsheet]",
+    "headroom-ai[proxy,code,ml,memory,relevance,image,reports,otel,evals,voice,html,benchmark,mcp,spreadsheet,bedrock]",
 ]
 
 [project.scripts]

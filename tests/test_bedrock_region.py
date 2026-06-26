@@ -13,6 +13,7 @@ importorskip_no_env_leak("litellm")
 
 from headroom.backends.litellm import (  # noqa: E402  (must follow importorskip)
     LiteLLMBackend,
+    _apply_anthropic_beta,
     _bedrock_profiles_cache,
     _bedrock_region_prefix,
     _build_bedrock_fallback_map,
@@ -352,3 +353,88 @@ class TestNormalizeBedrockProfileId:
         assert _normalize_bedrock_profile_id("claude-sonnet-4-20250514") == (
             "claude-sonnet-4-20250514"
         )
+
+
+# =============================================================================
+# Inference-profile ARN mapping (converse route)
+# =============================================================================
+
+
+class TestBedrockArnMapping:
+    """Full inference-profile ARNs must route through the converse handler.
+
+    A bare ARN contains ``/`` (``.../application-inference-profile/<id>``), so
+    without an explicit branch it falls through to the generic ``/``-passthrough
+    and reaches LiteLLM unprefixed, which fails with ``provider = None``.
+    """
+
+    def _backend(self):
+        with patch(
+            "headroom.backends.litellm._fetch_bedrock_inference_profiles",
+            return_value={},
+        ):
+            return LiteLLMBackend(provider="bedrock", region="ap-southeast-1")
+
+    def test_application_inference_profile_arn(self):
+        arn = (
+            "arn:aws:bedrock:ap-southeast-1:123456789012:application-inference-profile/abc123def456"
+        )
+        assert self._backend().map_model_id(arn) == f"bedrock/converse/{arn}"
+
+    def test_system_inference_profile_arn(self):
+        arn = (
+            "arn:aws:bedrock:us-east-1:123456789012:"
+            "inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
+        assert self._backend().map_model_id(arn) == f"bedrock/converse/{arn}"
+
+    def test_arn_strips_context_window_marker(self):
+        """A trailing [1m] marker on the model id must not break ARN routing."""
+        base = (
+            "arn:aws:bedrock:ap-southeast-1:123456789012:application-inference-profile/abc123def456"
+        )
+        assert self._backend().map_model_id(f"{base}[1m]") == f"bedrock/converse/{base}"
+
+    def test_converse_prefixed_arn_passthrough(self):
+        model = (
+            "bedrock/converse/arn:aws:bedrock:ap-southeast-1:123456789012:"
+            "application-inference-profile/abc123def456"
+        )
+        assert self._backend().map_model_id(model) == model
+
+
+# =============================================================================
+# anthropic-beta header forwarding (e.g. 1M context window)
+# =============================================================================
+
+
+class TestApplyAnthropicBeta:
+    """The client's ``anthropic-beta`` header must reach the LiteLLM call.
+
+    LiteLLM's Bedrock converse transform reads beta features (notably
+    ``context-1m-2025-08-07``) from a ``headers`` kwarg; without forwarding,
+    the 1M window silently caps at 200k.
+    """
+
+    def test_forwards_beta(self):
+        kwargs: dict = {}
+        _apply_anthropic_beta(kwargs, {"anthropic-beta": "context-1m-2025-08-07"})
+        assert kwargs["headers"]["anthropic-beta"] == "context-1m-2025-08-07"
+
+    def test_no_beta_is_noop(self):
+        kwargs: dict = {}
+        _apply_anthropic_beta(kwargs, {})
+        assert "headers" not in kwargs
+
+    def test_preserves_existing_headers(self):
+        kwargs: dict = {"headers": {"x-existing": "1"}}
+        _apply_anthropic_beta(kwargs, {"anthropic-beta": "context-1m-2025-08-07"})
+        assert kwargs["headers"] == {
+            "x-existing": "1",
+            "anthropic-beta": "context-1m-2025-08-07",
+        }
+
+    def test_titlecase_header_key(self):
+        kwargs: dict = {}
+        _apply_anthropic_beta(kwargs, {"Anthropic-Beta": "context-1m-2025-08-07"})
+        assert kwargs["headers"]["anthropic-beta"] == "context-1m-2025-08-07"
