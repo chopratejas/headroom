@@ -2509,6 +2509,9 @@ def _ensure_proxy(
 
             if probe_ready(manifest.health_url):
                 health_payload = helpers._query_proxy_health(port)
+                running_config = helpers._proxy_health_config(health_payload)
+                if running_config is None:
+                    running_config = helpers._query_proxy_config(port)
                 if helpers._proxy_needs_version_restart(health_payload):
                     running_version = helpers._proxy_version(health_payload) or "unknown"
                     active_sessions = helpers._proxy_active_session_count(health_payload)
@@ -2533,6 +2536,31 @@ def _ensure_proxy(
                     raise click.ClickException(
                         f"Persistent deployment '{manifest.profile}' on port {port} "
                         f"is running stale Headroom {running_version} and could not be restarted."
+                    )
+                incompatible_targets = []
+                if running_config is not None:
+                    if openai_api_url:
+                        running_openai_url = _normalize_proxy_api_url(
+                            running_config.get("openai_api_url")
+                        )
+                        requested_openai_url = _normalize_proxy_api_url(openai_api_url)
+                        if running_openai_url != requested_openai_url:
+                            incompatible_targets.append("openai-api-url")
+                    if anthropic_api_url:
+                        running_anthropic_url = _normalize_proxy_api_url(
+                            running_config.get("anthropic_api_url")
+                        )
+                        requested_anthropic_url = _normalize_proxy_api_url(anthropic_api_url)
+                        if running_anthropic_url != requested_anthropic_url:
+                            incompatible_targets.append("anthropic-api-url")
+                if incompatible_targets:
+                    flags_str = ", ".join(
+                        f"--{flag.replace('_', '-')}" for flag in incompatible_targets
+                    )
+                    raise click.ClickException(
+                        f"Persistent deployment '{manifest.profile}' on port {port} is "
+                        f"incompatible with requested {flags_str}. Use a different port or "
+                        "stop the persistent proxy before wrapping this client."
                     )
                 click.echo(f"  Proxy already running on port {port}")
                 click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
@@ -2623,7 +2651,22 @@ def _ensure_proxy(
                     flags_str = ", ".join(
                         f if f.startswith("--") else f"--{f.replace('_', '-')}" for f in missing
                     )
+                    active_sessions = helpers._proxy_active_session_count(health_payload)
+                    has_target_mismatch = any(
+                        flag in {"openai-api-url", "anthropic-api-url"} for flag in missing
+                    )
                     other_wrappers = helpers._live_proxy_clients(port, exclude_self=True)
+                    if has_target_mismatch and (other_wrappers or active_sessions > 0):
+                        detail = (
+                            f"{active_sessions} active session(s)"
+                            if active_sessions > 0
+                            else f"{len(other_wrappers)} other wrapper(s)"
+                        )
+                        raise click.ClickException(
+                            f"Proxy on port {port} is missing {flags_str} and cannot be reused "
+                            f"because {detail} are attached. Use a different port or stop the "
+                            "existing proxy before wrapping this client."
+                        )
                     if other_wrappers:
                         # Another wrapper is attached to this proxy; restarting it
                         # to add flags would drop their in-flight requests. Reuse

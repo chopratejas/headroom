@@ -321,6 +321,53 @@ def test_ensure_proxy_restarts_ephemeral_proxy_for_openai_api_url_mismatch(monke
     assert calls[1][2]["openai_api_url"] == "https://api.individual.githubcopilot.com"
 
 
+def test_ensure_proxy_rejects_openai_target_mismatch_when_other_wrapper_attached(
+    monkeypatch,
+) -> None:
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": "12345",
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": "https://api.openai.com/v1",
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: None)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(wrap_cli, "_live_proxy_clients", lambda *a, **kw: [999])
+
+    with pytest.raises(click.ClickException, match="cannot be reused"):
+        wrap_cli._ensure_proxy(8787, False, openai_api_url="https://api.x.ai/v1")
+
+
+def test_ensure_proxy_rejects_persistent_proxy_with_incompatible_openai_target(
+    monkeypatch,
+) -> None:
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": "12345",
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": "https://api.openai.com/v1",
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+
+    with pytest.raises(click.ClickException, match="Use a different port"):
+        wrap_cli._ensure_proxy(8787, False, openai_api_url="https://api.x.ai/v1")
+
+
 def test_ensure_proxy_reuses_agent_proxy_without_savings_profile(monkeypatch) -> None:
     health = {
         "version": wrap_cli._HEADROOM_VERSION,
