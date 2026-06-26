@@ -271,10 +271,10 @@ def test_run_proxy_only_watcher_calls_setup_lines_callback(
 
     callback_calls: list[None] = []
 
-    def fake_setup() -> None:
+    def fake_setup(_port: int) -> None:
         callback_calls.append(None)
 
-    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *a, **kw: fake_proc)
+    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *a, **kw: (fake_proc, 8787))
     # Replace time.sleep with a no-op so the loop spins quickly.
     monkeypatch.setattr(wrap_mod.time, "sleep", lambda _s: None)
     # Replace _make_cleanup to avoid side-effects on real ports/files.
@@ -322,7 +322,7 @@ def test_run_proxy_only_watcher_keyboardinterrupt_shuts_down_cleanly(
         if sleep_calls["n"] >= 1:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *a, **kw: (_FakeProc(), 8787))
     monkeypatch.setattr(wrap_mod.time, "sleep", raising_sleep)
     monkeypatch.setattr(wrap_mod, "_make_cleanup", lambda holder, port: lambda *a, **kw: None)
     monkeypatch.setattr(wrap_mod.signal, "signal", lambda *a, **kw: None)
@@ -338,7 +338,7 @@ def test_run_proxy_only_watcher_keyboardinterrupt_shuts_down_cleanly(
             learn=False,
             memory=False,
             agent_type="cursor",
-            print_setup_lines=lambda: None,
+            print_setup_lines=lambda _port: None,
         )
 
     inv = runner.invoke(_cmd)
@@ -369,7 +369,7 @@ def test_run_proxy_only_watcher_unexpected_exception_returns_exit_1(
             learn=False,
             memory=False,
             agent_type="cline",
-            print_setup_lines=lambda: None,
+            print_setup_lines=lambda _port: None,
         )
 
     inv = runner.invoke(_cmd)
@@ -405,7 +405,7 @@ def test_run_proxy_only_watcher_calls_cleanup_on_finally(
             learn=False,
             memory=False,
             agent_type="cline",
-            print_setup_lines=lambda: None,
+            print_setup_lines=lambda _port: None,
         )
 
     inv = runner.invoke(_cmd)

@@ -968,7 +968,7 @@ def test_launch_tool_ignores_sigint_in_wrapper(
     class FakeCompleted:
         returncode = 0
 
-    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *args, **kwargs: (None, 8787))
     monkeypatch.setattr(
         wrap_mod.signal, "signal", lambda sig, fn: signal_handlers.setdefault(sig, fn)
     )
