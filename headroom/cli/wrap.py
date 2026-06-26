@@ -1241,7 +1241,7 @@ def _snapshot_grok_config_if_unwrapped(config_file: Path, backup_file: Path) -> 
     shutil.copy2(config_file, backup_file)
 
 
-def _rewrite_grok_args_for_headroom(grok_args: tuple) -> tuple[tuple[str, ...], str]:
+def _rewrite_grok_args_for_headroom(grok_args: tuple) -> tuple[tuple[str, ...], str | None]:
     """Route Grok through the Headroom alias while preserving other CLI args."""
 
     requested_model: str | None = None
@@ -1267,8 +1267,39 @@ def _rewrite_grok_args_for_headroom(grok_args: tuple) -> tuple[tuple[str, ...], 
         rewritten_args.append(arg)
         i += 1
 
-    selected_model = _resolve_grok_launch_model(requested_model)
-    return ("-m", _GROK_HEADROOM_MODEL_ALIAS, *rewritten_args), selected_model
+    return ("--model", _GROK_HEADROOM_MODEL_ALIAS, *rewritten_args), requested_model
+
+
+def _resolve_grok_requested_model(config_content: str, requested_model: str | None) -> str:
+    """Resolve a Grok CLI model flag to the upstream xAI model id."""
+
+    requested = (requested_model or "").strip()
+    if not requested or requested == _GROK_HEADROOM_MODEL_ALIAS:
+        return _resolve_grok_launch_model(requested)
+
+    target_header = f"[model.{requested}]"
+    in_target = False
+    for raw_line in config_content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            if line == target_header:
+                in_target = True
+                continue
+            if in_target:
+                break
+            continue
+        if in_target:
+            key, _, value = line.partition("=")
+            if key.strip() != "model":
+                continue
+            candidate = value.split("#", 1)[0].strip()
+            if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {'"', "'"}:
+                return _resolve_grok_launch_model(candidate[1:-1].strip())
+            break
+
+    return _resolve_grok_launch_model(requested)
 
 
 def _inject_grok_provider_config(port: int, model_name: str) -> Path:
@@ -4478,7 +4509,10 @@ def grok(
         click.echo("Install Grok Build CLI: https://docs.x.ai/build/overview")
         raise SystemExit(1)
 
-    grok_launch_args, selected_model = _rewrite_grok_args_for_headroom(grok_args)
+    grok_launch_args, requested_model = _rewrite_grok_args_for_headroom(grok_args)
+    config_file, _ = _grok_config_paths()
+    existing_config = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
+    selected_model = _resolve_grok_requested_model(existing_config, requested_model)
     config_file = _inject_grok_provider_config(port, selected_model)
     env = dict(os.environ)
     env_vars_display = [

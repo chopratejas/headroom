@@ -74,12 +74,43 @@ def test_wrap_grok_injects_config_backed_model_alias(
     assert "GROK_PROXY_URL" not in env
     assert captured["tool_label"] == "GROK"
     assert captured["agent_type"] == "grok"
-    assert captured["args"] == ("-m", HEADROOM_MODEL_ALIAS)
+    assert captured["args"] == ("--model", HEADROOM_MODEL_ALIAS)
     assert captured["env_vars_display"] == [
         f"{config_file}: model.{HEADROOM_MODEL_ALIAS} -> http://127.0.0.1:8787/v1",
         "upstream model = grok-beta",
     ]
     assert captured["openai_api_url"] == DEFAULT_API_URL
+
+
+def test_wrap_grok_resolves_existing_model_alias(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    grok_dir = tmp_path / ".grok"
+    grok_dir.mkdir(parents=True)
+    (grok_dir / "config.toml").write_text(
+        '[model.my-model]\nmodel = "grok-beta"\nbase_url = "https://api.x.ai/v1"\n',
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_launch_tool(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    with (
+        patch("headroom.cli.wrap.shutil.which", return_value="grok"),
+        patch("headroom.cli.wrap._launch_tool", side_effect=fake_launch_tool),
+    ):
+        result = runner.invoke(
+            main,
+            ["wrap", "grok", "--no-rtk", "--", "--model", "my-model"],
+        )
+
+    assert result.exit_code == 0, result.output
+    content = (grok_dir / "config.toml").read_text(encoding="utf-8")
+    assert 'model = "grok-beta"' in content
+    assert captured["args"] == ("--model", HEADROOM_MODEL_ALIAS)
+    assert captured["env_vars_display"][-1] == "upstream model = grok-beta"
 
 
 def test_wrap_grok_uses_default_model_when_none_requested(
@@ -100,7 +131,7 @@ def test_wrap_grok_uses_default_model_when_none_requested(
     assert result.exit_code == 0, result.output
     content = (tmp_path / ".grok" / "config.toml").read_text(encoding="utf-8")
     assert f'model = "{DEFAULT_MODEL}"' in content
-    assert captured["args"] == ("-m", HEADROOM_MODEL_ALIAS)
+    assert captured["args"] == ("--model", HEADROOM_MODEL_ALIAS)
     assert captured["env_vars_display"][-1] == f"upstream model = {DEFAULT_MODEL}"
 
 
