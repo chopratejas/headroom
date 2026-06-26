@@ -2672,7 +2672,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             leanctx_py_stats = get_leanctx_python_stats()
         except ImportError:
             leanctx_py_stats = {"tool": "leanctx-py", "tokens_saved": 0}
-cli_filtering_stats = await asyncio.to_thread(_get_context_tool_stats)
+        cli_filtering_stats = await asyncio.to_thread(_get_context_tool_stats)
         cli_filtering_tool = (
             str(cli_filtering_stats.get("tool", "rtk")) if cli_filtering_stats else "rtk"
         )
