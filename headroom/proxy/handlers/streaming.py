@@ -1034,6 +1034,9 @@ class StreamingMixin:
 
         get_codex_rate_limit_state().update_from_headers(dict(upstream_response.headers))
 
+        _is_5hour_limit = False
+        _sleep_seconds = 0
+        _reset_time_str = ""
         if upstream_response.status_code >= 400:
             logger.warning(
                 "[%s] Forwarding upstream streaming error status=%s url=%s",
@@ -1092,32 +1095,93 @@ class StreamingMixin:
                     status_code=upstream_response.status_code,
                 )
 
-            stream_state["total_bytes"] = len(error_content)
-            await self._finalize_stream_response(
-                body=body,
-                provider=provider,
-                outcome_provider=outcome_provider,
-                model=model,
-                request_id=request_id,
-                original_tokens=original_tokens,
-                optimized_tokens=optimized_tokens,
-                tokens_saved=tokens_saved,
-                transforms_applied=transforms_applied,
-                optimization_latency=optimization_latency,
-                stream_state=stream_state,
-                start_time=start_time,
-                tags=tags,
-                pipeline_timing=pipeline_timing,
-                prefix_tracker=prefix_tracker,
-                original_messages=original_messages,
-                client=client,
-                waste_signals=waste_signals,
-            )
-            return Response(
-                content=error_content,
-                status_code=upstream_response.status_code,
-                headers=response_headers,
-            )
+            if upstream_response.status_code in (401, 402, 429):
+                try:
+                    import datetime
+                    _err_text = error_content.decode("utf-8")
+                    _err_json = json.loads(_err_text)
+                    
+                    _err_msg = ""
+                    _err_val = _err_json.get("error")
+                    if isinstance(_err_val, dict):
+                        _err_msg = _err_val.get("message", "")
+                    elif isinstance(_err_val, str):
+                        _err_msg = _err_val
+                    else:
+                        _err_msg = _err_json.get("message", "")
+                        
+                    if ("Usage limit reached" in _err_msg or "rate limit" in _err_msg.lower()) and ("wait until" in _err_msg or "will reset on" in _err_msg):
+                        import re
+                        # 1. Match Anthropic format: "wait until 2026-06-24T04:02:00Z"
+                        m = re.search(r"wait until (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)", _err_msg)
+                        if m:
+                            _reset_time_str = m.group(1)
+                            _rt_str = _reset_time_str
+                            if _rt_str.endswith("Z"):
+                                _rt_str = _rt_str[:-1] + "+00:00"
+                            _reset_time = datetime.datetime.fromisoformat(_rt_str)
+                            _now = datetime.datetime.now(datetime.timezone.utc)
+                            _sleep_seconds = (_reset_time - _now).total_seconds()
+                            if _sleep_seconds > 0:
+                                _is_5hour_limit = True
+                        else:
+                            # 2. Match Freemodel format: "will reset on Jun 24 at 4:02 AM (UTC+8)"
+                            m2 = re.search(r"will reset on\s+([A-Za-z]+)\s+(\d+)\s+at\s+(\d+):(\d+)\s+(AM|PM)\s*\(UTC([+-]?\d+)\)", _err_msg)
+                            if m2:
+                                month_str, day_str, hour_str, min_str, am_pm, tz_offset_str = m2.groups()
+                                months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+                                month = months.index(month_str.lower()[:3]) + 1
+                                day = int(day_str)
+                                hour = int(hour_str)
+                                minute = int(min_str)
+                                if am_pm.upper() == "PM" and hour < 12:
+                                    hour += 12
+                                elif am_pm.upper() == "AM" and hour == 12:
+                                    hour = 0
+                                offset_hours = int(tz_offset_str)
+                                tz = datetime.timezone(datetime.timedelta(hours=offset_hours))
+                                year = datetime.datetime.now(datetime.timezone.utc).year
+                                _reset_time = datetime.datetime(year, month, day, hour, minute, tzinfo=tz)
+                                _now = datetime.datetime.now(datetime.timezone.utc)
+                                if _reset_time < _now - datetime.timedelta(days=30):
+                                    _reset_time = _reset_time.replace(year=year + 1)
+                                _sleep_seconds = (_reset_time - _now).total_seconds()
+                                _reset_time_str = _reset_time.isoformat()
+                                if _sleep_seconds > 0:
+                                    _is_5hour_limit = True
+                except Exception as e:
+                    logger.warning(f"[{request_id}] Failed to parse Anthropic rate limit reset time: {e}")
+
+            if _is_5hour_limit:
+                logger.info(f"[{request_id}] Auto-continuing: waiting {_sleep_seconds:.1f}s for Anthropic rate limit reset at {_reset_time_str}")
+                # Skip returning the error Response. We will auto-continue at the end of _stream_response.
+            else:
+                stream_state["total_bytes"] = len(error_content)
+                await self._finalize_stream_response(
+                    body=body,
+                    provider=provider,
+                    outcome_provider=outcome_provider,
+                    model=model,
+                    request_id=request_id,
+                    original_tokens=original_tokens,
+                    optimized_tokens=optimized_tokens,
+                    tokens_saved=tokens_saved,
+                    transforms_applied=transforms_applied,
+                    optimization_latency=optimization_latency,
+                    stream_state=stream_state,
+                    start_time=start_time,
+                    tags=tags,
+                    pipeline_timing=pipeline_timing,
+                    prefix_tracker=prefix_tracker,
+                    original_messages=original_messages,
+                    client=client,
+                    waste_signals=waste_signals,
+                )
+                return Response(
+                    content=error_content,
+                    status_code=upstream_response.status_code,
+                    headers=response_headers,
+                )
 
         # Forward upstream rate-limit headers to the client. We pass both the
         # generic ``*ratelimit*`` headers (Anthropic) and Codex's ``x-codex-*``
@@ -1384,6 +1448,122 @@ class StreamingMixin:
                     client=client,
                     waste_signals=waste_signals,
                 )
+
+        if _is_5hour_limit:
+            async def auto_continue_wrapper():
+                nonlocal upstream_response
+                waited = 0
+                target_sleep = _sleep_seconds + 5.0
+                
+                # Send fake message start and initial text block
+                msg_start = {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_headroom_wait",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": model,
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                    }
+                }
+                yield f"event: message_start\ndata: {json.dumps(msg_start)}\n\n".encode("utf-8")
+                
+                block_start = {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+                yield f"event: content_block_start\ndata: {json.dumps(block_start)}\n\n".encode("utf-8")
+                
+                wait_msg = f"\n\n⏳ **Headroom**: Anthropic 5-hour limit reached. Auto-continuing and waiting {_sleep_seconds:.0f} seconds until {_reset_time_str}...\n\n"
+                delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": wait_msg}}
+                yield f"event: content_block_delta\ndata: {json.dumps(delta)}\n\n".encode("utf-8")
+
+                while waited < target_sleep:
+                    yield b": headroom-keepalive\n\n"
+                    step = min(15.0, target_sleep - waited)
+                    await asyncio.sleep(step)
+                    waited += step
+                
+                # Retry upstream
+                _upstream_req = self.http_client.build_request(
+                    "POST", url, content=outbound_bytes, headers=outbound_headers
+                )
+                try:
+                    new_upstream_response = await self.http_client.send(_upstream_req, stream=True)
+                    upstream_response = new_upstream_response
+                    
+                    if upstream_response.status_code >= 400:
+                        err_content = await upstream_response.aread()
+                        await upstream_response.aclose()
+                        err_msg = f"\n\n❌ Auto-continue retry failed with status {upstream_response.status_code}: {err_content.decode(errors='replace')}"
+                        logger.error(f"[{request_id}] {err_msg}")
+                        err_delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": err_msg}}
+                        yield f"event: content_block_delta\ndata: {json.dumps(err_delta)}\n\n".encode("utf-8")
+                        yield b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+                        yield b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}\n\n'
+                        yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+                        return
+                        
+                except Exception as e:
+                    logger.error(f"[{request_id}] Auto-continue retry failed: {e}")
+                    err_msg = f"\n\n❌ Auto-continue retry failed: {e}"
+                    err_delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": err_msg}}
+                    yield f"event: content_block_delta\ndata: {json.dumps(err_delta)}\n\n".encode("utf-8")
+                    yield b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+                    yield b'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}\n\n'
+                    yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+                    return
+                
+                # Stream the actual response, filtering SSE events to safely append
+                buffer = bytearray()
+                first_block_seen = False
+                shift_indexes = False
+                
+                import re
+                def shift_repl(m):
+                    return f'"index":{int(m.group(1)) + 1}'
+
+                async for chunk in generate():
+                    buffer.extend(chunk)
+                    while b"\n\n" in buffer:
+                        event_bytes, buffer = buffer.split(b"\n\n", 1)
+                        event_str = event_bytes.decode("utf-8", errors="replace")
+                        
+                        if event_str.startswith("event: message_start"):
+                            continue # Drop it, already sent
+                            
+                        if event_str.startswith("event: content_block_start"):
+                            if not first_block_seen:
+                                first_block_seen = True
+                                if '"type":"text"' in event_str or '"type": "text"' in event_str:
+                                    shift_indexes = False
+                                    continue # Drop start, subsequent deltas append to our text block
+                                else:
+                                    # It's a tool_use block. Close our text block first.
+                                    yield b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+                                    shift_indexes = True
+                                    rewritten = re.sub(r'"index"\s*:\s*0', '"index":1', event_str)
+                                    yield f"{rewritten}\n\n".encode("utf-8")
+                                    continue
+                            else:
+                                if shift_indexes:
+                                    rewritten = re.sub(r'"index"\s*:\s*(\d+)', shift_repl, event_str)
+                                    yield f"{rewritten}\n\n".encode("utf-8")
+                                    continue
+                        
+                        if event_str.startswith("event: content_block_delta") or event_str.startswith("event: content_block_stop"):
+                            if shift_indexes:
+                                rewritten = re.sub(r'"index"\s*:\s*(\d+)', shift_repl, event_str)
+                                yield f"{rewritten}\n\n".encode("utf-8")
+                                continue
+
+                        yield bytes(event_bytes) + b"\n\n"
+
+            return StreamingResponse(
+                auto_continue_wrapper(),
+                media_type="text/event-stream",
+                headers=forwarded_headers,
+            )
 
         return StreamingResponse(
             generate(),
