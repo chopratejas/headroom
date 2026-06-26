@@ -26,6 +26,7 @@ import os
 import re
 import sqlite3
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -431,8 +432,9 @@ class TrafficLearner:
         # Pattern accumulator: hash → (pattern, count)
         self._pattern_counts: dict[str, tuple[ExtractedPattern, int]] = {}
 
-        # Dedup: hashes of patterns already saved to DB
-        self._saved_hashes: set[str] = set()
+        # Dedup: hashes of patterns already saved to DB. Insertion-ordered so
+        # eviction removes the OLDEST entry (a plain set.pop() is arbitrary).
+        self._saved_hashes: OrderedDict[str, None] = OrderedDict()
         # content_hash → memory.id for persisted rows. Lets re-sightings
         # bump the existing row's evidence_count instead of creating a
         # duplicate row.
@@ -1205,11 +1207,13 @@ class TrafficLearner:
         if count >= self._min_evidence:
             # Ready to save
             del self._pattern_counts[h]
-            self._saved_hashes.add(h)
-            # Trim saved hashes to prevent unbounded growth
+            self._saved_hashes[h] = None
+            # Trim saved hashes to prevent unbounded growth — evict the oldest
+            # and drop its persisted-id mapping so it doesn't leak / bump a
+            # stale row on re-sighting.
             if len(self._saved_hashes) > self._dedup_window:
-                # Remove oldest (arbitrary, set is unordered, but prevents growth)
-                self._saved_hashes.pop()
+                oldest, _ = self._saved_hashes.popitem(last=False)
+                self._persisted_ids.pop(oldest, None)
 
             # Persist the real accumulated count, not the dataclass default.
             pattern.evidence_count = count
@@ -1307,7 +1311,7 @@ class TrafficLearner:
             else:
                 key = _normalize_hash_key(category, content, metadata)
             h = hashlib.sha256(key.encode()).hexdigest()[:16]
-            self._saved_hashes.add(h)
+            self._saved_hashes[h] = None
             # If multiple rows share the same content (legacy duplicates),
             # last-wins — we only need one id to target the bump.
             self._persisted_ids[h] = memory_id

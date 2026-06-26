@@ -2569,7 +2569,7 @@ class OpenAIHandlerMixin:
                     # These are charged at 50% of the input price
                     prompt_details = usage.get("prompt_tokens_details") or {}
                     cache_read_tokens = prompt_details.get("cached_tokens", 0)
-                except (KeyError, TypeError, AttributeError) as e:
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI response: {e}"
                     )
@@ -3351,7 +3351,7 @@ class OpenAIHandlerMixin:
                     details = usage.get("input_tokens_details")
                     if isinstance(details, dict):
                         cache_read_tokens = _usage_int(details.get("cached_tokens"))
-                except (KeyError, TypeError, AttributeError) as e:
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI passthrough response: {e}"
                     )
@@ -3420,12 +3420,27 @@ class OpenAIHandlerMixin:
                             cont_response = await self._retry_request(
                                 "POST", url, headers, continuation_body
                             )
-                            resp_json = cont_response.json()
-                            response = cont_response
-                            logger.info(
-                                f"[{request_id}] Memory: Handled {len(tool_outputs)} "
-                                f"tool call(s) with continuation for user {memory_user_id} (responses)"
-                            )
+                            # Only adopt the continuation if it succeeded; otherwise
+                            # keep the original 200 response instead of clobbering it
+                            # with an error body.
+                            if cont_response.status_code == 200:
+                                try:
+                                    resp_json = cont_response.json()
+                                    response = cont_response
+                                    logger.info(
+                                        f"[{request_id}] Memory: Handled {len(tool_outputs)} "
+                                        f"tool call(s) with continuation for user {memory_user_id} (responses)"
+                                    )
+                                except (json.JSONDecodeError, ValueError) as e:
+                                    logger.warning(
+                                        f"[{request_id}] Memory: continuation returned "
+                                        f"non-JSON body, keeping original response: {e}"
+                                    )
+                            else:
+                                logger.warning(
+                                    f"[{request_id}] Memory: continuation failed with "
+                                    f"status {cont_response.status_code}, keeping original response"
+                                )
                     except Exception as e:
                         logger.warning(
                             f"[{request_id}] Memory tool handling failed (responses): {e}"
@@ -5237,14 +5252,14 @@ class OpenAIHandlerMixin:
                                     elif event_type == "response.completed":
                                         # No output items at all — flush
                                         decided = True
-                                for buf in event_buffer:
-                                    await websocket.send_text(buf)
-                                event_buffer.clear()
-                                await _record_ws_response_metrics()
-                                _reset()
-                                response_completed_seen = True
+                                        for buf in event_buffer:
+                                            await websocket.send_text(buf)
+                                        event_buffer.clear()
+                                        await _record_ws_response_metrics()
+                                        _reset()
+                                        response_completed_seen = True
 
-                                continue
+                                    continue
 
                                 # --- Phase 2a: Suppress mode (memory response) ---
                                 if suppress_response:
@@ -6386,10 +6401,13 @@ class OpenAIHandlerMixin:
                 output_tokens = stream_state["output_tokens"] or 0
                 cache_read_tokens = stream_state["cache_read_input_tokens"] or 0
                 cache_write_tokens = stream_state["cache_creation_input_tokens"] or 0
-                uncached_input_tokens = max(
-                    0,
-                    input_tokens - cache_read_tokens - cache_write_tokens,
-                )
+                if stream_provider == "anthropic":
+                    # Anthropic's usage.input_tokens already excludes both cache
+                    # read and cache-creation tokens, so it is the uncached count.
+                    uncached_input_tokens = max(0, input_tokens)
+                else:
+                    # Gemini's promptTokenCount includes cached content tokens.
+                    uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
                 await self._record_request_outcome(
                     RequestOutcome(
                         request_id=request_id,

@@ -458,8 +458,10 @@ class HNSWVectorIndex:
                     new_memories.append((memory, embedding, hnsw_id))
                     self._next_hnsw_id += 1
 
-            # Resize if needed
-            required_capacity = len(self._memory_to_hnsw) + len(new_memories)
+            # Resize if needed. HNSW labels come from the monotonic _next_hnsw_id,
+            # which is never reclaimed on remove/evict, so capacity must cover the
+            # highest assigned label (_next_hnsw_id - 1), not the active count.
+            required_capacity = self._next_hnsw_id
             if required_capacity > self._max_elements:
                 new_max = max(self._max_elements * 2, required_capacity + 1000)
                 self._resize_index(new_max)

@@ -197,6 +197,9 @@ class MemoryHandler:
         # _ensure_initialized). Not used by the legacy sync _initialized flag
         # on its own because that flag isn't atomic across await points.
         self._init_lock: asyncio.Lock | None = None
+        # Strong refs to background dedup tasks so the event loop can't GC them
+        # mid-flight (asyncio only holds weak references to bare create_task()).
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._memory_tools: list[dict[str, Any]] | None = None
         # Native memory tool directory
         self._native_memory_dir: Path | None = None
@@ -1031,7 +1034,11 @@ your responses, not to drive new actions."""
         if provider == "anthropic":
             content = response.get("content", [])
             if isinstance(content, list):
-                return [block for block in content if block.get("type") == "tool_use"]
+                return [
+                    block
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "tool_use"
+                ]
             return []
 
         elif provider == "openai":
@@ -1105,14 +1112,18 @@ your responses, not to drive new actions."""
                 # Custom memory tools need backend
                 await self._ensure_initialized()
                 if not self._backend:
-                    continue
-                result_content = await self._execute_memory_tool(
-                    tool_name,
-                    input_data,
-                    user_id,
-                    provider,
-                    request_context=request_context,
-                )
+                    # Backend unavailable (fail-open). Still emit a tool_result so
+                    # the continuation isn't malformed — Anthropic rejects a
+                    # tool_use with no matching tool_result (HTTP 400).
+                    result_content = json.dumps({"error": "memory backend not ready"})
+                else:
+                    result_content = await self._execute_memory_tool(
+                        tool_name,
+                        input_data,
+                        user_id,
+                        provider,
+                        request_context=request_context,
+                    )
             else:
                 continue
 
@@ -1254,9 +1265,11 @@ your responses, not to drive new actions."""
 
         # Async background dedup: auto-supersede obvious duplicates
         if similar_memories:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._background_dedup(memory.id, similar_memories, effective_user_id, backend)
             )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         logger.info(
             "event=memory_save user=%s scope=%s agent=%s provider=%s similar=%d",
