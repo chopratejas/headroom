@@ -1,0 +1,39 @@
+version: "3"
+
+tasks:
+  test:
+    desc: Run all LeanContext tests
+    cmds:
+      - python -m pytest tests/test_transforms/test_lean_context.py tests/test_transforms/test_lean_context_bench.py tests/test_transforms/test_lean_context_fuzz.py tests/test_proxy/test_coalescer.py tests/test_proxy/test_coalescer_fuzz.py -v
+
+  test-unit:
+    desc: Unit tests only
+    cmds:
+      - python -m pytest tests/test_transforms/test_lean_context.py tests/test_proxy/test_coalescer.py -v
+
+  test-fuzz:
+    desc: Fuzzing tests
+    cmds:
+      - python -m pytest tests/test_transforms/test_lean_context_fuzz.py tests/test_proxy/test_coalescer_fuzz.py -v --hypothesis-show-statistics
+
+  bench:
+    desc: Benchmarks
+    cmds:
+      - python -m pytest tests/test_transforms/test_lean_context_bench.py -v
+
+  coverage:
+    desc: Test coverage
+    cmds:
+      - python -m pytest --cov=headroom.transforms.lean_context --cov=headroom.proxy.coalescer --cov-report=term -v
+
+  lint:
+    desc: Lint
+    cmds:
+      - ruff check headroom/transforms/lean_context.py headroom/proxy/coalescer.py
+
+  all:
+    desc: Full suite
+    cmds:
+      - task: lint
+      - task: test
+      - task: coverage

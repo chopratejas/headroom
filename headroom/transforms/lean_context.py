@@ -49,6 +49,10 @@ SIGNAL_PATTERNS = [
     # General relevance
     re.compile(r"(?i)(fix|patch|resolve|address|workaround|solution)"),
     re.compile(r"(?i)(critical|fatal|panic|crash|deadlock|timeout|OOM)"),
+    # npm/yarn errors
+    re.compile(r"npm ERR!", re.IGNORECASE),
+    re.compile(r"yarn ERR", re.IGNORECASE),
+    re.compile(r"ELIFECYCLE", re.IGNORECASE),
 ]
 
 
