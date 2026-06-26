@@ -119,7 +119,7 @@ def test_create_proxy_backend_handles_missing_litellm_backend(caplog) -> None:
             anyllm_provider="ignored",
             bedrock_region="us-east-1",
             logger=logger,
-            litellm_backend_cls=lambda provider, region: (_ for _ in ()).throw(
+            litellm_backend_cls=lambda provider, region, profile_name=None: (_ for _ in ()).throw(
                 ImportError("missing")
             ),
         )
