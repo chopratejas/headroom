@@ -60,6 +60,7 @@ class AuthMode(str, enum.Enum):
 SUBSCRIPTION_UA_PREFIXES: tuple[str, ...] = (
     "claude-cli/",
     "claude-code/",
+    "codebuddy/",
     "codex-cli/",
     "cursor/",
     "claude-vscode/",
@@ -195,6 +196,8 @@ CLIENT_UA_MAP: tuple[tuple[str, str], ...] = (
     ("claude-cli/", "claude-code"),
     ("claude-vscode/", "claude-vscode"),
     ("anthropic-cli/", "anthropic-cli"),
+    # CodeBuddy (Claude Code compatible)
+    ("codebuddy/", "codebuddy"),
     # OpenAI ecosystem
     ("codex-cli/", "codex"),
     # Editors / IDEs

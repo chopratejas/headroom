@@ -63,7 +63,7 @@
 
 ## ADR-004: Why Per-Agent Plugins for Learn System
 
-**Context:** Different AI agents (Claude, Codex, Gemini) have different context patterns.
+**Context:** Different AI agents (Claude, CodeBuddy, Codex, Gemini) have different context patterns.
 
 **Decision:** Plugin architecture with agent-specific analyzers.
 

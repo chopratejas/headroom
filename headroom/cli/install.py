@@ -135,7 +135,7 @@ def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
     "--target",
     "targets",
     multiple=True,
-    type=click.Choice(["claude", "copilot", "codex", "aider", "cursor", "openclaw"]),
+    type=click.Choice(["claude", "copilot", "codex", "aider", "cursor", "openclaw", "codebuddy"]),
     help="Tool target to configure when --providers manual is used.",
 )
 @click.option("--profile", default="default", show_default=True, help="Deployment profile name.")
@@ -195,6 +195,21 @@ def install_apply(
 
     if preset == InstallPreset.PERSISTENT_DOCKER.value:
         runtime = RuntimeKind.DOCKER.value
+
+    # When --target is specified without --providers manual, switch to manual mode
+    # so the user's target selection is respected instead of ignored.
+    if targets and provider_mode != ProviderSelectionMode.MANUAL.value:
+        provider_mode = ProviderSelectionMode.MANUAL.value
+
+    # When the sole target is a target that doubles as a backend name (e.g. codebuddy),
+    # and the user did not explicitly override --backend, default the backend to match.
+    _DEFAULT_BACKEND = "anthropic"
+    if backend == _DEFAULT_BACKEND and len(targets) == 1:
+        from headroom.install.models import ToolTarget
+
+        target_name = targets[0]
+        if target_name in {t.value for t in ToolTarget} and target_name != _DEFAULT_BACKEND:
+            backend = target_name
 
     manifest = build_manifest(
         profile=profile,

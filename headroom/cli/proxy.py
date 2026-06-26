@@ -683,7 +683,8 @@ def dashboard(port: int, no_open: bool) -> None:
     envvar="HEADROOM_BACKEND",
     help=(
         "API backend: 'anthropic' (direct), 'bedrock' (AWS), 'openrouter' (OpenRouter), "
-        "'anyllm' (any-llm), or 'litellm-<provider>' (e.g., litellm-vertex). "
+        "'anyllm' (any-llm), 'codebuddy' (Tencent CodeBuddy, anthropic + openai-api-url to tencent.sso.copilot.tencent.com), "
+        "or 'litellm-<provider>' (e.g., litellm-vertex). "
         "Env: HEADROOM_BACKEND."
     ),
 )
@@ -924,6 +925,14 @@ def proxy(
             )
             sys.exit(1)
         os.environ["HEADROOM_INTERCEPT_ENABLED"] = "1"
+
+    # codebuddy backend: equivalent to --backend anthropic --openai-api-url <url>
+    _CODEBUDDY_API_URL = "https://tencent.sso.copilot.tencent.com"
+    if backend == "codebuddy":
+        if openai_api_url is None:
+            openai_api_url = _CODEBUDDY_API_URL
+        # Keep anthropic backend; only set the OpenAI upstream URL.
+        backend = "anthropic"
 
     provider_api_overrides = resolve_api_overrides(
         anthropic_api_url=anthropic_api_url,

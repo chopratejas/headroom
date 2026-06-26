@@ -2408,7 +2408,9 @@ class OpenAIHandlerMixin:
                 )
 
         # Direct OpenAI API (no backend configured)
-        url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/chat/completions")
+        # CodeBuddy (via /v2/chat/completions) sets request.state.upstream_path
+        upstream_path = getattr(request.state, "upstream_path", None) or "/v1/chat/completions"
+        url = build_copilot_upstream_url(self.OPENAI_API_URL, upstream_path)
 
         try:
             if stream:

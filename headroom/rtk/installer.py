@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import platform
@@ -12,6 +13,7 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
 
 from headroom._subprocess import run
@@ -203,6 +205,110 @@ def register_claude_hooks(rtk_path: Path | None = None) -> bool:
     except Exception as e:
         logger.warning("Failed to register rtk hooks: %s", e)
         return False
+
+
+def register_codebuddy_hooks(rtk_path: Path | None = None) -> bool:
+    """Register rtk hooks in CodeBuddy settings.
+
+    Tries ``rtk init --agent codebuddy --global --auto-patch`` first.
+    If the installed rtk does not support ``--agent codebuddy``, falls back
+    to manually writing a PreToolUse hook to ``~/.codebuddy/settings.json``
+    that calls ``rtk hook claude`` (which works even with older rtk versions).
+
+    Returns True if hooks were registered successfully.
+    """
+    rtk_path = rtk_path or RTK_BIN_PATH
+
+    # Try the native --agent codebuddy path first
+    try:
+        result = run(
+            [str(rtk_path), "init", "--agent", "codebuddy", "--global", "--auto-patch"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if result.returncode == 0:
+            logger.info("rtk hooks registered in CodeBuddy (native --agent codebuddy)")
+            return True
+        logger.debug(
+            "rtk init --agent codebuddy failed, falling back to manual: %s", result.stderr.strip()
+        )
+    except Exception as e:
+        logger.debug("rtk init --agent codebuddy error, falling back to manual: %s", e)
+
+    # Fallback: manually write PreToolUse hook using "rtk hook claude"
+    return _register_codebuddy_hooks_manual(rtk_path)
+
+
+def _register_codebuddy_hooks_manual(rtk_path: Path | None = None) -> bool:
+    """Manually write rtk hooks into ~/.codebuddy/settings.json.
+
+    Uses ``rtk hook claude`` command which is compatible with older rtk
+    versions that don't support ``--agent codebuddy``.
+    """
+    from headroom.install.paths import codebuddy_settings_path
+
+    rtk_path = rtk_path or RTK_BIN_PATH
+    if not rtk_path or not rtk_path.exists():
+        return False
+
+    path = codebuddy_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: dict[str, Any] = {}
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+
+    rtk_cmd = str(rtk_path)
+    hook_command = f"{rtk_cmd} hook codebuddy"
+
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+
+    pre_tool_use = hooks.get("PreToolUse")
+    if not isinstance(pre_tool_use, list):
+        pre_tool_use = []
+
+    # Check if already registered (either "rtk hook codebuddy" or "rtk hook claude")
+    already_registered = any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("hooks"), list)
+        and any(
+            isinstance(h, dict)
+            and "rtk" in str(h.get("command", ""))
+            and "hook" in str(h.get("command", ""))
+            and ("claude" in str(h.get("command", "")) or "codebuddy" in str(h.get("command", "")))
+            for h in entry["hooks"]
+        )
+        for entry in pre_tool_use
+    )
+
+    if not already_registered:
+        pre_tool_use.append(
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": hook_command,
+                    }
+                ],
+            }
+        )
+        hooks["PreToolUse"] = pre_tool_use
+        payload["hooks"] = hooks
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        logger.info("rtk hooks manually registered in CodeBuddy (rtk hook claude fallback)")
+    else:
+        logger.debug("rtk hooks already present in CodeBuddy settings")
+
+    return True
 
 
 def ensure_rtk(version: str | None = None) -> Path | None:
