@@ -2612,7 +2612,7 @@ def _pid_alive(pid: int) -> bool:
     try:
         import psutil  # type: ignore[import-untyped]  # optional dep, already used elsewhere
 
-        return psutil.pid_exists(pid)
+        return bool(psutil.pid_exists(pid))
     except Exception:
         pass
     try:
