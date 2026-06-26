@@ -384,3 +384,98 @@ class TestNormalizeBedrockProfileId:
         assert _normalize_bedrock_profile_id("claude-sonnet-4-20250514") == (
             "claude-sonnet-4-20250514"
         )
+
+
+# =============================================================================
+# Named profile forwarded to acompletion kwargs
+# =============================================================================
+
+_MODEL_MAP_US = {"claude-sonnet-4-20250514": "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"}
+_BODY = {
+    "model": "claude-sonnet-4-20250514",
+    "messages": [{"role": "user", "content": "hi"}],
+    "max_tokens": 10,
+}
+
+
+def _make_fake_completion_resp():
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock()]
+    mock_resp.choices[0].message.content = "hello"
+    mock_resp.choices[0].message.tool_calls = None
+    mock_resp.choices[0].finish_reason = "stop"
+    mock_resp.usage.prompt_tokens = 10
+    mock_resp.usage.completion_tokens = 5
+    return mock_resp
+
+
+class TestBedrockProfileForwardedToCompletion:
+    """Regression: --bedrock-profile must be passed to acompletion(), not just to
+    _fetch_bedrock_inference_profiles() at startup. Without self.profile_name the
+    actual Bedrock call still uses ambient/default credentials even when the user
+    explicitly supplied a named SSO profile."""
+
+    def setup_method(self):
+        _bedrock_profiles_cache.clear()
+
+    async def test_send_message_passes_aws_profile_name(self):
+        """send_message() must include aws_profile_name in the acompletion() kwargs."""
+        captured_kwargs: dict = {}
+
+        async def fake_acompletion(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _make_fake_completion_resp()
+
+        with patch(
+            "headroom.backends.litellm._fetch_bedrock_inference_profiles",
+            return_value=_MODEL_MAP_US,
+        ), patch("headroom.backends.litellm.acompletion", side_effect=fake_acompletion):
+            backend = LiteLLMBackend(
+                provider="bedrock", region="us-east-1", profile_name="my-sso-profile"
+            )
+            await backend.send_message(body=_BODY, headers={})
+
+        assert captured_kwargs.get("aws_profile_name") == "my-sso-profile"
+
+    async def test_stream_message_passes_aws_profile_name(self):
+        """stream_message() must include aws_profile_name in the acompletion() kwargs."""
+        captured_kwargs: dict = {}
+
+        async def fake_acompletion(**kwargs):
+            captured_kwargs.update(kwargs)
+
+            async def _empty():
+                return
+                yield  # pragma: no cover — makes this an async generator
+
+            return _empty()
+
+        with patch(
+            "headroom.backends.litellm._fetch_bedrock_inference_profiles",
+            return_value=_MODEL_MAP_US,
+        ), patch("headroom.backends.litellm.acompletion", side_effect=fake_acompletion):
+            backend = LiteLLMBackend(
+                provider="bedrock", region="us-east-1", profile_name="my-sso-profile"
+            )
+            async for _ in backend.stream_message(body=_BODY, headers={}):
+                pass
+
+        assert captured_kwargs.get("aws_profile_name") == "my-sso-profile"
+
+    async def test_no_profile_does_not_set_aws_profile_name(self):
+        """When no profile is configured, aws_profile_name must not appear in kwargs
+        (LiteLLM falls back to ambient credentials correctly)."""
+        captured_kwargs: dict = {}
+
+        async def fake_acompletion(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _make_fake_completion_resp()
+
+        with patch(
+            "headroom.backends.litellm._fetch_bedrock_inference_profiles",
+            return_value=_MODEL_MAP_US,
+        ), patch("headroom.backends.litellm.acompletion", side_effect=fake_acompletion):
+            backend = LiteLLMBackend(provider="bedrock", region="us-east-1")
+            await backend.send_message(body=_BODY, headers={})
+
+        assert "aws_profile_name" not in captured_kwargs

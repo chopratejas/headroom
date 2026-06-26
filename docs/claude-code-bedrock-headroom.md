@@ -15,22 +15,18 @@ Claude Code  ──ANTHROPIC_BASE_URL──▶  Headroom proxy  ──LiteLLM (b
  (normal mode)     (plain http)        (compresses)         (your AWS creds)      (Claude)
 ```
 
-Two non-obvious requirements make the difference between "works" and "silently bypasses
+One non-obvious requirement makes the difference between "works" and "silently bypasses
 the proxy":
 
-1. **`CLAUDE_CODE_USE_BEDROCK=0`** — Without this, Claude Code detects ARN model IDs or
-   the `CLAUDE_CODE_USE_BEDROCK=1` flag and calls Bedrock directly via the AWS SDK,
+1. **`CLAUDE_CODE_USE_BEDROCK=0`** — Without this, Claude Code sees the
+   `CLAUDE_CODE_USE_BEDROCK=1` flag and calls Bedrock directly via the AWS SDK,
    completely bypassing `ANTHROPIC_BASE_URL` and the proxy.
-2. **Standard Anthropic model names** in `ANTHROPIC_DEFAULT_*_MODEL` (e.g.
-   `claude-sonnet-4-6`, not ARNs) — Claude Code validates model names client-side against
-   a built-in list. ARN values are detected and cause Claude Code to bypass the proxy.
 
 ## Why not "just set CLAUDE_CODE_USE_BEDROCK=1"?
 
 That approach **does not work** with Headroom. When `CLAUDE_CODE_USE_BEDROCK=1` is set,
 Claude Code calls Bedrock directly using the AWS SDK — `ANTHROPIC_BASE_URL` is ignored
-entirely and the proxy never receives a byte. The same bypass happens when
-`ANTHROPIC_DEFAULT_*_MODEL` contains ARN values. Use the Anthropic-mode path below.
+entirely and the proxy never receives a byte. Use the Anthropic-mode path below.
 
 ## Prerequisites
 
@@ -145,7 +141,7 @@ The proxy uses the correct prefix automatically when constructing fallback model
 | Symptom | Cause | Fix |
 |---|---|---|
 | Proxy receives no requests | Claude Code is in Bedrock mode, bypassing proxy | Set `CLAUDE_CODE_USE_BEDROCK=0` |
-| `400 The provided model identifier is invalid` | ARN value in `ANTHROPIC_DEFAULT_*_MODEL` detected by Claude Code | Use standard model names (`claude-sonnet-4-6`, not ARNs) |
+| `400 The provided model identifier is invalid` | Bedrock rejected the model name format | Use standard cross-region profile names (`claude-sonnet-4-6`) or a valid application inference profile ARN |
 | `403 AccessDeniedException` on system-defined profiles | IAM policy only permits application profiles | Use `--bedrock-profile` with an authorized profile and pass application inference profile ARNs as model values |
 | `400 … Try calling via converse route` | Old proxy version routing ARNs to invoke path | Upgrade to headroom ≥ 0.27.1 |
 | Model map empty at startup | boto3 not installed or wrong AWS profile | `pip install boto3`; check `--bedrock-profile` / `AWS_PROFILE` |

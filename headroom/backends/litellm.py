@@ -436,6 +436,7 @@ class LiteLLMBackend(Backend):
 
         self.provider = provider
         self.region = region
+        self.profile_name = profile_name
         self.kwargs = kwargs
 
         # Get provider config from registry
@@ -707,6 +708,9 @@ class LiteLLMBackend(Backend):
                 elif self.provider in ("vertex_ai", "vertex_ai_beta"):
                     kwargs["vertex_location"] = self.region
 
+            if self.provider == "bedrock" and self.profile_name:
+                kwargs["aws_profile_name"] = self.profile_name
+
             # Forward API key from request headers if present.
             # Skip for Bedrock/Vertex: they use env-based auth (AWS SigV4 / Google ADC).
             # Forwarding x-api-key (e.g. sk-ant-dummy) would override their credentials.
@@ -810,6 +814,9 @@ class LiteLLMBackend(Backend):
                     kwargs["aws_region_name"] = self.region
                 elif self.provider in ("vertex_ai", "vertex_ai_beta"):
                     kwargs["vertex_location"] = self.region
+
+            if self.provider == "bedrock" and self.profile_name:
+                kwargs["aws_profile_name"] = self.profile_name
 
             # Forward API key from request headers if present.
             # Skip for Bedrock/Vertex: they use env-based auth (AWS SigV4 / Google ADC).
@@ -1035,6 +1042,9 @@ class LiteLLMBackend(Backend):
                 elif self.provider in ("vertex_ai", "vertex_ai_beta"):
                     kwargs["vertex_location"] = self.region
 
+            if self.provider == "bedrock" and self.profile_name:
+                kwargs["aws_profile_name"] = self.profile_name
+
             # Forward API key from request headers if present.
             # Skip for Bedrock/Vertex: they use env-based auth (AWS SigV4 / Google ADC).
             # Forwarding x-api-key (e.g. sk-ant-dummy) would override their credentials.
@@ -1209,6 +1219,9 @@ class LiteLLMBackend(Backend):
                     kwargs["aws_region_name"] = self.region
                 elif self.provider in ("vertex_ai", "vertex_ai_beta"):
                     kwargs["vertex_location"] = self.region
+
+            if self.provider == "bedrock" and self.profile_name:
+                kwargs["aws_profile_name"] = self.profile_name
 
             # Forward API key from request headers if present.
             # Skip for Bedrock/Vertex: they use env-based auth (AWS SigV4 / Google ADC).
