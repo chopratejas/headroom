@@ -462,13 +462,44 @@ def _start_proxy(
         if openai_api_url:
             proxy_env["GITHUB_COPILOT_API_URL"] = openai_api_url
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=stdio_log_file,
-        stderr=stdio_log_file,
-        env=proxy_env,
-        start_new_session=os.name == "posix",
-    )
+    # Detach the proxy from the launching console on Windows so an ungraceful
+    # close of the owning agent (closing the terminal window, taskkill, or a
+    # crash) cannot tree-kill the shared proxy out from under other live
+    # clients. Without this the proxy stays in the owner's console + Job
+    # object; closing that window terminates the whole tree, bypassing the
+    # marker-based reference counting in ``_make_cleanup`` and breaking every
+    # other ``headroom wrap`` instance routed through the same port.
+    #   DETACHED_PROCESS         — no shared console (no CTRL_CLOSE_EVENT)
+    #   CREATE_NEW_PROCESS_GROUP — isolate from the parent's Ctrl-C
+    #   CREATE_BREAKAWAY_FROM_JOB— survive Job kill-on-close (Windows Terminal,
+    #                              VS Code integrated terminal, conhost)
+    # On POSIX, ``start_new_session`` already detaches via setsid(). The guard
+    # is ``sys.platform == "win32"`` (not ``os.name == "nt"``) so mypy narrows
+    # the platform and resolves the Windows-only ``subprocess`` constants.
+    _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = (
+            subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | _CREATE_BREAKAWAY_FROM_JOB
+        )
+
+    popen_kwargs: dict[str, Any] = {
+        "stdout": stdio_log_file,
+        "stderr": stdio_log_file,
+        "env": proxy_env,
+        "start_new_session": os.name == "posix",
+        "creationflags": creationflags,
+    }
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+    except OSError:
+        # The launcher's Job object forbids breakaway. Retry without that flag;
+        # DETACHED_PROCESS still spares the proxy from console-close events.
+        if sys.platform == "win32":
+            popen_kwargs["creationflags"] = creationflags & ~_CREATE_BREAKAWAY_FROM_JOB
+        proc = subprocess.Popen(cmd, **popen_kwargs)
 
     # Wait for proxy to be ready.
     # ML components (Kompress, Magika, Tree-sitter) load synchronously before
