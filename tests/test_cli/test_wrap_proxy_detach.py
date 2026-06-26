@@ -81,3 +81,38 @@ def test_start_proxy_keeps_creationflags_zero_off_windows(
     # POSIX detaches via setsid(); no Windows creation flags are applied.
     assert kwargs["creationflags"] == 0
     assert isinstance(kwargs["start_new_session"], bool)
+
+
+def test_start_proxy_retries_without_breakaway_when_job_forbids_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Force the Windows branch and supply its constants, as above.
+    monkeypatch.setattr(wrap_cli.sys, "platform", "win32")
+    monkeypatch.setattr(wrap_cli.subprocess, "DETACHED_PROCESS", 0x8, raising=False)
+    monkeypatch.setattr(
+        wrap_cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
+    )
+
+    # First spawn raises OSError (the launcher's Job forbids breakaway); the
+    # second must succeed without CREATE_BREAKAWAY_FROM_JOB.
+    seen: list[int] = []
+
+    def _flaky_popen(cmd: Any, **kwargs: Any) -> _FakeProc:
+        seen.append(kwargs["creationflags"])
+        if len(seen) == 1:
+            raise OSError("a process in the job cannot break away")
+        return _FakeProc()
+
+    monkeypatch.setattr(wrap_cli.subprocess, "Popen", _flaky_popen)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wrap_cli, "_get_log_path", lambda: tmp_path / "proxy.log")
+    monkeypatch.setattr(wrap_cli, "_resolve_wrap_proxy_timeout_seconds", lambda: 1)
+
+    wrap_cli._start_proxy(8787)
+
+    assert len(seen) == 2  # the call was retried exactly once
+    assert seen[0] & _CREATE_BREAKAWAY_FROM_JOB  # first attempt requests breakaway
+    assert not seen[1] & _CREATE_BREAKAWAY_FROM_JOB  # retry drops it
+    assert seen[1] & 0x8  # but still detaches from the console
+    assert seen[1] & 0x200  # and still gets its own process group
