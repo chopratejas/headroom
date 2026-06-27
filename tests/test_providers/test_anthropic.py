@@ -77,6 +77,9 @@ class TestAnthropicModelLimits:
     def test_get_context_limit_strips_ansi_model_suffix(self, anthropic_provider):
         assert anthropic_provider.get_context_limit("claude-opus-4-7[1m]") == 1000000
 
+    def test_get_context_limit_claude_opus_4_8(self, anthropic_provider):
+        assert anthropic_provider.get_context_limit("claude-opus-4-8") == 1000000
+
     def test_supports_model_known(self, anthropic_provider):
         assert anthropic_provider.supports_model("claude-3-5-sonnet-20241022")
 
@@ -108,5 +111,10 @@ class TestAnthropicCostEstimation:
 
     def test_pricing_lookup_strips_ansi_model_suffix(self, anthropic_provider):
         assert anthropic_provider._get_pricing("claude-opus-4-7[1m]") == (
+            anthropic_provider._get_pricing("claude-opus-4-7")
+        )
+
+    def test_opus_4_8_pricing_matches_opus_tier(self, anthropic_provider):
+        assert anthropic_provider._get_pricing("claude-opus-4-8") == (
             anthropic_provider._get_pricing("claude-opus-4-7")
         )
