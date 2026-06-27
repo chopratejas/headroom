@@ -114,7 +114,12 @@ class TestAnthropicCostEstimation:
             anthropic_provider._get_pricing("claude-opus-4-7")
         )
 
-    def test_opus_4_8_pricing_matches_opus_tier(self, anthropic_provider):
-        assert anthropic_provider._get_pricing("claude-opus-4-8") == (
-            anthropic_provider._get_pricing("claude-opus-4-7")
-        )
+    @pytest.mark.parametrize("model", ["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"])
+    def test_current_opus_tier_pricing(self, anthropic_provider, model):
+        # Opus 4.6–4.8 share the same current-tier rates per anthropic.com/pricing
+        # (verified 2026-06-27): $5/MTok input, $25/MTok output, cache read = 0.1x input ($0.50).
+        assert anthropic_provider._get_pricing(model) == {
+            "input": 5.00,
+            "output": 25.00,
+            "cached_input": 0.50,
+        }

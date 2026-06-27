@@ -112,14 +112,15 @@ ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
 
 # Fallback pricing - LiteLLM is preferred source
 # NOTE: These are ESTIMATES. Always verify against actual Anthropic billing.
-# Last updated: 2025-01-14
+# Last updated: 2026-06-27
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
-    # Claude 4.8 (Opus tier pricing)
-    "claude-opus-4-8": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
-    # Claude 4.7 (Opus tier pricing)
-    "claude-opus-4-7": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
-    # Claude 4.6 (Opus tier pricing)
-    "claude-opus-4-6": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
+    # Claude 4.8 — current Opus tier (anthropic.com/pricing): $5 in / $25 out,
+    # prompt-cache read = 0.1x input ($0.50).
+    "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+    # Claude 4.7 (current Opus tier)
+    "claude-opus-4-7": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+    # Claude 4.6 (current Opus tier)
+    "claude-opus-4-6": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
     # Claude 4.5 (Opus tier pricing)
     "claude-opus-4-5-20251101": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
     # Claude 4 (Sonnet/Haiku tier pricing)
