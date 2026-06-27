@@ -68,6 +68,14 @@ def render_retrieve_cli_guidance() -> str:
     )
 
 
+def render_retrieve_cli_workflow_steps() -> str:
+    return (
+        "    4. Claude answers from kept rows unless it has a concrete gap\n"
+        "    5. When a raw, original, complete, or targeted follow-up is needed, "
+        "it calls headroom_retrieve"
+    )
+
+
 def render_retrieve_system_instructions(hashes: list[str], tool_name: str) -> str:
     hash_list = ", ".join(hashes) if len(hashes) <= 5 else f"{', '.join(hashes[:5])} ..."
     return f"""

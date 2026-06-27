@@ -48,7 +48,28 @@ def test_static_publication_surfaces_reference_skill_and_rule() -> None:
     assert SKILL_GITHUB_URL in llms_text
     assert CANONICAL_RULE in llms_text
     assert CANONICAL_RULE in ccr_doc
+    assert render_retrieve_tool_description() in ccr_doc
+    assert render_retrieve_query_description() in ccr_doc
     assert CANONICAL_RULE in failure_learning
+
+
+def test_plugin_sources_match_canonical_retrieve_strings() -> None:
+    plugin_files = [
+        REPO_ROOT / "plugins" / "opencode" / "src" / "retrieve.ts",
+        REPO_ROOT / "plugins" / "openclaw" / "src" / "tools" / "headroom-retrieve.ts",
+    ]
+    canonical_description_fragments = [
+        "Retrieve original uncompressed content that was compressed to save tokens. ",
+        "Trust kept rows unless you have a concrete gap. Retrieve when you need raw, original, ",
+        "or complete content, or when a targeted follow-up cannot be answered from the kept summary. ",
+        "The hash is provided in compression markers like [N items compressed... hash=abc123].",
+    ]
+
+    for plugin_file in plugin_files:
+        source = plugin_file.read_text(encoding="utf-8")
+        for fragment in canonical_description_fragments:
+            assert fragment in source
+        assert render_retrieve_query_description() in source
 
 
 def test_classifier_flags_thoroughness_without_query_as_redundant() -> None:

@@ -14,7 +14,10 @@ from typing import Any
 import click
 
 from headroom._subprocess import run
-from headroom.ccr.retrieve_policy import render_retrieve_cli_guidance
+from headroom.ccr.retrieve_policy import (
+    render_retrieve_cli_guidance,
+    render_retrieve_cli_workflow_steps,
+)
 
 from .main import main
 
@@ -47,8 +50,7 @@ How it works:
     1. ANTHROPIC_BASE_URL routes all requests through the proxy
     2. The proxy compresses large tool outputs (file listings, search results)
     3. Claude sees compressed summaries with hash markers
-    4. Claude answers from kept rows unless it has a concrete gap
-    5. When a raw, original, complete, or targeted follow-up is needed, it calls headroom_retrieve
+{render_retrieve_cli_workflow_steps()}
     6. The MCP server fetches original content from the proxy
 
 \b
