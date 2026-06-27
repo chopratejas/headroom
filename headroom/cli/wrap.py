@@ -3242,6 +3242,36 @@ def unwrap() -> None:
 # Claude Code
 # =============================================================================
 
+# Hostnames that mean "this machine" — used to avoid feeding the proxy its own
+# URL back as the upstream when the user already had ANTHROPIC_BASE_URL pointed
+# at a previous Headroom instance.
+_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _detect_inbound_anthropic_upstream(port: int) -> str | None:
+    """Return a pre-set ANTHROPIC_BASE_URL that is NOT this proxy, else None.
+
+    Issue #1353: users who already route Claude Code at a LiteLLM (or any
+    custom Anthropic-compatible) gateway via ``ANTHROPIC_BASE_URL`` lose that
+    routing when they run ``headroom wrap claude`` — wrap overwrites
+    ANTHROPIC_BASE_URL with the local proxy URL and silently forwards to
+    api.anthropic.com instead of the LiteLLM URL the user configured. Treat
+    the pre-existing value as the proxy's upstream so compression layers on
+    top of the user's gateway instead of replacing it. URLs pointing at this
+    proxy instance are ignored to avoid a self-referential forwarding loop.
+    """
+
+    base_url = (os.environ.get("ANTHROPIC_BASE_URL") or "").strip()
+    if not base_url:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+    except ValueError:
+        return None
+    if (parsed.hostname or "").lower() in _LOCAL_HOSTNAMES and parsed.port == port:
+        return None
+    return base_url
+
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
@@ -3454,6 +3484,20 @@ def claude(
         # by Headroom. This is the turnkey Vertex compression path.
         use_vertex = bool(os.environ.get("CLAUDE_CODE_USE_VERTEX"))
 
+        # Issue #1353: when none of the explicit override channels (Foundry,
+        # Vertex, ANTHROPIC_TARGET_API_URL) apply, inherit a pre-existing
+        # ANTHROPIC_BASE_URL as the upstream so wrap doesn't silently revert
+        # the user's LiteLLM/custom-gateway routing back to api.anthropic.com.
+        custom_upstream: str | None = None
+        if (
+            not foundry_upstream
+            and not use_vertex
+            and not os.environ.get("ANTHROPIC_TARGET_API_URL")
+        ):
+            custom_upstream = _detect_inbound_anthropic_upstream(port)
+
+        upstream_for_proxy = foundry_upstream or custom_upstream
+
         proxy_holder[0] = _ensure_proxy(
             port,
             no_proxy,
@@ -3463,7 +3507,7 @@ def claude(
             code_graph=code_graph,
             backend=backend,
             region=region,
-            anthropic_api_url=foundry_upstream,
+            anthropic_api_url=upstream_for_proxy,
         )
         _push_runtime_env(port, no_proxy)
 
@@ -3511,6 +3555,8 @@ def claude(
             click.echo(
                 f"  Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL={_foundry_proxy_url(proxy_url)} → upstream {foundry_upstream}"
             )
+        elif custom_upstream:
+            click.echo(f"  ANTHROPIC_BASE_URL={proxy_url} → upstream {custom_upstream}")
         else:
             click.echo(f"  ANTHROPIC_BASE_URL={proxy_url}")
         if claude_args:
