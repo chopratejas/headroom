@@ -34,6 +34,10 @@ from typing import Any
 
 from headroom import paths as _paths
 from headroom import savings_ledger
+from headroom.ccr.retrieve_policy import (
+    render_retrieve_query_description,
+    render_retrieve_tool_description,
+)
 
 # fcntl is Unix-only; on Windows we skip file locking (stats are best-effort).
 # Keep the module typed as Any so Windows mypy runs don't try to resolve Unix-only attrs.
@@ -519,18 +523,17 @@ class HeadroomMCPServer:
                 ),
                 Tool(
                     name=CCR_TOOL_NAME,
-                    description=(
-                        "Retrieve original uncompressed content by hash. "
-                        "Use this when you need full details from previously compressed content. "
-                        "The hash comes from headroom_compress results or from compression "
-                        "markers like [N items compressed... hash=abc123]."
-                    ),
+                    description=render_retrieve_tool_description(),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "hash": {
                                 "type": "string",
                                 "description": "Hash key from compression (e.g., 'abc123' from hash=abc123)",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": render_retrieve_query_description(),
                             },
                         },
                         "required": ["hash"],

@@ -9,6 +9,10 @@ from headroom.cache.compression_store import (
     get_compression_store,
     reset_compression_store,
 )
+from headroom.ccr.retrieve_policy import (
+    render_retrieve_query_description,
+    render_retrieve_tool_description,
+)
 from tests._mcp_stub import import_module_with_mcp_stub
 
 mcp_server = import_module_with_mcp_stub("headroom.ccr.mcp_server")
@@ -201,3 +205,16 @@ def test_handle_stats_shows_zero_lifetime_totals_when_present() -> None:
     assert "Lifetime Savings:" in text
     assert "Tokens saved: 0" in text
     assert "Compression savings: $0.00" in text
+
+
+def test_mcp_tool_registration_uses_canonical_retrieve_policy(fresh_store) -> None:
+    server = mcp_server.HeadroomMCPServer(check_proxy=False)
+
+    tools = asyncio.run(server.server.list_tools_handler())
+    retrieve_tool = next(tool for tool in tools if tool.kwargs["name"] == mcp_server.CCR_TOOL_NAME)
+
+    assert retrieve_tool.kwargs["description"] == render_retrieve_tool_description()
+    assert (
+        retrieve_tool.kwargs["inputSchema"]["properties"]["query"]["description"]
+        == render_retrieve_query_description()
+    )

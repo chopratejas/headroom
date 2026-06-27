@@ -94,38 +94,7 @@ def save_mcp_config(config: dict) -> None:
 def mcp() -> None:
     """MCP server for Claude Code integration.
 
-    \b
-    The MCP server exposes headroom_retrieve as a tool that Claude Code
-    can use to retrieve compressed content. This enables CCR (Compress-
-    Cache-Retrieve) for subscription users who don't have API access.
-
-    \b
-    Quick Start:
-        headroom mcp install    # Configure Claude Code
-        headroom proxy          # Start the proxy (in another terminal)
-        ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
-
-    \b
-    The MCP server provides on-demand tools (compress, retrieve, stats).
-    For automatic compression of ALL traffic, also set ANTHROPIC_BASE_URL
-    to route through the proxy.
-
-    \b
-    How it works:
-        1. ANTHROPIC_BASE_URL routes all requests through the proxy
-        2. The proxy compresses large tool outputs (file listings, search results)
-        3. Claude sees compressed summaries with hash markers
-        4. When Claude needs full details, it calls headroom_retrieve
-        5. The MCP server fetches original content from the proxy
-
-    \b
-    Note on tool naming: MCP clients display tools as
-    `mcp__<server>__<tool>`. Our server is named "headroom" and our
-    tools are named headroom_retrieve / headroom_compress / etc., so
-    Claude Code shows them as `mcp__headroom__headroom_retrieve`. The
-    "headroom" doubling is normal MCP namespacing — not a bug. The
-    proxy's compression markers (and any docs/prompts) reference the
-    bare tool name `headroom_retrieve`.
+    See the module-level `_MCP_GROUP_HELP` text for the current CCR guidance.
     """
     pass
 

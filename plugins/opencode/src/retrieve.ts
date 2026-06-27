@@ -21,16 +21,22 @@ export function createHeadroomRetrieveTool(config: RetrieveToolConfig) {
   return {
     name: "headroom_retrieve",
     description:
-      "Retrieve original uncompressed content from Headroom's compression store. " +
-      "Use when compressed context mentions a hash and you need the full details. " +
-      "Pass the hash from the compression marker (24 hex characters). " +
-      "Retrieval is by hash and always returns the full original content.",
+      "Retrieve original uncompressed content that was compressed to save tokens. " +
+      "Trust kept rows unless you have a concrete gap. Retrieve when you need raw, original, " +
+      "or complete content, or when a targeted follow-up cannot be answered from the kept summary. " +
+      "Pass the hash from the compression marker (24 hex characters).",
     parameters: {
       type: "object" as const,
       properties: {
         hash: {
           type: "string",
           description: "The 24-character hex hash from the compression marker",
+        },
+        query: {
+          type: "string",
+          description:
+            "Optional targeted search query for a concrete gap. Use it when the kept summary " +
+            "cannot answer a specific follow-up. If omitted, returns all original items.",
         },
       },
       required: ["hash"],
