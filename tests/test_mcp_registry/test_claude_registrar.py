@@ -12,6 +12,9 @@ import pytest
 from headroom.mcp_registry.base import RegisterStatus, ServerSpec
 from headroom.mcp_registry.claude import ClaudeRegistrar
 
+_RESOLVED_COMMAND = ("/usr/bin/python", "-m", "headroom.cli")
+_RESOLVED_ARGS = ("-m", "headroom.cli", "mcp", "serve")
+
 
 def _make_registrar(
     tmp_path: Path,
@@ -25,8 +28,8 @@ def _make_registrar(
 def _spec() -> ServerSpec:
     return ServerSpec(
         name="headroom",
-        command="headroom",
-        args=("mcp", "serve"),
+        command="/usr/bin/python",
+        args=("-m", "headroom.cli", "mcp", "serve"),
         env={},
     )
 
@@ -70,8 +73,8 @@ def test_get_server_reads_modern_config(tmp_path: Path) -> None:
             {
                 "mcpServers": {
                     "headroom": {
-                        "command": "headroom",
-                        "args": ["mcp", "serve"],
+                        "command": _RESOLVED_COMMAND[0],
+                        "args": list(_RESOLVED_ARGS),
                         "env": {"HEADROOM_PROXY_URL": "http://127.0.0.1:9000"},
                     }
                 }
@@ -81,8 +84,8 @@ def test_get_server_reads_modern_config(tmp_path: Path) -> None:
     reg = _make_registrar(tmp_path, cli=None)
     got = reg.get_server("headroom")
     assert got is not None
-    assert got.command == "headroom"
-    assert got.args == ("mcp", "serve")
+    assert got.command == _RESOLVED_COMMAND[0]
+    assert got.args == _RESOLVED_ARGS
     assert got.env == {"HEADROOM_PROXY_URL": "http://127.0.0.1:9000"}
 
 
@@ -90,13 +93,22 @@ def test_get_server_falls_back_to_legacy(tmp_path: Path) -> None:
     cfg = tmp_path / ".claude" / "mcp.json"
     cfg.parent.mkdir()
     cfg.write_text(
-        json.dumps({"mcpServers": {"headroom": {"command": "headroom", "args": ["mcp", "serve"]}}})
+        json.dumps(
+            {
+                "mcpServers": {
+                    "headroom": {
+                        "command": _RESOLVED_COMMAND[0],
+                        "args": list(_RESOLVED_ARGS),
+                    }
+                }
+            }
+        )
     )
     reg = _make_registrar(tmp_path, cli=None)
     got = reg.get_server("headroom")
     assert got is not None
-    assert got.command == "headroom"
-    assert got.args == ("mcp", "serve")
+    assert got.command == _RESOLVED_COMMAND[0]
+    assert got.args == _RESOLVED_ARGS
     assert got.env == {}
 
 
@@ -105,14 +117,23 @@ def test_get_server_reads_claude_config_dir(
 ) -> None:
     cfg = tmp_path / ".claude.json"
     cfg.write_text(
-        json.dumps({"mcpServers": {"headroom": {"command": "headroom", "args": ["mcp", "serve"]}}})
+        json.dumps(
+            {
+                "mcpServers": {
+                    "headroom": {
+                        "command": _RESOLVED_COMMAND[0],
+                        "args": list(_RESOLVED_ARGS),
+                    }
+                }
+            }
+        )
     )
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     reg = ClaudeRegistrar(claude_cli=None)
     got = reg.get_server("headroom")
     assert got is not None
-    assert got.command == "headroom"
-    assert got.args == ("mcp", "serve")
+    assert got.command == _RESOLVED_COMMAND[0]
+    assert got.args == _RESOLVED_ARGS
 
 
 # ----------------------------------------------------------------------
@@ -136,19 +157,18 @@ def test_register_via_cli_calls_claude_mcp_add(tmp_path: Path) -> None:
         "-s",
         "user",
     ]
-    assert add_cmd[-3:] == ["--", "headroom", "mcp"] or add_cmd[-4:] == [
+    assert add_cmd[-(len(_RESOLVED_ARGS) + 2) :] == [
         "--",
-        "headroom",
-        "mcp",
-        "serve",
+        _RESOLVED_COMMAND[0],
+        *_RESOLVED_ARGS,
     ]
 
 
 def test_register_via_cli_includes_env(tmp_path: Path) -> None:
     spec = ServerSpec(
         name="headroom",
-        command="headroom",
-        args=("mcp", "serve"),
+        command=_RESOLVED_COMMAND[0],
+        args=_RESOLVED_ARGS,
         env={"HEADROOM_PROXY_URL": "http://127.0.0.1:9000"},
     )
     reg = _make_registrar(tmp_path, cli="/usr/local/bin/claude")
@@ -168,8 +188,8 @@ def test_register_writes_file_when_no_cli(tmp_path: Path) -> None:
     cfg = tmp_path / ".claude" / ".claude.json"
     data = json.loads(cfg.read_text())
     assert "headroom" in data["mcpServers"]
-    assert data["mcpServers"]["headroom"]["command"] == "headroom"
-    assert data["mcpServers"]["headroom"]["args"] == ["mcp", "serve"]
+    assert data["mcpServers"]["headroom"]["command"] == _RESOLVED_COMMAND[0]
+    assert data["mcpServers"]["headroom"]["args"] == list(_RESOLVED_ARGS)
 
 
 def test_register_writes_to_legacy_when_only_legacy_exists(tmp_path: Path) -> None:
@@ -194,7 +214,7 @@ def test_register_writes_to_claude_config_dir(
     assert result.status == RegisterStatus.REGISTERED
     cfg = tmp_path / ".claude.json"
     data = json.loads(cfg.read_text())
-    assert data["mcpServers"]["headroom"]["command"] == "headroom"
+    assert data["mcpServers"]["headroom"]["command"] == _RESOLVED_COMMAND[0]
     assert not (tmp_path / ".claude" / ".claude.json").exists()
 
 
@@ -207,7 +227,16 @@ def test_register_already_when_spec_matches(tmp_path: Path) -> None:
     cfg = tmp_path / ".claude" / ".claude.json"
     cfg.parent.mkdir()
     cfg.write_text(
-        json.dumps({"mcpServers": {"headroom": {"command": "headroom", "args": ["mcp", "serve"]}}})
+        json.dumps(
+            {
+                "mcpServers": {
+                    "headroom": {
+                        "command": _RESOLVED_COMMAND[0],
+                        "args": list(_RESOLVED_ARGS),
+                    }
+                }
+            }
+        )
     )
     reg = _make_registrar(tmp_path, cli="/usr/local/bin/claude")
     with patch("subprocess.run") as run_mock:
@@ -224,8 +253,8 @@ def test_register_mismatch_when_spec_differs_no_force(tmp_path: Path) -> None:
             {
                 "mcpServers": {
                     "headroom": {
-                        "command": "headroom",
-                        "args": ["mcp", "serve"],
+                        "command": _RESOLVED_COMMAND[0],
+                        "args": list(_RESOLVED_ARGS),
                         "env": {"HEADROOM_PROXY_URL": "http://127.0.0.1:9999"},
                     }
                 }
@@ -305,7 +334,7 @@ def test_unregister_via_file_when_no_cli(tmp_path: Path) -> None:
         json.dumps(
             {
                 "mcpServers": {
-                    "headroom": {"command": "headroom", "args": ["mcp", "serve"]},
+                    "headroom": {"command": _RESOLVED_COMMAND[0], "args": list(_RESOLVED_ARGS)},
                     "other": {"command": "other"},
                 }
             }
@@ -331,7 +360,7 @@ def test_unregister_removes_from_claude_config_dir(
         json.dumps(
             {
                 "mcpServers": {
-                    "headroom": {"command": "headroom", "args": ["mcp", "serve"]},
+                    "headroom": {"command": _RESOLVED_COMMAND[0], "args": list(_RESOLVED_ARGS)},
                     "other": {"command": "other"},
                 }
             }

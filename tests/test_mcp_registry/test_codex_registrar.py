@@ -16,6 +16,10 @@ else:  # pragma: no cover
     import tomli as tomllib
 
 
+_RESOLVED_COMMAND = ("/usr/bin/python", "-m", "headroom.cli")
+_RESOLVED_ARGS = ("-m", "headroom.cli", "mcp", "serve")
+
+
 def _make_registrar(tmp_path: Path) -> CodexRegistrar:
     return CodexRegistrar(home_dir=tmp_path)
 
@@ -23,8 +27,8 @@ def _make_registrar(tmp_path: Path) -> CodexRegistrar:
 def _spec(env: dict[str, str] | None = None) -> ServerSpec:
     return ServerSpec(
         name="headroom",
-        command="headroom",
-        args=("mcp", "serve"),
+        command=_RESOLVED_COMMAND[0],
+        args=_RESOLVED_ARGS,
         env=env or {},
     )
 
@@ -111,16 +115,16 @@ def test_get_server_returns_spec_when_table_present(tmp_path: Path) -> None:
     cfg.parent.mkdir()
     cfg.write_text(
         "[mcp_servers.headroom]\n"
-        'command = "headroom"\n'
-        'args = ["mcp", "serve"]\n'
+        f"command = {_RESOLVED_COMMAND[0]!r}\n"
+        f"args = {list(_RESOLVED_ARGS)!r}\n"
         "\n"
         "[mcp_servers.headroom.env]\n"
         'HEADROOM_PROXY_URL = "http://127.0.0.1:9000"\n'
     )
     got = _make_registrar(tmp_path).get_server("headroom")
     assert got is not None
-    assert got.command == "headroom"
-    assert got.args == ("mcp", "serve")
+    assert got.command == _RESOLVED_COMMAND[0]
+    assert got.args == _RESOLVED_ARGS
     assert got.env == {"HEADROOM_PROXY_URL": "http://127.0.0.1:9000"}
 
 
@@ -146,8 +150,8 @@ def test_register_creates_config_when_missing(tmp_path: Path) -> None:
     assert "# --- Headroom MCP server ---" in text
     assert "[mcp_servers.headroom]" in text
     parsed = tomllib.loads(text)
-    assert parsed["mcp_servers"]["headroom"]["command"] == "headroom"
-    assert parsed["mcp_servers"]["headroom"]["args"] == ["mcp", "serve"]
+    assert parsed["mcp_servers"]["headroom"]["command"] == _RESOLVED_COMMAND[0]
+    assert parsed["mcp_servers"]["headroom"]["args"] == list(_RESOLVED_ARGS)
 
 
 def test_register_appends_to_existing_config_preserves_other_keys(tmp_path: Path) -> None:
@@ -166,7 +170,7 @@ def test_register_appends_to_existing_config_preserves_other_keys(tmp_path: Path
     parsed = tomllib.loads(text)
     assert parsed["model"] == "gpt-4o"
     assert parsed["other_section"]["value"] == 42
-    assert parsed["mcp_servers"]["headroom"]["command"] == "headroom"
+    assert parsed["mcp_servers"]["headroom"]["command"] == _RESOLVED_COMMAND[0]
 
 
 def test_register_includes_env_subtable(tmp_path: Path) -> None:
@@ -193,7 +197,7 @@ def test_register_headroom_and_serena_coexist(tmp_path: Path) -> None:
     assert "# --- Headroom MCP server: serena ---" in text
 
     parsed = tomllib.loads(text)
-    assert parsed["mcp_servers"]["headroom"]["command"] == "headroom"
+    assert parsed["mcp_servers"]["headroom"]["command"] == _RESOLVED_COMMAND[0]
     assert parsed["mcp_servers"]["serena"]["command"] == "uvx"
 
 
@@ -326,11 +330,11 @@ def test_unregister_preserves_user_managed_entry(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "spec",
     [
-        ServerSpec(name="headroom", command="headroom", args=("mcp", "serve")),
+        ServerSpec(name="headroom", command=_RESOLVED_COMMAND[0], args=_RESOLVED_ARGS),
         ServerSpec(
             name="headroom",
-            command="headroom",
-            args=("mcp", "serve"),
+            command=_RESOLVED_COMMAND[0],
+            args=_RESOLVED_ARGS,
             env={"HEADROOM_PROXY_URL": "http://127.0.0.1:9000"},
         ),
         ServerSpec(name="headroom", command="/usr/bin/headroom", args=()),
