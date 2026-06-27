@@ -19,6 +19,8 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shlex
 import shutil
 import signal
 import socket
@@ -30,6 +32,8 @@ import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
+
+from headroom._subprocess import run
 
 # Fix Windows cp1252 encoding — box-drawing characters require UTF-8
 if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
@@ -122,6 +126,23 @@ from headroom.proxy.project_context import with_project_prefix as _with_project_
 
 from .main import main
 
+
+def _read_text(path: Path) -> str:
+    """Read a text file with explicit UTF-8 encoding."""
+    return path.read_text(encoding="utf-8")
+
+
+def _write_text(path: Path, content: str) -> None:
+    """Write a text file with explicit UTF-8 encoding."""
+    path.write_text(content, encoding="utf-8")
+
+
+def _append_text(path: Path, content: str) -> None:
+    """Append to a text file with explicit UTF-8 encoding."""
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(content)
+
+
 _CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
 _CONTEXT_TOOL_LEAN_CTX = "lean-ctx"
@@ -143,7 +164,29 @@ _WRAP_PROXY_TIMEOUT_ML_MODULES = ("torch", "sentence_transformers", "spacy")
 _TOOL_SEARCH_ENV = TOOL_SEARCH_ENV
 _TOOL_SEARCH_DEFAULT = TOOL_SEARCH_DEFAULT
 _AGENT_SAVINGS_WRAP_AGENTS = {"claude", "codex", "cursor"}
-_DEFAULT_AGENT_SAVINGS_PROFILE = "agent-90"
+
+# 1M context window for `wrap claude` (#1158). Claude Code only sends the
+# `context-1m` beta header — unlocking the 1M window for entitled subscription
+# users — when the model id carries the `[1m]` suffix. Behind a custom
+# ANTHROPIC_BASE_URL (the proxy) its `/model` picker selection does not survive,
+# so `--1m` forces the suffix via ANTHROPIC_MODEL on the launched process.
+_ANTHROPIC_MODEL_ENV = "ANTHROPIC_MODEL"
+_CONTEXT_1M_SUFFIX = "[1m]"
+# Only used when no model is otherwise selected (no ANTHROPIC_MODEL set). The
+# current default Opus; the suffix logic preserves any model the user did set.
+_DEFAULT_1M_MODEL = "claude-opus-4-8"
+
+
+def _resolve_1m_model(current: str | None) -> str:
+    """Return the model id that makes Claude Code request the 1M window (#1158).
+
+    Preserves a model the user already selected via ``ANTHROPIC_MODEL`` (only
+    appending the ``[1m]`` suffix when missing); falls back to the default Opus
+    when none is set. Idempotent — a value already ending in ``[1m]`` is
+    returned unchanged.
+    """
+    base = (current or "").strip() or _DEFAULT_1M_MODEL
+    return base if base.endswith(_CONTEXT_1M_SUFFIX) else f"{base}{_CONTEXT_1M_SUFFIX}"
 
 
 def _normalize_tool_search_mode(value: str) -> str:
@@ -238,7 +281,7 @@ def _wrap_agent_savings_profile(agent_type: str) -> str | None:
 
     if agent_type not in _AGENT_SAVINGS_WRAP_AGENTS:
         return None
-    return os.environ.get("HEADROOM_SAVINGS_PROFILE") or _DEFAULT_AGENT_SAVINGS_PROFILE
+    return os.environ.get("HEADROOM_SAVINGS_PROFILE") or None
 
 
 def _default_wrap_proxy_timeout_seconds() -> int:
@@ -394,14 +437,11 @@ def _start_proxy(
     timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
     stdio_log_path = _get_proxy_stdio_log_path()
-    stdio_log_file = open(stdio_log_path, "a")  # noqa: SIM115
+    stdio_log_file = open(stdio_log_path, "a", encoding="utf-8")  # noqa: SIM115
 
     # Ensure proxy subprocess uses UTF-8 (Windows defaults to cp1252)
     proxy_env = os.environ.copy()
     proxy_env["PYTHONIOENCODING"] = "utf-8"
-    if agent_type in {"claude", "codex", "cursor"}:
-        apply_agent_savings_env_defaults(proxy_env)
-
     # Tell the proxy which agent is being wrapped (for traffic learning output)
     if agent_type != "unknown":
         proxy_env["HEADROOM_AGENT_TYPE"] = agent_type
@@ -444,7 +484,7 @@ def _start_proxy(
             stdio_log_file.close()
             # Read last few lines of log for error context
             try:
-                tail = stdio_log_path.read_text()[-500:]
+                tail = _read_text(stdio_log_path)[-500:]
             except Exception:
                 tail = "(no log output)"
             raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
@@ -480,10 +520,66 @@ def _setup_rtk(verbose: bool = False) -> Path | None:
     if register_claude_hooks(rtk_path):
         if verbose:
             click.echo("  rtk hooks registered in Claude Code")
+        try:
+            patched = _patch_rtk_hook_absolute_path(rtk_path)
+            if patched and verbose:
+                click.echo("  rtk hook script patched to use absolute path")
+        except Exception as e:
+            if verbose:
+                click.echo(f"  rtk hook absolute-path patch skipped: {e}")
     else:
         click.echo("  rtk hook registration failed — continuing without it")
 
     return rtk_path
+
+
+def _patch_rtk_hook_absolute_path(rtk_path: Path, hook_script_path: Path | None = None) -> bool:
+    """Rewrite bare ``rtk`` invocations in the generated Claude hook script
+    to use the absolute path to the RTK binary Headroom manages.
+
+    ``rtk init --global --auto-patch`` writes ``~/.claude/hooks/rtk-rewrite.sh``
+    with a bare ``rtk`` command that depends on PATH lookup. Since
+    ``~/.headroom/bin`` (where Headroom installs rtk) is not automatically
+    added to PATH, that lookup fails and the hook silently does nothing.
+
+    This rewrites bare ``rtk`` command tokens to the absolute, shell-quoted
+    path of the rtk binary so the hook works regardless of PATH.
+
+    Idempotent: only rewrites bare ``rtk`` tokens (not paths that already
+    point elsewhere), and only writes the file back if content changed.
+
+    Returns True if the hook script was modified.
+    """
+    if hook_script_path is None:
+        hook_script_path = Path.home() / ".claude" / "hooks" / "rtk-rewrite.sh"
+
+    if not hook_script_path.exists():
+        return False
+
+    original = hook_script_path.read_text()
+
+    # Quote the absolute path safely for POSIX shells. This matters because
+    # paths containing spaces or other shell-special characters (e.g.
+    # "/Users/Alice Smith/.headroom/bin/rtk") must be quoted, or the
+    # generated script will break when the shell splits on whitespace.
+    quoted_path = shlex.quote(str(rtk_path))
+
+    # Replace bare `rtk` command tokens with the quoted absolute path.
+    # Matches `rtk` as a standalone word (preceded by start-of-line or
+    # whitespace/operators, followed by whitespace or end-of-line), so it
+    # won't touch things like "rtkfoo" or "/some/path/rtk" that are already
+    # absolute.
+    patched, count = re.subn(
+        r"(?<![\w/-])rtk(?=\s|$)",
+        lambda _match: quoted_path,
+        original,
+    )
+
+    if count and patched != original:
+        hook_script_path.write_text(patched)
+        return True
+
+    return False
 
 
 def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
@@ -505,12 +601,10 @@ def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
             # lean-ctx writes project-local files when initialized from a git
             # checkout. Run from a non-project directory so setup is limited to
             # home-scoped agent config such as ~/.codex or ~/.claude.
-            result = subprocess.run(
+            result = run(
                 [str(lean_ctx), "init", "--agent", agent],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=30,
                 cwd=setup_cwd,
             )
@@ -560,7 +654,7 @@ def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
         return False
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_text(path))
     except (OSError, json.JSONDecodeError):
         return False
     if not isinstance(payload, dict):
@@ -628,7 +722,7 @@ def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
     if not changed:
         return False
 
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _write_text(path, json.dumps(payload, indent=2) + "\n")
     return True
 
 
@@ -681,7 +775,7 @@ def _write_claude_wrap_base_url(
     payload: dict[str, Any] = {}
     if path.exists():
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(_read_text(path))
         except (OSError, json.JSONDecodeError):
             payload = {}
     if not isinstance(payload, dict):
@@ -692,7 +786,7 @@ def _write_claude_wrap_base_url(
     env_map[key] = proxy_url
     payload["env"] = env_map
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _write_text(path, json.dumps(payload, indent=2) + "\n")
     return previous
 
 
@@ -713,7 +807,7 @@ def _restore_claude_wrap_base_url(
     if not path.exists():
         return
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_text(path))
     except (OSError, json.JSONDecodeError):
         return
     if not isinstance(payload, dict):
@@ -734,7 +828,7 @@ def _restore_claude_wrap_base_url(
         env_map[key] = previous
         payload["env"] = env_map
     if payload:
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        _write_text(path, json.dumps(payload, indent=2) + "\n")
     else:
         path.unlink(missing_ok=True)
 
@@ -847,15 +941,18 @@ def _remove_headroom_installed_serena_mcp(registrar: Any) -> str:
     return "failed"
 
 
-def _disable_serena_mcp(registrar: Any, *, verbose: bool = False) -> None:
-    """Make ``--no-serena`` actively disable Serena, not merely skip adding it.
+def _disable_serena_mcp(
+    registrar: Any, *, verbose: bool = False, reason: str = "--no-serena"
+) -> None:
+    """Actively disable a Headroom-installed Serena entry, not merely skip it.
 
-    Serena is registered by default, so a prior ``headroom wrap`` persists a
-    ``serena`` entry into the agent's MCP config; the agent then keeps
-    launching Serena on startup. Just *skipping* registration on a later
-    ``--no-serena`` run leaves that stale entry in place — so the flag has to
-    remove the entry Headroom installed. A user-managed Serena (absent from
-    our ledger) is reported but left untouched.
+    Serena used to be registered by default, so a prior ``headroom wrap``
+    persists a ``serena`` entry into the agent's MCP config; the agent then
+    keeps launching Serena on startup. Just *skipping* registration on a later
+    run leaves that stale entry in place — so this removes the entry Headroom
+    installed. A user-managed Serena (absent from our ledger) is reported but
+    left untouched. ``reason`` is surfaced in the message: ``--no-serena`` when
+    the user opted out, or a note that tokensave is now the primary compressor.
     """
     if not registrar.detect():
         if verbose:
@@ -864,12 +961,12 @@ def _disable_serena_mcp(registrar: Any, *, verbose: bool = False) -> None:
 
     if registrar.get_server("serena") is None:
         if verbose:
-            click.echo("  Skipping Serena MCP (--no-serena)")
+            click.echo(f"  Skipping Serena MCP ({reason})")
         return
 
     status = _remove_headroom_installed_serena_mcp(registrar)
     if status == "removed":
-        click.echo("  Removed previously-installed Serena MCP (--no-serena)")
+        click.echo(f"  Removed previously-installed Serena MCP ({reason})")
         click.echo(f"    restart {registrar.display_name} if it was already running")
     elif status == "not_headroom_owned":
         click.echo(
@@ -882,122 +979,219 @@ def _disable_serena_mcp(registrar: Any, *, verbose: bool = False) -> None:
         )
 
 
+# =============================================================================
+# tokensave — primary coding-task compressor (Serena is the backup)
+# =============================================================================
+
+
+def _ensure_tokensave_binary(verbose: bool = False) -> Path | None:
+    """Resolve the tokensave binary, fetching the release asset if missing.
+
+    Returns the binary path, or ``None`` when tokensave is unavailable
+    (offline, unsupported platform, or download failure) — the caller then
+    falls back to Serena.
+    """
+    from headroom.graph.tokensave_installer import ensure_tokensave, get_tokensave_path
+
+    existing = get_tokensave_path()
+    if existing:
+        return existing
+
+    click.echo("  tokensave: fetching code-graph binary...")
+    path = ensure_tokensave()
+    if path:
+        click.echo(f"  tokensave: installed at {path}")
+    else:
+        click.echo(
+            "  tokensave: no prebuilt binary available for this platform "
+            "(try 'cargo install tokensave') — falling back to Serena"
+        )
+    return path
+
+
+def _index_tokensave_project(bin_path: Path, *, verbose: bool = False) -> None:
+    """Index the current project into the tokensave graph (non-fatal).
+
+    Runs ``tokensave init`` the first time (creates ``.tokensave/``), then
+    ``tokensave sync`` for incremental updates. tokensave also re-checks
+    staleness on demand, so a failure here is logged but never blocks the
+    wrap — the MCP server still indexes lazily on first query.
+    """
+    project_dir = Path.cwd()
+    subcommand = "sync" if (project_dir / ".tokensave").exists() else "init"
+    try:
+        result = run(
+            [str(bin_path), subcommand],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            click.echo("  Code graph: indexed (tokensave)")
+        elif verbose:
+            click.echo(f"  Code graph: tokensave {subcommand} failed ({result.stderr[:100]})")
+    except subprocess.TimeoutExpired:
+        click.echo("  Code graph: tokensave indexing timed out (will complete on demand)")
+    except Exception as e:
+        if verbose:
+            click.echo(f"  Code graph: tokensave indexing skipped ({e})")
+
+
+def _setup_tokensave_mcp(registrar: Any, *, verbose: bool = False, force: bool = False) -> bool:
+    """Register tokensave MCP with the given agent (idempotent).
+
+    Returns ``True`` when tokensave is available and set up, ``False`` when the
+    binary is unavailable — the caller then falls back to Serena. Mirrors
+    :func:`_setup_serena_mcp`'s ledger-aware migration: a stale
+    Headroom-installed ``tokensave`` entry is force-updated to the current
+    spec, while a user-managed entry is left untouched.
+    """
+    from headroom.mcp_registry import build_tokensave_spec, format_result
+    from headroom.mcp_registry.base import RegisterStatus
+    from headroom.mcp_registry.ledger import headroom_installed_matching, record_install
+
+    if not registrar.detect():
+        if verbose:
+            click.echo(f"  tokensave MCP: {registrar.display_name} not detected — skipping")
+        return False
+
+    bin_path = _ensure_tokensave_binary(verbose=verbose)
+    if bin_path is None:
+        return False
+
+    # Warm the graph so the first query is instant (non-fatal).
+    _index_tokensave_project(bin_path, verbose=verbose)
+
+    spec = build_tokensave_spec(str(bin_path))
+    result = registrar.register_server(spec, force=force)
+
+    # Migrate a stale Headroom-installed entry (e.g. an older binary path or
+    # pinned version), mirroring the Serena migration path. Only force-update
+    # when the ledger proves Headroom installed the entry on disk.
+    if (
+        result.status == RegisterStatus.MISMATCH
+        and not force
+        and headroom_installed_matching(registrar.name, registrar.get_server("tokensave"))
+    ):
+        result = registrar.register_server(spec, force=True)
+        if result.status == RegisterStatus.REGISTERED:
+            click.echo("  tokensave MCP: migrated previously-installed entry to current spec")
+
+    if result.status == RegisterStatus.REGISTERED:
+        record_install(registrar.name, spec)
+
+    line = format_result(
+        registrar.name,
+        result,
+        label="tokensave MCP",
+        verbose=verbose,
+        overwrite_hint="update or remove the existing tokensave MCP entry, then rerun headroom wrap",
+        restart_hint=f"restart {registrar.display_name} if it was already running",
+    )
+    if line is not None:
+        click.echo(line)
+    return True
+
+
+def _remove_headroom_installed_tokensave_mcp(registrar: Any) -> str:
+    """Remove the tokensave MCP entry only if the ledger proves Headroom installed it."""
+    from headroom.mcp_registry.ledger import clear_install, headroom_installed_matching
+
+    current = registrar.get_server("tokensave")
+    if not headroom_installed_matching(registrar.name, current):
+        return "not_headroom_owned"
+    if registrar.unregister_server("tokensave"):
+        clear_install(registrar.name, "tokensave")
+        return "removed"
+    return "failed"
+
+
+def _disable_tokensave_mcp(registrar: Any, *, verbose: bool = False) -> None:
+    """Make ``--no-tokensave`` actively remove a Headroom-installed tokensave entry."""
+    if not registrar.detect():
+        if verbose:
+            click.echo(f"  tokensave MCP: {registrar.display_name} not detected — skipping")
+        return
+
+    if registrar.get_server("tokensave") is None:
+        if verbose:
+            click.echo("  Skipping tokensave MCP (--no-tokensave)")
+        return
+
+    status = _remove_headroom_installed_tokensave_mcp(registrar)
+    if status == "removed":
+        click.echo("  Removed previously-installed tokensave MCP (--no-tokensave)")
+        click.echo(f"    restart {registrar.display_name} if it was already running")
+    elif status == "not_headroom_owned":
+        click.echo(
+            "  tokensave MCP is present but user-managed — leaving it in place "
+            "(--no-tokensave only removes entries Headroom installed)"
+        )
+    else:  # "failed"
+        click.echo(
+            "  tokensave MCP: removal failed — remove the 'tokensave' entry "
+            "from your MCP config manually"
+        )
+
+
+def _setup_coding_compressor(registrar: Any, *, serena_context: str, **kwargs: Any) -> None:
+    """Set up the coding-task compressor: tokensave primary, Serena backup.
+
+    Policy (decided per the integration):
+
+    * ``no_tokensave`` — skip/disable tokensave entirely.
+    * tokensave is set up by default; on success it becomes the primary
+      compressor and any Headroom-installed Serena entry is removed.
+    * Serena is the backup: registered automatically when tokensave is
+      unavailable (unless ``no_serena``), or forced on with ``serena=True``.
+
+    ``kwargs`` carries the boolean flags ``serena``, ``no_serena``,
+    ``no_tokensave`` and the per-agent registrar ``force`` semantics.
+    """
+    serena = bool(kwargs.get("serena"))
+    no_serena = bool(kwargs.get("no_serena"))
+    no_tokensave = bool(kwargs.get("no_tokensave"))
+    force = bool(kwargs.get("force"))
+    verbose = bool(kwargs.get("verbose"))
+
+    tokensave_ok = False
+    if no_tokensave:
+        _disable_tokensave_mcp(registrar, verbose=verbose)
+    else:
+        tokensave_ok = _setup_tokensave_mcp(registrar, verbose=verbose, force=force)
+
+    if serena or (not tokensave_ok and not no_serena):
+        _setup_serena_mcp(registrar, context=serena_context, verbose=verbose, force=force)
+    else:
+        # tokensave is primary (or Serena was explicitly disabled): drop any
+        # Serena entry a prior wrap installed; user-managed entries are kept.
+        reason = (
+            "--no-serena" if no_serena else "tokensave is now the primary code-graph compressor"
+        )
+        _disable_serena_mcp(registrar, verbose=verbose, reason=reason)
+
+
 _CBM_MCP_SERVER_NAME = "codebase-memory-mcp"
 
 
-def _register_cbm_mcp_server(cbm_bin: str) -> None:
-    """Register codebase-memory-mcp as an MCP server in Claude Code.
-
-    Uses ``claude mcp add`` so the tools appear in ``/mcp`` automatically.
-    Idempotent — skips if already registered.
-    """
-    claude_cli = shutil.which("claude")
-    if not claude_cli:
-        return
-
-    # Check if already registered
-    check = subprocess.run(
-        [claude_cli, "mcp", "get", _CBM_MCP_SERVER_NAME],
-        capture_output=True,
-        text=True,
-    )
-    if check.returncode == 0:
-        return  # Already registered
-
-    result = subprocess.run(
-        [claude_cli, "mcp", "add", _CBM_MCP_SERVER_NAME, "-s", "user", "--", cbm_bin],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        click.echo(f"  Code graph: registered {_CBM_MCP_SERVER_NAME} MCP server")
-    else:
-        pass  # Non-critical — tools won't appear in /mcp but graph still works
-
-
 def _setup_code_graph(verbose: bool = False) -> bool:
-    """Ensure codebase-memory-mcp is installed, registered as MCP server, and project is indexed.
+    """Ensure the tokensave code graph is set up and the project indexed.
 
-    codebase-memory-mcp builds a knowledge graph of the codebase using
-    tree-sitter, enabling the LLM to query code structure (call chains,
-    function definitions, impact analysis) instead of reading entire files.
+    tokensave is Headroom's primary code-graph compressor and is normally
+    installed by default (it builds a semantic knowledge graph the LLM can
+    query for call chains, definitions, and impact analysis instead of
+    reading whole files). ``--code-graph`` is kept for backward compatibility
+    and as an explicit "set up the graph and force an index now" switch, even
+    when tokensave registration was otherwise skipped.
 
-    Steps:
-    1. Download the binary if not already present.
-    2. Register as an MCP server in Claude Code (``claude mcp add``).
-    3. Index the current project (fast, idempotent).
-
-    With Claude Code's MCP Tool Search, the 14 graph tools add ~200 tokens
-    overhead per request (not the full ~1,915) — they're lazy-loaded.
-
-    Returns True if graph is ready, False if setup failed.
+    Returns True if the graph is ready, False if tokensave is unavailable.
+    Earlier releases backed this flag with ``codebase-memory-mcp``; that
+    server is no longer installed, and ``headroom unwrap`` still cleans up any
+    legacy ``codebase-memory-mcp`` entry a prior wrap left behind.
     """
-    from headroom.graph.installer import ensure_cbm, get_cbm_path
+    from headroom.mcp_registry import ClaudeRegistrar
 
-    cbm_path = get_cbm_path()
-    if not cbm_path:
-        click.echo("  Code graph: downloading codebase-memory-mcp...")
-        cbm_path = ensure_cbm()
-        if cbm_path:
-            click.echo(f"  Code graph: installed at {cbm_path}")
-        else:
-            click.echo("  Code graph: download failed — skipping")
-            return False
-
-    cbm_bin = str(cbm_path)
-
-    # Register as MCP server so tools appear in /mcp
-    _register_cbm_mcp_server(cbm_bin)
-
-    # Index current project (fast — ~1s for most repos, idempotent)
-    project_dir = str(Path.cwd())
-    try:
-        result = subprocess.run(
-            [
-                cbm_bin,
-                "cli",
-                "index_repository",
-                json.dumps({"repo_path": project_dir, "mode": "fast"}),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            # Parse node/edge counts from output
-            for line in result.stdout.splitlines():
-                if '"nodes"' in line:
-                    try:
-                        # Parse the JSON response to extract node/edge counts
-                        import re
-
-                        m_nodes = re.search(r'"nodes":(\d+)', line)
-                        m_edges = re.search(r'"edges":(\d+)', line)
-                        if m_nodes and m_edges:
-                            nodes = int(m_nodes.group(1))
-                            edges = int(m_edges.group(1))
-                            click.echo(
-                                f"  Code graph: indexed ({nodes:,} symbols, "
-                                f"{edges:,} relationships)"
-                            )
-                        else:
-                            click.echo("  Code graph: indexed")
-                    except (ValueError, AttributeError):
-                        click.echo("  Code graph: indexed")
-                    return True
-            click.echo("  Code graph: indexed")
-            return True
-        else:
-            if verbose:
-                click.echo(f"  Code graph: indexing failed ({result.stderr[:100]})")
-            return False
-    except subprocess.TimeoutExpired:
-        click.echo("  Code graph: indexing timed out (will complete in background)")
-        return False
-    except Exception as e:
-        if verbose:
-            click.echo(f"  Code graph: setup failed ({e})")
-        return False
+    return _setup_tokensave_mcp(ClaudeRegistrar(), verbose=verbose, force=True)
 
 
 # rtk instructions for tools without hook support (Codex, Cursor, Aider).
@@ -1084,7 +1278,12 @@ def _codex_config_paths() -> tuple[Path, Path]:
     return config_file, backup_file
 
 
-def _strip_codex_headroom_blocks(content: str, *, remove_mcp: bool = False) -> str:
+def _strip_codex_headroom_blocks(
+    content: str,
+    *,
+    remove_mcp: bool = False,
+    remove_named_mcp: bool = True,
+) -> str:
     """Remove all Headroom-managed blocks from a Codex ``config.toml`` string.
 
     Returns the cleaned content.  Safe to call on content that never contained
@@ -1111,12 +1310,13 @@ def _strip_codex_headroom_blocks(content: str, *, remove_mcp: bool = False) -> s
     if remove_mcp:
         # Remove Headroom-managed MCP blocks written by `wrap codex`.
         content = _remove_marker_span(content, _CODEX_MCP_MARKER, _CODEX_MCP_END)
-        content = re.sub(
-            r"(?ms)^# --- Headroom MCP server: [^\n]+ ---\n.*?"
-            r"^# --- end Headroom MCP server: [^\n]+ ---\n?",
-            "",
-            content,
-        )
+        if remove_named_mcp:
+            content = re.sub(
+                r"(?ms)^# --- Headroom MCP server: [^\n]+ ---\n.*?"
+                r"^# --- end Headroom MCP server: [^\n]+ ---\n?",
+                "",
+                content,
+            )
         content = _remove_marker_span(content, _MEMORY_MCP_MARKER, _MEMORY_MCP_END)
 
     # Strip any leftover top-level keys that older (or crashed) versions of
@@ -1205,6 +1405,17 @@ def _has_redirectable_top_level_key(content: str, key: str) -> bool:
     return pattern.search(content) is not None
 
 
+def _codex_config_has_headroom_markers(content: str) -> bool:
+    """Return whether a Codex config already contains wrap-owned markers."""
+    managed_markers = (
+        _CODEX_TOP_LEVEL_MARKER,
+        _CODEX_END_MARKER,
+        _CODEX_MCP_MARKER,
+        _MEMORY_MCP_MARKER,
+    )
+    return any(marker in content for marker in managed_markers)
+
+
 def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) -> None:
     """Snapshot ``config.toml`` to ``backup_file`` before the first injection.
 
@@ -1218,18 +1429,18 @@ def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) ->
       *pre-wrap* state, so running wrap repeatedly must not clobber it.
     * If the config file doesn't exist yet, there's nothing to back up; unwrap
       will remove the file entirely instead of restoring a snapshot.
-    * If the config already contains a Headroom marker, a wrap run is already
-      active: do not snapshot the injected state.
+    * If the config already contains any Headroom-managed Codex marker, a wrap
+      run is already active: do not snapshot the injected state.
     """
     if backup_file.exists():
         return
     if not config_file.exists():
         return
     try:
-        content = config_file.read_text()
+        content = _read_text(config_file)
     except OSError:
         return
-    if _CODEX_TOP_LEVEL_MARKER in content or _CODEX_END_MARKER in content:
+    if _codex_config_has_headroom_markers(content):
         return
     backup_file.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_file, backup_file)
@@ -1399,7 +1610,7 @@ def _inject_codex_provider_config(port: int) -> None:
         _snapshot_codex_config_if_unwrapped(config_file, backup_file)
 
         if config_file.exists():
-            content = config_file.read_text()
+            content = _read_text(config_file)
             # Remove any prior Headroom-managed blocks before re-injecting so
             # the operation is idempotent and supports port changes.
             content = _strip_codex_headroom_blocks(content)
@@ -1440,7 +1651,7 @@ def _inject_codex_provider_config(port: int) -> None:
                 f"\n{provider_section}"
             )
 
-        config_file.write_text(content)
+        _write_text(config_file, content)
         click.echo(f"  Codex config: injected Headroom provider (WS + HTTP) into {config_file}")
         # Pull existing native threads into the headroom-provider menu so Codex's
         # history list stays whole once it routes through Headroom. Best-effort.
@@ -1472,15 +1683,30 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
 
     # Case 2: no backup, but config file exists and has markers — strip them.
     if config_file.exists():
-        original = config_file.read_text()
-        if _CODEX_TOP_LEVEL_MARKER in original or _CODEX_END_MARKER in original:
-            cleaned = _strip_codex_headroom_blocks(original, remove_mcp=True)
+        original = _read_text(config_file)
+        if _codex_config_has_headroom_markers(original):
+            # Without a backup, only remove named MCP blocks when this file
+            # also carries wrap-owned provider markers from a full wrap.
+            remove_named_mcp = any(
+                marker in original
+                for marker in (
+                    _CODEX_TOP_LEVEL_MARKER,
+                    _CODEX_END_MARKER,
+                    _CODEX_MCP_MARKER,
+                    _CODEX_MCP_END,
+                )
+            )
+            cleaned = _strip_codex_headroom_blocks(
+                original,
+                remove_mcp=True,
+                remove_named_mcp=remove_named_mcp,
+            )
             if not cleaned.strip():
                 # Nothing left but Headroom content — remove the file entirely
                 # so Codex falls back to its default config.
                 config_file.unlink()
                 return "removed", config_file
-            config_file.write_text(cleaned)
+            _write_text(config_file, cleaned)
             return "cleaned", config_file
 
     # Nothing to undo.
@@ -1651,23 +1877,50 @@ def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
     Returns True if instructions were written.
     """
     if file_path.exists():
-        existing = file_path.read_text()
+        existing = _read_text(file_path)
         if _RTK_MARKER in existing:
             if verbose:
                 click.echo(f"  rtk instructions already in {file_path.name}")
             return True
         # Append to existing file
-        with open(file_path, "a") as f:
-            f.write("\n\n" + RTK_INSTRUCTIONS_BLOCK)
+        _append_text(file_path, "\n\n" + RTK_INSTRUCTIONS_BLOCK)
     else:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(RTK_INSTRUCTIONS_BLOCK)
+        _write_text(file_path, RTK_INSTRUCTIONS_BLOCK)
 
     click.echo(f"  rtk instructions injected into {file_path}")
     return True
 
 
-def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
+def _remove_rtk_instructions(file_path: Path) -> bool:
+    """Remove Headroom's marker-fenced rtk guidance from an instruction file."""
+    if not file_path.exists():
+        return False
+
+    content = _read_text(file_path)
+    end_marker = "<!-- /headroom:rtk-instructions -->"
+    start = content.find(_RTK_MARKER)
+    if start < 0:
+        return False
+
+    end = content.find(end_marker, start)
+    if end < 0:
+        return False
+    end += len(end_marker)
+    prefix = content[:start].rstrip()
+    suffix = content[end:].lstrip("\r\n")
+    cleaned = "\n\n".join(part for part in (prefix, suffix) if part)
+    if cleaned:
+        cleaned = cleaned.rstrip() + "\n"
+
+    if cleaned:
+        _write_text(file_path, cleaned)
+    else:
+        file_path.unlink()
+    return True
+
+
+def _inject_memory_mcp_config(user_id: str) -> None:
     """Register headroom memory as an MCP server in Codex's config.toml.
 
     Idempotent — replaces existing section if present.
@@ -1680,12 +1933,11 @@ def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
     # Use forward slashes in TOML paths (works on all platforms, avoids
     # backslash escaping issues on Windows)
     python_bin = sys.executable.replace("\\", "/")
-    db_path_toml = db_path.replace("\\", "/")
     mcp_section = (
         f"\n{_MEMORY_MCP_MARKER}\n"
         f"[mcp_servers.headroom_memory]\n"
         f'command = "{python_bin}"\n'
-        f'args = ["-m", "headroom.memory.mcp_server", "--db", "{db_path_toml}", "--user", "{user_id}"]\n'
+        f'args = ["-m", "headroom.memory.mcp_server", "--user", "{user_id}"]\n'
         f"startup_timeout_sec = 30\n"
         f"tool_timeout_sec = 30\n"
         f"{_MEMORY_MCP_END}\n"
@@ -1701,7 +1953,7 @@ def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
         _snapshot_codex_config_if_unwrapped(config_file, backup_file)
 
         if config_file.exists():
-            content = config_file.read_text()
+            content = _read_text(config_file)
             if _MEMORY_MCP_MARKER in content:
                 start = content.index(_MEMORY_MCP_MARKER)
                 end = content.index(_MEMORY_MCP_END) + len(_MEMORY_MCP_END)
@@ -1711,7 +1963,7 @@ def _inject_memory_mcp_config(db_path: str, user_id: str) -> None:
         else:
             content = mcp_section
 
-        config_file.write_text(content)
+        _write_text(config_file, content)
         click.echo(f"  Memory MCP: registered in {config_file}")
     except Exception as e:
         click.echo(f"  Warning: could not register memory MCP: {e}")
@@ -1735,14 +1987,13 @@ def _inject_memory_agents_md(file_path: Path) -> bool:
     )
 
     if file_path.exists():
-        existing = file_path.read_text()
+        existing = _read_text(file_path)
         if _MEMORY_AGENTS_MARKER in existing:
             return True  # Already injected
-        with open(file_path, "a") as f:
-            f.write("\n\n" + memory_block)
+        _append_text(file_path, "\n\n" + memory_block)
     else:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(memory_block)
+        _write_text(file_path, memory_block)
 
     click.echo(f"  Memory guidance injected into {file_path.name}")
     return True
@@ -1824,7 +2075,7 @@ def _inject_continue_rtk_systemmessage(config_file: Path, verbose: bool = False)
     """
     if config_file.exists():
         try:
-            content = config_file.read_text()
+            content = _read_text(config_file)
         except OSError as exc:
             click.echo(f"  Warning: could not read {config_file}: {exc}")
             return False
@@ -1877,7 +2128,7 @@ def _inject_continue_rtk_systemmessage(config_file: Path, verbose: bool = False)
 
     if any_changed:
         config_file.parent.mkdir(parents=True, exist_ok=True)
-        config_file.write_text(json.dumps(data, indent=2) + "\n")
+        _write_text(config_file, json.dumps(data, indent=2) + "\n")
         click.echo(f"  rtk instructions injected into {config_file}")
     elif all_ok and verbose:
         # Idempotent re-run with no refusals — nothing to do.
@@ -1934,6 +2185,9 @@ def _agent_savings_config_mismatches(
     """Return restart reasons when a running proxy lacks target agent savings."""
 
     if agent_type not in _AGENT_SAVINGS_TARGET_AGENTS:
+        return []
+
+    if _wrap_agent_savings_profile(agent_type) is None:
         return []
 
     desired_env = os.environ.copy()
@@ -2348,6 +2602,7 @@ def _ensure_proxy(
                         f"is running stale Headroom {running_version} and could not be restarted."
                     )
                 click.echo(f"  Proxy already running on port {port}")
+                click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
                 return None
             if helpers._recover_persistent_proxy(port):
                 return None
@@ -2478,6 +2733,7 @@ def _ensure_proxy(
 
             if not needs_restart:
                 click.echo(f"  Proxy already running on port {port}")
+                click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
                 return None
 
         # Start (or restart) the proxy with the requested flags
@@ -2506,6 +2762,7 @@ def _ensure_proxy(
                 ),
             )
             click.echo(f"  Proxy ready on http://127.0.0.1:{port}")
+            click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
             return proc
         except RuntimeError as e:
             click.echo(f"  Error: {e}")
@@ -2564,7 +2821,7 @@ def _register_proxy_client(port: int) -> None:
         ident = _proc_identity(os.getpid())
         if ident is not None:
             payload["start_src"], payload["start_time"] = ident
-        _client_marker_path(port).write_text(json.dumps(payload))
+        _write_text(_client_marker_path(port), json.dumps(payload))
     except OSError:
         pass
 
@@ -2579,13 +2836,24 @@ def _unregister_proxy_client(port: int) -> None:
 
 def _pid_alive(pid: int) -> bool:
     """Return True if ``pid`` names a live process."""
+    if pid <= 0:
+        return False  # non-positive PIDs are never valid client markers
+    try:
+        import psutil  # type: ignore[import-untyped]  # optional dep, already used elsewhere
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        pass
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
     except PermissionError:
         return True  # exists but owned by another user
-    except OSError:
+    except (ProcessLookupError, OSError, SystemError):
+        # On Windows, os.kill against a stale/invalid PID can fail with WinError
+        # 87 ("The parameter is incorrect"); CPython sometimes surfaces this as a
+        # SystemError rather than an OSError. SystemError is not an OSError
+        # subclass, so a bare `except OSError` lets it escape and crash cleanup(),
+        # leaving the shared proxy running.
         return False
     return True
 
@@ -2598,7 +2866,7 @@ def _marker_pid_reused(marker: Path, pid: int) -> bool:
     mismatched source) returns ``False`` so a real client is never pruned.
     """
     try:
-        rec = json.loads(marker.read_text())
+        rec = json.loads(_read_text(marker))
     except (OSError, ValueError):
         return False
     src = rec.get("start_src")
@@ -2757,14 +3025,12 @@ def _run_checked(
 ) -> subprocess.CompletedProcess[str]:
     """Run subprocess and raise a ClickException with actionable context on failure."""
     try:
-        return subprocess.run(
+        return run(
             cmd,
             cwd=str(cwd) if cwd else None,
             check=True,
             capture_output=True,
             text=True,
-            encoding="utf-8",
-            errors="replace",
         )
     except FileNotFoundError as e:
         raise click.ClickException(f"{action} failed: command not found: {cmd[0]}") from e
@@ -2795,12 +3061,10 @@ def _normalize_openclaw_gateway_provider_ids(provider_ids: tuple[str, ...] | Non
 
 def _read_openclaw_config_value(openclaw_bin: str, path: str) -> Any | None:
     """Read an OpenClaw config value when present, returning None on missing paths."""
-    result = subprocess.run(
+    result = run(
         [openclaw_bin, "config", "get", path],
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if result.returncode != 0:
         return None
@@ -2879,12 +3143,10 @@ def _set_openclaw_context_engine_slot(openclaw_bin: str, engine_id: str) -> None
 
 def _restart_or_start_openclaw_gateway(openclaw_bin: str) -> tuple[str, str]:
     """Restart the gateway when running, otherwise start it."""
-    restart_result = subprocess.run(
+    restart_result = run(
         [openclaw_bin, "gateway", "restart"],
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if restart_result.returncode == 0:
         output = restart_result.stdout.strip() or restart_result.stderr.strip()
@@ -2995,11 +3257,22 @@ def unwrap() -> None:
     is_flag=True,
     help="Skip headroom MCP server registration (compression markers will be unactionable)",
 )
-@click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
+@click.option(
+    "--no-tokensave",
+    is_flag=True,
+    help="Skip the tokensave code-graph MCP server (primary coding-task compressor)",
+)
+@click.option(
+    "--serena",
+    is_flag=True,
+    help="Force the Serena MCP backup compressor on (registered automatically when "
+    "tokensave is unavailable)",
+)
+@click.option("--no-serena", is_flag=True, help="Never register the Serena backup compressor")
 @click.option(
     "--code-graph",
     is_flag=True,
-    help="Enable code graph indexing via codebase-memory-mcp (optional)",
+    help="Force a tokensave code-graph index now (tokensave is the default compressor)",
 )
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option(
@@ -3031,6 +3304,17 @@ def unwrap() -> None:
     default=None,
     help="Cloud region for Vertex/Bedrock backends (env: HEADROOM_REGION).",
 )
+@click.option(
+    "--1m",
+    "context_1m",
+    is_flag=True,
+    help=(
+        "Preserve the 1M context window. Behind a custom ANTHROPIC_BASE_URL "
+        "Claude Code drops the context-1m beta header and caps at 200k; this "
+        "sets ANTHROPIC_MODEL=<opus>[1m] on the launched process so the 1M "
+        "window activates through the proxy (issue #1158)."
+    ),
+)
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.option("--prepare-only", is_flag=True, hidden=True)
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
@@ -3038,6 +3322,8 @@ def claude(
     port: int,
     no_rtk: bool,
     no_mcp: bool,
+    no_tokensave: bool,
+    serena: bool,
     no_serena: bool,
     code_graph: bool,
     no_proxy: bool,
@@ -3046,6 +3332,7 @@ def claude(
     tool_search: str | None,
     backend: str | None,
     region: str | None,
+    context_1m: bool,
     verbose: bool,
     prepare_only: bool,
     claude_args: tuple,
@@ -3062,10 +3349,13 @@ def claude(
         headroom wrap claude --memory           # With persistent memory
         headroom wrap claude --resume <id>      # Resume a session
         headroom wrap claude -- -p              # Claude in print mode
-        headroom wrap claude --code-graph        # With code graph intelligence
+        headroom wrap claude                    # tokensave code graph (primary)
+        headroom wrap claude --no-tokensave     # Skip tokensave; fall back to Serena
+        headroom wrap claude --serena           # Also register the Serena backup
         headroom wrap claude --no-context-tool  # Skip CLI context-tool setup
         headroom wrap claude --no-mcp           # Skip MCP retrieve tool registration
-        headroom wrap claude --no-serena        # Skip Serena MCP registration
+        headroom wrap claude --no-serena        # Never register the Serena backup
+        headroom wrap claude --1m               # Preserve the 1M context window
     """
     if prepare_only:
         if not no_rtk:
@@ -3097,15 +3387,13 @@ def claude(
     # Memory sync BEFORE proxy startup — sync headroom DB ↔ Claude's files
     if memory:
         try:
-            import subprocess as _sp
-
             mem_dir = Path.cwd() / ".headroom"
             mem_dir.mkdir(parents=True, exist_ok=True)
             _sync_db = str(mem_dir / "memory.db")
             _sync_user = os.environ.get("USER", os.environ.get("USERNAME", "default"))
 
             click.echo(f"  Syncing memory (user={_sync_user})...")
-            sync_result = _sp.run(
+            sync_result = run(
                 [
                     sys.executable,
                     "-m",
@@ -3196,14 +3484,17 @@ def claude(
         elif verbose:
             click.echo("  Skipping MCP retrieve tool (--no-mcp)")
 
-        if not no_serena:
-            from headroom.mcp_registry import ClaudeRegistrar
+        # Coding-task compressor: tokensave primary, Serena backup.
+        from headroom.mcp_registry import ClaudeRegistrar
 
-            _setup_serena_mcp(ClaudeRegistrar(), context="claude-code", verbose=verbose)
-        else:
-            from headroom.mcp_registry import ClaudeRegistrar
-
-            _disable_serena_mcp(ClaudeRegistrar(), verbose=verbose)
+        _setup_coding_compressor(
+            ClaudeRegistrar(),
+            serena_context="claude-code",
+            serena=serena,
+            no_serena=no_serena,
+            no_tokensave=no_tokensave,
+            verbose=verbose,
+        )
 
         if code_graph:
             _setup_code_graph(verbose=verbose)
@@ -3268,6 +3559,16 @@ def claude(
                 "(using your existing environment value)"
             )
 
+        # Issue #1158: opt-in 1M context window. Claude Code only sends the
+        # context-1m beta header when the model id carries the [1m] suffix, so
+        # force it via ANTHROPIC_MODEL on the launched process.
+        if context_1m:
+            env[_ANTHROPIC_MODEL_ENV] = _resolve_1m_model(env.get(_ANTHROPIC_MODEL_ENV))
+            click.echo(
+                f"  {_ANTHROPIC_MODEL_ENV}={env[_ANTHROPIC_MODEL_ENV]} "
+                "(1M context window; issue #1158)"
+            )
+
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
 
@@ -3311,13 +3612,20 @@ def unwrap_claude(
         if registrar.detect():
             removed_headroom = registrar.unregister_server("headroom")
             removed_code_graph = registrar.unregister_server(_CBM_MCP_SERVER_NAME)
+            tokensave_status = _remove_headroom_installed_tokensave_mcp(registrar)
             serena_status = _remove_headroom_installed_serena_mcp(registrar)
             if removed_headroom:
                 click.echo("  Removed Headroom MCP retrieve tool from Claude.")
             else:
                 click.echo("  Headroom MCP retrieve tool was not registered in Claude.")
             if removed_code_graph:
-                click.echo("  Removed code graph MCP server from Claude.")
+                click.echo("  Removed legacy codebase-memory-mcp code graph server from Claude.")
+            if tokensave_status == "removed":
+                click.echo("  Removed Headroom-installed tokensave MCP server from Claude.")
+            elif tokensave_status == "failed":
+                click.echo(
+                    "  tokensave MCP server matched Headroom ledger but could not be removed."
+                )
             if serena_status == "removed":
                 click.echo("  Removed Headroom-installed Serena MCP server from Claude.")
             elif serena_status == "failed":
@@ -3633,6 +3941,26 @@ def copilot(
 
 
 # =============================================================================
+# GitHub Copilot CLI (unwrap)
+# =============================================================================
+
+
+@unwrap.command("copilot")
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
+@click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
+def unwrap_copilot(port: int, no_stop_proxy: bool) -> None:
+    """Undo durable setup from ``headroom wrap copilot``."""
+    instructions = Path.cwd() / ".github" / "copilot-instructions.md"
+    if _remove_rtk_instructions(instructions):
+        click.echo("  Removed Headroom rtk instructions from Copilot.")
+    else:
+        click.echo("  No Headroom rtk instructions found for Copilot.")
+
+    if not no_stop_proxy:
+        _echo_unwrap_proxy_stop_status(_stop_local_proxy_for_unwrap(port), port)
+
+
+# =============================================================================
 # OpenAI Codex CLI
 # =============================================================================
 
@@ -3651,11 +3979,22 @@ def copilot(
     is_flag=True,
     help="Skip headroom MCP server registration (compression markers will be unactionable)",
 )
-@click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
+@click.option(
+    "--no-tokensave",
+    is_flag=True,
+    help="Skip the tokensave code-graph MCP server (primary coding-task compressor)",
+)
+@click.option(
+    "--serena",
+    is_flag=True,
+    help="Force the Serena MCP backup compressor on (registered automatically when "
+    "tokensave is unavailable)",
+)
+@click.option("--no-serena", is_flag=True, help="Never register the Serena backup compressor")
 @click.option(
     "--code-graph",
     is_flag=True,
-    help="Enable code graph indexing via codebase-memory-mcp (optional)",
+    help="Force a tokensave code-graph index now (tokensave is the default compressor)",
 )
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option(
@@ -3682,6 +4021,8 @@ def codex(
     port: int,
     no_rtk: bool,
     no_mcp: bool,
+    no_tokensave: bool,
+    serena: bool,
     no_serena: bool,
     code_graph: bool,
     no_proxy: bool,
@@ -3709,7 +4050,9 @@ def codex(
         headroom wrap codex -- "fix the bug"        # Pass prompt to codex
         headroom wrap codex --no-context-tool       # Skip CLI context-tool setup
         headroom wrap codex --no-mcp                # Skip MCP retrieve tool registration
-        headroom wrap codex --no-serena             # Skip Serena MCP registration
+        headroom wrap codex --no-tokensave          # Skip tokensave; fall back to Serena
+        headroom wrap codex --serena                # Also register the Serena backup
+        headroom wrap codex --no-serena             # Never register the Serena backup
         headroom wrap codex --port 9999             # Custom proxy port
         headroom wrap codex --backend anyllm --anyllm-provider groq
     """
@@ -3747,14 +4090,19 @@ def codex(
     elif verbose:
         click.echo("  Skipping MCP retrieve tool (--no-mcp)")
 
-    if not no_serena:
-        from headroom.mcp_registry import CodexRegistrar
+    # Coding-task compressor: tokensave primary, Serena backup. Codex starts
+    # long-lived MCP subprocesses from config.toml, so force re-registration.
+    from headroom.mcp_registry import CodexRegistrar
 
-        _setup_serena_mcp(CodexRegistrar(), context="codex", verbose=verbose, force=True)
-    else:
-        from headroom.mcp_registry import CodexRegistrar
-
-        _disable_serena_mcp(CodexRegistrar(), verbose=verbose)
+    _setup_coding_compressor(
+        CodexRegistrar(),
+        serena_context="codex",
+        serena=serena,
+        no_serena=no_serena,
+        no_tokensave=no_tokensave,
+        verbose=verbose,
+        force=True,
+    )
 
     # Setup memory MCP server for Codex (native tool integration)
     if memory:
@@ -3765,7 +4113,7 @@ def codex(
         mem_user = os.environ.get("USER", os.environ.get("USERNAME", "default"))
 
         # Register MCP server in Codex config
-        _inject_memory_mcp_config(db_path, mem_user)
+        _inject_memory_mcp_config(mem_user)
 
         # Inject memory guidance into project AGENTS.md
         agents_md = Path.cwd() / "AGENTS.md"
@@ -3823,11 +4171,7 @@ def codex(
     # the config file.  Re-inject MCP config after if memory is enabled.
     _inject_codex_provider_config(port)
     if memory:
-        mem_dir = Path.cwd() / ".headroom"
-        _inject_memory_mcp_config(
-            str(mem_dir / "memory.db"),
-            os.environ.get("USER", os.environ.get("USERNAME", "default")),
-        )
+        _inject_memory_mcp_config(os.environ.get("USER", os.environ.get("USERNAME", "default")))
 
     _launch_tool(
         binary=codex_bin,
@@ -4768,13 +5112,11 @@ def openclaw(
         install_cwd = None
 
     click.echo("  Installing OpenClaw plugin with required unsafe-install flag...")
-    install_result = subprocess.run(
+    install_result = run(
         install_cmd,
         cwd=str(install_cwd) if install_cwd else None,
         capture_output=True,
         text=True,
-        encoding="utf-8",
-        errors="replace",
     )
     if install_result.returncode != 0:
         combined_error = "\n".join(
@@ -4943,9 +5285,8 @@ def opencode(
         click.echo("  Setting up memory for OpenCode...")
         mem_dir = Path.cwd() / ".headroom"
         mem_dir.mkdir(parents=True, exist_ok=True)
-        db_path = str(mem_dir / "memory.db")
         mem_user = os.environ.get("USER", os.environ.get("USERNAME", "default"))
-        _inject_memory_mcp_config(db_path, mem_user)
+        _inject_memory_mcp_config(mem_user)
         agents_md = Path.cwd() / "AGENTS.md"
         _inject_memory_agents_md(agents_md)
 
@@ -4968,7 +5309,6 @@ def opencode(
     if memory:
         mem_dir = Path.cwd() / ".headroom"
         _inject_memory_mcp_config(
-            str(mem_dir / "memory.db"),
             os.environ.get("USER", os.environ.get("USERNAME", "default")),
         )
 
@@ -5040,11 +5380,11 @@ def unwrap_opencode(port: int, no_stop_proxy: bool) -> None:
                 f"could not restore OpenCode config from backup: {exc}"
             ) from exc
     elif config_file.exists():
-        content = config_file.read_text()
+        content = _read_text(config_file)
         if _PROVIDER_MARKER_START in content or _MCP_MARKER_START in content:
             cleaned = strip_opencode_headroom_blocks(content)
             if cleaned.strip():
-                config_file.write_text(cleaned + "\n", encoding="utf-8")
+                _write_text(config_file, cleaned + "\n")
                 click.echo(f"  Removed Headroom block from {config_file}; other content preserved.")
                 status = "cleaned"
             else:
@@ -5206,15 +5546,21 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
             )
         click.echo(f"  Nothing to undo: {config_file} has no Headroom wrap markers.")
 
-    # Serena is written as its own [mcp_servers.serena] table with Headroom
-    # markers, separate from the provider block handled above — a "cleaned"
-    # restore leaves it behind. Remove it explicitly (only if we installed it),
-    # mirroring unwrap_claude. Runs after the restore so a backup-restore that
-    # already dropped Serena makes this a safe no-op.
+    # tokensave and Serena are each written as their own [mcp_servers.<name>]
+    # table with Headroom markers, separate from the provider block handled
+    # above — a "cleaned" restore leaves them behind. Remove them explicitly
+    # (only if we installed them), mirroring unwrap_claude. Runs after the
+    # restore so a backup-restore that already dropped them is a safe no-op.
     from headroom.mcp_registry import CodexRegistrar
 
     codex_registrar = CodexRegistrar()
     if codex_registrar.detect():
+        tokensave_status = _remove_headroom_installed_tokensave_mcp(codex_registrar)
+        if tokensave_status == "removed":
+            click.echo("  Removed Headroom-installed tokensave MCP server from Codex.")
+        elif tokensave_status == "failed":
+            click.echo("  tokensave MCP server matched Headroom ledger but could not be removed.")
+
         serena_status = _remove_headroom_installed_serena_mcp(codex_registrar)
         if serena_status == "removed":
             click.echo("  Removed Headroom-installed Serena MCP server from Codex.")

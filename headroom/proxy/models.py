@@ -154,6 +154,13 @@ class ProxyConfig:
     # CLI: --disable-kompress; env: HEADROOM_DISABLE_KOMPRESS=1.
     disable_kompress: bool = False
 
+    # With disable_kompress, route fall-through content to PASSTHROUGH instead
+    # of the default KOMPRESS fallback strategy. Restores the legacy
+    # --disable-kompress behaviour for callers that relied on it. No effect
+    # unless disable_kompress is also set.
+    # CLI: --disable-kompress-fallback; env: HEADROOM_DISABLE_KOMPRESS_FALLBACK=1.
+    disable_kompress_fallback: bool = False
+
     # Per-provider overrides for `disable_kompress`. None inherits the global
     # value above; True/False force-disable/enable Kompress for that provider's
     # pipeline only (other compressors and all routing/exclusion are unaffected).
@@ -191,8 +198,26 @@ class ProxyConfig:
     # CLI: --exclude-tools <name1,name2>; env: HEADROOM_EXCLUDE_TOOLS=<name1,name2>
     exclude_tools: set[str] | None = None
 
+    # Tool names whose results must never be lossy-compressed (e.g. Bash, WebFetch).
+    # Merged into exclude_tools before ContentRouter processes the conversation.
+    # CLI: --protect-tool-results <name1,name2>; env: HEADROOM_PROTECT_TOOL_RESULTS=<name1,name2>
+    protect_tool_results: frozenset[str] = field(default_factory=frozenset)
+
     # Read lifecycle management
     read_lifecycle: bool = True
+
+    # Mechanism B: activity-based read maturation (hold fresh Reads out of
+    # the provider prefix cache; compress once their file quiesces).
+    # Experimental — default off. CLI: --read-maturation;
+    # env: HEADROOM_READ_MATURATION=1
+    read_maturation: bool = False
+    # Read-maturation tuning (only meaningful when read_maturation=True).
+    # Defaults mirror ReadMaturationConfig. CLI: --read-maturation-quiesce-turns,
+    # --read-maturation-max-hold-turns, --read-maturation-min-size-bytes;
+    # env: HEADROOM_READ_MATURATION_QUIESCE_TURNS / _MAX_HOLD_TURNS / _MIN_SIZE_BYTES.
+    read_maturation_quiesce_turns: int = 5
+    read_maturation_max_hold_turns: int = 25
+    read_maturation_min_size_bytes: int = 2048
 
     # Deprecated compatibility argument. ContentRouter is always active in
     # the Python proxy; accepting this avoids breaking old config constructors
@@ -242,6 +267,9 @@ class ProxyConfig:
     # Timeouts
     request_timeout_seconds: int = 300
     connect_timeout_seconds: int = 10
+    # Anthropic buffered reads can legitimately run longer than the generic
+    # proxy request cap. Keep the generic timeout unchanged elsewhere.
+    anthropic_buffered_request_timeout_seconds: int = 600
 
     # Connection pool
     max_connections: int = 500
