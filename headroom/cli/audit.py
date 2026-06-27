@@ -71,10 +71,21 @@ def audit_reads_cmd(
         codex_report = audit_codex(root)
         if codex_report.sessions == 0:
             raise click.ClickException(f"no *.jsonl transcripts found under {root}")
+        sim = None
+        if simulate_maturation:
+            from headroom.audit.maturation import render_sim_text, simulate_codex_maturation
+
+            sim = simulate_codex_maturation(root)
         if output_format == "json":
-            click.echo(_json.dumps(codex_report.to_dict(), indent=2, sort_keys=True))
+            data = codex_report.to_dict()
+            if sim is not None:
+                data["maturation_simulation"] = sim.to_dict()
+            click.echo(_json.dumps(data, indent=2, sort_keys=True))
         else:
             click.echo(render_codex_text(codex_report))
+            if sim is not None:
+                click.echo()
+                click.echo(render_sim_text(sim))
         return
 
     if root is None:

@@ -166,6 +166,117 @@ def simulate_maturation(root: Path) -> MaturationSimReport:
     return r
 
 
+def _codex_output_text(payload: dict) -> str:
+    out = payload.get("output", "")
+    if isinstance(out, dict):
+        out = out.get("output", "") or str(out)
+    return str(out)
+
+
+def simulate_codex_maturation(root: Path) -> MaturationSimReport:
+    """Run the maturation simulation over Codex shell-based transcripts.
+
+    Codex has no structured ``Read`` tool. It reads files through
+    ``exec_command`` calls such as ``cat``, ``sed -n``, and ``rtk read``.
+    This mirrors ``simulate_maturation`` with the Codex command classifier
+    so ``headroom audit-reads --codex --simulate-maturation`` sizes the
+    same read-maturation policy from Codex traffic instead of returning an
+    all-zero Claude-only simulation.
+    """
+    from headroom.audit.codex import classify_command
+
+    r = MaturationSimReport()
+    next_touch_gaps: list[int] = []
+    at_risk = dict.fromkeys(QUIESCE_CANDIDATES, 0)
+
+    for path in sorted(root.glob("**/*.jsonl")):
+        pending: dict[str, tuple[str, str | None, bool, int]] = {}
+        timeline: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
+        session_reads: list[tuple[str, int, int]] = []
+        seen_files: set[str] = set()
+        turn = 0
+        try:
+            with path.open(errors="replace") as f:
+                for raw in f:
+                    try:
+                        line = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    pl = line.get("payload") or {}
+                    t = pl.get("type")
+                    if t == "function_call" and pl.get("name") == "exec_command":
+                        turn += 1
+                        try:
+                            args = json.loads(pl.get("arguments", "{}"))
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                        cat, fpath, partial = classify_command(
+                            args.get("cmd", ""), args.get("workdir", "")
+                        )
+                        pending[pl.get("call_id", "")] = (cat, fpath, partial, turn)
+                        if cat == "read" and fpath:
+                            r.read_calls += 1
+                            if fpath in seen_files:
+                                r.rereads_any += 1
+                                if partial:
+                                    r.rereads_partial += 1
+                            seen_files.add(fpath)
+                            timeline[fpath].append((turn, "read", 0))
+                        elif cat == "edit" and fpath:
+                            timeline[fpath].append((turn, "edit", 0))
+                    elif t == "function_call_output":
+                        cat, fpath, _partial, call_turn = pending.get(
+                            pl.get("call_id", ""), ("", None, False, turn)
+                        )
+                        if cat != "read" or not fpath:
+                            continue
+                        text = _codex_output_text(pl)
+                        size = len(text.encode("utf-8", errors="replace"))
+                        session_reads.append((fpath, call_turn, size))
+        except OSError:
+            continue
+
+        for ops in timeline.values():
+            ops.sort(key=lambda item: item[0])
+            for op_turn, kind, _size in ops:
+                if kind != "edit":
+                    continue
+                previous = [(t, k) for t, k, _ in ops if t < op_turn]
+                if not any(k == "read" for _t, k in previous):
+                    r.edits_without_prior_read += 1
+                    continue
+                r.edits_with_prior_read += 1
+                gap = op_turn - max(t for t, _k in previous)
+                for n in QUIESCE_CANDIDATES:
+                    if gap > n:
+                        at_risk[n] += 1
+
+        for fpath, read_turn, size in session_reads:
+            if size < MATURE_FLOOR:
+                continue
+            r.big_reads += 1
+            r.big_read_bytes += size
+            later = [t for t, _, _ in timeline[fpath] if t > read_turn]
+            if later:
+                next_touch_gaps.append(min(later) - read_turn)
+            else:
+                r.never_touched_again += 1
+
+    def pct(xs: list[int], p: float) -> int:
+        return sorted(xs)[int(len(xs) * p)] if xs else 0
+
+    r.next_touch_p50 = pct(next_touch_gaps, 0.5)
+    r.next_touch_p90 = pct(next_touch_gaps, 0.9)
+    r.next_touch_p95 = pct(next_touch_gaps, 0.95)
+    if next_touch_gaps:
+        r.next_touch_within = {
+            n: round(100 * sum(1 for gap in next_touch_gaps if gap <= n) / len(next_touch_gaps), 1)
+            for n in QUIESCE_CANDIDATES
+        }
+    r.at_risk_edits = at_risk
+    return r
+
+
 def render_sim_text(r: MaturationSimReport) -> str:
     """Human-readable simulation summary."""
     out: list[str] = []
