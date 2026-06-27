@@ -744,7 +744,7 @@ class OpenAIHandlerMixin:
         not just the generic passthrough route that already honors it. Falls
         back to the configured ``OPENAI_API_URL`` (``OPENAI_TARGET_API_URL``).
         """
-        custom = request.headers.get("x-headroom-base-url")
+        custom = request.headers.get("x-headroom-base-url", "").strip()
         return custom or self.OPENAI_API_URL
 
     @staticmethod
