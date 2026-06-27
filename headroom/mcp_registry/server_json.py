@@ -19,6 +19,7 @@ SERVER_TITLE = "Headroom"
 SERVER_DESCRIPTION = (
     "Headroom MCP server for compression, retrieval, and stats in MCP-compatible hosts."
 )
+PYPI_OWNERSHIP_MARKER = f"<!-- mcp-name: {SERVER_NAME} -->"
 WEBSITE_URL = "https://headroomlabs-ai.github.io/headroom/"
 REPOSITORY_URL = "https://github.com/headroomlabs-ai/headroom"
 REPOSITORY_ID = "1129940957"

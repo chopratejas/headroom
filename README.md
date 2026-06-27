@@ -20,6 +20,8 @@
   <a href="https://headroom-docs.vercel.app/docs"><img src="https://img.shields.io/badge/docs-online-blue.svg" alt="Docs"></a>
 </p>
 
+<!-- mcp-name: io.github.headroomlabs-ai/headroom -->
+
 <p align="center">
   <a href="https://headroom-docs.vercel.app/docs">Docs</a> ·
   <a href="#get-started-60-seconds">Install</a> ·

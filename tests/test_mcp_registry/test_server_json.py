@@ -8,6 +8,7 @@ from pathlib import Path
 from headroom.mcp_registry import build_server_json, render_server_json
 from headroom.mcp_registry.install import build_headroom_spec
 from headroom.mcp_registry.server_json import (
+    PYPI_OWNERSHIP_MARKER,
     REPOSITORY_ID,
     REPOSITORY_URL,
     SCHEMA_URL,
@@ -80,5 +81,6 @@ def test_docs_point_to_canonical_server_json() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     mcp_docs = (PROJECT_ROOT / "docs/content/docs/mcp.mdx").read_text(encoding="utf-8")
 
+    assert PYPI_OWNERSHIP_MARKER in readme
     assert "`server.json`" in readme
     assert "https://github.com/headroomlabs-ai/headroom/blob/main/server.json" in mcp_docs
