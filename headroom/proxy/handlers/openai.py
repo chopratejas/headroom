@@ -735,6 +735,18 @@ class OpenAIHandlerMixin:
         """Return True when inbound headers request full passthrough."""
         return _headroom_bypass_enabled(headers)
 
+    def _resolve_openai_upstream(self, request: Request) -> str:
+        """Return the OpenAI upstream base URL for ``request``.
+
+        Honors the ``x-headroom-base-url`` request header so OpenAI-compatible
+        gateways (LiteLLM, CPA, self-hosted vLLM, Azure OpenAI) route through
+        the dedicated ``/v1/chat/completions`` and ``/v1/responses`` handlers,
+        not just the generic passthrough route that already honors it. Falls
+        back to the configured ``OPENAI_API_URL`` (``OPENAI_TARGET_API_URL``).
+        """
+        custom = request.headers.get("x-headroom-base-url")
+        return custom or self.OPENAI_API_URL
+
     @staticmethod
     def _strict_previous_turn_frozen_count(
         messages: list[dict[str, Any]],
@@ -2486,7 +2498,9 @@ class OpenAIHandlerMixin:
                 )
 
         # Direct OpenAI API (no backend configured)
-        url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/chat/completions")
+        url = build_copilot_upstream_url(
+            self._resolve_openai_upstream(request), "/v1/chat/completions"
+        )
 
         try:
             if stream:
@@ -3245,7 +3259,9 @@ class OpenAIHandlerMixin:
         if is_chatgpt_auth:
             url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/responses")
+            url = build_copilot_upstream_url(
+                self._resolve_openai_upstream(request), "/v1/responses"
+            )
 
         # The standalone Rust proxy has native /v1/responses item handling,
         # but the default CLI runtime is this Python proxy. Compress the
