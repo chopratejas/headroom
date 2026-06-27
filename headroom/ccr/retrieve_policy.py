@@ -31,7 +31,9 @@ _CONCRETE_GAP_PATTERNS = (
     re.compile(r"\bexact\b"),
     re.compile(r"\bverbatim\b"),
     re.compile(r"\bomitted\b"),
-    re.compile(r"\bquote\b"),
+    re.compile(r"\bquote(?:d)?\b"),
+    re.compile(r"\b(?:line|row|record|entry|item|file)\s+\d+\b"),
+    re.compile(r"\bquoted?\s+(?:passage|text|section)\b"),
     re.compile(r"\bspecific (?:line|row|record|entry|item|file)\b"),
 )
 

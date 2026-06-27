@@ -142,7 +142,7 @@ client = HeadroomClient(
 )
 
 # CCR happens automatically during chat completions.
-# The LLM calls headroom_retrieve when it needs more data.
+# The LLM answers from kept rows unless it has a concrete gap.
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=messages,

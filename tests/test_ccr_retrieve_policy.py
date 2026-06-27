@@ -51,6 +51,7 @@ def test_static_publication_surfaces_reference_skill_and_rule() -> None:
     assert CANONICAL_RULE in ccr_doc
     assert render_retrieve_tool_description() in ccr_doc
     assert render_retrieve_query_description() in ccr_doc
+    assert "when it needs more data" not in ccr_doc
     assert CANONICAL_RULE in failure_learning
 
 
@@ -89,3 +90,16 @@ def test_classifier_allows_targeted_or_raw_requests() -> None:
     assert not raw_request.is_redundant
     assert targeted_query.should_retrieve
     assert not targeted_query.is_redundant
+
+
+def test_classifier_treats_precise_line_row_and_quote_requests_as_concrete_gaps() -> None:
+    requests = [
+        "verify line 42",
+        "verify row 7",
+        "verify the quoted passage",
+    ]
+
+    for request in requests:
+        assessment = classify_retrieve_need(request)
+        assert assessment.should_retrieve
+        assert not assessment.is_redundant
