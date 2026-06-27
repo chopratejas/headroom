@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `min(4, cpu)` × 1). The ONNX embedder already capped its threads; this brings
   the torch path to parity
   ([#198](https://github.com/headroomlabs-ai/headroom/issues/198)).
+- Buffered passthrough routes (e.g. `GET /v1/models`) no longer return an
+  opaque HTTP 502 when an OpenAI-compatible upstream closes a pooled
+  keep-alive connection mid-response (`httpx.RemoteProtocolError` /
+  "incomplete chunked read"). Headroom now retries the request once on a
+  fresh connection — mirroring a direct `curl` — and only returns a clear
+  `upstream_protocol_error` 502 if the upstream is genuinely sending an
+  incomplete response
+  ([#1112](https://github.com/chopratejas/headroom/issues/1112)).
 
 ### Changed
 
