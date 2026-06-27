@@ -326,6 +326,137 @@ def test_install_apply_uses_docker_runtime_for_persistent_docker(monkeypatch) ->
     assert calls == ["start_docker"]
 
 
+def test_deploy_prefers_docker_when_available(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+    calls: list[str] = []
+
+    class Manifest:
+        profile = "default"
+        preset = "persistent-docker"
+        runtime_kind = "docker"
+        supervisor_kind = "none"
+        scope = "user"
+        health_url = "http://127.0.0.1:8787/readyz"
+        targets = ["claude", "codex"]
+        mutations = []
+        artifacts = []
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return Manifest()
+
+    monkeypatch.setattr(
+        "headroom.cli.install._command_available", lambda command: command == "docker"
+    )
+    monkeypatch.setattr("headroom.cli.install.build_manifest", fake_build)
+    monkeypatch.setattr("headroom.cli.install.load_manifest", lambda profile: None)
+    monkeypatch.setattr("headroom.cli.install.apply_mutations", lambda deployment: [])
+    monkeypatch.setattr("headroom.cli.install.install_supervisor", lambda deployment: [])
+    monkeypatch.setattr("headroom.cli.install.save_manifest", lambda deployment: None)
+    monkeypatch.setattr(
+        "headroom.cli.install.start_persistent_docker",
+        lambda deployment: calls.append("start_docker"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.wait_ready", lambda deployment, timeout_seconds=45: True
+    )
+
+    result = runner.invoke(main, ["deploy"])
+
+    assert result.exit_code == 0, result.output
+    assert "Selected persistent-docker" in result.output
+    assert "Deployed turnkey deployment 'default'" in result.output
+    assert captured["preset"] == "persistent-docker"
+    assert captured["runtime_kind"] == "docker"
+    assert calls == ["start_docker"]
+
+
+def test_deploy_prefers_gpu_docker_when_available(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    class Manifest:
+        profile = "default"
+        preset = "persistent-docker"
+        runtime_kind = "docker"
+        supervisor_kind = "none"
+        scope = "user"
+        health_url = "http://127.0.0.1:8787/readyz"
+        targets: list[str] = []
+        base_env: dict[str, str] = {}
+        mutations = []
+        artifacts = []
+
+    manifest = Manifest()
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return manifest
+
+    monkeypatch.setattr("headroom.cli.install._detect_nvidia_gpu_names", lambda: ["RTX 4090"])
+    monkeypatch.setattr("headroom.cli.install._docker_supports_nvidia_gpus", lambda: True)
+    monkeypatch.setattr("headroom.cli.install.build_manifest", fake_build)
+    monkeypatch.setattr("headroom.cli.install.load_manifest", lambda profile: None)
+    monkeypatch.setattr("headroom.cli.install.apply_mutations", lambda deployment: [])
+    monkeypatch.setattr("headroom.cli.install.install_supervisor", lambda deployment: [])
+    monkeypatch.setattr("headroom.cli.install.save_manifest", lambda deployment: None)
+    monkeypatch.setattr("headroom.cli.install.start_persistent_docker", lambda deployment: None)
+    monkeypatch.setattr(
+        "headroom.cli.install.wait_ready", lambda deployment, timeout_seconds=45: True
+    )
+
+    result = runner.invoke(main, ["deploy"])
+
+    assert result.exit_code == 0, result.output
+    assert "RTX 4090" in result.output
+    assert captured["preset"] == "persistent-docker"
+    assert captured["runtime_kind"] == "docker"
+    assert manifest.base_env["HEADROOM_DOCKER_GPUS"] == "all"
+
+
+def test_deploy_falls_back_to_detached_python_without_supervisor(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class Manifest:
+        profile = "default"
+        preset = "persistent-task"
+        runtime_kind = "python"
+        supervisor_kind = "task"
+        scope = "user"
+        health_url = "http://127.0.0.1:8787/readyz"
+        targets: list[str] = []
+        mutations = []
+        artifacts = []
+
+    manifest = Manifest()
+
+    monkeypatch.setattr("headroom.cli.install._command_available", lambda command: False)
+    monkeypatch.setattr("headroom.cli.install.build_manifest", lambda **_: manifest)
+    monkeypatch.setattr("headroom.cli.install.load_manifest", lambda profile: None)
+    monkeypatch.setattr("headroom.cli.install.apply_mutations", lambda deployment: [])
+    monkeypatch.setattr(
+        "headroom.cli.install.install_supervisor",
+        lambda deployment: calls.append(f"supervisor:{deployment.supervisor_kind}") or [],
+    )
+    monkeypatch.setattr("headroom.cli.install.save_manifest", lambda deployment: None)
+    monkeypatch.setattr(
+        "headroom.cli.install.start_detached_agent",
+        lambda profile: calls.append(f"agent:{profile}"),
+    )
+    monkeypatch.setattr(
+        "headroom.cli.install.wait_ready", lambda deployment, timeout_seconds=45: True
+    )
+
+    result = runner.invoke(main, ["deploy", "--no-docker"])
+
+    assert result.exit_code == 0, result.output
+    assert "No supported supervisor was detected" in result.output
+    assert manifest.supervisor_kind == "none"
+    assert calls == ["supervisor:none", "agent:default"]
+
+
 def test_install_remove_continues_when_runtime_teardown_errors(monkeypatch) -> None:
     runner = CliRunner()
     calls: list[str] = []

@@ -132,6 +132,9 @@ def build_runtime_command(manifest: DeploymentManifest) -> list[str]:
         "--volume",
         f"{_mount_source(home, '.config/opencode')}:{container_home}/.config/opencode",
     ]
+    docker_gpus = manifest.base_env.get("HEADROOM_DOCKER_GPUS", "").strip()
+    if docker_gpus:
+        command.extend(["--gpus", docker_gpus])
     if not _is_windows():
         getuid = getattr(os, "getuid", None)
         getgid = getattr(os, "getgid", None)

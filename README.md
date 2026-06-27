@@ -92,6 +92,7 @@ pip install "headroom-ai[all]"          # Python
 npm install headroom-ai                 # Node / TypeScript
 
 # 2 — Pick your mode
+headroom deploy                         # turnkey local deployment + agent config
 headroom wrap claude                    # wrap a coding agent
 headroom proxy --port 8787              # drop-in proxy, zero code changes
 # or: from headroom import compress      # inline library
