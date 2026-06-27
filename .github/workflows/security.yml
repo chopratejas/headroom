@@ -1,0 +1,99 @@
+name: Security
+
+# Security gate: dependency vulnerability scanning (SCA), static analysis
+# (CodeQL/SAST), and secret scanning. Runs on every PR to main, on push to
+# main, weekly (to catch newly-disclosed CVEs without a code change), and on
+# demand. Each job is an independent required check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:00 UTC — surface CVEs disclosed since the last commit.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # ---- SCA: dependency vulnerability scan -------------------------------
+  # Audits the PRODUCTION dependency set ([all]) exported from uv.lock. The
+  # `benchmark` extra is intentionally excluded from [all] (it pulls lm-eval's
+  # sqlitedict/nltk, which carry unpatchable upstream High CVEs and are never
+  # installed in production), so this gate fails only on actionable findings.
+  dependency-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Export production dependency set from uv.lock
+        run: |
+          uv export --frozen --no-dev --no-emit-project --no-hashes \
+            --extra all --format requirements-txt > requirements-prod.txt
+          echo "Production dependencies audited:"
+          wc -l requirements-prod.txt
+
+      - name: Audit dependencies (pip-audit)
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: requirements-prod.txt
+
+  # ---- SAST: CodeQL static analysis ------------------------------------
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  # ---- Secret scanning -------------------------------------------------
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the scan covers the whole branch, not just the tip.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
