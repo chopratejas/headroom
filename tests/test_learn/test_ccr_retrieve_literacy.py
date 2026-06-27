@@ -18,12 +18,17 @@ def _project(tmp_path: Path) -> ProjectInfo:
     return ProjectInfo(name="demo", project_path=project_path, data_path=data_path)
 
 
-def _retrieve_call(msg_index: int, query: str | None = None) -> ToolCall:
+def _retrieve_call(
+    msg_index: int,
+    query: str | None = None,
+    *,
+    name: str = "headroom_retrieve",
+) -> ToolCall:
     input_data = {"hash": "abc123"}
     if query is not None:
         input_data["query"] = query
     return ToolCall(
-        name="headroom_retrieve",
+        name=name,
         tool_call_id=f"tc-{msg_index}",
         input_data=input_data,
         output='{"rows": 1}',
@@ -70,6 +75,42 @@ def test_analyzer_skips_targeted_retrieve_requests(_mock_call_llm, tmp_path: Pat
     result = SessionAnalyzer(model="test-model").analyze(_project(tmp_path), [session])
 
     assert all(rec.section != LEARN_SECTION for rec in result.recommendations)
+
+
+@patch("headroom.learn.analyzer._call_llm", return_value={"context_file_rules": [], "memory_file_rules": []})
+def test_analyzer_counts_namespaced_mcp_retrieve_calls(_mock_call_llm, tmp_path: Path) -> None:
+    tool_call = _retrieve_call(2, name="mcp__headroom__headroom_retrieve")
+    session = SessionData(
+        session_id="s1",
+        tool_calls=[tool_call],
+        events=[
+            SessionEvent(type="user_message", msg_index=1, text="Be sure the kept summary did not miss anything."),
+            SessionEvent(type="tool_call", msg_index=2, tool_call=tool_call),
+        ],
+    )
+
+    result = SessionAnalyzer(model="test-model").analyze(_project(tmp_path), [session])
+
+    assert any(rec.section == LEARN_SECTION for rec in result.recommendations)
+
+
+@patch("headroom.learn.analyzer._detect_default_model", side_effect=RuntimeError("no backend"))
+def test_analyzer_returns_deterministic_recommendation_when_model_detection_fails(
+    _mock_detect_default_model, tmp_path: Path
+) -> None:
+    tool_call = _retrieve_call(2)
+    session = SessionData(
+        session_id="s1",
+        tool_calls=[tool_call],
+        events=[
+            SessionEvent(type="user_message", msg_index=1, text="Be sure the kept summary did not miss anything."),
+            SessionEvent(type="tool_call", msg_index=2, tool_call=tool_call),
+        ],
+    )
+
+    result = SessionAnalyzer().analyze(_project(tmp_path), [session])
+
+    assert any(rec.section == LEARN_SECTION for rec in result.recommendations)
 
 
 def test_codex_rollout_scanner_preserves_user_messages(tmp_path: Path) -> None:

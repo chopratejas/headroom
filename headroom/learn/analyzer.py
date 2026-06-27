@@ -183,11 +183,9 @@ class SessionAnalyzer:
         # Build compact digest of all sessions, leading with detected loops.
         digest = _build_digest(project, sessions, loops=loops)
 
-        # Resolve model (auto-detect if not specified)
-        model = self.model or _detect_default_model()
-
         # Call LLM for analysis
         try:
+            model = self.model or _detect_default_model()
             raw = _call_llm(digest, model)
             llm_recs = _parse_llm_response(raw)
             # Weight loop guardrails above one-off rules using MEASURED waste.
@@ -835,7 +833,7 @@ def _build_ccr_retrieve_recommendations(sessions: list[SessionData]) -> list[Rec
                 continue
 
             tool_call = event.tool_call
-            if tool_call.name != "headroom_retrieve":
+            if not _is_ccr_retrieve_tool_name(tool_call.name):
                 continue
 
             query = tool_call.input_data.get("query")
@@ -859,6 +857,13 @@ def _build_ccr_retrieve_recommendations(sessions: list[SessionData]) -> list[Rec
             estimated_tokens_saved=max(1200, evidence * 1200),
         )
     ]
+
+
+def _is_ccr_retrieve_tool_name(name: str) -> bool:
+    normalized = name.strip()
+    if not normalized:
+        return False
+    return normalized == "headroom_retrieve" or normalized.split("__")[-1] == "headroom_retrieve"
 
 
 def _merge_recommendations(
