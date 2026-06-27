@@ -203,7 +203,9 @@ class CodexPlugin(LearnPlugin, ConversationScanner):
                     output_bytes=len(result_content.encode("utf-8")),
                 )
                 tool_calls.append(tool_call)
-                events.append(SessionEvent(type="tool_call", msg_index=msg_index, tool_call=tool_call))
+                events.append(
+                    SessionEvent(type="tool_call", msg_index=msg_index, tool_call=tool_call)
+                )
 
         return SessionData(session_id=session_id, tool_calls=tool_calls, events=events)
 
@@ -275,7 +277,9 @@ class CodexPlugin(LearnPlugin, ConversationScanner):
                         output_bytes=len(result_content.encode("utf-8")),
                     )
                     tool_calls.append(tool_call)
-                    events.append(SessionEvent(type="tool_call", msg_index=msg_index, tool_call=tool_call))
+                    events.append(
+                        SessionEvent(type="tool_call", msg_index=msg_index, tool_call=tool_call)
+                    )
 
         except OSError as e:
             logger.debug("Failed to read Codex session %s: %s", jsonl_path, e)

@@ -38,7 +38,10 @@ def _retrieve_call(
     )
 
 
-@patch("headroom.learn.analyzer._call_llm", return_value={"context_file_rules": [], "memory_file_rules": []})
+@patch(
+    "headroom.learn.analyzer._call_llm",
+    return_value={"context_file_rules": [], "memory_file_rules": []},
+)
 def test_analyzer_emits_ccr_retrieve_literacy_rule_for_redundant_retrieval(
     _mock_call_llm, tmp_path: Path
 ) -> None:
@@ -47,7 +50,11 @@ def test_analyzer_emits_ccr_retrieve_literacy_rule_for_redundant_retrieval(
         session_id="s1",
         tool_calls=[tool_call],
         events=[
-            SessionEvent(type="user_message", msg_index=1, text="Be sure the kept summary did not miss anything."),
+            SessionEvent(
+                type="user_message",
+                msg_index=1,
+                text="Be sure the kept summary did not miss anything.",
+            ),
             SessionEvent(type="tool_call", msg_index=2, tool_call=tool_call),
         ],
     )
@@ -60,14 +67,19 @@ def test_analyzer_emits_ccr_retrieve_literacy_rule_for_redundant_retrieval(
     assert rule.evidence_count == 1
 
 
-@patch("headroom.learn.analyzer._call_llm", return_value={"context_file_rules": [], "memory_file_rules": []})
+@patch(
+    "headroom.learn.analyzer._call_llm",
+    return_value={"context_file_rules": [], "memory_file_rules": []},
+)
 def test_analyzer_skips_targeted_retrieve_requests(_mock_call_llm, tmp_path: Path) -> None:
     tool_call = _retrieve_call(2, query="auth middleware")
     session = SessionData(
         session_id="s1",
         tool_calls=[tool_call],
         events=[
-            SessionEvent(type="user_message", msg_index=1, text="Check the auth middleware entries."),
+            SessionEvent(
+                type="user_message", msg_index=1, text="Check the auth middleware entries."
+            ),
             SessionEvent(type="tool_call", msg_index=2, tool_call=tool_call),
         ],
     )
@@ -77,14 +89,21 @@ def test_analyzer_skips_targeted_retrieve_requests(_mock_call_llm, tmp_path: Pat
     assert all(rec.section != LEARN_SECTION for rec in result.recommendations)
 
 
-@patch("headroom.learn.analyzer._call_llm", return_value={"context_file_rules": [], "memory_file_rules": []})
+@patch(
+    "headroom.learn.analyzer._call_llm",
+    return_value={"context_file_rules": [], "memory_file_rules": []},
+)
 def test_analyzer_counts_namespaced_mcp_retrieve_calls(_mock_call_llm, tmp_path: Path) -> None:
     tool_call = _retrieve_call(2, name="mcp__headroom__headroom_retrieve")
     session = SessionData(
         session_id="s1",
         tool_calls=[tool_call],
         events=[
-            SessionEvent(type="user_message", msg_index=1, text="Be sure the kept summary did not miss anything."),
+            SessionEvent(
+                type="user_message",
+                msg_index=1,
+                text="Be sure the kept summary did not miss anything.",
+            ),
             SessionEvent(type="tool_call", msg_index=2, tool_call=tool_call),
         ],
     )
@@ -103,7 +122,11 @@ def test_analyzer_returns_deterministic_recommendation_when_model_detection_fail
         session_id="s1",
         tool_calls=[tool_call],
         events=[
-            SessionEvent(type="user_message", msg_index=1, text="Be sure the kept summary did not miss anything."),
+            SessionEvent(
+                type="user_message",
+                msg_index=1,
+                text="Be sure the kept summary did not miss anything.",
+            ),
             SessionEvent(type="tool_call", msg_index=2, tool_call=tool_call),
         ],
     )
@@ -127,7 +150,9 @@ def test_codex_rollout_scanner_preserves_user_messages(tmp_path: Path) -> None:
                         "payload": {
                             "type": "message",
                             "role": "user",
-                            "content": [{"type": "input_text", "text": "Be sure the summary is enough."}],
+                            "content": [
+                                {"type": "input_text", "text": "Be sure the summary is enough."}
+                            ],
                         },
                     }
                 ),

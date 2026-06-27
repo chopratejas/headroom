@@ -42,9 +42,9 @@ def test_skill_file_matches_canonical_renderer() -> None:
 def test_static_publication_surfaces_reference_skill_and_rule() -> None:
     llms_text = (REPO_ROOT / "llms.txt").read_text(encoding="utf-8")
     ccr_doc = (REPO_ROOT / "docs" / "content" / "docs" / "ccr.mdx").read_text(encoding="utf-8")
-    failure_learning = (
-        REPO_ROOT / "docs" / "content" / "docs" / "failure-learning.mdx"
-    ).read_text(encoding="utf-8")
+    failure_learning = (REPO_ROOT / "docs" / "content" / "docs" / "failure-learning.mdx").read_text(
+        encoding="utf-8"
+    )
 
     assert SKILL_GITHUB_URL in llms_text
     assert CANONICAL_RULE in llms_text
