@@ -599,7 +599,7 @@ class HeadroomProxy(
             if config.cost_tracking_enabled
             else None
         )
-        self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker)
+        self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker, stateless=config.stateless)
 
         # Initialize transforms based on routing mode.
         #
