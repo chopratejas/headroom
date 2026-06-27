@@ -150,6 +150,7 @@ def build_prefix_cache_stats(
                     or (provider == "openai" and any(p in model_name for p in _openai_prefixes))
                     or (provider == "gemini" and "gemini" in model_name)
                     or (provider == "bedrock" and "claude" in model_name)
+                    or (provider == "minimax" and ("MiniMax-M" in model_name or "minimax-m" in model_name.lower()))
                 )
                 if is_match:
                     price_per_1m = cost_tracker._get_list_price(model_name)
@@ -787,6 +788,19 @@ class CostTracker:
 
     def _get_list_price(self, model: str) -> float | None:
         """Get list input price per 1M tokens for a model."""
+        # MiniMax fallback — covers the wire-format provider that isn't
+        # in the litellm registry. The MiniMaxProvider class already
+        # declares per-million-token pricing; surface it here so the
+        # cache-savings economics have a price to multiply by.
+        try:
+            from headroom.providers.minimax import MODEL_INPUT_COST
+
+            normalised = model.split("/")[-1]
+            if normalised in MODEL_INPUT_COST:
+                return MODEL_INPUT_COST[normalised]
+        except ImportError:
+            pass
+
         litellm = _get_litellm_module()
         if litellm is None:
             return None
@@ -805,10 +819,37 @@ class CostTracker:
 
         Returns (cache_read, cache_write, uncached) per-token costs, or None
         if pricing is unavailable. Uses LiteLLM's native cache pricing data.
+
+        Providers that ship their own pricing (e.g. MiniMax) get a
+        deterministic fallback so cost tracking works on Python 3.14
+        where litellm is not installed.
         """
+        # MiniMax fallback — covers the wire-format provider that isn't
+        # in the litellm registry. The MiniMaxProvider class already
+        # declares per-million-token pricing; convert to per-token here.
+        try:
+            from headroom.providers.minimax import (
+                MODEL_INPUT_COST as _MINIMAX_INPUT,
+            )
+
+            normalised = model.split("/")[-1]
+            if normalised in _MINIMAX_INPUT:
+                # MiniMax M3/M2.x have a 90% cache_read discount and 25%
+                # cache_write premium (matches what the gateway exposes).
+                uncached_per_token = _MINIMAX_INPUT[normalised] / 1_000_000
+                cache_read = uncached_per_token * 0.10
+                cache_write = uncached_per_token * 1.25
+                return (cache_read, cache_write, uncached_per_token)
+        except ImportError:
+            pass
+
         litellm = _get_litellm_module()
         if litellm is None:
-            return None
+            # Python 3.14 path: litellm is unavailable (the headroom-ai
+            # fork pins requires-python<3.14). Fall back to a small
+            # hardcoded pricing table so the dashboard still shows real
+            # costs for Anthropic Claude and OpenAI gpt-*/o-* models.
+            return self._get_cache_prices_fallback(model)
         try:
             from headroom.pricing.litellm_pricing import resolve_litellm_model
 
@@ -822,6 +863,91 @@ class CostTracker:
             return (cache_read, cache_write, uncached)
         except Exception:
             return None
+
+    def _get_cache_prices_fallback(self, model: str) -> tuple[float, float, float] | None:
+        """Provider fallback pricing when litellm is unavailable.
+
+        On Python 3.14 the headroom-ai fork skips litellm (it pins
+        ``requires-python<3.14``), so without a fallback CostTracker
+        silently returns ``None`` for every Claude / gpt-* / o-series
+        model. This helper plugs a small hardcoded pricing table so the
+        dashboard shows real numbers instead of $0.
+
+        Returns ``(cache_read, cache_write, uncached)`` per-token costs,
+        or ``None`` if the model is not in the fallback table.
+        """
+        import re as _re
+
+        normalised = model.split("/")[-1]
+
+        # Anthropic Claude — match both Claude 4.x
+        # (claude-sonnet-4-5, claude-opus-4-20250514) and Claude 3.x
+        # (claude-3-5-sonnet-20241022, claude-3-5-sonnet-20). Numeric
+        # prefix is 1 token ("claude-sonnet-4") or 2 tokens
+        # ("claude-3-5-sonnet"). Trailing datestamp / version is 1 to 8
+        # digits (e.g. "-5", "-20241022") and is optional.
+        claude_match = _re.match(
+            r"claude-(?:\d+-)*(opus|sonnet|haiku)(?:[-.](\d+))?(?:-\d{1,8})?$",
+            normalised,
+        )
+        if claude_match:
+            family = claude_match.group(1)
+            # Conservative list prices (per 1M INPUT tokens, USD):
+            #   opus $15, sonnet $3, haiku $0.80 (Claude 4) / $0.25 (Claude 3)
+            if family == "opus":
+                uncached_per_m = 15.0
+            elif family == "sonnet":
+                uncached_per_m = 3.0
+            elif family == "haiku":
+                if "claude-3" in normalised:
+                    uncached_per_m = 0.25
+                else:
+                    uncached_per_m = 0.80
+            else:
+                uncached_per_m = 3.0
+            uncached_per_token = uncached_per_m / 1_000_000
+            # Anthropic: 90% off cache reads, 25% premium on writes.
+            cache_read = uncached_per_token * 0.10
+            cache_write = uncached_per_token * 1.25
+            return (cache_read, cache_write, uncached_per_token)
+
+        # OpenAI gpt-* / o1-* / o3-* / o4-*
+        if _re.match(r"^(gpt-5|gpt-4|gpt-3\.5|o1|o3|o4)", normalised):
+            if normalised.startswith("gpt-5-nano"):
+                uncached_per_m = 0.10
+            elif normalised.startswith("gpt-5-mini"):
+                uncached_per_m = 0.25
+            elif normalised.startswith("gpt-5"):
+                uncached_per_m = 5.00
+            elif normalised.startswith("gpt-4o-mini"):
+                uncached_per_m = 0.15
+            elif normalised.startswith("gpt-4o"):
+                uncached_per_m = 2.50
+            elif normalised.startswith("gpt-4-turbo"):
+                uncached_per_m = 10.00
+            elif normalised.startswith("gpt-4"):
+                uncached_per_m = 10.00
+            elif normalised.startswith("gpt-3.5"):
+                uncached_per_m = 0.50
+            elif normalised.startswith("o1-mini"):
+                uncached_per_m = 3.00
+            elif normalised.startswith("o1"):
+                uncached_per_m = 15.00
+            elif normalised.startswith("o3-mini"):
+                uncached_per_m = 1.10
+            elif normalised.startswith("o3") or normalised.startswith("o4-mini"):
+                uncached_per_m = 1.10
+            elif normalised.startswith("o4"):
+                uncached_per_m = 10.00
+            else:
+                return None
+            uncached_per_token = uncached_per_m / 1_000_000
+            # OpenAI: 50% off cache reads, no explicit write premium.
+            cache_read = uncached_per_token * 0.50
+            cache_write = uncached_per_token * 1.00
+            return (cache_read, cache_write, uncached_per_token)
+
+        return None
 
     def stats(self) -> dict:
         """Get token statistics per model."""
@@ -850,6 +976,7 @@ class CostTracker:
         cost_with_headroom = 0.0
         total_billed_input_tokens = 0
         total_input_tokens = 0
+        per_model_cost: dict[str, float] = {}
         for model in self._tokens_saved_by_model:
             saved = self._tokens_saved_by_model[model]
             sent = self._tokens_sent_by_model.get(model, 0)
@@ -871,6 +998,16 @@ class CostTracker:
                     billed_tokens = sent
                 cost_with_headroom += model_cost
                 total_billed_input_tokens += billed_tokens
+                # Attach cost to the per_model dict so the dashboard
+                # Per-Model table can render a $ column even when the
+                # provider has no litellm registry entry (e.g. MiniMax).
+                per_model_cost[model] = round(model_cost, 6)
+
+        # Surface per-model cost in the per_model dict (rounded to 6
+        # decimal places to match the existing token-cost display precision).
+        for model, cost in per_model_cost.items():
+            if model in per_model:
+                per_model[model]["input_cost_usd"] = cost
 
         # Compression savings: price saved tokens at the model's list input price.
         # This is simple, monotonic, and transparent — each saved token is valued

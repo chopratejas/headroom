@@ -208,7 +208,13 @@
             <div class="bg-surface rounded-lg p-4 border border-border">
                 <div class="text-xs text-gray-500 uppercase tracking-wide mb-1">Token Savings</div>
                 <div class="flex items-baseline gap-2">
-                    <span class="text-3xl font-light tabular-nums text-accent" x-text="formatNumber(stats.tokens?.saved || 0)"></span>
+                    <!-- Use displayedTokensSaved so an idle proxy still
+                         shows the persistent session / lifetime total
+                         instead of a wall of zeros. Tooltip clarifies the
+                         source (runtime / session / lifetime). -->
+                    <span class="text-3xl font-light tabular-nums text-accent"
+                          x-text="formatNumber(displayedTokensSaved)"
+                          :title="'Source: ' + displayedTokensSavedSource"></span>
                     <!-- Active compression ratio: savings as a fraction of tokens we
                          *attempted* to compress (extracted units + tool schema). When
                          the attempted denominator is missing (backend-routed paths
@@ -1123,29 +1129,38 @@
             <div class="bg-surface rounded-lg border border-border overflow-hidden mb-6">
                 <div class="px-4 py-3 border-b border-border flex justify-between items-center">
                     <span class="text-sm font-medium text-gray-300">Per-Model Token Savings</span>
-                    <span class="text-xs text-gray-500">Exact tokens saved per model</span>
+                    <span class="text-xs text-gray-500">Exact tokens saved per model — grouped by upstream provider</span>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm" style="table-layout:fixed">
                         <colgroup>
-                            <col style="width:40%">
-                            <col style="width:12%">
-                            <col style="width:18%">
-                            <col style="width:18%">
-                            <col style="width:12%">
+                            <col style="width:14%">
+                            <col style="width:30%">
+                            <col style="width:9%">
+                            <col style="width:13%">
+                            <col style="width:13%">
+                            <col style="width:11%">
+                            <col style="width:10%">
                         </colgroup>
                         <thead>
                             <tr class="text-xs text-gray-500 uppercase tracking-wide">
+                                <th class="px-4 py-3 font-medium text-left">Provider</th>
                                 <th class="px-4 py-3 font-medium text-left">Model</th>
                                 <th class="px-4 py-3 font-medium text-right">Requests</th>
                                 <th class="px-4 py-3 font-medium text-right">Tokens Saved</th>
                                 <th class="px-4 py-3 font-medium text-right">Tokens Sent</th>
                                 <th class="px-4 py-3 font-medium text-right">Reduction</th>
+                                <th class="px-4 py-3 font-medium text-right">Cost (USD)</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-border">
                             <template x-for="[model, info] in Object.entries(stats.cost?.per_model || {})" :key="model">
                                 <tr class="hover:bg-border/30 transition-colors">
+                                    <td class="px-4 py-3 text-left">
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono"
+                                              :class="providerChipClass(providerFor(model))"
+                                              x-text="providerFor(model)"></span>
+                                    </td>
                                     <td class="px-4 py-3 text-left">
                                         <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(model)"></span>
                                     </td>
@@ -1155,6 +1170,7 @@
                                     <td class="px-4 py-3 text-right">
                                         <span class="text-accent font-mono tabular-nums" x-text="info.reduction_pct.toFixed(1) + '%'"></span>
                                     </td>
+                                    <td class="px-4 py-3 text-right font-mono tabular-nums" x-text="info.input_cost_usd != null ? '$' + formatCurrency(info.input_cost_usd) : '—'"></td>
                                 </tr>
                             </template>
                         </tbody>
@@ -1802,6 +1818,12 @@
 
                 async init() {
                     await this.fetchStats();
+                    // Pre-load historical savings so the Historical tab is
+                    // populated immediately on first click instead of
+                    // showing "waiting for saved requests" until the user
+                    // navigates. /stats-history is small (just a JSON
+                    // pointer + a few series + 500 most-recent points).
+                    await this.fetchHistoryStats();
 
                     this.pollInterval = setInterval(() => {
                         this.pollDashboard();
@@ -2446,6 +2468,54 @@
                     return pf.net_benefit_tokens ?? ((pf.tokens_preserved || 0) - (pf.compression_foregone_tokens || 0));
                 },
 
+                // --- Session-vs-Lifetime fallback for the hero metrics ---
+
+                // The "Session" tab shows runtime counters that reset to 0
+                // when the proxy is idle, but the persistent ledger at
+                // ~/.headroom/proxy_savings.json still holds the lifetime
+                // total + a per-display-session counter that started at the
+                // last proxy boot. When the runtime is empty but persistent
+                // data is present (idle proxy or one that hasn't seen a
+                // request in this polling window), fall back to the
+                // persistent values so the dashboard isn't a wall of
+                // zeros. Runtime is always preferred when it has data.
+
+                get persistentSessionIsFresh() {
+                    const last = this.stats.persistent_savings?.display_session?.last_activity_at;
+                    if (!last) return false;
+                    const ageMs = Date.now() - new Date(last).getTime();
+                    // Anything in the last 5 minutes counts as fresh; the
+                    // proxy is still considered "active" for display
+                    // purposes. Past that the session is stale and the
+                    // lifetime total becomes the headline number.
+                    return ageMs >= 0 && ageMs < 5 * 60 * 1000;
+                },
+
+                get displayedTokensSaved() {
+                    const runtime = this.stats.tokens?.saved || 0;
+                    if (runtime > 0) return runtime;
+                    if (this.persistentSessionIsFresh) {
+                        return this.stats.persistent_savings?.display_session?.tokens_saved || 0;
+                    }
+                    return this.stats.persistent_savings?.lifetime?.tokens_saved || 0;
+                },
+
+                get displayedRequests() {
+                    const runtime = this.stats.requests?.total || 0;
+                    if (runtime > 0) return runtime;
+                    if (this.persistentSessionIsFresh) {
+                        return this.stats.persistent_savings?.display_session?.requests || 0;
+                    }
+                    return this.stats.persistent_savings?.lifetime?.requests || 0;
+                },
+
+                get displayedTokensSavedSource() {
+                    const runtime = this.stats.tokens?.saved || 0;
+                    if (runtime > 0) return 'runtime';
+                    if (this.persistentSessionIsFresh) return 'session';
+                    return 'lifetime';
+                },
+
                 get hasCompressionVsCache() {
                     const cvc = this.stats.prefix_cache?.compression_vs_cache || {};
                     const pf = this.stats.prefix_cache?.prefix_freeze || {};
@@ -2598,6 +2668,73 @@
                 getProviderPercent(count) {
                     const total = this.stats.requests?.total || 1;
                     return Math.min((count / total) * 100, 100);
+                },
+
+                // --- Provider classification (per-model chip in tables) ---
+
+                // Resolve the upstream provider name for a model string. Used
+                // in the Per-Model Token Savings table to surface which
+                // upstream billed the request. Substring rules are kept
+                // conservative — anything we don't recognise falls into
+                // "other" so we never mis-classify a real provider.
+                providerFor(model) {
+                    if (!model) return 'other';
+                    const m = model.toLowerCase();
+                    // Bedrock / AWS — uses region-prefixed model ids like
+                    // "us.anthropic.claude-3-5-sonnet-...". The "anthropic."
+                    // substring BEFORE "claude" is the giveaway.
+                    if (/^(us|eu|apac|ap|ca|sa)\.anthropic\./.test(m)
+                        || m.startsWith('anthropic.')) {
+                        return 'bedrock';
+                    }
+                    // Anthropic direct
+                    if (m.startsWith('claude') || m.includes('claude-')) {
+                        return 'anthropic';
+                    }
+                    // OpenAI
+                    if (m.startsWith('gpt-') || m.startsWith('o1-')
+                        || m.startsWith('o3-') || m.startsWith('o4-')
+                        || m.startsWith('chatgpt-')) {
+                        return 'openai';
+                    }
+                    // Google Gemini
+                    if (m.startsWith('gemini-') || m.includes('/gemini')) {
+                        return 'gemini';
+                    }
+                    // MiniMax M3 / M2.x wire-compatible models. Accept
+                    // both bare ("MiniMax-M3") and prefixed
+                    // ("minimax/MiniMax-M3") forms.
+                    if (m.startsWith('minimax-m') || m.includes('minimax-m')
+                        || m.includes('minimax/')) {
+                        return 'minimax';
+                    }
+                    // Mistral
+                    if (m.startsWith('mistral') || m.startsWith('mixtral')
+                        || m.includes('codestral')) {
+                        return 'mistral';
+                    }
+                    // DeepSeek
+                    if (m.startsWith('deepseek-')) {
+                        return 'deepseek';
+                    }
+                    return 'other';
+                },
+
+                // Tailwind-friendly colour tokens for each provider chip.
+                // Slightly bumped opacity so the chip reads clearly on
+                // both light and dark dashboard themes.
+                providerChipClass(provider) {
+                    const map = {
+                        anthropic: 'bg-orange-500/20 text-orange-200 border border-orange-500/50',
+                        openai: 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/50',
+                        gemini: 'bg-blue-500/20 text-blue-200 border border-blue-500/50',
+                        bedrock: 'bg-purple-500/20 text-purple-200 border border-purple-500/50',
+                        minimax: 'bg-cyan-500/20 text-cyan-100 border border-cyan-400/60',
+                        mistral: 'bg-amber-500/20 text-amber-200 border border-amber-500/50',
+                        deepseek: 'bg-pink-500/20 text-pink-200 border border-pink-500/50',
+                        other: 'bg-gray-700/40 text-gray-300 border border-gray-500/50',
+                    };
+                    return map[provider] || map.other;
                 },
 
                 getSparkline(data) {
