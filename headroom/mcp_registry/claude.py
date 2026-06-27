@@ -10,17 +10,44 @@ available, and reads the underlying JSON files directly for compare /
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from .base import MCPRegistrar, RegisterResult, RegisterStatus, ServerSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_command(spec: ServerSpec) -> ServerSpec:
+    """Rewrite a bare ``headroom`` command to an absolute path.
+
+    Claude Code spawns the MCP server as a subprocess with the minimal PATH
+    a GUI app inherits, which excludes the venv bin dir where the ``headroom``
+    console script lives. A bare command name then fails to exec and the
+    server shows as "failed" in ``/mcp`` with no way to reconnect. Resolve it
+    to the running executable's absolute path (the script sits next to
+    ``sys.executable``), falling back to ``argv[0]`` then PATH lookup.
+    """
+    if spec.command != "headroom":
+        return spec
+    candidate = Path(sys.executable).with_name("headroom")
+    if not candidate.exists():
+        argv0 = Path(sys.argv[0])
+        if argv0.name == "headroom" and argv0.exists():
+            candidate = argv0.resolve()
+        else:
+            which = shutil.which("headroom")
+            if which is None:
+                return spec
+            candidate = Path(which)
+    return dataclasses.replace(spec, command=str(candidate))
 
 
 class ClaudeRegistrar(MCPRegistrar):
@@ -73,6 +100,7 @@ class ClaudeRegistrar(MCPRegistrar):
         return None
 
     def register_server(self, spec: ServerSpec, *, force: bool = False) -> RegisterResult:
+        spec = _resolve_command(spec)
         existing = self.get_server(spec.name)
         if existing is not None:
             if _specs_equivalent(existing, spec):

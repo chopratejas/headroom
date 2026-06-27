@@ -10,7 +10,13 @@ from unittest.mock import patch
 import pytest
 
 from headroom.mcp_registry.base import RegisterStatus, ServerSpec
-from headroom.mcp_registry.claude import ClaudeRegistrar
+from headroom.mcp_registry.claude import ClaudeRegistrar, _resolve_command
+
+# Command as it lands in config after resolution to an absolute path (the bare
+# "headroom" name a GUI-spawned client cannot exec on its minimal PATH).
+RESOLVED_COMMAND = _resolve_command(
+    ServerSpec(name="headroom", command="headroom", args=("mcp", "serve"))
+).command
 
 
 def _make_registrar(
@@ -136,9 +142,9 @@ def test_register_via_cli_calls_claude_mcp_add(tmp_path: Path) -> None:
         "-s",
         "user",
     ]
-    assert add_cmd[-3:] == ["--", "headroom", "mcp"] or add_cmd[-4:] == [
+    assert add_cmd[-4:] == [
         "--",
-        "headroom",
+        RESOLVED_COMMAND,
         "mcp",
         "serve",
     ]
@@ -168,7 +174,7 @@ def test_register_writes_file_when_no_cli(tmp_path: Path) -> None:
     cfg = tmp_path / ".claude" / ".claude.json"
     data = json.loads(cfg.read_text())
     assert "headroom" in data["mcpServers"]
-    assert data["mcpServers"]["headroom"]["command"] == "headroom"
+    assert data["mcpServers"]["headroom"]["command"] == RESOLVED_COMMAND
     assert data["mcpServers"]["headroom"]["args"] == ["mcp", "serve"]
 
 
@@ -194,7 +200,7 @@ def test_register_writes_to_claude_config_dir(
     assert result.status == RegisterStatus.REGISTERED
     cfg = tmp_path / ".claude.json"
     data = json.loads(cfg.read_text())
-    assert data["mcpServers"]["headroom"]["command"] == "headroom"
+    assert data["mcpServers"]["headroom"]["command"] == RESOLVED_COMMAND
     assert not (tmp_path / ".claude" / ".claude.json").exists()
 
 
@@ -207,7 +213,9 @@ def test_register_already_when_spec_matches(tmp_path: Path) -> None:
     cfg = tmp_path / ".claude" / ".claude.json"
     cfg.parent.mkdir()
     cfg.write_text(
-        json.dumps({"mcpServers": {"headroom": {"command": "headroom", "args": ["mcp", "serve"]}}})
+        json.dumps(
+            {"mcpServers": {"headroom": {"command": RESOLVED_COMMAND, "args": ["mcp", "serve"]}}}
+        )
     )
     reg = _make_registrar(tmp_path, cli="/usr/local/bin/claude")
     with patch("subprocess.run") as run_mock:
@@ -224,7 +232,7 @@ def test_register_mismatch_when_spec_differs_no_force(tmp_path: Path) -> None:
             {
                 "mcpServers": {
                     "headroom": {
-                        "command": "headroom",
+                        "command": RESOLVED_COMMAND,
                         "args": ["mcp", "serve"],
                         "env": {"HEADROOM_PROXY_URL": "http://127.0.0.1:9999"},
                     }

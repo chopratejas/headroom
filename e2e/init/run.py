@@ -22,6 +22,7 @@ from ``e2e/init/Dockerfile``).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -111,6 +112,13 @@ def _verify_claude_local(ctx: CaseContext) -> None:
     # being dead pointers for users who never ran `headroom mcp install`).
     # The `-e HEADROOM_PROXY_URL=…` arg is only emitted when the proxy
     # port differs from the 8787 default; this case uses --port 9011.
+    # The MCP server command is resolved to the absolute path of the running
+    # `headroom` executable so GUI clients with a minimal PATH can spawn it, so
+    # compare that segment by basename rather than the full venv path.
+    normalized = [
+        [os.path.basename(arg) if arg.endswith("/headroom") else arg for arg in argv]
+        for argv in claude_calls
+    ]
     expected = [
         ["plugin", "marketplace", "add", str(REPO_ROOT_IN_CONTAINER)],
         ["plugin", "install", "headroom@headroom-marketplace", "--scope", "local"],
@@ -128,7 +136,7 @@ def _verify_claude_local(ctx: CaseContext) -> None:
             "serve",
         ],
     ]
-    if claude_calls != expected:
+    if normalized != expected:
         raise AssertionError(f"Unexpected Claude install commands: {claude_calls}")
 
 
