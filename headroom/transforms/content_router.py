@@ -2417,11 +2417,12 @@ class ContentRouter(Transform):
         """
         # Pre-process: Read lifecycle management (stale/superseded detection)
         if self.config.read_lifecycle.enabled:
+            from ..cache.compression_store import get_compression_store
             from .read_lifecycle import ReadLifecycleManager
 
             lifecycle_mgr = ReadLifecycleManager(
                 self.config.read_lifecycle,
-                compression_store=kwargs.get("compression_store"),
+                compression_store=kwargs.get("compression_store") or get_compression_store(),
             )
             lifecycle_result = lifecycle_mgr.apply(
                 messages,
