@@ -19,14 +19,21 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 httpx = pytest.importorskip("httpx")
 
+from starlette.datastructures import Headers  # noqa: E402
+
 from headroom.proxy.handlers.openai import OpenAIHandlerMixin  # noqa: E402
 
 
 class _FakeRequest:
-    """Minimal stand-in exposing ``headers`` with a ``.get()`` lookup."""
+    """Minimal stand-in exposing ``headers`` like a real Starlette request.
+
+    Uses ``starlette.datastructures.Headers`` so header lookup is
+    case-insensitive, matching the production ``request.headers`` — a
+    plain ``dict`` would let case-folding regressions pass silently.
+    """
 
     def __init__(self, headers: dict[str, str]) -> None:
-        self.headers = headers
+        self.headers = Headers(headers=headers)
 
 
 def _stub_proxy(fallback_url: str) -> OpenAIHandlerMixin:
@@ -62,3 +69,12 @@ def test_empty_header_falls_back_to_configured_url() -> None:
 
     whitespace = _FakeRequest({"x-headroom-base-url": "   "})
     assert proxy._resolve_openai_upstream(whitespace) == "https://api.openai.test"
+
+
+def test_header_lookup_is_case_insensitive() -> None:
+    """Transports may send mixed-case header names; lookup must still resolve."""
+    proxy = _stub_proxy("https://api.openai.test")
+    # Real transports routinely send Title-Case header names.
+    request = _FakeRequest({"X-Headroom-Base-Url": "https://gateway.example"})
+
+    assert proxy._resolve_openai_upstream(request) == "https://gateway.example"
