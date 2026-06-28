@@ -45,6 +45,7 @@ import httpx
 
 from headroom.agent_savings import proxy_pipeline_kwargs
 from headroom.copilot_auth import apply_copilot_api_auth, build_copilot_upstream_url
+from headroom.learn._shared import normalize_tool_name
 from headroom.pipeline import PipelineStage, summarize_routing_markers
 from headroom.proxy.auth_mode import (
     classify_auth_mode,
@@ -421,6 +422,13 @@ def _ensure_responses_store_for_memory_tools(
     return False
 
 
+def _allow_responses_memory_tools(*, is_chatgpt_auth: bool) -> bool:
+    # ChatGPT Codex rejects Responses payloads unless store=false. The
+    # transparent memory-tool continuation flow needs stored responses, so keep
+    # it on the regular API path only.
+    return not is_chatgpt_auth
+
+
 def _responses_input_item_text_bytes(item: Any) -> int:
     if not isinstance(item, dict):
         return _json_byte_len(item)
@@ -505,6 +513,113 @@ def _responses_input_to_waste_messages(instructions: Any, input_data: Any) -> li
                 {"role": role if isinstance(role, str) and role else "user", "content": text}
             )
     return messages
+
+
+def _responses_function_args(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str) or not arguments.strip():
+        return {}
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _responses_command_arg_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return ""
+        parts = [str(part) for part in value if part is not None]
+        if len(parts) >= 3 and parts[-2] in {"-c", "-lc"}:
+            return parts[-1]
+        return " ".join(parts)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _normalize_responses_tool_for_learning(
+    name: Any,
+    input_args: Any,
+) -> tuple[str, dict[str, Any]]:
+    tool_name = name if isinstance(name, str) and name else "unknown"
+    normalized_name = normalize_tool_name(tool_name)
+    parsed = _responses_function_args(input_args)
+
+    if normalized_name == "Bash":
+        parsed = dict(parsed)
+        command = parsed.pop("cmd", None)
+        if "command" in parsed:
+            command = parsed["command"]
+        parsed["command"] = _responses_command_arg_text(command)
+
+    return normalized_name, parsed
+
+
+def _openai_responses_tool_results_for_learning(
+    input_data: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(input_data, list):
+        return []
+
+    try:
+        from headroom.memory.traffic_learner import _is_error as output_is_error
+    except Exception:
+        output_is_error = None
+
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    for item in input_data:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type != "function_call" and (
+            not isinstance(item_type, str)
+            or f"{item_type}_output" not in _RESPONSES_OUTPUT_ITEM_TYPES
+        ):
+            continue
+        call_id = item.get("call_id") or item.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        name = item.get("name")
+        input_args = item.get("arguments") if item_type == "function_call" else item.get("input")
+        tool_name, tool_input = _normalize_responses_tool_for_learning(name, input_args)
+        calls_by_id[call_id] = {
+            "tool_name": tool_name,
+            "input": tool_input,
+        }
+
+    results: list[dict[str, Any]] = []
+    for item in input_data:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in _RESPONSES_OUTPUT_ITEM_TYPES:
+            continue
+        call_id = item.get("call_id")
+        call = calls_by_id.get(call_id if isinstance(call_id, str) else "")
+        if call is None:
+            continue
+        output = _responses_part_text(item.get("output"))
+        if not output and item.get("output") is not None:
+            output = json.dumps(item.get("output"), ensure_ascii=False, default=str)
+        is_error = bool(item.get("is_error"))
+        if output_is_error is not None:
+            try:
+                is_error = is_error or output_is_error(output)
+            except Exception:
+                pass
+        results.append(
+            {
+                "tool_name": call["tool_name"],
+                "input": call["input"],
+                "output": output,
+                "is_error": is_error,
+            }
+        )
+    return results
 
 
 def _openai_responses_context_budget(payload: dict[str, Any]) -> dict[str, Any]:
@@ -699,6 +814,40 @@ class OpenAIHandlerMixin:
 
     OPENAI_RESPONSES_ROUTER_MIN_BYTES = 512
     OPENAI_RESPONSES_OUTPUT_TYPES = _RESPONSES_OUTPUT_ITEM_TYPES
+
+    async def _feed_openai_responses_traffic_learner(
+        self,
+        *,
+        instructions: Any,
+        input_data: Any,
+        request_id: str,
+    ) -> None:
+        traffic_learner = getattr(self, "traffic_learner", None)
+        if not traffic_learner:
+            return
+        try:
+            memory_handler = getattr(self, "memory_handler", None)
+            if (
+                traffic_learner._backend is None
+                and memory_handler
+                and memory_handler.initialized
+                and memory_handler.backend
+            ):
+                traffic_learner.set_backend(memory_handler.backend)
+
+            for tool_result in _openai_responses_tool_results_for_learning(input_data)[-5:]:
+                await traffic_learner.on_tool_result(
+                    tool_name=tool_result["tool_name"],
+                    tool_input=tool_result["input"],
+                    tool_output=tool_result["output"],
+                    is_error=tool_result["is_error"],
+                )
+
+            messages = _responses_input_to_waste_messages(instructions, input_data)
+            if messages:
+                await traffic_learner.on_messages(messages)
+        except Exception as exc:
+            logger.debug("[%s] Traffic learner (openai/responses): %s", request_id, exc)
 
     def _openai_responses_unit_cache(self) -> tuple[Any, OrderedDict[str, Any]]:
         with _OPENAI_RESPONSES_UNIT_CACHE_INIT_LOCK:
@@ -2965,6 +3114,12 @@ class OpenAIHandlerMixin:
             stripped_count=_pre_strip_count_resp,
             request_id=request_id,
         )
+        headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
+        if is_chatgpt_auth:
+            client = "codex"
+        responses_memory_tools_allowed = _allow_responses_memory_tools(
+            is_chatgpt_auth=is_chatgpt_auth
+        )
 
         # PR-A6 (P5-50, preps P0-6): session-sticky `OpenAI-Beta` merge
         # for /v1/responses. Compute a session_id off the same store the
@@ -3181,7 +3336,7 @@ class OpenAIHandlerMixin:
 
                 memory_tool_defs_chat = (
                     self.memory_handler.compute_memory_tool_definitions("openai")
-                    if self.memory_handler.config.inject_tools
+                    if self.memory_handler.config.inject_tools and responses_memory_tools_allowed
                     else []
                 )
                 memory_tool_defs_responses: list[dict[str, Any]] = []
@@ -3202,11 +3357,13 @@ class OpenAIHandlerMixin:
                 resp_tools = body.get("tools") or []
                 resp_tools, mem_tools_injected = _apply_sticky_mem_tools_resp(
                     provider="openai",
-                    session_id=_responses_session_id,
+                    session_id=_responses_session_id if responses_memory_tools_allowed else None,
                     request_id=request_id,
                     existing_tools=resp_tools,
                     memory_tools_to_inject=memory_tool_defs_responses,
-                    inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                    inject_this_turn=bool(
+                        self.memory_handler.config.inject_tools and responses_memory_tools_allowed
+                    ),
                 )
                 if mem_tools_injected:
                     body["tools"] = resp_tools
@@ -3227,6 +3384,12 @@ class OpenAIHandlerMixin:
                 request_id,
             )
 
+        await self._feed_openai_responses_traffic_learner(
+            instructions=instructions,
+            input_data=input_data,
+            request_id=request_id,
+        )
+
         # /v1/responses is OpenAI-specific (Codex) — always routes direct.
         # LiteLLM/AnyLLM backends use /v1/chat/completions or /v1/messages.
         if self.anthropic_backend is not None:
@@ -3234,10 +3397,6 @@ class OpenAIHandlerMixin:
                 f"[{request_id}] /v1/responses always routes to OpenAI direct "
                 f"(backend '{self.anthropic_backend.name}' not used for Responses API)"
             )
-
-        headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
-        if is_chatgpt_auth:
-            client = "codex"
 
         # Route to correct endpoint based on auth mode.
         # ChatGPT session auth (codex login) uses chatgpt.com, not api.openai.com.
@@ -3455,6 +3614,7 @@ class OpenAIHandlerMixin:
                 if (
                     self.memory_handler
                     and memory_user_id
+                    and responses_memory_tools_allowed
                     and resp_json
                     and response.status_code == 200
                     and self.memory_handler.has_memory_tool_calls(resp_json, "openai")
@@ -3780,6 +3940,7 @@ class OpenAIHandlerMixin:
         )
 
         upstream_headers, is_chatgpt_auth = _resolve_codex_routing_headers(upstream_headers)
+        ws_memory_tools_allowed = _allow_responses_memory_tools(is_chatgpt_auth=is_chatgpt_auth)
         _lower_headers = {k.lower(): v for k, v in upstream_headers.items()}
 
         # Build upstream WebSocket URL based on auth mode
@@ -4113,6 +4274,13 @@ class OpenAIHandlerMixin:
             except json.JSONDecodeError:
                 # Not JSON — pass through as-is
                 pass
+            ws_learning_instructions: Any = None
+            ws_learning_input: Any = ""
+            if isinstance(body, dict):
+                ws_learning_body = body.get("response", body)
+                if isinstance(ws_learning_body, dict):
+                    ws_learning_instructions = ws_learning_body.get("instructions")
+                    ws_learning_input = ws_learning_body.get("input", "")
             ws_input_tokens_total = 0
             ws_output_tokens_total = 0
             ws_cache_read_tokens_total = 0
@@ -4377,7 +4545,7 @@ class OpenAIHandlerMixin:
 
                     ws_mem_defs_chat = (
                         self.memory_handler.compute_memory_tool_definitions("openai")
-                        if self.memory_handler.config.inject_tools
+                        if self.memory_handler.config.inject_tools and ws_memory_tools_allowed
                         else []
                     )
                     ws_mem_defs_responses: list[dict[str, Any]] = []
@@ -4398,11 +4566,13 @@ class OpenAIHandlerMixin:
                     ws_tools = ws_response_body.get("tools") or []
                     ws_tools, mem_injected = _apply_sticky_mem_tools_ws(
                         provider="openai",
-                        session_id=session_id,
+                        session_id=session_id if ws_memory_tools_allowed else None,
                         request_id=request_id,
                         existing_tools=ws_tools,
                         memory_tools_to_inject=ws_mem_defs_responses,
-                        inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                        inject_this_turn=bool(
+                            self.memory_handler.config.inject_tools and ws_memory_tools_allowed
+                        ),
                     )
                     if mem_injected:
                         ws_response_body["tools"] = ws_tools
@@ -4468,6 +4638,12 @@ class OpenAIHandlerMixin:
             # internal errors), but we wrap the call site in try/except
             # anyway so a JSON-shape edge case can never break the WS
             # session.
+            await self._feed_openai_responses_traffic_learner(
+                instructions=ws_learning_instructions,
+                input_data=ws_learning_input,
+                request_id=request_id,
+            )
+
             if self.config.optimize and not _ws_bypass:
                 _first_frame_compression_elapsed_ms = 0.0
                 try:
@@ -4767,6 +4943,12 @@ class OpenAIHandlerMixin:
                             return raw_msg, False, "invalid_inner_payload"
                         frame_compression_elapsed_ms = 0.0
                         try:
+                            await self._feed_openai_responses_traffic_learner(
+                                instructions=inner_payload.get("instructions"),
+                                input_data=inner_payload.get("input", ""),
+                                request_id=request_id,
+                            )
+
                             model_for_frame = inner_payload.get("model") or ""
                             _frame_auth_mode = classify_auth_mode(ws_headers)
                             _preflight_ms = (time.perf_counter() - _preflight_started) * 1000.0
@@ -5052,7 +5234,9 @@ class OpenAIHandlerMixin:
                         nonlocal ws_upstream_frames_total, ws_last_upstream_frame_type
                         nonlocal ws_ttfb_ms
 
-                        memory_enabled = bool(self.memory_handler and memory_user_id)
+                        memory_enabled = bool(
+                            self.memory_handler and memory_user_id and ws_memory_tools_allowed
+                        )
 
                         # Per-response state (reset after each response.completed)
                         event_buffer: list[str] = []
