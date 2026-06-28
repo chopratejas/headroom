@@ -4115,18 +4115,7 @@ def codex(
     _codex_config_file, _codex_backup_file = _codex_config_paths()
     _snapshot_codex_config_if_unwrapped(_codex_config_file, _codex_backup_file)
 
-    # Resolve actual port early so that config-file injection (_setup_headroom_mcp,
-    # _inject_codex_provider_config) and env building (_build_codex_launch_env) all
-    # point at the port the proxy will actually bind to, not the requested port.
-    _wp_mod = _live_wrap_module()
-    try:
-        actual_port = _wp_mod._find_available_port(port)
-        if actual_port != port:
-            click.echo(
-                f"  Port {port} is in use, using port {actual_port} instead."
-            )
-    except (OSError, RuntimeError) as e:
-        raise click.ClickException(str(e)) from e
+    # Non-port-dependent setup first (RTK, etc.).
     if not no_rtk:
         if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
             click.echo("  Setting up lean-ctx for Codex...")
@@ -4138,6 +4127,21 @@ def codex(
                 # Keep RTK guidance local to the user's Codex configuration.
                 global_agents = _codex_home_dir() / "AGENTS.md"
                 _inject_rtk_instructions(global_agents, verbose=verbose)
+
+    # Let _ensure_proxy decide the port (same contract as other wrappers).
+    # We call it here so the resolved actual_port is available for
+    # MCP registration, provider config, and launch-env building below.
+    _codex_proxy, actual_port = _ensure_proxy(
+        port,
+        no_proxy,
+        learn=learn,
+        memory=memory,
+        agent_type="codex",
+        code_graph=code_graph,
+        backend=backend,
+        anyllm_provider=anyllm_provider,
+        region=region,
+    )
 
     # Register headroom MCP server in Codex config.toml so Codex can
     # call headroom_retrieve on compression markers from the proxy.
@@ -4234,22 +4238,38 @@ def codex(
     if memory:
         _inject_memory_mcp_config(os.environ.get("USER", os.environ.get("USERNAME", "default")))
 
-    _launch_tool(
-        binary=codex_bin,
-        args=codex_args,
-        env=env,
-        port=actual_port,
-        no_proxy=no_proxy,
-        tool_label="CODEX",
-        env_vars_display=env_vars_display,
-        learn=learn,
-        memory=memory,
-        agent_type="codex",
-        code_graph=code_graph,
-        backend=backend,
-        anyllm_provider=anyllm_provider,
-        region=region,
-    )
+    # Proxy already started by _ensure_proxy above; tell _launch_tool to
+    # skip duplicate startup.  Cleanup of _codex_proxy happens on exit
+    # via the finally block below.
+    try:
+        _launch_tool(
+            binary=codex_bin,
+            args=codex_args,
+            env=env,
+            port=actual_port,
+            no_proxy=True,
+            tool_label="CODEX",
+            env_vars_display=env_vars_display,
+            learn=learn,
+            memory=memory,
+            agent_type="codex",
+            code_graph=code_graph,
+            backend=backend,
+            anyllm_provider=anyllm_provider,
+            region=region,
+        )
+    finally:
+        # _launch_tool's internal cleanup unregisters this client marker,
+        # but doesn't know about the proxy we started.  Terminate it when
+        # no other clients remain.
+        if _codex_proxy and _codex_proxy.poll() is None:
+            _other = _live_proxy_clients(actual_port, exclude_self=True)
+            if not _other:
+                _codex_proxy.terminate()
+                try:
+                    _codex_proxy.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _codex_proxy.kill()
 
 
 # =============================================================================
