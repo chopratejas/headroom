@@ -100,6 +100,7 @@ def _mixed_indicators(content: str) -> dict[str, bool]:
     return {
         "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
         "has_json_blocks": bool(_JSON_BLOCK_START.search(content)),
+        "has_embedded_json_with_text": _has_valid_json_block_with_text(content),
         "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
         "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
     }
@@ -731,6 +732,31 @@ _SEARCH_RESULT_PATTERN = re.compile(r"^\S+:\d+:", re.MULTILINE)
 _PROSE_PATTERN = re.compile(r"[A-Z][a-z]+\s+\w+\s+\w+")
 
 
+def _has_valid_json_block_with_text(content: str) -> bool:
+    """Return true when prose/log text wraps a valid JSON block."""
+    lines = content.split("\n")
+
+    for i, line in enumerate(lines):
+        if not line.strip().startswith(("[", "{")):
+            continue
+
+        json_content, end_i = _extract_json_block(lines, i)
+        if json_content is None:
+            continue
+
+        try:
+            json.loads(json_content)
+        except (TypeError, ValueError):
+            continue
+
+        leading_text = "\n".join(lines[:i]).strip()
+        trailing_text = "\n".join(lines[end_i + 1 :]).strip()
+        if leading_text or trailing_text:
+            return True
+
+    return False
+
+
 def is_mixed_content(content: str) -> bool:
     """Detect if content contains multiple distinct types.
 
@@ -743,6 +769,7 @@ def is_mixed_content(content: str) -> bool:
     indicators = {
         "has_code_fences": bool(_CODE_FENCE_PATTERN.search(content)),
         "has_json_blocks": bool(_JSON_BLOCK_START.search(content)),
+        "has_embedded_json_with_text": _has_valid_json_block_with_text(content),
         "has_prose": len(_PROSE_PATTERN.findall(content)) > 5,
         "has_search_results": bool(_SEARCH_RESULT_PATTERN.search(content)),
     }
@@ -1175,14 +1202,13 @@ class ContentRouter(Transform):
             # force Kompress, skip the full router detection path so large
             # proxy payloads do not pay for an unused strategy decision.
             force_kompress = bool(getattr(self, "_runtime_force_kompress", False))
-            if force_kompress:
-                mixed = False
+            mixed = is_mixed_content(content)
+            if force_kompress and not mixed:
                 detection = DetectionResult(ContentType.PLAIN_TEXT, 1.0, {})
                 strategy = CompressionStrategy.KOMPRESS
             else:
-                mixed = is_mixed_content(content)
                 detection = _detect_content(content)
-                strategy = self._determine_strategy(content)
+                strategy = CompressionStrategy.MIXED if mixed else self._determine_strategy(content)
             if debug_enabled:
                 _log_router_debug(
                     "content_router_input",
@@ -3062,9 +3088,11 @@ class ContentRouter(Transform):
              via `compress_assistant_text_blocks` when the deployment
              knows the backend doesn't honor cache_control AND
              compression is byte-deterministic.
-          3. User and system blocks carry the prompt the model is acting
-             on; compressing them silently mutates the request. Always
-             skipped per `skip_user` / `skip_system`.
+        3. User and system blocks carry the prompt the model is acting
+           on; compressing them silently mutates the request. Skipped
+           unless `skip_user` / `skip_system` is explicitly disabled.
+           Developer blocks are instruction-level content and stay
+           protected by default.
           4. Tool / function blocks are tool outputs — semantically safe
              to compress (the model references them once, then moves on).
 
@@ -3096,11 +3124,13 @@ class ContentRouter(Transform):
         # Role-based gate for `text` blocks. Tool/function roles are tool
         # outputs and compress freely; assistant defaults to skip (cache
         # safety) with explicit opt-in; unknown roles default to skip.
-        if (skip_user and role == "user") or (skip_system and role in {"system", "developer"}):
+        if role == "developer":
+            protect_text_blocks = True
+        elif (skip_user and role == "user") or (skip_system and role == "system"):
             protect_text_blocks = True
         elif role == "assistant" and not compress_assistant_text_blocks:
             protect_text_blocks = True
-        elif role not in ("assistant", "tool", "function"):
+        elif role not in ("user", "system", "assistant", "tool", "function"):
             protect_text_blocks = True
         else:
             protect_text_blocks = False

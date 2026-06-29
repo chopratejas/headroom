@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -176,6 +177,44 @@ def test_mixed_content_section_splitting_and_json_extraction() -> None:
     assert _extract_json_block(["{", '"a": 1'], 0) == (None, 0)
 
 
+def test_short_instruction_with_embedded_json_compresses_without_kompress() -> None:
+    rows = [
+        {
+            "id": i,
+            "source": "opencode",
+            "status": "ok",
+            "message": "routine event with repeated fields",
+            "needle": "CRITICAL_NEEDLE_42" if i == 17 else "ordinary",
+        }
+        for i in range(40)
+    ]
+    content = "\n".join(
+        [
+            "Compress this OpenCode context. Preserve critical values.",
+            json.dumps(rows, indent=2),
+            "Return a concise answer.",
+        ]
+    )
+    router = ContentRouter(
+        ContentRouterConfig(
+            enable_kompress=False,
+            skip_user_messages=False,
+        )
+    )
+
+    assert is_mixed_content(content) is True
+    assert router._determine_strategy(content) is CompressionStrategy.MIXED
+
+    result = router.compress(content, context="CRITICAL_NEEDLE_42 opencode")
+
+    assert result.strategy_used is CompressionStrategy.MIXED
+    assert result.tokens_saved > 0
+    assert "CRITICAL_NEEDLE_42" in result.compressed
+    assert any(
+        decision.strategy is CompressionStrategy.SMART_CRUSHER for decision in result.routing_log
+    )
+
+
 def test_extract_json_block_ignores_brackets_inside_strings() -> None:
     """Brackets/braces inside JSON string values must not end the block early.
 
@@ -277,7 +316,9 @@ def test_content_router_strategy_and_compress_paths(monkeypatch: pytest.MonkeyPa
     assert router.compress("   ").strategy_used is CompressionStrategy.PASSTHROUGH
 
 
-def test_force_kompress_bypasses_content_detection(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_force_kompress_bypasses_heavy_detection_for_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     router = ContentRouter()
     router._runtime_force_kompress = True
     pure_result = RouterCompressionResult(
@@ -289,7 +330,7 @@ def test_force_kompress_bypasses_content_detection(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         content_router_module,
         "is_mixed_content",
-        lambda content: (_ for _ in ()).throw(AssertionError("mixed detection called")),
+        lambda content: False,
     )
     monkeypatch.setattr(
         content_router_module,
@@ -300,6 +341,30 @@ def test_force_kompress_bypasses_content_detection(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(router, "_compress_pure", lambda *args, **kwargs: pure_result)
 
     assert router.compress("large tool output") is pure_result
+
+
+def test_force_kompress_preserves_mixed_content_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = ContentRouter()
+    router._runtime_force_kompress = True
+    mixed_result = RouterCompressionResult(
+        compressed="mixed",
+        original="mixed",
+        strategy_used=CompressionStrategy.MIXED,
+    )
+
+    monkeypatch.setattr(content_router_module, "is_mixed_content", lambda content: True)
+    monkeypatch.setattr(router, "_compress_mixed", lambda *args, **kwargs: mixed_result)
+    monkeypatch.setattr(
+        router,
+        "_compress_pure",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("force_kompress bypassed mixed routing")
+        ),
+    )
+
+    assert router.compress('instruction\n[{"id": 1}]\nanswer') is mixed_result
 
 
 def test_normal_compress_path_still_uses_content_detection(
@@ -577,7 +642,7 @@ def test_log_strategy_does_not_fallback_to_kompress_when_log_is_noop(
 #     never modified, regardless of role/type.
 #   * assistant text blocks are part of the cache prefix in subsequent
 #     turns; default-skipped, opt-in via compress_assistant_text_blocks.
-#   * user/system text blocks are the prompt; never modified.
+#   * user/system text blocks are the prompt; default-skipped unless opted in.
 #   * tool/function text blocks are tool outputs; freely compressed.
 #   * min_chars threshold gates short blocks.
 # ---------------------------------------------------------------------------
@@ -715,6 +780,23 @@ def test_user_text_blocks_never_compressed_even_with_assistant_optin(
     assert result["content"][0]["text"] == long_text
 
 
+def test_user_text_blocks_opt_in_compresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router_with_mock_compress(monkeypatch)
+    long_text = "U" * 1000
+    msg = {"role": "user", "content": [{"type": "text", "text": long_text}]}
+    result = router._process_content_blocks(
+        msg,
+        msg["content"],
+        "",
+        [],
+        set(),
+        skip_user=False,
+    )
+    assert "[compressed]" in result["content"][0]["text"]
+
+
 def test_system_text_blocks_skipped_when_skip_system_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -728,6 +810,42 @@ def test_system_text_blocks_skipped_when_skip_system_true(
         [],
         set(),
         skip_system=True,
+        compress_assistant_text_blocks=True,
+    )
+    assert result["content"][0]["text"] == long_text
+
+
+def test_system_text_blocks_opt_in_compresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router_with_mock_compress(monkeypatch)
+    long_text = "S" * 1000
+    msg = {"role": "system", "content": [{"type": "text", "text": long_text}]}
+    result = router._process_content_blocks(
+        msg,
+        msg["content"],
+        "",
+        [],
+        set(),
+        skip_system=False,
+    )
+    assert "[compressed]" in result["content"][0]["text"]
+
+
+def test_developer_text_blocks_stay_protected_under_agent_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router_with_mock_compress(monkeypatch)
+    long_text = "D" * 1000
+    msg = {"role": "developer", "content": [{"type": "text", "text": long_text}]}
+    result = router._process_content_blocks(
+        msg,
+        msg["content"],
+        "",
+        [],
+        set(),
+        skip_user=False,
+        skip_system=False,
         compress_assistant_text_blocks=True,
     )
     assert result["content"][0]["text"] == long_text
@@ -755,7 +873,7 @@ def test_unknown_role_text_blocks_skipped_for_safety(
 ) -> None:
     router = _make_router_with_mock_compress(monkeypatch)
     long_text = "Q" * 1000
-    msg = {"role": "developer", "content": [{"type": "text", "text": long_text}]}
+    msg = {"role": "custom", "content": [{"type": "text", "text": long_text}]}
     result = router._process_content_blocks(
         msg,
         msg["content"],
