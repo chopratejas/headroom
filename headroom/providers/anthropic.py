@@ -151,6 +151,36 @@ _UNKNOWN_CLAUDE_DEFAULT = {
 }
 
 
+# DeepSeek fallback pricing for --anthropic-api-url deepseek routing
+_DEEPSEEK_FALLBACK_PRICING: dict[str, dict[str, float]] = {
+    "deepseek-v4-flash": {"input": 0.14, "output": 0.28, "cached_input": 0.0028},
+    "deepseek-v4-pro": {"input": 0.435, "output": 0.87, "cached_input": 0.003625},
+}
+
+
+def _get_deepseek_pricing(model: str) -> dict[str, float] | None:
+    """Get fallback pricing for a DeepSeek model.
+
+    Used when the Anthropic provider encounters a deepseek-* model name
+    (via --anthropic-api-url pointing at DeepSeek's Anthropic-compatible
+    endpoint) and LiteLLM is unavailable.
+
+    Args:
+        model: The model name to look up.
+
+    Returns:
+        Pricing dict with input/output/cached_input keys, or None.
+    """
+    # Direct match
+    if model in _DEEPSEEK_FALLBACK_PRICING:
+        return cast(dict[str, float], _DEEPSEEK_FALLBACK_PRICING[model])
+    # Partial match
+    for known_model, prices in _DEEPSEEK_FALLBACK_PRICING.items():
+        if model in known_model or known_model in model:
+            return cast(dict[str, float], prices)
+    return None
+
+
 def _load_custom_model_config() -> dict[str, Any]:
     """Load custom model configuration from environment or config file.
 
@@ -169,7 +199,7 @@ def _load_custom_model_config() -> dict[str, Any]:
         try:
             # Check if it's a file path
             if os.path.isfile(env_config):
-                with open(env_config) as f:
+                with open(env_config, encoding="utf-8") as f:
                     loaded = json.load(f)
             else:
                 # Try to parse as JSON string
@@ -195,7 +225,7 @@ def _load_custom_model_config() -> dict[str, Any]:
             config_file = legacy_models
     if config_file.exists():
         try:
-            with open(config_file) as f:
+            with open(config_file, encoding="utf-8") as f:
                 loaded = json.load(f)
 
             # Only load anthropic-specific config
@@ -696,5 +726,9 @@ class AnthropicProvider(Provider):
         # Default for unknown Claude models
         if model.startswith("claude"):
             return cast(dict[str, float], _UNKNOWN_CLAUDE_DEFAULT["pricing"])
+
+        # DeepSeek model fallback (via --anthropic-api-url)
+        if model.startswith("deepseek"):
+            return _get_deepseek_pricing(model)
 
         return None
