@@ -2860,7 +2860,7 @@ class OpenAIHandlerMixin:
 
         from headroom.proxy.helpers import (
             MAX_REQUEST_BODY_SIZE,
-            _read_request_json,
+            read_request_json_with_bytes,
         )
         from headroom.tokenizers import get_tokenizer
         from headroom.utils import extract_user_query
@@ -2890,9 +2890,13 @@ class OpenAIHandlerMixin:
                 },
             )
 
-        # Parse request
+        # Parse request. Keep the original (post-content-decoding) bytes so a
+        # request we never mutate is forwarded byte-for-byte instead of being
+        # canonically re-serialized. Codex Desktop posts whose body differs
+        # from our re-serialization are rejected upstream with HTTP 400
+        # (#1542); byte-faithful passthrough avoids that.
         try:
-            body = await _read_request_json(request)
+            body, original_body_bytes = await read_request_json_with_bytes(request)
         except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
@@ -2905,6 +2909,9 @@ class OpenAIHandlerMixin:
                 },
             )
 
+        # Tracks whether anything below rewrites `body`. While it stays False
+        # the original bytes are forwarded verbatim (see the forward calls).
+        body_mutated = False
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
         _bypass = self._headroom_bypass_enabled(request.headers)
@@ -2951,6 +2958,11 @@ class OpenAIHandlerMixin:
         # Cloudflare Workers forward "br, zstd" which OpenAI may honor;
         # if httpx lacks brotli support the response body is undecipherable → 502.
         headers.pop("accept-encoding", None)
+        # Strip content-encoding: read_request_json_with_bytes already decoded
+        # the inbound body (zstd/gzip/deflate/br), so the bytes we forward are
+        # plain. Leaving a stale content-encoding header makes the upstream try
+        # to decompress already-decoded JSON and reject it with HTTP 400 (#1542).
+        headers.pop("content-encoding", None)
         tags = extract_tags(headers)
         client = classify_client(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
@@ -3133,6 +3145,7 @@ class OpenAIHandlerMixin:
                                     if current_input
                                     else memory_context
                                 )
+                                body_mutated = True
                                 log_memory_injection(
                                     request_id=request_id,
                                     session_id=None,
@@ -3146,6 +3159,7 @@ class OpenAIHandlerMixin:
                                 )
                                 if bytes_appended > 0:
                                     body["input"] = new_input
+                                    body_mutated = True
                                     log_memory_injection(
                                         request_id=request_id,
                                         session_id=None,
@@ -3210,6 +3224,7 @@ class OpenAIHandlerMixin:
                 )
                 if mem_tools_injected:
                     body["tools"] = resp_tools
+                    body_mutated = True
                     logger.info(f"[{request_id}] Memory: Injected memory tools (openai/responses)")
 
                     if _ensure_responses_store_for_memory_tools(
@@ -3271,6 +3286,7 @@ class OpenAIHandlerMixin:
                 )
                 attempted_input_tokens = int(_attempted_tokens)
                 if _modified:
+                    body_mutated = True
                     tokens_saved = int(_tokens_saved)
                     optimized_tokens = max(0, original_tokens - tokens_saved)
                     transforms_applied = [*_transforms, *list(transforms_applied)]
@@ -3397,10 +3413,22 @@ class OpenAIHandlerMixin:
                     memory_user_id=memory_user_id,
                     memory_request_ctx=memory_request_ctx,
                     waste_signals=waste_signals_dict,
+                    original_body_bytes=original_body_bytes,
+                    body_mutated=body_mutated,
                 )
             else:
                 headers = await apply_copilot_api_auth(headers, url=url)
-                response = await self._retry_request("POST", url, headers, body)
+                response = await self._retry_request(
+                    "POST",
+                    url,
+                    headers,
+                    body,
+                    original_body_bytes=original_body_bytes,
+                    body_mutated=body_mutated,
+                    request_id=request_id,
+                    forwarder_name="openai_responses",
+                    path_for_log=request.url.path,
+                )
                 _response_body_for_debug: Any = None
                 _response_raw_for_debug: str | None = None
                 try:
