@@ -19,6 +19,7 @@ import gc
 import hashlib
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -37,8 +38,39 @@ logger = logging.getLogger(__name__)
 
 # Default HuggingFace model ID
 HF_MODEL_ID = "chopratejas/kompress-v2-base"
+
+# Tokens matching this pattern are always kept regardless of model score.
+# Numbers, ALLCAPS identifiers, dotted paths, unix paths, file extensions,
+# CLI flags, and CamelCase names carry semantic meaning that agents cannot
+# reconstruct from context — dropping them degrades reasoning correctness.
+# Disable with HEADROOM_KOMPRESS_MUST_KEEP=0.
+_KOMPRESS_MUST_KEEP_RE = re.compile(
+    r"\b0x[0-9A-Fa-f]+\b"  # hex addresses/IDs: 0x7fff2038
+    r"|(?<![\w.])\d+(?:\.\d+)?(?![\w.])"  # standalone numbers: 42, 3.14
+    r"|[A-Z_]{2,}"  # ALLCAPS: SIGILL, HTTP, EOF, ERROR
+    r"|[a-z_][a-z0-9_]*\.[a-z0-9_]+"  # dotted.paths: libsystem_kernel.dylib
+    r"|/[a-z0-9/._-]{2,}"  # unix paths: /usr/lib/python3.so
+    r"|\.[a-z]{2,4}\b"  # extensions: .py .so .json
+    r"|--?[a-z][\w-]*"  # flags: --verbose, -n
+    r"|\b[A-Z][a-z]+[A-Z]\w*"  # CamelCase: EXC_BAD_INSTRUCTION, IndexError
+)
+_KOMPRESS_MUST_KEEP_ENV = "HEADROOM_KOMPRESS_MUST_KEEP"
 KOMPRESS_BACKEND_ENV = "HEADROOM_KOMPRESS_BACKEND"
 KOMPRESS_ONNX_FILENAME_ENV = "HEADROOM_KOMPRESS_ONNX_FILENAME"
+
+
+def _add_kompress_must_keep_words(
+    kept_ids: set[int],
+    chunk_words: list[str],
+    chunk_start: int,
+) -> None:
+    """Add semantically fragile words that should never be model-dropped."""
+    if os.environ.get(_KOMPRESS_MUST_KEEP_ENV, "1") == "0":
+        return
+    for word_idx, word in enumerate(chunk_words):
+        if _KOMPRESS_MUST_KEEP_RE.search(word):
+            kept_ids.add(word_idx + chunk_start)
+
 
 # ONNX artifacts are resolved against the model repo in this order, falling
 # through on download miss OR session-load failure:
@@ -856,6 +888,24 @@ class KompressCompressor(Transform):
         if n_words < 10:
             return self._passthrough(content, n_words)
 
+        # Cooperative wall-clock budget (#1171): kompress ONNX inference is
+        # O(tokens) and non-preemptible once the request's asyncio timeout fires,
+        # so one large block can run for minutes holding a worker (the leak ->
+        # executor-saturation -> queue-timeout cascade). Bail at the next chunk
+        # boundary past this budget, keeping the unprocessed tail verbatim. 0
+        # disables. Env HEADROOM_COMPRESSION_DEADLINE_MS overrides (default 20s).
+        # Cached per instance: operator config, read once -- not per compress() call.
+        deadline_s = getattr(self, "_deadline_s", None)
+        if deadline_s is None:
+            try:
+                deadline_s = max(
+                    0.0,
+                    float(os.environ.get("HEADROOM_COMPRESSION_DEADLINE_MS", "20000")) / 1000.0,
+                )
+            except ValueError:
+                deadline_s = 20.0
+            self._deadline_s = deadline_s
+
         try:
             model, tokenizer, backend = _load_kompress(
                 self.config.model_id, self.config.device, allow_download=allow_download
@@ -879,8 +929,23 @@ class KompressCompressor(Transform):
             kept_ids: set[int] = set()
             inference_ms = 0.0
             chunk_count = 0
+            t_deadline = time.perf_counter()
 
             for chunk_start in range(0, n_words, max_chunk_words):
+                if deadline_s and (time.perf_counter() - t_deadline) > deadline_s:
+                    # Keep everything from here on verbatim and stop: a partial
+                    # compression that returns NOW beats a full one that leaks a
+                    # non-preemptible worker for minutes (#1171).
+                    kept_ids.update(range(chunk_start, n_words))
+                    logger.warning(
+                        "Kompress hit %.1fs deadline after %d/%d words (%d chunks done); "
+                        "kept remainder verbatim to free the request thread (#1171)",
+                        deadline_s,
+                        chunk_start,
+                        n_words,
+                        chunk_count,
+                    )
+                    break
                 chunk_count += 1
                 chunk_words = words[chunk_start : chunk_start + max_chunk_words]
 
@@ -941,6 +1006,11 @@ class KompressCompressor(Transform):
                             continue
                         if bool(mask_list[idx]):
                             kept_ids.add(wid + chunk_start)
+
+                # Hard override: always keep must-keep tokens regardless of model score.
+                # Numbers, error names, paths, and flags carry meaning agents cannot
+                # reconstruct from context. Disable via HEADROOM_KOMPRESS_MUST_KEEP=0.
+                _add_kompress_must_keep_words(kept_ids, chunk_words, chunk_start)
 
             if not kept_ids:
                 if inference_ms >= 1000.0:
@@ -1163,7 +1233,7 @@ class KompressCompressor(Transform):
                     scores = model.get_scores(input_ids, attention_mask)
                     inference_ms += (time.perf_counter() - inference_started) * 1000
 
-                for batch_idx, (text_idx, chunk_start, _chunk_words, ratio) in enumerate(batch):
+                for batch_idx, (text_idx, chunk_start, chunk_words, ratio) in enumerate(batch):
                     word_ids = encoding.word_ids(batch_index=batch_idx)
                     score_list = scores[batch_idx] if is_onnx else scores[batch_idx].cpu()
 
@@ -1192,6 +1262,10 @@ class KompressCompressor(Transform):
                         for wid, score in word_scores.items():
                             if score > self.config.score_threshold:
                                 kept_ids_per_text[text_idx].add(wid + chunk_start)
+
+                    _add_kompress_must_keep_words(
+                        kept_ids_per_text[text_idx], chunk_words, chunk_start
+                    )
 
             except Exception as e:
                 logger.warning(
