@@ -59,7 +59,6 @@ def build_serena_spec(context: str) -> ServerSpec:
     reachable at http://localhost:24282/dashboard/ for anyone who wants it —
     only the automatic browser-open is disabled.
     """
-    
     common_args = (
         "start-mcp-server",
         "--project-from-cwd",
@@ -76,7 +75,7 @@ def build_serena_spec(context: str) -> ServerSpec:
             command=serena_bin,
             args=common_args,
         )
-        
+
     return ServerSpec(
         name="serena",
         command="uvx",
