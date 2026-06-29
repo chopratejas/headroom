@@ -49,7 +49,7 @@ def build_serena_spec(context: str) -> ServerSpec:
     only falls back to an ephemeral ``uvx`` invocation — which re-fetches
     Serena from GitHub on every launch — when no local binary is found.
 
-    ``--open-web-dashboard=False`` suppresses Serena's browser popup on
+    ``--open-web-dashboard False`` suppresses Serena's browser popup on
     startup. Headroom installs Serena by default, so without this flag every
     wrapped session opens the Serena dashboard tab even for users who never
     opted into Serena or created a ``~/.serena/serena_config.yml``. The flag
