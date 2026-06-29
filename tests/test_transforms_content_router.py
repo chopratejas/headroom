@@ -864,3 +864,83 @@ def test_detect_content_python_backend_skips_native(
 
     result = _detect_content('[{"id": 1}, {"id": 2}]')
     assert result.content_type is ContentType.JSON_ARRAY
+
+
+def test_detect_timeout_secs_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watchdog budget reads HEADROOM_DETECT_TIMEOUT_SECS; bad values → default."""
+    get = content_router_module._detect_timeout_secs
+    default = content_router_module._DEFAULT_DETECT_TIMEOUT_SECS
+
+    monkeypatch.delenv("HEADROOM_DETECT_TIMEOUT_SECS", raising=False)
+    assert get() == default
+
+    monkeypatch.setenv("HEADROOM_DETECT_TIMEOUT_SECS", "0.25")
+    assert get() == 0.25
+
+    monkeypatch.setenv("HEADROOM_DETECT_TIMEOUT_SECS", "nope")
+    assert get() == default
+
+    monkeypatch.setenv("HEADROOM_DETECT_TIMEOUT_SECS", "0")
+    assert get() == default
+
+
+def test_rust_detect_watchdog_passes_through_result() -> None:
+    """A fast native detector returns its result unchanged through the watchdog."""
+    sentinel = SimpleNamespace(content_type="json_array", confidence=1.0, metadata={})
+    out = content_router_module._rust_detect_watchdogged(lambda _content: sentinel, "payload", 5.0)
+    assert out is sentinel
+
+
+def test_rust_detect_watchdog_relays_native_error() -> None:
+    """An exception raised inside the native detector propagates to the caller."""
+
+    def boom(_content: str) -> None:
+        raise ValueError("native boom")
+
+    with pytest.raises(ValueError, match="native boom"):
+        content_router_module._rust_detect_watchdogged(boom, "payload", 5.0)
+
+
+def test_detect_content_watchdog_degrades_on_windows_hang(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung native detect on Windows degrades to pure-Python, never deadlocks (#575)."""
+    import threading as _threading
+
+    import headroom._core as _core
+
+    monkeypatch.setenv("HEADROOM_DETECT_BACKEND", "rust")
+    monkeypatch.setattr(content_router_module.sys, "platform", "win32")
+    monkeypatch.setenv("HEADROOM_DETECT_TIMEOUT_SECS", "0.1")
+
+    release = _threading.Event()
+
+    def _hang(_content: str):
+        release.wait()  # simulate the WaitOnAddress park (GIL released while waiting)
+        return SimpleNamespace(content_type="plain_text", confidence=1.0, metadata={})
+
+    monkeypatch.setattr(_core, "detect_content_type", _hang)
+
+    try:
+        # JSON content: the pure-Python regex fallback recognizes it as JSON_ARRAY,
+        # proving we took the degrade path rather than the (hung) native result.
+        result = _detect_content('[{"id": 1}]')
+        assert result.content_type is ContentType.JSON_ARRAY
+    finally:
+        release.set()  # let the daemon worker finish so it does not linger
+
+
+def test_detect_content_watchdog_uses_native_result_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows with rust forced, a fast native result still flows through unchanged."""
+    import headroom._core as _core
+
+    monkeypatch.setenv("HEADROOM_DETECT_BACKEND", "rust")
+    monkeypatch.setattr(content_router_module.sys, "platform", "win32")
+
+    fake = SimpleNamespace(content_type="source_code", confidence=1.0, metadata={})
+    monkeypatch.setattr(_core, "detect_content_type", lambda _content: fake)
+
+    result = _detect_content("def main(): pass")
+    assert result.content_type is ContentType.SOURCE_CODE
