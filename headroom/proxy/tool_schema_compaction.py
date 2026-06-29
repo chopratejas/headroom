@@ -41,34 +41,93 @@ from typing import Any
 
 # Keys that are JSON Schema annotations, not constraints.
 # Removing them does not change the set of valid inputs.
-TOOL_SCHEMA_DROP_KEYS: frozenset[str] = frozenset({
-    "$id",
-    "$schema",
-    "$comment",
-    "deprecated",
-    "examples",
-    "example",
-    "markdownDescription",
-    "readOnly",
-    "title",
-    "writeOnly",
-})
+TOOL_SCHEMA_DROP_KEYS: frozenset[str] = frozenset(
+    {
+        "$id",
+        "$schema",
+        "$comment",
+        "deprecated",
+        "examples",
+        "example",
+        "markdownDescription",
+        "readOnly",
+        "title",
+        "writeOnly",
+    }
+)
 
 # Parameter names that are self-explanatory.  When ``description``
 # matches the name (case-insensitive prefix), it can be stripped.
-_SEMANTIC_PARAM_NAMES: frozenset[str] = frozenset({
-    "query", "search", "filter", "sort", "order", "limit", "offset",
-    "page", "per_page", "perpage", "cursor", "after", "before",
-    "owner", "repo", "repository", "org", "organization",
-    "user", "username", "email", "name", "title", "description",
-    "id", "number", "count", "url", "path", "file", "filename",
-    "branch", "tag", "sha", "commit", "ref", "key", "token",
-    "type", "format", "state", "status", "action", "method",
-    "body", "content", "message", "text", "comment", "note",
-    "start", "end", "from", "to", "direction", "ascending",
-    "dry_run", "verbose", "force", "recursive", "include",
-    "exclude", "pattern", "regex", "since", "until",
-})
+_SEMANTIC_PARAM_NAMES: frozenset[str] = frozenset(
+    {
+        "query",
+        "search",
+        "filter",
+        "sort",
+        "order",
+        "limit",
+        "offset",
+        "page",
+        "per_page",
+        "perpage",
+        "cursor",
+        "after",
+        "before",
+        "owner",
+        "repo",
+        "repository",
+        "org",
+        "organization",
+        "user",
+        "username",
+        "email",
+        "name",
+        "title",
+        "description",
+        "id",
+        "number",
+        "count",
+        "url",
+        "path",
+        "file",
+        "filename",
+        "branch",
+        "tag",
+        "sha",
+        "commit",
+        "ref",
+        "key",
+        "token",
+        "type",
+        "format",
+        "state",
+        "status",
+        "action",
+        "method",
+        "body",
+        "content",
+        "message",
+        "text",
+        "comment",
+        "note",
+        "start",
+        "end",
+        "from",
+        "to",
+        "direction",
+        "ascending",
+        "dry_run",
+        "verbose",
+        "force",
+        "recursive",
+        "include",
+        "exclude",
+        "pattern",
+        "regex",
+        "since",
+        "until",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Env-var helpers
@@ -86,9 +145,7 @@ def tool_desc_max_chars() -> int:
     global _TOOL_DESC_MAX_CHARS
     if _TOOL_DESC_MAX_CHARS is None:
         try:
-            _TOOL_DESC_MAX_CHARS = int(
-                os.environ.get("HEADROOM_TOOL_DESC_MAX_CHARS", "0")
-            )
+            _TOOL_DESC_MAX_CHARS = int(os.environ.get("HEADROOM_TOOL_DESC_MAX_CHARS", "0"))
         except ValueError:
             _TOOL_DESC_MAX_CHARS = 0
     return _TOOL_DESC_MAX_CHARS
@@ -252,7 +309,7 @@ def _truncate_description(desc: str, max_chars: int) -> str:
     m = _FIRST_SENTENCE_RE.match(desc)
     if m and len(m.group(1)) <= max_chars:
         first = m.group(1)
-        rest = desc[len(first):].strip()
+        rest = desc[len(first) :].strip()
         if rest:
             m2 = _FIRST_SENTENCE_RE.match(rest)
             if m2 and len(first) + 1 + len(m2.group(1)) <= int(max_chars * 1.5):
@@ -291,14 +348,22 @@ def _truncate_descriptions_in_schema(
     for key, child in value.items():
         if key == "description" and isinstance(child, str):
             # Layer 3: strip descriptions on self-explanatory params.
-            if strip_semantic and _grandparent_key == "properties" and _parent_key and _is_semantic_param_name(_parent_key):
+            if (
+                strip_semantic
+                and _grandparent_key == "properties"
+                and _parent_key
+                and _is_semantic_param_name(_parent_key)
+            ):
                 # ponytail: drop description on semantic params — the name alone is enough.
                 continue
             compacted[key] = _truncate_description(child, max_chars)
         else:
             compacted[key] = _truncate_descriptions_in_schema(
-                child, max_chars, strip_semantic,
-                _parent_key=key, _grandparent_key=_parent_key,
+                child,
+                max_chars,
+                strip_semantic,
+                _parent_key=key,
+                _grandparent_key=_parent_key,
             )
 
     return compacted

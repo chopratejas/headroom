@@ -29,7 +29,9 @@ def system_compact_enabled() -> bool:
 def system_compact_min_chars() -> int:
     """Return the minimum block length for compression (env-configurable)."""
     try:
-        return int(os.environ.get("HEADROOM_SYSTEM_COMPACT_MIN_CHARS", str(_SYSTEM_COMPACT_MIN_CHARS)))
+        return int(
+            os.environ.get("HEADROOM_SYSTEM_COMPACT_MIN_CHARS", str(_SYSTEM_COMPACT_MIN_CHARS))
+        )
     except ValueError:
         return _SYSTEM_COMPACT_MIN_CHARS
 
@@ -121,7 +123,11 @@ def compact_system_prompt(
     before = _json_byte_len(blocks)
 
     updated_blocks, modified = _compact_system_blocks(
-        blocks, router, model, request_id, min_chars,
+        blocks,
+        router,
+        model,
+        request_id,
+        min_chars,
     )
 
     after = _json_byte_len(updated_blocks)

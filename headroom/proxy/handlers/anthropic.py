@@ -1929,7 +1929,9 @@ class AnthropicHandlerMixin:
                     )
             except Exception as _tools_compaction_exc:
                 _tools_modified = False
-                logger.warning("[%s] tool schema compaction FAILED: %s", request_id, _tools_compaction_exc)
+                logger.warning(
+                    "[%s] tool schema compaction FAILED: %s", request_id, _tools_compaction_exc
+                )
 
             # Layer 2: Tool description truncation (opt-in via
             # HEADROOM_TOOL_DESC_MAX_CHARS).  Preserves first sentence
@@ -1942,7 +1944,9 @@ class AnthropicHandlerMixin:
 
                 _desc_max = tool_desc_max_chars()
                 if _desc_max > 0:
-                    body, _desc_modified, _desc_before, _desc_after = compact_tool_descriptions(body, _desc_max)
+                    body, _desc_modified, _desc_before, _desc_after = compact_tool_descriptions(
+                        body, _desc_max
+                    )
                     if _desc_modified:
                         tools = body["tools"]
                         transforms_applied.append("anthropic:tool_desc_compaction")
@@ -1956,7 +1960,9 @@ class AnthropicHandlerMixin:
                         )
             except Exception as _desc_compaction_exc:
                 _desc_modified = False
-                logger.warning("[%s] tool desc compaction FAILED: %s", request_id, _desc_compaction_exc)
+                logger.warning(
+                    "[%s] tool desc compaction FAILED: %s", request_id, _desc_compaction_exc
+                )
 
             # Layer 3: System prompt compaction (opt-in via
             # HEADROOM_SYSTEM_COMPACT).  Uses CCR to compress large
@@ -1989,7 +1995,9 @@ class AnthropicHandlerMixin:
                         )
             except Exception as _sys_compaction_exc:
                 _sys_modified = False
-                logger.warning("[%s] system prompt compaction FAILED: %s", request_id, _sys_compaction_exc)
+                logger.warning(
+                    "[%s] system prompt compaction FAILED: %s", request_id, _sys_compaction_exc
+                )
 
             presend_event = self.pipeline_extensions.emit(
                 PipelineStage.PRE_SEND,

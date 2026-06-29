@@ -1432,8 +1432,8 @@ class OpenAIHandlerMixin:
             _desc_max = tool_desc_max_chars()
             if _desc_max > 0:
                 _desc_compact_started = time.perf_counter()
-                desc_payload, desc_modified, desc_before, desc_after = (
-                    compact_tool_descriptions(working, _desc_max)
+                desc_payload, desc_modified, desc_before, desc_after = compact_tool_descriptions(
+                    working, _desc_max
                 )
                 _add_timing("compression_tool_desc_compaction", _desc_compact_started)
                 if desc_modified:
