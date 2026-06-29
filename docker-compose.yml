@@ -60,7 +60,7 @@ services:
       dockerfile: Dockerfile.vscode-plugin
       args:
         VSCODE_FORK_REPO: ${VSCODE_FORK_REPO:-https://github.com/damnthonyy/vscode.git}
-        VSCODE_FORK_BRANCH: ${VSCODE_FORK_BRANCH:-main}
+        VSCODE_FORK_COMMIT: ${VSCODE_FORK_COMMIT:-bd6c147a19b5934e8008e8e1b518383b2de90218}
     volumes:
       - ./plugin:/output
     profiles:

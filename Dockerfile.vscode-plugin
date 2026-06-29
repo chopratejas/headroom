@@ -5,10 +5,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG VSCODE_FORK_REPO=https://github.com/damnthonyy/vscode.git
-ARG VSCODE_FORK_BRANCH=main
+# Pinned to an audited commit for supply-chain safety. Update this SHA
+# (and note the audit in the PR) whenever a new fork revision is needed.
+ARG VSCODE_FORK_COMMIT=bd6c147a19b5934e8008e8e1b518383b2de90218
 
 WORKDIR /build
-RUN git clone --depth=1 --branch=${VSCODE_FORK_BRANCH} ${VSCODE_FORK_REPO} vscode
+RUN git init vscode && cd vscode && \
+    git remote add origin ${VSCODE_FORK_REPO} && \
+    git fetch --depth=1 origin ${VSCODE_FORK_COMMIT} && \
+    git checkout ${VSCODE_FORK_COMMIT}
 
 WORKDIR /build/vscode/extensions/copilot
 
