@@ -240,8 +240,8 @@ _ANTHROPIC_CCR_TOOL_SNAPSHOT_BYTES = (
     b'"description":"Retrieve original uncompressed content that was '
     b"compressed to save tokens. Trust kept rows unless you have a "
     b"concrete gap. Retrieve when you need raw, original, or complete "
-    b"content, or when a targeted follow-up cannot be answered from the "
-    b"kept summary. The hash is provided in "
+    b"content, or when you need to inspect the original payload for a "
+    b"specific follow-up. The hash is provided in "
     b'compression markers like [N items compressed... hash=abc123].",'
     b'"input_schema":{"type":"object",'
     b'"properties":{'
@@ -249,9 +249,9 @@ _ANTHROPIC_CCR_TOOL_SNAPSHOT_BYTES = (
     b'"description":"Hash key from the compression marker '
     b"(e.g., 'abc123' from hash=abc123)\"},"
     b'"query":{"type":"string",'
-    b'"description":"Optional targeted search query for a concrete gap. '
-    b"Use it when the kept summary cannot answer a specific follow-up. "
-    b'If omitted, returns all original items."}'
+    b'"description":"Optional context hint for the concrete gap you are '
+    b"checking. The hint is recorded for feedback and stats; retrieval "
+    b'still returns the full original content."}'
     b"},"
     b'"required":["hash"]}}'
 )
@@ -262,8 +262,8 @@ _OPENAI_CCR_TOOL_SNAPSHOT_BYTES = (
     b'"description":"Retrieve original uncompressed content that was '
     b"compressed to save tokens. Trust kept rows unless you have a "
     b"concrete gap. Retrieve when you need raw, original, or complete "
-    b"content, or when a targeted follow-up cannot be answered from the "
-    b"kept summary. The hash is provided in "
+    b"content, or when you need to inspect the original payload for a "
+    b"specific follow-up. The hash is provided in "
     b'compression markers like [N items compressed... hash=abc123].",'
     b'"parameters":{"type":"object",'
     b'"properties":{'
@@ -271,9 +271,9 @@ _OPENAI_CCR_TOOL_SNAPSHOT_BYTES = (
     b'"description":"Hash key from the compression marker '
     b"(e.g., 'abc123' from hash=abc123)\"},"
     b'"query":{"type":"string",'
-    b'"description":"Optional targeted search query for a concrete gap. '
-    b"Use it when the kept summary cannot answer a specific follow-up. "
-    b'If omitted, returns all original items."}'
+    b'"description":"Optional context hint for the concrete gap you are '
+    b"checking. The hint is recorded for feedback and stats; retrieval "
+    b'still returns the full original content."}'
     b"},"
     b'"required":["hash"]}}}'
 )
