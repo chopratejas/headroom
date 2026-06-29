@@ -469,18 +469,28 @@ def _start_proxy(
     # object; closing that window terminates the whole tree, bypassing the
     # marker-based reference counting in ``_make_cleanup`` and breaking every
     # other ``headroom wrap`` instance routed through the same port.
-    #   DETACHED_PROCESS         — no shared console (no CTRL_CLOSE_EVENT)
+    #   CREATE_NO_WINDOW         — give the proxy its OWN, invisible console.
+    #                              A separate console means the parent's
+    #                              CTRL_CLOSE_EVENT never reaches it, and no
+    #                              stray console window pops up. DETACHED_PROCESS
+    #                              also isolates the console, but for a console
+    #                              subsystem exe (python.exe) it leaves the proxy
+    #                              consoleless and Windows surfaces a visible
+    #                              console window — closing that window killed
+    #                              the proxy, defeating the whole point.
     #   CREATE_NEW_PROCESS_GROUP — isolate from the parent's Ctrl-C
     #   CREATE_BREAKAWAY_FROM_JOB— survive Job kill-on-close (Windows Terminal,
     #                              VS Code integrated terminal, conhost)
-    # On POSIX, ``start_new_session`` already detaches via setsid(). The guard
-    # is ``sys.platform == "win32"`` (not ``os.name == "nt"``) so mypy narrows
-    # the platform and resolves the Windows-only ``subprocess`` constants.
+    # CREATE_NO_WINDOW / DETACHED_PROCESS / CREATE_NEW_CONSOLE are mutually
+    # exclusive — pick exactly one. On POSIX, ``start_new_session`` already
+    # detaches via setsid(). ``sys.platform == "win32"`` (not ``os.name ==
+    # "nt"``) so mypy narrows the platform and resolves the Windows-only
+    # ``subprocess`` constants below.
     _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
     creationflags = 0
     if sys.platform == "win32":
         creationflags = (
-            subprocess.DETACHED_PROCESS
+            subprocess.CREATE_NO_WINDOW
             | subprocess.CREATE_NEW_PROCESS_GROUP
             | _CREATE_BREAKAWAY_FROM_JOB
         )
@@ -496,7 +506,7 @@ def _start_proxy(
         proc = subprocess.Popen(cmd, **popen_kwargs)
     except OSError:
         # The launcher's Job object forbids breakaway. Retry without that flag;
-        # DETACHED_PROCESS still spares the proxy from console-close events.
+        # CREATE_NO_WINDOW still spares the proxy from console-close events.
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = creationflags & ~_CREATE_BREAKAWAY_FROM_JOB
         proc = subprocess.Popen(cmd, **popen_kwargs)

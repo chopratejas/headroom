@@ -32,9 +32,7 @@ class _FakeProc:
         return None
 
 
-def _capture_popen_kwargs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> dict[str, Any]:
+def _capture_popen_kwargs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     """Invoke ``_start_proxy`` with all I/O stubbed; return the Popen kwargs."""
     captured: dict[str, Any] = {}
 
@@ -53,20 +51,16 @@ def _capture_popen_kwargs(
     return captured
 
 
-def test_start_proxy_detaches_on_windows(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_start_proxy_detaches_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Force the Windows branch regardless of the host OS, and supply the
     # Windows-only ``subprocess`` constants the host lacks on POSIX.
     monkeypatch.setattr(wrap_cli.sys, "platform", "win32")
-    monkeypatch.setattr(wrap_cli.subprocess, "DETACHED_PROCESS", 0x8, raising=False)
-    monkeypatch.setattr(
-        wrap_cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
-    )
+    monkeypatch.setattr(wrap_cli.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(wrap_cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
 
     flags = _capture_popen_kwargs(monkeypatch, tmp_path)["creationflags"]
 
-    assert flags & 0x8  # DETACHED_PROCESS: no shared console
+    assert flags & 0x08000000  # CREATE_NO_WINDOW: own hidden console
     assert flags & 0x200  # CREATE_NEW_PROCESS_GROUP: ignore the parent's Ctrl-C
     assert flags & _CREATE_BREAKAWAY_FROM_JOB  # survive Job kill-on-close
 
@@ -88,10 +82,8 @@ def test_start_proxy_retries_without_breakaway_when_job_forbids_it(
 ) -> None:
     # Force the Windows branch and supply its constants, as above.
     monkeypatch.setattr(wrap_cli.sys, "platform", "win32")
-    monkeypatch.setattr(wrap_cli.subprocess, "DETACHED_PROCESS", 0x8, raising=False)
-    monkeypatch.setattr(
-        wrap_cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False
-    )
+    monkeypatch.setattr(wrap_cli.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(wrap_cli.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
 
     # First spawn raises OSError (the launcher's Job forbids breakaway); the
     # second must succeed without CREATE_BREAKAWAY_FROM_JOB.
@@ -114,5 +106,5 @@ def test_start_proxy_retries_without_breakaway_when_job_forbids_it(
     assert len(seen) == 2  # the call was retried exactly once
     assert seen[0] & _CREATE_BREAKAWAY_FROM_JOB  # first attempt requests breakaway
     assert not seen[1] & _CREATE_BREAKAWAY_FROM_JOB  # retry drops it
-    assert seen[1] & 0x8  # but still detaches from the console
+    assert seen[1] & 0x08000000  # but still gets its own hidden console
     assert seen[1] & 0x200  # and still gets its own process group
