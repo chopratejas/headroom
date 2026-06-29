@@ -1905,6 +1905,92 @@ class AnthropicHandlerMixin:
                 if tools != _original_tools:
                     body["tools"] = tools
 
+            # Tool schema compaction: strip annotation keys ($schema, title,
+            # examples, etc.) and normalise description whitespace.  Runs
+            # after tools are finalised (sorting, CCR injection) but before
+            # the PRE_SEND pipeline event so extensions see the compacted
+            # schema.  Mirrors the same pass that the OpenAI handler applies.
+            _tools_compaction_started = time.time()
+            try:
+                from headroom.proxy.tool_schema_compaction import compact_tools
+
+                body, _tools_modified, _tools_before_bytes, _tools_after_bytes = compact_tools(body)
+                if _tools_modified:
+                    tools = body["tools"]
+                    transforms_applied.append("anthropic:tool_schema_compaction")
+                    _tools_compaction_ms = (time.time() - _tools_compaction_started) * 1000
+                    logger.debug(
+                        "[%s] tool schema compaction: %d -> %d bytes (%.0f%% saved) in %.1fms",
+                        request_id,
+                        _tools_before_bytes,
+                        _tools_after_bytes,
+                        (1 - _tools_after_bytes / max(_tools_before_bytes, 1)) * 100,
+                        _tools_compaction_ms,
+                    )
+            except Exception as _tools_compaction_exc:
+                _tools_modified = False
+                logger.warning("[%s] tool schema compaction FAILED: %s", request_id, _tools_compaction_exc)
+
+            # Layer 2: Tool description truncation (opt-in via
+            # HEADROOM_TOOL_DESC_MAX_CHARS).  Preserves first sentence
+            # of each description so tool selection still works.
+            try:
+                from headroom.proxy.tool_schema_compaction import (
+                    compact_tool_descriptions,
+                    tool_desc_max_chars,
+                )
+
+                _desc_max = tool_desc_max_chars()
+                if _desc_max > 0:
+                    body, _desc_modified, _desc_before, _desc_after = compact_tool_descriptions(body, _desc_max)
+                    if _desc_modified:
+                        tools = body["tools"]
+                        transforms_applied.append("anthropic:tool_desc_compaction")
+                        logger.debug(
+                            "[%s] tool description compaction: %d -> %d bytes (%.0f%% saved, max_chars=%d)",
+                            request_id,
+                            _desc_before,
+                            _desc_after,
+                            (1 - _desc_after / max(_desc_before, 1)) * 100,
+                            _desc_max,
+                        )
+            except Exception as _desc_compaction_exc:
+                _desc_modified = False
+                logger.warning("[%s] tool desc compaction FAILED: %s", request_id, _desc_compaction_exc)
+
+            # Layer 3: System prompt compaction (opt-in via
+            # HEADROOM_SYSTEM_COMPACT).  Uses CCR to compress large
+            # system content blocks (CLAUDE.md, rules, hooks, etc.)
+            # while preserving cache_control and short instruction blocks.
+            try:
+                from headroom.proxy.system_compaction import (
+                    compact_system_prompt,
+                    system_compact_enabled,
+                )
+                from headroom.transforms.compression_units import find_content_router
+
+                if system_compact_enabled():
+                    _sys_router = find_content_router(self.anthropic_pipeline)
+                    if _sys_router is not None:
+                        body, _sys_modified, _sys_before, _sys_after = compact_system_prompt(
+                            body,
+                            router=_sys_router,
+                            model=model,
+                            request_id=request_id,
+                        )
+                    if _sys_modified:
+                        transforms_applied.append("anthropic:system_prompt_compaction")
+                        logger.debug(
+                            "[%s] system prompt compaction: %d -> %d bytes (%.0f%% saved)",
+                            request_id,
+                            _sys_before,
+                            _sys_after,
+                            (1 - _sys_after / max(_sys_before, 1)) * 100,
+                        )
+            except Exception as _sys_compaction_exc:
+                _sys_modified = False
+                logger.warning("[%s] system prompt compaction FAILED: %s", request_id, _sys_compaction_exc)
+
             presend_event = self.pipeline_extensions.emit(
                 PipelineStage.PRE_SEND,
                 operation="proxy.request",
