@@ -3499,6 +3499,7 @@ class OpenAIHandlerMixin:
             )
             _append_unique_transforms(transforms_applied, _shape_result.labels)
             if _shape_result.changed:
+                body_mutated = True
                 logger.info(
                     "[%s] /v1/responses output shaping labels=%s",
                     request_id,

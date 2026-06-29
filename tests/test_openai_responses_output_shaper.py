@@ -73,6 +73,7 @@ def test_http_responses_output_shaper_rewrites_and_labels(monkeypatch):
         async def _fake_retry(*args: Any, **kwargs: Any) -> httpx.Response:
             body = args[3]
             captured["body"] = copy.deepcopy(body)
+            captured["retry_kwargs"] = dict(kwargs)
             return await _ok_response(*args, **kwargs)
 
         async def _record_request_outcome(outcome: Any) -> None:
@@ -92,6 +93,8 @@ def test_http_responses_output_shaper_rewrites_and_labels(monkeypatch):
     assert "<headroom_output_shaping>" in sent["instructions"]
     assert sent["reasoning"]["effort"] == "low"
     assert sent["text"]["verbosity"] == "low"
+    assert captured["retry_kwargs"]["body_mutated"] is True
+    assert captured["retry_kwargs"]["original_body_bytes"] is not None
     transforms = outcomes[-1].transforms_applied
     assert any(t.startswith("output_shaper:stratum:") for t in transforms)
     assert "output_shaper:verbosity:L2" in transforms
