@@ -27,7 +27,7 @@
 
 mod common;
 
-use common::{install_static_token_source, start_proxy_with_state};
+use common::{get_stats, install_static_token_source, start_proxy_with_state};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
@@ -222,6 +222,100 @@ async fn native_envelope_round_trip_byte_equal() {
         parsed.get("model").is_none(),
         "Vertex envelope must NOT carry a `model` field"
     );
+
+    proxy.shutdown().await;
+}
+
+/// A Vertex rawPredict request lands in the unified savings store attributed
+/// to `vertex` — completes the per-backend attribution matrix alongside the
+/// anthropic/openai/bedrock tests.
+#[tokio::test]
+async fn stats_attributes_vertex_raw_predict() {
+    let upstream = MockServer::start().await;
+    mount_capture_json(&upstream).await;
+    let proxy = start_proxy_with_state(
+        &upstream.uri(),
+        |c| {
+            // Recording is gated on should_record(): compression on AND mode != off.
+            c.compression = true;
+            c.compression_mode = headroom_proxy::config::CompressionMode::LiveZone;
+        },
+        |s| install_static_token_source(s, TEST_BEARER),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(raw_predict_url(&proxy.url()))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&minimal_vertex_body()).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let stats = get_stats(&proxy).await;
+    assert_eq!(stats["requests"]["by_provider"]["vertex"], 1);
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn vertex_not_recorded_when_compression_off() {
+    // Recording is gated on the compression master switch — consistent with
+    // forward_http and the Bedrock lanes. With compression off, no request is
+    // recorded (so all lanes stay consistent, none provider-skewed).
+    let upstream = MockServer::start().await;
+    mount_capture_json(&upstream).await;
+    let proxy = start_proxy_with_state(
+        &upstream.uri(),
+        |c| c.compression = false,
+        |s| install_static_token_source(s, TEST_BEARER),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(raw_predict_url(&proxy.url()))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&minimal_vertex_body()).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let stats = get_stats(&proxy).await;
+    assert_eq!(stats["requests"]["total"], 0);
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn vertex_not_recorded_when_mode_off() {
+    // Recording is gated on should_record(): compression on but mode == off is a
+    // byte-equal passthrough with zero savings, so the Vertex lane records nothing
+    // (per-lane guard for the mode clause, matching forward_http).
+    let upstream = MockServer::start().await;
+    mount_capture_json(&upstream).await;
+    let proxy = start_proxy_with_state(
+        &upstream.uri(),
+        |c| {
+            c.compression = true;
+            c.compression_mode = headroom_proxy::config::CompressionMode::Off;
+        },
+        |s| install_static_token_source(s, TEST_BEARER),
+    )
+    .await;
+
+    let resp = reqwest::Client::new()
+        .post(raw_predict_url(&proxy.url()))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&minimal_vertex_body()).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let stats = get_stats(&proxy).await;
+    assert_eq!(stats["requests"]["total"], 0);
 
     proxy.shutdown().await;
 }

@@ -61,6 +61,38 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+  coverage:
+    name: coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      # Use the repo-pinned stable toolchain (rust-toolchain.toml). Codecov
+      # gates on lcov *line* coverage, which is already 100% on stable — the one
+      # genuinely-unreachable serialize-error edge sits on an executed line. The
+      # `#[coverage(off)]` attribute (a no-op here, gated by cfg(coverage_nightly))
+      # only matters for a true *region*-100% under a local nightly run, so CI
+      # does not need nightly and avoids overriding the toolchain pin.
+      - name: Install toolchain (stable + llvm-tools)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: llvm-tools-preview
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --workspace --lcov --output-path lcov-rust.info
+      - name: Upload to Codecov (rust flag)
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov-rust.info
+          flags: rust
+          # Reporting only — never fail the build on the upload step itself; the
+          # coverage *gate* lives in codecov.yml's `rust` flag status.
+          fail_ci_if_error: false
+
   wheels:
     name: wheels (${{ matrix.target }})
     runs-on: ${{ matrix.os }}

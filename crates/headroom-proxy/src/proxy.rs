@@ -24,7 +24,7 @@ use crate::compression;
 use crate::config::Config;
 use crate::error::ProxyError;
 use crate::headers::{build_forward_request_headers, filter_response_headers};
-use crate::health::{healthz, healthz_upstream};
+use crate::health::{health, healthz, healthz_upstream};
 use crate::websocket::ws_handler;
 // Phase F PR-F1: imported as `classify_auth_mode` to make the call
 // site self-documenting. `AuthMode` is re-exported under the same
@@ -72,6 +72,125 @@ pub struct AppState {
     /// route hits `bearer()`. Tests override via
     /// [`AppState::with_token_source`].
     pub vertex_token_source: Arc<dyn crate::vertex::TokenSource>,
+    /// Phase H: Rust-native savings store backing the `/stats` JSON and the
+    /// `/dashboard`. Fed by the compression dispatch for every backend the
+    /// proxy serves, so the dashboard is unified across all of them. Defaults
+    /// to in-memory; a persistent path is wired from config when set.
+    pub savings: Arc<crate::observability::stats::SavingsStore>,
+    /// Phase H: per-model price book used to value token savings in USD. Resolved
+    /// once at startup from `--pricebook` / `HEADROOM_PROXY_PRICEBOOK` — an
+    /// `http(s)://` URL (defaulting to the models.dev catalog) fetched and cached
+    /// here, or a local file path. Empty when disabled/unreachable, in which case
+    /// savings are reported in tokens with USD at zero.
+    ///
+    /// ponytail: this `Arc` *is* the cache — load once, hold for the process
+    /// lifetime. No periodic refresh; a restart re-fetches. Add a refresh task
+    /// only if prices need to update without a redeploy (they rarely do).
+    pub price_book: Arc<crate::observability::pricing::PriceBook>,
+}
+
+/// Cap on the price-book body we'll buffer from a URL. The live models.dev
+/// catalog is ~2.4 MiB; 16 MiB leaves generous headroom while still bounding a
+/// misbehaving (or chunked, content-length-less) source so it can't OOM us.
+const MAX_PRICEBOOK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Startup is allowed to block on this fetch (it runs once, off the request
+/// path), but not indefinitely — fail-open to an empty book past the deadline.
+const PRICEBOOK_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Resolve the per-model price book from `Config::pricebook_source`:
+///
+/// - `None` (the flag is unset) → the compiled-in models.dev snapshot
+///   ([`PriceBook::vendored`]); USD valuation works out of the box, no network.
+/// - `Some("")` (explicit opt-out) → an empty book; savings report tokens-only.
+/// - `Some(url)` (`http(s)://`) → fetched once and cached in the returned book,
+///   for operators who want live prices instead of the vendored snapshot.
+/// - `Some(path)` → read from a local file.
+///
+/// Any override failure — unreachable URL, unreadable file, malformed JSON —
+/// fails open to an empty book rather than erroring. Pricing is best-effort.
+async fn load_price_book(
+    source: Option<&str>,
+    client: &reqwest::Client,
+) -> crate::observability::pricing::PriceBook {
+    use crate::observability::pricing::PriceBook;
+    let source = match source {
+        None => return PriceBook::vendored(),
+        Some(s) => s.trim(),
+    };
+    if source.is_empty() {
+        return PriceBook::empty();
+    }
+    if source.starts_with("http://") || source.starts_with("https://") {
+        // Use a dedicated client that FOLLOWS redirects for this one-time fetch.
+        // The proxy's own `client` is built with `redirect::Policy::none()` so it
+        // forwards proxied redirects verbatim — but a CDN-fronted price URL may
+        // answer with a 3xx, which `none()` would surface as a non-2xx and fail
+        // open to an empty book. Following redirects matches `curl -L` in
+        // scripts/refresh_model_limits.sh. Falls back to the proxy client if the
+        // builder somehow fails.
+        let fetch_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()
+            .unwrap_or_else(|_| client.clone());
+        match fetch_price_book_json(&fetch_client, source).await {
+            Some(json) => PriceBook::from_models_dev_json(&json),
+            None => {
+                tracing::warn!(
+                    event = "pricebook_fetch_failed",
+                    url = %source,
+                    "could not fetch the models.dev price book; USD savings will read 0 \
+                     (set --pricebook to a reachable URL/file, or \"\" to silence this)"
+                );
+                PriceBook::empty()
+            }
+        }
+    } else {
+        match std::fs::read_to_string(source) {
+            Ok(json) => PriceBook::from_models_dev_json(&json),
+            Err(_) => {
+                tracing::warn!(
+                    event = "pricebook_read_failed",
+                    path = %source,
+                    "could not read the price book file; USD savings will read 0"
+                );
+                PriceBook::empty()
+            }
+        }
+    }
+}
+
+/// Bounded GET: fetch `url` and return the response body, or `None` on any error
+/// (unreachable, non-2xx, timed out, or larger than `max_bytes`). The body is
+/// read in streaming chunks with the cap checked *before* each chunk is buffered
+/// — a declared Content-Length is unreliable, so this is the only safe bound — so
+/// a misbehaving source can't OOM us. Shared by the price-book and supplemental
+/// `/stats` fetches; each caller parses the bytes its own way.
+async fn bounded_get(
+    client: &reqwest::Client,
+    url: &str,
+    timeout: std::time::Duration,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    let mut resp = client.get(url).timeout(timeout).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if bytes.len() + chunk.len() > max_bytes {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Some(bytes)
+}
+
+/// Fetch a models.dev-shaped price book JSON, or `None` on any error
+/// (unreachable, non-2xx, oversized, timed out, non-UTF-8).
+async fn fetch_price_book_json(client: &reqwest::Client, url: &str) -> Option<String> {
+    let bytes = bounded_get(client, url, PRICEBOOK_FETCH_TIMEOUT, MAX_PRICEBOOK_BYTES).await?;
+    String::from_utf8(bytes).ok()
 }
 
 /// PR-E6: maximum number of sessions tracked by the drift detector
@@ -83,7 +202,7 @@ pub struct AppState {
 const DRIFT_DETECTOR_CAPACITY: usize = 1000;
 
 impl AppState {
-    pub fn new(config: Config) -> Result<Self, ProxyError> {
+    pub async fn new(config: Config) -> Result<Self, ProxyError> {
         let client = reqwest::Client::builder()
             .connect_timeout(config.upstream_connect_timeout)
             .timeout(config.upstream_timeout)
@@ -101,12 +220,41 @@ impl AppState {
         let vertex_token_source: Arc<dyn crate::vertex::TokenSource> =
             Arc::new(crate::vertex::adc::GcpAdcTokenSource::new());
 
+        // Phase H: savings store backing `/stats` + `/dashboard`. Persisted to
+        // `config.savings_path` when set (lifetime/history survive restarts);
+        // in-memory otherwise.
+        let savings = Arc::new(match config.savings_path.clone() {
+            Some(path) => crate::observability::stats::SavingsStore::with_path(
+                path,
+                crate::observability::stats::StoreConfig::default(),
+            ),
+            None => crate::observability::stats::SavingsStore::in_memory(),
+        });
+        // Persistence runs off the request path: `record` only marks the store
+        // dirty; `spawn_savings_flusher` (wired in `main`) does the disk I/O on a
+        // background interval. Kept out of this constructor so building an
+        // `AppState` never silently spawns a task.
+        // Resolved once here and cached in the `Arc` for the process lifetime.
+        // Reuses the proxy's `client` so the fetch shares its connection pool.
+        let price_book =
+            Arc::new(load_price_book(config.pricebook_source.as_deref(), &client).await);
+        // Surface whether pricing is actually active: an empty book means USD
+        // savings silently read 0, so make that visible at startup.
+        tracing::info!(
+            event = "pricebook_loaded",
+            models = price_book.len(),
+            source = config.pricebook_source.as_deref().unwrap_or("(vendored)"),
+            "price book ready"
+        );
+
         Ok(Self {
             config: Arc::new(config),
             client,
             bedrock_credentials: None,
             drift_state: DriftState::new(DRIFT_DETECTOR_CAPACITY),
             vertex_token_source,
+            savings,
+            price_book,
         })
     }
 
@@ -123,11 +271,11 @@ impl AppState {
     /// Test helper: build an `AppState` with an explicit token source.
     /// Lets the integration tests substitute a `StaticTokenSource` so
     /// the test suite never hits real GCP.
-    pub fn with_token_source(
+    pub async fn with_token_source(
         config: Config,
         token_source: Arc<dyn crate::vertex::TokenSource>,
     ) -> Result<Self, ProxyError> {
-        let mut s = Self::new(config)?;
+        let mut s = Self::new(config).await?;
         s.vertex_token_source = token_source;
         Ok(s)
     }
@@ -137,10 +285,48 @@ impl AppState {
 /// everything else hits the catch-all forwarder. WebSocket upgrades are
 /// handled inside the catch-all handler when an `Upgrade: websocket` header
 /// is present.
+/// Spawn the background savings flusher.
+///
+/// On the request path, `SavingsStore::record` only marks the store dirty — it
+/// never touches disk. This task performs the actual filesystem write on the
+/// blocking pool every `interval`, keeping disk I/O off the async request
+/// workers under slow/stalled/network filesystems.
+///
+/// Returns the task handle (or `None` for in-memory stores, where no task is
+/// spawned) so the caller can `abort()` it on shutdown before the final flush —
+/// an explicit lifecycle rather than a detached task left to the runtime drop.
+#[must_use]
+pub fn spawn_savings_flusher(
+    store: Arc<crate::observability::stats::SavingsStore>,
+    interval: std::time::Duration,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !store.is_persistent() {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let store = store.clone();
+            // Filesystem I/O on the blocking pool, never an async request worker.
+            let _ = tokio::task::spawn_blocking(move || store.flush()).await;
+        }
+    }))
+}
+
 pub fn build_app(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/healthz/upstream", get(healthz_upstream))
+        // Dashboard-facing health/history/feed endpoints. The embedded
+        // dashboard polls these; serving them on the proxy (one process →
+        // one store) keeps the status pill, Historical view, and feed working
+        // without an upstream. `/health` is the dashboard shape ({status,
+        // version}); `/healthz` above stays the machine probe.
+        .route("/health", get(health))
+        .route("/stats-history", get(handle_stats_history))
+        .route("/transformations/feed", get(handle_transformations_feed))
         // PR-D3: Prometheus scrape endpoint. Renders the global
         // registry in text format. The handler is stateless — no
         // `AppState` needed — and idempotent across concurrent
@@ -149,6 +335,13 @@ pub fn build_app(state: AppState) -> Router {
         // any feature flag; an operator who doesn't want it scraped
         // simply firewalls the path.
         .route("/metrics", get(crate::observability::handle_metrics))
+        // Phase H: Rust-native savings JSON for the dashboard. Unified across
+        // every backend the proxy serves (one process → one store). Served by
+        // default; reads the in-process savings aggregate.
+        .route("/stats", get(handle_stats))
+        // Phase H: the dashboard UI, embedded into the binary so it ships
+        // self-contained (no template file at runtime). Reads `/stats`.
+        .route("/dashboard", get(handle_dashboard))
         // PR-C2: explicit POST route for /v1/chat/completions. The
         // handler buffers the body and re-injects it into
         // `forward_http`, which runs the OpenAI live-zone gate
@@ -291,6 +484,99 @@ pub fn build_app(state: AppState) -> Router {
     }
 
     router.fallback(any(catch_all)).with_state(state)
+}
+
+/// `GET /stats` — the Rust-native savings JSON the dashboard consumes.
+///
+/// Backend-agnostic and unified by construction: the proxy fronts every backend
+/// in one process, so the in-process savings store already aggregates them all.
+/// Served by default with no flag.
+async fn handle_stats(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    let mut stats = state.savings.stats_json(std::time::SystemTime::now());
+    // Transitional: fold in blocks still produced only by the Python proxy so
+    // the Rust dashboard is the single source of truth during migration.
+    // Fail-open — an unreachable Python proxy just omits those blocks.
+    if let Some(url) = state.config.upstream_stats_url.as_deref() {
+        if let Some(python) = fetch_upstream_stats(&state.client, url).await {
+            stats = crate::observability::supplemental::merge_supplemental(stats, &python);
+        }
+    }
+    axum::Json(stats)
+}
+
+/// Per-fetch budget for the transitional supplemental `/stats` pull. Short — it
+/// is a dashboard convenience, never on a request hot path.
+const SUPPLEMENTAL_STATS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// Cap on the supplemental `/stats` response body. The URL is operator-controlled
+/// (the transitional Python proxy), so this is defense-in-depth: a stats JSON is
+/// far under 1 MiB, and a buggy/compromised upstream must not be able to OOM us
+/// with a huge (or chunked, content-length-less) response.
+const MAX_SUPPLEMENTAL_BYTES: usize = 1024 * 1024;
+
+/// Fetch the transitional Python proxy's `/stats` JSON, or `None` on any error
+/// (unreachable, non-2xx, unparseable) — the caller treats `None` as "no
+/// supplemental blocks this poll".
+async fn fetch_upstream_stats(client: &reqwest::Client, url: &str) -> Option<serde_json::Value> {
+    // Bounded streaming read (see `bounded_get`) so a misbehaving upstream can't
+    // OOM us. Parse via `serde_json` rather than `Response::json` so we don't
+    // need reqwest's `json` feature enabled.
+    let bytes = bounded_get(
+        client,
+        url,
+        SUPPLEMENTAL_STATS_TIMEOUT,
+        MAX_SUPPLEMENTAL_BYTES,
+    )
+    .await?;
+    serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+}
+
+/// The dashboard HTML, embedded at compile time. During the Python-retirement
+/// transition the template still lives in the Python tree; `include_str!` bakes
+/// it into the Rust binary so the running proxy needs no template file. The
+/// page fetches `/stats` and renders the unified savings view; cards backed by
+/// stat sources still living in Python stay empty until those are ported.
+const DASHBOARD_HTML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../headroom/dashboard/templates/dashboard.html"
+));
+
+/// `GET /dashboard` — serve the embedded dashboard UI.
+async fn handle_dashboard() -> axum::response::Html<&'static str> {
+    axum::response::Html(DASHBOARD_HTML)
+}
+
+/// `GET /stats-history` — the durable savings history the dashboard's Historical
+/// view consumes (`lifetime`, the checkpoint `history`, and a daily rollup
+/// `series.daily`). Backed by the same in-process store as `/stats`.
+async fn handle_stats_history(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    axum::Json(state.savings.history_json())
+}
+
+/// `GET /transformations/feed` — the dashboard's per-request "what was removed"
+/// feed. The Rust proxy does not retain per-request transformation detail (that
+/// was a Python-proxy feature), so this returns an empty, well-formed feed: the
+/// dashboard renders "no data yet" instead of erroring on a 404/502.
+async fn handle_transformations_feed() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "transformations": [], "log_full_messages": false }))
+}
+
+/// Provider label for the savings store, derived from the compressible endpoint.
+fn provider_for_endpoint(endpoint: compression::CompressibleEndpoint) -> &'static str {
+    match endpoint {
+        compression::CompressibleEndpoint::AnthropicMessages => "anthropic",
+        compression::CompressibleEndpoint::OpenAiChatCompletions
+        | compression::CompressibleEndpoint::OpenAiResponses => "openai",
+    }
+}
+
+/// Best-effort `model` id from a request body; `"unknown"` when absent or the
+/// body does not parse. Never fails — savings recording is fire-and-forget.
+fn extract_model_id(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Catch-all handler. If the request is a WebSocket upgrade, hand off to the
@@ -567,7 +853,20 @@ pub(crate) async fn forward_http(
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| ProxyError::InvalidHeader(e.to_string()))?;
 
-    let upstream_resp = if should_intercept {
+    // Phase H / failed-accuracy: the savings outcome is built on the buffered
+    // (intercept) path where token counts are known, but recorded only once the
+    // request's fate is known — a non-2xx upstream AND a connect/transport error
+    // both count toward `requests.failed` (the error case is recorded at the send
+    // site below, matching the Bedrock/Vertex handlers).
+    //
+    // Recording boundary: only requests that *attempted* the upstream are
+    // recorded. Pre-upstream rejections (413 payload-too-large, missing Bedrock
+    // credentials, an unrecognized action path) return before this is populated
+    // and are intentionally NOT recorded — they are client/config errors, not
+    // upstream interactions, and counting them as failed would conflate the two.
+    let mut pending_record: Option<crate::observability::stats::RequestOutcome> = None;
+
+    let upstream_send_result = if should_intercept {
         // Buffer up to `compression_max_body_bytes`. If the body
         // exceeds this, the body is already partially consumed and
         // cannot be resumed as a stream — fail loudly per project
@@ -748,6 +1047,22 @@ pub(crate) async fn forward_http(
             outcome,
             compression::Outcome::NoCompression | compression::Outcome::Passthrough { .. }
         );
+
+        // Phase H: capture savings attribution before `outcome` is consumed by
+        // the match below. Provider comes from the route, model from the body,
+        // and token counts from a `Compressed` outcome (zero otherwise — the
+        // request still counts, with no savings).
+        let rec_provider = provider_for_endpoint(endpoint);
+        let rec_model = extract_model_id(&buffered);
+        let (rec_tokens_before, rec_tokens_after) = match &outcome {
+            compression::Outcome::Compressed {
+                tokens_before,
+                tokens_after,
+                ..
+            } => (*tokens_before as u64, *tokens_after as u64),
+            _ => (0, 0),
+        };
+
         let body_to_send = match outcome {
             compression::Outcome::NoCompression => {
                 // PR-B2: forward the *original* buffered bytes. The
@@ -837,6 +1152,28 @@ pub(crate) async fn forward_http(
             }
         };
 
+        // Phase H: record this LLM request into the savings store so `/stats`
+        // and the dashboard reflect every backend the proxy serves. Output and
+        // cache tokens (response-side) are wired in a follow-up; they default
+        // to zero here, so compression savings are exact and request counts
+        // accurate from day one. USD is valued via the price book when the model
+        // is priced; otherwise savings stay token-only with USD at zero.
+        //
+        // Recording is gated on `should_record()` (compression on AND mode not
+        // `off`): interception above buffers/forwards regardless, but a request
+        // that can't actually compress (mode `off`) is not a savings event. The
+        // Bedrock/Vertex lanes gate on the same predicate.
+        pending_record = state.config.should_record().then(|| {
+            crate::observability::stats::RequestOutcome::priced(
+                rec_provider,
+                rec_model,
+                rec_tokens_before,
+                rec_tokens_after,
+                request_id.clone(),
+                &state.price_book,
+            )
+        });
+
         // C2 fix: cache-safety alarm. When the dispatcher returned
         // `NoCompression` or `Passthrough`, the post-dispatcher body
         // MUST be byte-length-equal to the original buffered body.
@@ -899,7 +1236,7 @@ pub(crate) async fn forward_http(
             .headers(outgoing_headers)
             .body(body_to_send)
             .send()
-            .await?
+            .await
     } else {
         // Pure streaming path — the original passthrough behaviour.
         let body_stream =
@@ -911,11 +1248,38 @@ pub(crate) async fn forward_http(
             .headers(outgoing_headers)
             .body(reqwest_body)
             .send()
-            .await?
+            .await
+    };
+
+    // Connect/timeout/transport errors carry no upstream status. Record the
+    // request as failed before propagating — same as the Bedrock/Vertex handlers
+    // — so an OpenAI/Anthropic upstream outage is not silently absent from
+    // `/stats` (and `requests.failed` stays consistent across providers).
+    let upstream_resp = match upstream_send_result {
+        Ok(resp) => resp,
+        Err(e) => {
+            if let Some(outcome) = pending_record.take() {
+                state.savings.record_finalized(outcome, true, start);
+            }
+            return Err(e.into());
+        }
     };
 
     let upstream_status = upstream_resp.status();
     let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // For SSE responses, defer record_finalized into the state machine task so
+    // it can populate output_tokens/cache tokens from the stream body.
+    // For non-SSE responses (and pure passthrough), record immediately here.
+    // The SSE kind is determined below; we hold `fwd_deferred` until then.
+    let fwd_deferred = pending_record.take().map(|o| {
+        (
+            o,
+            state.savings.clone(),
+            start,
+            !upstream_status.is_success(),
+        )
+    });
 
     // PR-A8 / P5-57: capture the upstream request id BEFORE we move
     // `upstream_resp.headers()` into the response filter. Anthropic
@@ -1032,9 +1396,19 @@ pub(crate) async fn forward_http(
     let parser_tx = if !matches!(sse_kind, SseStreamKind::None) {
         let (tx, rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(SSE_PARSER_QUEUE_DEPTH);
         let rid_for_parser = request_id.clone();
-        tokio::spawn(run_sse_state_machine(sse_kind, rx, rid_for_parser));
+        tokio::spawn(run_sse_state_machine(
+            sse_kind,
+            rx,
+            rid_for_parser,
+            fwd_deferred,
+        ));
         Some(tx)
     } else {
+        // Non-SSE: output tokens are unavailable without a body state machine;
+        // record immediately with whatever was captured at compression time.
+        if let Some((outcome, savings, started, failed)) = fwd_deferred {
+            savings.record_finalized(outcome, failed, started);
+        }
         None
     };
     let resp_stream = upstream_resp.bytes_stream().map(move |r| match r {
@@ -1117,6 +1491,9 @@ enum SseStreamKind {
 
 impl SseStreamKind {
     fn for_request_path(path: &str) -> Self {
+        // Trim a single trailing slash so that clients which append one
+        // (common in URL-building libraries) still get telemetry.
+        let path = path.trim_end_matches('/');
         match path {
             "/v1/messages" => Self::Anthropic,
             "/v1/chat/completions" => Self::OpenAiChat,
@@ -1258,10 +1635,18 @@ fn maybe_inject_openai_prompt_cache_key(
 
 /// Drive the per-provider state machine over a stream of byte chunks.
 /// Lives in its own task; the byte path never waits on it.
+type FwdDeferred = Option<(
+    crate::observability::stats::RequestOutcome,
+    Arc<crate::observability::stats::SavingsStore>,
+    std::time::Instant,
+    bool,
+)>;
+
 async fn run_sse_state_machine(
     kind: SseStreamKind,
     mut rx: tokio::sync::mpsc::Receiver<bytes::Bytes>,
     request_id: String,
+    deferred: FwdDeferred,
 ) {
     use crate::sse::framing::SseFramer;
 
@@ -1272,6 +1657,7 @@ async fn run_sse_state_machine(
     match kind {
         SseStreamKind::Anthropic => {
             let mut state = crate::sse::anthropic::AnthropicStreamState::new();
+            let mut had_sse_error = false;
             while let Some(chunk) = rx.recv().await {
                 framer.push(&chunk);
                 while let Some(ev_result) = framer.next_event() {
@@ -1291,6 +1677,7 @@ async fn run_sse_state_machine(
                                 error = %e,
                                 "sse framer error"
                             );
+                            had_sse_error = true;
                         }
                     }
                 }
@@ -1332,9 +1719,35 @@ async fn run_sse_state_machine(
                 blocks = state.blocks.len(),
                 "sse stream closed"
             );
+            if let Some((mut outcome, savings, started, failed)) = deferred {
+                outcome.output_tokens = state.usage.output_tokens;
+                outcome.cache_read_tokens = state.usage.cache_read_input_tokens;
+                outcome.cache_write_tokens = state.usage.cache_creation_input_tokens;
+                // Back-fill for uncompressed requests: compression set tokens_before=0
+                // (no savings), but the stream usage gives us the real input count so
+                // total_input_tokens in the store isn't systematically under-counted.
+                // For 100% cache-hit requests input_tokens=0 but cache_read_input_tokens=N,
+                // so use the full prompt size (input + cached) as the effective input.
+                let effective_input = state
+                    .usage
+                    .input_tokens
+                    .saturating_add(state.usage.cache_read_input_tokens);
+                if outcome.tokens_before == 0 && effective_input > 0 {
+                    outcome.tokens_before = effective_input;
+                    outcome.tokens_after = effective_input;
+                }
+                let stream_errored =
+                    matches!(state.status, crate::sse::anthropic::StreamStatus::Errored);
+                savings.record_finalized(
+                    outcome,
+                    failed || had_sse_error || stream_errored,
+                    started,
+                );
+            }
         }
         SseStreamKind::OpenAiChat => {
             let mut state = crate::sse::openai_chat::ChunkState::new();
+            let mut had_sse_error = false;
             while let Some(chunk) = rx.recv().await {
                 framer.push(&chunk);
                 while let Some(ev_result) = framer.next_event() {
@@ -1354,6 +1767,7 @@ async fn run_sse_state_machine(
                                 error = %e,
                                 "sse framer error"
                             );
+                            had_sse_error = true;
                         }
                     }
                 }
@@ -1435,9 +1849,35 @@ async fn run_sse_state_machine(
                 has_usage = state.usage.is_some(),
                 "sse stream closed"
             );
+            if let Some((mut outcome, savings, started, failed)) = deferred {
+                if let Some(usage) = &state.usage {
+                    outcome.output_tokens = usage
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    outcome.cache_read_tokens = usage
+                        .get("prompt_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    // Back-fill for uncompressed requests.
+                    if outcome.tokens_before == 0 {
+                        let pt = usage
+                            .get("prompt_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if pt > 0 {
+                            outcome.tokens_before = pt;
+                            outcome.tokens_after = pt;
+                        }
+                    }
+                }
+                savings.record_finalized(outcome, failed || had_sse_error, started);
+            }
         }
         SseStreamKind::OpenAiResponses => {
             let mut state = crate::sse::openai_responses::ResponseState::new();
+            let mut had_sse_error = false;
             while let Some(chunk) = rx.recv().await {
                 framer.push(&chunk);
                 while let Some(ev_result) = framer.next_event() {
@@ -1457,6 +1897,7 @@ async fn run_sse_state_machine(
                                 error = %e,
                                 "sse framer error"
                             );
+                            had_sse_error = true;
                         }
                     }
                 }
@@ -1566,8 +2007,49 @@ async fn run_sse_state_machine(
                 incomplete_reason = state.incomplete_reason.as_deref().unwrap_or(""),
                 "sse stream closed"
             );
+            // Both `response.failed` and `response.incomplete` are stream-level
+            // errors regardless of the HTTP status (which was 200). An incomplete
+            // response is truncated (e.g. hit max_output_tokens) and must not be
+            // counted as a successful billable completion.
+            let stream_failed =
+                matches!(state.terminal_status(), Some("failed") | Some("incomplete"));
+            if let Some((mut outcome, savings, started, failed)) = deferred {
+                if let Some(usage) = &state.usage {
+                    outcome.output_tokens = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    outcome.cache_read_tokens = usage
+                        .get("input_tokens_details")
+                        .and_then(|d| d.get("cached_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    // Back-fill for uncompressed requests.
+                    if outcome.tokens_before == 0 {
+                        let it = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if it > 0 {
+                            outcome.tokens_before = it;
+                            outcome.tokens_after = it;
+                        }
+                    }
+                }
+                savings.record_finalized(
+                    outcome,
+                    failed || had_sse_error || stream_failed,
+                    started,
+                );
+            }
         }
-        SseStreamKind::None => {}
+        SseStreamKind::None => {
+            // Unreachable: only called when !matches!(sse_kind, SseStreamKind::None).
+            // Safety fallback so deferred is never silently dropped if that invariant breaks.
+            if let Some((outcome, savings, started, failed)) = deferred {
+                savings.record_finalized(outcome, failed, started);
+            }
+        }
     }
 }
 
@@ -1615,5 +2097,170 @@ mod tests {
         let uri: Uri = "/".parse().unwrap();
         let out = build_upstream_url(&base, &uri).unwrap();
         assert_eq!(out.as_str(), "http://up:8080/");
+    }
+
+    // ---- SseStreamKind path matching --------------------------------------- #
+
+    #[test]
+    fn sse_stream_kind_exact_paths() {
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/messages"),
+            SseStreamKind::Anthropic
+        ));
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/chat/completions"),
+            SseStreamKind::OpenAiChat
+        ));
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/responses"),
+            SseStreamKind::OpenAiResponses
+        ));
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/unknown"),
+            SseStreamKind::None
+        ));
+    }
+
+    #[test]
+    fn sse_stream_kind_trailing_slash_still_matches() {
+        // URL-building libraries often append a trailing slash; the kind
+        // detector must trim it so telemetry and savings tracking engage.
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/messages/"),
+            SseStreamKind::Anthropic
+        ));
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/chat/completions/"),
+            SseStreamKind::OpenAiChat
+        ));
+        assert!(matches!(
+            SseStreamKind::for_request_path("/v1/responses/"),
+            SseStreamKind::OpenAiResponses
+        ));
+    }
+
+    // ---- price book source resolution -------------------------------------- #
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap()
+    }
+
+    const PRICEBOOK_JSON: &str = r#"{"anthropic":{"models":{
+        "claude-haiku-4-5":{"cost":{"input":1.0,"output":5.0}}
+    }}}"#;
+
+    #[tokio::test]
+    async fn pricebook_none_uses_vendored_snapshot() {
+        // Unset → compiled-in models.dev snapshot, no network.
+        let book = load_price_book(None, &test_client()).await;
+        assert!(!book.is_empty());
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_empty_string_disables_pricing() {
+        let c = test_client();
+        assert!(load_price_book(Some(""), &c).await.is_empty());
+        assert!(load_price_book(Some("   "), &c).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricebook_reads_local_file() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("headroom_pricebook_{}.json", std::process::id()));
+        std::fs::write(&path, PRICEBOOK_JSON).unwrap();
+        let book = load_price_book(Some(path.to_str().unwrap()), &test_client()).await;
+        let _ = std::fs::remove_file(&path);
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_missing_file_fails_open_to_empty() {
+        let book = load_price_book(Some("/no/such/pricebook.json"), &test_client()).await;
+        assert!(book.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricebook_unreachable_url_fails_open_to_empty() {
+        // Closed localhost port → instant connection-refused, so this exercises
+        // the http branch + fail-open without depending on models.dev being up
+        // (and without waiting out a connect timeout on a blackholed address).
+        let book = load_price_book(Some("http://127.0.0.1:1/api.json"), &test_client()).await;
+        assert!(book.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pricebook_url_happy_path_fetches_and_parses() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = r#"{"anthropic":{"models":{
+            "claude-haiku-4-5":{"cost":{"input":1.0,"output":5.0}}
+        }}}"#;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let url = format!("{}/api.json", server.uri());
+        let book = load_price_book(Some(&url), &test_client()).await;
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_url_follows_redirects() {
+        // A CDN-fronted price URL may 3xx; the fetch must follow it (the proxy's
+        // own client uses redirect::none, so this exercises the dedicated
+        // redirect-following client in load_price_book).
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = r#"{"a":{"models":{"claude-haiku-4-5":{"cost":{"input":1.0}}}}}"#;
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/api.json"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let url = format!("{}/redirect", server.uri());
+        let book = load_price_book(Some(&url), &test_client()).await;
+        assert!(book.lookup("claude-haiku-4-5").is_some());
+    }
+
+    #[tokio::test]
+    async fn pricebook_non_2xx_fails_open_to_empty() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let book = load_price_book(Some(&server.uri()), &test_client()).await;
+        assert!(book.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bounded_get_enforces_byte_cap() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(100)))
+            .mount(&server)
+            .await;
+        // Cap below the body → rejected (the OOM guard that protects the 16MiB
+        // pricebook / 1MiB supplemental fetches, exercised cheaply here).
+        let over = bounded_get(&test_client(), &server.uri(), PRICEBOOK_FETCH_TIMEOUT, 10).await;
+        assert!(over.is_none());
+        // Cap above the body → accepted in full.
+        let under = bounded_get(&test_client(), &server.uri(), PRICEBOOK_FETCH_TIMEOUT, 1000).await;
+        assert_eq!(under.unwrap().len(), 100);
     }
 }

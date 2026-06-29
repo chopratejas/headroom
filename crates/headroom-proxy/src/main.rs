@@ -31,7 +31,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "headroom-proxy starting"
     );
 
-    let mut state = AppState::new(config.clone())?;
+    // Surface a likely misconfiguration: the master compression switch is on but
+    // the mode is `off`, so nothing is actually compressed.
+    if config.compression_enabled_but_mode_off() {
+        tracing::warn!(
+            event = "compression_master_without_mode",
+            "compression is enabled but --compression-mode is `off`; requests pass \
+             through byte-equal with no savings. Set --compression-mode live_zone \
+             (or HEADROOM_PROXY_COMPRESSION_MODE=live_zone) to engage the compressor."
+        );
+    }
+
+    let mut state = AppState::new(config.clone()).await?;
 
     // PR-D1: resolve AWS credentials at startup via the `aws-config`
     // default chain. Loaded once so per-request signing is cheap.
@@ -62,6 +73,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    // Phase H: persistence runs off the request path. `record` only marks the
+    // savings store dirty; this background task does the disk I/O on an interval
+    // (on the blocking pool). We abort it and flush once more on shutdown below.
+    let savings = state.savings.clone();
+    let flusher =
+        headroom_proxy::spawn_savings_flusher(savings.clone(), std::time::Duration::from_secs(2));
+
     let app = build_app(state).into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -78,6 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tokio::time::sleep(grace).await;
         })
         .await?;
+
+    // Stop the periodic flusher, then take the final durable flush ourselves so
+    // the last sub-interval of recorded savings is not lost on a clean shutdown.
+    if let Some(flusher) = flusher {
+        flusher.abort();
+    }
+    tokio::task::spawn_blocking(move || savings.flush())
+        .await
+        .ok();
 
     Ok(())
 }

@@ -19,14 +19,13 @@ use url::Url;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 pub enum CompressionMode {
-    /// Compression disabled. Body forwards byte-equal to upstream.
-    /// This is the default; Phase B will switch the default to
-    /// `live_zone` once that mode is implemented.
+    /// Compression disabled. Body forwards byte-equal to upstream. This is the
+    /// default. A request under this mode is not recorded as a savings event
+    /// (see [`Config::should_record`]).
     Off,
-    /// Compress only live-zone blocks (latest user message,
-    /// latest tool/function/shell/patch outputs). NOT YET IMPLEMENTED:
-    /// in PR-A1 this falls through to passthrough behaviour with a
-    /// loud warning. Phase B PR-B2 wires in the actual dispatcher.
+    /// Compress only live-zone blocks: the latest user message and the latest
+    /// tool/function/shell/patch outputs. Runs the live-zone dispatcher over the
+    /// request body.
     LiveZone,
 }
 
@@ -469,6 +468,31 @@ pub struct CliArgs {
         default_value = "https://www.googleapis.com/auth/cloud-platform"
     )]
     pub vertex_adc_scope: String,
+
+    /// Phase H: path to the JSON file that persists dashboard savings stats
+    /// (lifetime totals, history, per-provider/model) across restarts. When
+    /// unset, stats are kept in memory only and reset on restart.
+    #[arg(long = "savings-path", env = "HEADROOM_PROXY_SAVINGS_PATH")]
+    pub savings_path: Option<std::path::PathBuf>,
+
+    /// Transitional: URL of the still-running Python proxy's `/stats`. When set,
+    /// dashboard blocks not yet produced by Rust (provider quota / subscription
+    /// / rate-limit panels) are folded into this proxy's `/stats`, so the Rust
+    /// dashboard is the single source of truth during migration. Fail-open: an
+    /// unreachable Python proxy just omits those blocks.
+    #[arg(long = "upstream-stats-url", env = "HEADROOM_PROXY_UPSTREAM_STATS_URL")]
+    pub upstream_stats_url: Option<String>,
+
+    /// Phase H: source of the models.dev-shaped JSON price book used to value
+    /// token savings in USD. When unset, the proxy uses the compiled-in
+    /// models.dev snapshot (refreshed via `scripts/refresh_model_limits.sh`), so
+    /// USD valuation works out of the box with no startup network call. Override
+    /// with an `http(s)://` URL to fetch live prices once at startup, or a local
+    /// file path. Pass an empty string to disable pricing entirely (savings then
+    /// report in tokens with USD at zero). Fail-open: an unreachable URL /
+    /// unreadable file yields USD zero rather than blocking startup.
+    #[arg(long = "pricebook", env = "HEADROOM_PROXY_PRICEBOOK")]
+    pub pricebook_source: Option<String>,
 }
 
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -499,11 +523,10 @@ pub struct Config {
     /// Inherits `max_body_bytes` when not overridden. Bodies larger
     /// than this still forward, just unchanged.
     pub compression_max_body_bytes: u64,
-    /// Policy mode for compression on `/v1/messages`. PR-A1 lockdown:
-    /// both `Off` and `LiveZone` result in byte-faithful passthrough;
-    /// `LiveZone` additionally emits a `tracing::warn!` per request
-    /// because the dispatcher isn't implemented yet (Phase B PR-B2
-    /// fills this in).
+    /// Policy mode for compression. `Off` forwards the body byte-faithful;
+    /// `LiveZone` runs the live-zone dispatcher (compressing the latest user
+    /// message + tool/output blocks). Only a non-`off` mode is a savings event —
+    /// see [`Config::should_record`].
     pub compression_mode: CompressionMode,
     /// Whether the live-zone dispatcher derives `frozen_message_count`
     /// automatically from customer `cache_control` markers. PR-A4
@@ -551,9 +574,39 @@ pub struct Config {
     /// PR-D4: GCP ADC OAuth scope used when fetching the bearer
     /// token. Default `https://www.googleapis.com/auth/cloud-platform`.
     pub vertex_adc_scope: String,
+    /// Phase H: persistent savings file path (see `CliArgs::savings_path`).
+    pub savings_path: Option<std::path::PathBuf>,
+    /// Transitional Python `/stats` URL for supplemental blocks (see
+    /// `CliArgs::upstream_stats_url`).
+    pub upstream_stats_url: Option<String>,
+    /// Phase H: models.dev price-book source for USD valuation (see
+    /// `CliArgs::pricebook_source`). `None` → compiled-in vendored snapshot;
+    /// `Some("")` → pricing disabled; `Some(url|path)` → override.
+    pub pricebook_source: Option<String>,
 }
 
 impl Config {
+    /// True when the compression master switch is on but the mode is still
+    /// `off` — a contradictory config that silently yields byte-faithful
+    /// passthrough (no savings). The two flags read as mutually exclusive, so
+    /// startup logs a WARN to surface the likely misconfiguration.
+    pub fn compression_enabled_but_mode_off(&self) -> bool {
+        self.compression && self.compression_mode == CompressionMode::Off
+    }
+
+    /// Whether request outcomes should be recorded into the savings store. The
+    /// single predicate the Bedrock/Vertex handlers and forward_http's recording
+    /// gate on, so the rule lives in one place and can't drift across lanes.
+    /// Requires the compression master switch AND a non-`off` mode: with
+    /// compression off (or on but `mode == off`, which forwards byte-equal with
+    /// zero savings) there is no savings event to record, so `/stats` stays empty
+    /// rather than logging traffic the proxy didn't actually compress. Note this
+    /// is narrower than the interception gate (`config.compression` alone): a
+    /// `mode == off` request is still buffered/forwarded, just not recorded.
+    pub fn should_record(&self) -> bool {
+        self.compression && self.compression_mode != CompressionMode::Off
+    }
+
     pub fn from_cli(args: CliArgs) -> Self {
         let rewrite_host = if args.no_rewrite_host {
             false
@@ -587,6 +640,12 @@ impl Config {
             bedrock_validate_eventstream_crc: args.bedrock_validate_eventstream_crc,
             vertex_region: args.vertex_region,
             vertex_adc_scope: args.vertex_adc_scope,
+            savings_path: args.savings_path,
+            upstream_stats_url: args.upstream_stats_url,
+            // Passed through verbatim: `None` (unset) → vendored snapshot,
+            // `Some("")` → disabled, `Some(url|path)` → override. The loader
+            // (`proxy::load_price_book`) interprets these.
+            pricebook_source: args.pricebook_source,
         }
     }
 
@@ -641,6 +700,52 @@ impl Config {
             // only; the upstream URL is `upstream`).
             vertex_region: "us-central1".to_string(),
             vertex_adc_scope: "https://www.googleapis.com/auth/cloud-platform".to_string(),
+            savings_path: None,
+            upstream_stats_url: None,
+            // Pricing disabled in tests (`Some("")`, not `None` → vendored):
+            // keeps the suite isolated from the vendored snapshot's contents and
+            // its periodic refresh, so no test depends on a specific USD value.
+            pricebook_source: Some(String::new()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config::for_test(Url::parse("http://127.0.0.1:0").unwrap())
+    }
+
+    #[test]
+    fn compression_misconfig_only_when_master_on_and_mode_off() {
+        let mut c = cfg();
+        // default for_test: compression=false, mode=Off
+        assert!(!c.compression_enabled_but_mode_off());
+
+        c.compression = true; // master on, mode still Off → contradictory
+        assert!(c.compression_enabled_but_mode_off());
+
+        c.compression_mode = CompressionMode::LiveZone; // both engaged → fine
+        assert!(!c.compression_enabled_but_mode_off());
+
+        c.compression = false; // master off, mode live_zone → not misconfigured
+        assert!(!c.compression_enabled_but_mode_off());
+    }
+
+    #[test]
+    fn should_record_requires_master_on_and_mode_engaged() {
+        let mut c = cfg();
+        assert!(!c.should_record()); // compression off
+
+        c.compression = true; // master on, but mode still Off → byte-equal, no savings
+        assert!(!c.should_record());
+
+        c.compression_mode = CompressionMode::LiveZone; // actually compressing → record
+        assert!(c.should_record());
+
+        c.compression = false; // master off again → no record regardless of mode
+        assert!(!c.should_record());
     }
 }

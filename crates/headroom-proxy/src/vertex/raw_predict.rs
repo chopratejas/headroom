@@ -75,6 +75,8 @@ pub(crate) async fn forward_vertex_request(
     attach_sse_tee: bool,
 ) -> Response {
     let path_for_log = uri.path().to_string();
+    // Wall-clock for the savings-store recent-request latency.
+    let rec_start = std::time::Instant::now();
 
     // ─── 1. BUFFER BODY ────────────────────────────────────────────────
     let max = state.config.compression_max_body_bytes as usize;
@@ -133,6 +135,8 @@ pub(crate) async fn forward_vertex_request(
     // The dispatcher uses RawValue-based surgery so `anthropic_version`
     // (and any other non-`messages` top-level field) round-trips
     // byte-equal. Compression off → buffered bytes used unchanged.
+    // Phase H: captured for the savings store; set in the Compressed arm below.
+    let (mut rec_tokens_before, mut rec_tokens_after) = (0u64, 0u64);
     let body_to_send = if state.config.compression {
         // PR-E3: Vertex uses GCP ADC bearer-token auth downstream, not
         // Anthropic credentials, so the PAYG/OAuth/subscription
@@ -177,6 +181,8 @@ pub(crate) async fn forward_vertex_request(
                     markers = markers_inserted.len(),
                     "vertex live-zone compression applied"
                 );
+                rec_tokens_before = tokens_before as u64;
+                rec_tokens_after = tokens_after as u64;
                 body
             }
             compression::Outcome::Passthrough { reason } => {
@@ -200,6 +206,22 @@ pub(crate) async fn forward_vertex_request(
         );
         buffered
     };
+
+    // Phase H: build this Vertex request's savings outcome now but record it once
+    // the upstream result is known, so `requests.failed` reflects connect errors
+    // / non-2xx upstreams. Recording is gated on `should_record()` (compression on
+    // AND mode != off) — the shared predicate; narrower than the plain-`compression`
+    // interception gate.
+    let rec_outcome = state.config.should_record().then(|| {
+        crate::observability::stats::RequestOutcome::priced(
+            "vertex",
+            ctx.model_id.clone(),
+            rec_tokens_before,
+            rec_tokens_after,
+            request_id.clone(),
+            &state.price_book,
+        )
+    });
 
     // ─── 4. RESOLVE BEARER TOKEN ───────────────────────────────────────
     let bearer = match state.vertex_token_source.bearer().await {
@@ -328,6 +350,10 @@ pub(crate) async fn forward_vertex_request(
                 error = %e,
                 "vertex upstream call failed"
             );
+            // Connect/timeout failure — record as a failed request.
+            if let Some(o) = rec_outcome {
+                state.savings.record_finalized(o, true, rec_start);
+            }
             return error_response(StatusCode::BAD_GATEWAY, "vertex upstream error");
         }
     };
@@ -335,6 +361,12 @@ pub(crate) async fn forward_vertex_request(
     // ─── 8. STREAM RESPONSE ────────────────────────────────────────────
     let upstream_status = upstream_resp.status();
     let status = StatusCode::from_u16(upstream_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    // Record now that the upstream status is known.
+    if let Some(o) = rec_outcome {
+        state
+            .savings
+            .record_finalized(o, !status.is_success(), rec_start);
+    }
     let resp_headers = filter_response_headers(upstream_resp.headers());
 
     // PR-C1 reuse: when `attach_sse_tee` is set AND the upstream

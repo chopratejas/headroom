@@ -7,6 +7,16 @@ license.workspace = true
 repository.workspace = true
 description = "Headroom transparent reverse proxy (Rust, axum). Phase 1: drop-in passthrough in front of the Python proxy."
 
+# `cargo llvm-cov` sets `--cfg coverage` (and `--cfg coverage_nightly` on
+# nightly). Register them so the `unexpected_cfgs` lint stays clean under
+# `clippy -D warnings`; they gate the `#[coverage(off)]` exclusion of
+# genuinely-unreachable error edges (see observability::stats::serialize_state).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage)',
+    'cfg(coverage_nightly)',
+] }
+
 [[bin]]
 name = "headroom-proxy"
 path = "src/main.rs"
@@ -53,6 +63,7 @@ aws-smithy-runtime-api = { workspace = true }
 # transitively pulled in by `aws-smithy-*` (so this is not an
 # additional cold dep — promoting to a direct one for clarity).
 crc32fast = "1"
+base64 = "0.22"
 # Phase D PR-D3: Prometheus metrics for Bedrock observability. The
 # `prometheus` crate's default-features pull in `protobuf`, which we
 # don't need (we serve text-format scrapes only), so we disable

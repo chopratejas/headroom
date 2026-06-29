@@ -15,6 +15,9 @@ pub struct ProxyHandle {
     pub addr: SocketAddr,
     pub shutdown: Option<oneshot::Sender<()>>,
     pub task: tokio::task::JoinHandle<()>,
+    /// Mirrors production: persistence is off the request path, so the final
+    /// write happens on shutdown. Held so `shutdown()` can flush.
+    pub savings: std::sync::Arc<headroom_proxy::observability::stats::SavingsStore>,
 }
 
 #[allow(dead_code)]
@@ -30,6 +33,12 @@ impl ProxyHandle {
             let _ = tx.send(());
         }
         let _ = self.task.await;
+        // Same as production's shutdown hook: persist whatever the request path
+        // marked dirty (record never writes to disk itself).
+        let savings = self.savings.clone();
+        tokio::task::spawn_blocking(move || savings.flush())
+            .await
+            .ok();
     }
 }
 
@@ -68,8 +77,9 @@ where
     let upstream_url: Url = upstream.parse().expect("valid upstream url");
     let mut config = Config::for_test(upstream_url);
     customize(&mut config);
-    let state = AppState::new(config.clone()).expect("app state");
+    let state = AppState::new(config.clone()).await.expect("app state");
     let state = customize_state(state);
+    let savings = state.savings.clone();
     let app = build_app(state).into_make_service_with_connect_info::<SocketAddr>();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -89,6 +99,7 @@ where
         addr,
         shutdown: Some(tx),
         task,
+        savings,
     }
 }
 
@@ -104,6 +115,33 @@ pub fn install_static_token_source(mut state: AppState, bearer: &str) -> AppStat
         bearer.to_string(),
     )) as Arc<dyn TokenSource>;
     state
+}
+
+/// Convenience: POST a minimal recordable Anthropic `/v1/messages` request (the
+/// standard `claude-haiku-4-5` body) and return the response. Callers assert on
+/// `.status()` as needed.
+#[allow(dead_code)]
+pub async fn post_messages(proxy: &ProxyHandle) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/v1/messages", proxy.url()))
+        .header("content-type", "application/json")
+        .body(r#"{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"max_tokens":10}"#)
+        .send()
+        .await
+        .expect("POST /v1/messages")
+}
+
+/// Convenience: `GET /stats` on a running proxy and parse the JSON body.
+#[allow(dead_code)]
+pub async fn get_stats(proxy: &ProxyHandle) -> serde_json::Value {
+    reqwest::Client::new()
+        .get(format!("{}/stats", proxy.url()))
+        .send()
+        .await
+        .expect("GET /stats")
+        .json()
+        .await
+        .expect("stats json")
 }
 
 /// Hold a reference to the config so dead_code doesn't strip its use.

@@ -64,3 +64,71 @@ pub use eventstream_to_sse::{translate_message, OutputMode, TranslateError, Tran
 pub use invoke::handle_invoke;
 pub use invoke_streaming::handle_invoke_streaming;
 pub use sigv4::{sign_request, SigV4Error, SigningInputs};
+
+/// Build the header list to pass to the SigV4 signer, dropping
+/// hop-by-hop, proxy-internal, and signer-managed headers, and
+/// injecting the correct `host` from the upstream URL.
+pub(crate) fn collect_signed_headers(
+    headers: &http::HeaderMap,
+    upstream_url: &url::Url,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(headers.len() + 1);
+    for (name, value) in headers.iter() {
+        let n = name.as_str().to_ascii_lowercase();
+        if matches!(
+            n.as_str(),
+            "host"
+                | "content-length"
+                | "connection"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "te"
+                | "trailers"
+                | "transfer-encoding"
+                | "upgrade"
+                | "authorization"
+                | "x-amz-date"
+                | "x-amz-content-sha256"
+        ) {
+            continue;
+        }
+        if n.starts_with("x-headroom-") {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            out.push((n, v.to_string()));
+        }
+    }
+    if let Some(host) = upstream_url.host_str() {
+        let host_value = match upstream_url.port() {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+        out.push(("host".to_string(), host_value));
+    }
+    out
+}
+
+/// Build a JSON error response in the Anthropic error envelope shape.
+pub(crate) fn error_response(
+    status: http::StatusCode,
+    event: &str,
+    msg: &str,
+) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::response::IntoResponse as _;
+    let body = serde_json::json!({
+        "error": { "type": event, "message": msg }
+    })
+    .to_string();
+    let mut resp = http::Response::builder()
+        .status(status)
+        .body(Body::from(body))
+        .expect("static error response");
+    resp.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    resp.into_response()
+}

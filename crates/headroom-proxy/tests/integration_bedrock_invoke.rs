@@ -36,7 +36,7 @@
 mod common;
 
 use aws_credential_types::Credentials;
-use common::start_proxy_with_state;
+use common::{get_stats, start_proxy_with_state};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
@@ -559,5 +559,115 @@ async fn tool_use_input_byte_equal_preserves_key_order() {
         units_pos < country_pos && country_pos < city_pos,
         "tool_use.input key order must be units→country→city; got: {received_str}"
     );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn bedrock_invoke_recorded_in_stats() {
+    // A Bedrock invoke must be recorded into the unified savings store and
+    // attributed to the `bedrock` backend, the same way the Anthropic/OpenAI
+    // lanes are via `forward_http`.
+    let upstream = MockServer::start().await;
+    let _captured = mount_capture_invoke(&upstream, r#"{"id":"msg_x","content":[]}"#).await;
+    let proxy = bedrock_proxy(&upstream, |c| {
+        // Recording is gated on should_record(): compression on AND mode != off.
+        c.compression = true;
+        c.compression_mode = headroom_proxy::config::CompressionMode::LiveZone;
+    })
+    .await;
+
+    let body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/model/{TEST_MODEL}/invoke", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("POST bedrock invoke");
+    assert_eq!(resp.status(), 200);
+
+    let stats = get_stats(&proxy).await;
+    assert_eq!(stats["requests"]["total"], 1);
+    assert_eq!(stats["requests"]["by_provider"]["bedrock"], 1);
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn bedrock_invoke_token_counts_flow_into_stats() {
+    // Verify apply_bedrock_response_usage wires token counts through to /stats
+    // so a regression (wrong outcome instance, missing field) is caught end-to-end.
+    let upstream = MockServer::start().await;
+    let _captured = mount_capture_invoke(
+        &upstream,
+        r#"{"id":"msg_x","content":[],"usage":{"input_tokens":50,"output_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":2}}"#,
+    )
+    .await;
+    let proxy = bedrock_proxy(&upstream, |c| {
+        c.compression = true;
+        c.compression_mode = headroom_proxy::config::CompressionMode::LiveZone;
+    })
+    .await;
+
+    let body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/model/{TEST_MODEL}/invoke", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("POST bedrock invoke");
+    assert_eq!(resp.status(), 200);
+
+    let stats = get_stats(&proxy).await;
+    assert_eq!(stats["requests"]["total"], 1);
+    // output_tokens flows into the recent-request feed
+    assert_eq!(stats["recent_requests"][0]["output_tokens"], 10);
+    // cache_read and cache_write tokens land in cost.per_model
+    let per_model = &stats["cost"]["per_model"][TEST_MODEL];
+    assert_eq!(per_model["cache_read_tokens"], 5);
+    assert_eq!(per_model["cache_write_tokens"], 2);
+
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn bedrock_not_recorded_when_mode_off() {
+    // Recording is gated on should_record(): compression on but mode == off is a
+    // byte-equal passthrough with zero savings, so the Bedrock lane records nothing
+    // (per-lane guard for the mode clause, matching forward_http).
+    let upstream = MockServer::start().await;
+    let _captured = mount_capture_invoke(&upstream, r#"{"id":"msg_x","content":[]}"#).await;
+    let proxy = bedrock_proxy(&upstream, |c| {
+        c.compression = true;
+        c.compression_mode = headroom_proxy::config::CompressionMode::Off;
+    })
+    .await;
+
+    let body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 10
+    });
+    let resp = reqwest::Client::new()
+        .post(format!("{}/model/{TEST_MODEL}/invoke", proxy.url()))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("POST bedrock invoke");
+    assert_eq!(resp.status(), 200);
+
+    let stats = get_stats(&proxy).await;
+    assert_eq!(stats["requests"]["total"], 0);
+
     proxy.shutdown().await;
 }

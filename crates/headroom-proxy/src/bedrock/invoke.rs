@@ -43,9 +43,8 @@ use std::time::{Instant, SystemTime};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Extension, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use bytes::Bytes;
-use futures_util::StreamExt as _;
 use http::HeaderName;
 use url::Url;
 
@@ -155,6 +154,9 @@ pub async fn handle_invoke(
     // new error path and forgets to instrument.
     let region = state.config.bedrock_region.clone();
     let _latency_guard = LatencyGuard::start(&model_id, &region);
+    // Wall-clock for the savings-store recent-request latency (the guard's clock
+    // is private and observes a Prometheus histogram on drop).
+    let rec_start = Instant::now();
 
     // PR-D3: count every invoke at handler entry (one per request,
     // before any error path can early-return). Pairs with the
@@ -174,7 +176,7 @@ pub async fn handle_invoke(
     );
 
     let is_anthropic = is_anthropic_model_id(&model_id);
-    let outbound_body: Bytes = if is_anthropic {
+    let (outbound_body, rec_tokens_before, rec_tokens_after): (Bytes, u64, u64) = if is_anthropic {
         run_anthropic_compression(&body, &state, auth_mode, &request_id)
     } else {
         tracing::info!(
@@ -184,8 +186,37 @@ pub async fn handle_invoke(
             reason = "non_anthropic_vendor",
             "bedrock invoke: skipping live-zone compression for non-anthropic vendor"
         );
-        body.clone()
+        (body.clone(), 0, 0)
     };
+
+    // Phase H: record every Bedrock request into the savings store so `/stats`
+    // and the dashboard cover this backend too — unified with the Anthropic /
+    // OpenAI lanes that flow through `forward_http`. The request-side outcome is
+    // built here (compression token counts are known now) but recorded only once
+    // the upstream result is known, so `requests.failed` reflects connect errors
+    // / non-2xx upstreams instead of counting every attempt as a success.
+    //
+    // Recording boundary (same as forward_http): only requests that *attempt* the
+    // upstream are recorded. Pre-upstream rejections below — missing credentials,
+    // SigV4 failure, an invalid endpoint or action path — return before the
+    // record site and are intentionally NOT counted; they are config/client
+    // errors, not upstream interactions.
+    //
+    // Recording is gated on `should_record()` (compression on AND mode != off),
+    // the same predicate every lane uses — a request that can't actually compress
+    // is not a savings event. Note this is narrower than the interception gate:
+    // `forward_http`'s `should_intercept` is the plain `config.compression` flag
+    // (it still buffers/forwards a mode=off request, just doesn't record it).
+    let rec_outcome = state.config.should_record().then(|| {
+        crate::observability::stats::RequestOutcome::priced(
+            "bedrock",
+            model_id.clone(),
+            rec_tokens_before,
+            rec_tokens_after,
+            request_id.clone(),
+            &state.price_book,
+        )
+    });
 
     // Resolve the Bedrock action from the inbound path so `/converse`
     // forwards to the upstream Converse endpoint instead of `/invoke`.
@@ -200,7 +231,7 @@ pub async fn handle_invoke(
                 path = %uri.path(),
                 "bedrock invoke: unrecognized action path"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::BAD_REQUEST,
                 "bedrock_invoke_action_invalid",
                 "Unsupported Bedrock action path",
@@ -219,7 +250,7 @@ pub async fn handle_invoke(
                 error = %msg,
                 "bedrock invoke: failed to construct upstream URL"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_endpoint_invalid",
                 &msg,
@@ -237,7 +268,7 @@ pub async fn handle_invoke(
                 model_id = %model_id,
                 "bedrock invoke: refusing to forward without AWS credentials"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_credentials_missing",
                 "AWS credentials not configured; refusing to forward unsigned",
@@ -247,7 +278,8 @@ pub async fn handle_invoke(
 
     // Build the headers we sign + forward. Start from the inbound
     // headers, drop the ones the upstream client manages, then sign.
-    let extra_signed: Vec<(String, String)> = collect_signed_headers(&headers, &upstream_url);
+    let extra_signed: Vec<(String, String)> =
+        super::collect_signed_headers(&headers, &upstream_url);
     let extra_signed_refs: Vec<(&str, &str)> = extra_signed
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -272,7 +304,7 @@ pub async fn handle_invoke(
                 error = %e,
                 "bedrock invoke: SigV4 signing failed; refusing to forward"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "bedrock_sigv4_failed",
                 &e.to_string(),
@@ -313,7 +345,7 @@ pub async fn handle_invoke(
                 error = %e,
                 "bedrock invoke: invalid HTTP method"
             );
-            return error_response(
+            return super::error_response(
                 StatusCode::BAD_REQUEST,
                 "bedrock_invalid_method",
                 &e.to_string(),
@@ -338,18 +370,56 @@ pub async fn handle_invoke(
                 error = %e,
                 "bedrock invoke: upstream request failed"
             );
+            // Connect/timeout failure — record as a failed request.
+            if let Some(o) = rec_outcome {
+                state.savings.record_finalized(o, true, rec_start);
+            }
             let status = if e.is_timeout() {
                 StatusCode::GATEWAY_TIMEOUT
             } else {
                 StatusCode::BAD_GATEWAY
             };
-            return error_response(status, "bedrock_upstream_error", &e.to_string());
+            return super::error_response(status, "bedrock_upstream_error", &e.to_string());
         }
     };
 
     let status =
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let resp_headers = filter_response_headers(upstream_resp.headers());
+
+    // Buffer the response body to extract token usage before recording.
+    // InvokeModel responses are complete JSON objects (not streams), so
+    // buffering doesn't hurt TTFB. The streaming counterpart
+    // (`invoke-with-response-stream`) is handled separately.
+    let resp_bytes = match upstream_resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                event = "bedrock_invoke_body_read_failed",
+                request_id = %request_id,
+                error = %e,
+                "bedrock invoke: failed to read upstream response body"
+            );
+            if let Some(o) = rec_outcome {
+                state.savings.record_finalized(o, true, rec_start);
+            }
+            return super::error_response(
+                StatusCode::BAD_GATEWAY,
+                "upstream_body_read_failed",
+                &e.to_string(),
+            );
+        }
+    };
+
+    // Extract usage from the Bedrock/Anthropic response body and record it.
+    if let Some(mut o) = rec_outcome {
+        if status.is_success() {
+            apply_bedrock_response_usage(&resp_bytes, &mut o);
+        }
+        state
+            .savings
+            .record_finalized(o, !status.is_success(), rec_start);
+    }
 
     tracing::info!(
         event = "bedrock_invoke_forwarded",
@@ -360,11 +430,7 @@ pub async fn handle_invoke(
         "bedrock invoke: response forwarded"
     );
 
-    // Stream the response body back without buffering.
-    let stream = upstream_resp
-        .bytes_stream()
-        .map(|r| r.map_err(std::io::Error::other));
-    let body_out = Body::from_stream(stream);
+    let body_out = Body::from(resp_bytes);
 
     let mut builder = Response::builder().status(status);
     if let Some(h) = builder.headers_mut() {
@@ -396,12 +462,15 @@ pub async fn handle_invoke(
 /// re-emission step (`ensure_anthropic_version_first`) almost always
 /// no-ops. We still call it as a defence-in-depth assertion that
 /// the byte order is correct before signing.
+/// Run the live-zone compressor and return the outbound body plus the
+/// pre/post-compression input token counts (`(0, 0)` when nothing compressed),
+/// so the caller can attribute Bedrock savings into the stats store.
 fn run_anthropic_compression(
     body: &Bytes,
     state: &AppState,
     _auth_mode: AuthMode,
     request_id: &str,
-) -> Bytes {
+) -> (Bytes, u64, u64) {
     // Detect envelope shape. A parseable InvokeModel envelope takes the
     // re-emit path below (anthropic_version pinned first); a non-envelope
     // body (e.g. a Converse-shaped payload) still runs through the
@@ -436,7 +505,15 @@ fn run_anthropic_compression(
         headroom_core::auth_mode::AuthMode::OAuth,
         request_id,
     );
-    match outcome {
+    let (tokens_before, tokens_after) = match &outcome {
+        AnthropicOutcome::Compressed {
+            tokens_before,
+            tokens_after,
+            ..
+        } => (*tokens_before as u64, *tokens_after as u64),
+        _ => (0, 0),
+    };
+    let out_body = match outcome {
         AnthropicOutcome::NoCompression => body.clone(),
         AnthropicOutcome::Passthrough { reason } => {
             tracing::info!(
@@ -471,7 +548,8 @@ fn run_anthropic_compression(
                 new_body
             }
         }
-    }
+    };
+    (out_body, tokens_before, tokens_after)
 }
 
 /// Build the upstream URL for the Bedrock route. Honours the
@@ -510,73 +588,38 @@ fn build_bedrock_upstream(
 }
 
 /// Build the list of headers to sign + forward. Drops hop-by-hop,
-/// `host`, `content-length` (reqwest manages those), `authorization`
-/// (we replace it with the SigV4 output). Lower-cases names for
-/// canonical-request consistency.
-fn collect_signed_headers(headers: &HeaderMap, upstream_url: &Url) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::with_capacity(headers.len() + 1);
-    for (name, value) in headers.iter() {
-        let n = name.as_str().to_ascii_lowercase();
-        if matches!(
-            n.as_str(),
-            "host"
-                | "content-length"
-                | "connection"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailers"
-                | "transfer-encoding"
-                | "upgrade"
-                | "authorization"
-                | "x-amz-date"
-                | "x-amz-content-sha256"
-        ) {
-            // Drop client-managed + signer-managed headers.
-            continue;
-        }
-        if n.starts_with("x-headroom-") {
-            // Internal headers are stripped from upstream traffic
-            // (PR-A5). The Bedrock route inherits the same default.
-            continue;
-        }
-        if let Ok(v) = value.to_str() {
-            out.push((n, v.to_string()));
-        }
+/// Populate `outcome` with token counts from a Bedrock response body.
+/// Silently no-ops on parse failures or absent fields.
+///
+/// Handles two Bedrock response shapes:
+/// - InvokeModel (Anthropic): `input_tokens`, `output_tokens`, `cache_read_input_tokens`
+/// - Converse: `inputTokens`, `outputTokens`, `cacheReadInputTokens`
+///
+/// When compression didn't run (`tokens_before == 0`), the billed input count
+/// fills both slots so savings_percent stays 0 instead of dividing by zero.
+fn apply_bedrock_response_usage(
+    resp_bytes: &[u8],
+    outcome: &mut crate::observability::stats::RequestOutcome,
+) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(resp_bytes) else {
+        return;
+    };
+    let Some(usage) = v.get("usage") else { return };
+    let get = |snake: &str, camel: &str| {
+        usage
+            .get(snake)
+            .or_else(|| usage.get(camel))
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0)
+    };
+    let input_tokens = get("input_tokens", "inputTokens");
+    if outcome.tokens_before == 0 {
+        outcome.tokens_before = input_tokens;
+        outcome.tokens_after = input_tokens;
     }
-    // Signer requires `host` in the canonical request. Add it
-    // explicitly from the upstream URL — the inbound `host` header
-    // (the proxy's listening hostname) is wrong for the canonical
-    // request.
-    if let Some(host) = upstream_url.host_str() {
-        let host_value = match upstream_url.port() {
-            Some(p) => format!("{host}:{p}"),
-            None => host.to_string(),
-        };
-        out.push(("host".to_string(), host_value));
-    }
-    out
-}
-
-fn error_response(status: StatusCode, event: &str, msg: &str) -> Response {
-    let body = serde_json::json!({
-        "error": {
-            "type": event,
-            "message": msg,
-        }
-    })
-    .to_string();
-    let _ = event;
-    let mut resp = Response::builder()
-        .status(status)
-        .body(Body::from(body))
-        .expect("static error response");
-    resp.headers_mut().insert(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("application/json"),
-    );
-    resp.into_response()
+    outcome.output_tokens = get("output_tokens", "outputTokens");
+    outcome.cache_read_tokens = get("cache_read_input_tokens", "cacheReadInputTokens");
+    outcome.cache_write_tokens = get("cache_creation_input_tokens", "cacheWriteInputTokens");
 }
 
 #[cfg(test)]
@@ -618,6 +661,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/converse"
             .parse()
@@ -655,6 +700,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke"
             .parse()
@@ -690,6 +737,8 @@ mod tests {
             vertex_token_source: std::sync::Arc::new(crate::vertex::StaticTokenSource::new(
                 "test".to_string(),
             )),
+            savings: std::sync::Arc::new(crate::observability::stats::SavingsStore::in_memory()),
+            price_book: std::sync::Arc::new(crate::observability::pricing::PriceBook::empty()),
         };
         let uri: Uri = "/model/anthropic.claude-3-haiku-20240307-v1:0/invoke"
             .parse()
@@ -717,7 +766,7 @@ mod tests {
         headers.insert("accept", "application/json".parse().unwrap());
         let upstream =
             Url::parse("https://bedrock-runtime.us-east-1.amazonaws.com/model/x/invoke").unwrap();
-        let out = collect_signed_headers(&headers, &upstream);
+        let out = super::super::collect_signed_headers(&headers, &upstream);
         let names: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
         assert!(names.contains(&"content-type"));
         assert!(names.contains(&"accept"));
@@ -731,5 +780,84 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .unwrap();
         assert_eq!(host, "bedrock-runtime.us-east-1.amazonaws.com");
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_extracts_all_fields() {
+        use crate::observability::pricing::PriceBook;
+        use crate::observability::stats::RequestOutcome;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            0,
+            0,
+            "r",
+            &PriceBook::empty(),
+        );
+        let resp = br#"{"id":"msg_01","type":"message","content":[],"usage":{"input_tokens":215,"output_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":0}}"#;
+        apply_bedrock_response_usage(resp, &mut o);
+        assert_eq!(o.tokens_before, 215);
+        assert_eq!(o.tokens_after, 215); // no compression → before == after
+        assert_eq!(o.output_tokens, 100);
+        assert_eq!(o.cache_read_tokens, 50);
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_preserves_compression_tokens() {
+        use crate::observability::pricing::PriceBook;
+        use crate::observability::stats::RequestOutcome;
+        // When compression ran, tokens_before > 0 — must not be overwritten.
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            1000,
+            600,
+            "r",
+            &PriceBook::empty(),
+        );
+        let resp =
+            br#"{"usage":{"input_tokens":600,"output_tokens":50,"cache_read_input_tokens":0}}"#;
+        apply_bedrock_response_usage(resp, &mut o);
+        assert_eq!(o.tokens_before, 1000); // preserved
+        assert_eq!(o.tokens_after, 600); // preserved
+        assert_eq!(o.output_tokens, 50);
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_handles_converse_camelcase() {
+        use crate::observability::pricing::PriceBook;
+        use crate::observability::stats::RequestOutcome;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            0,
+            0,
+            "r",
+            &PriceBook::empty(),
+        );
+        // Converse API uses camelCase keys
+        let resp = br#"{"output":{"message":{"role":"assistant","content":[{"text":"OK"}]}},"stopReason":"end_turn","usage":{"inputTokens":15,"outputTokens":4,"totalTokens":19,"cacheReadInputTokens":0,"cacheWriteInputTokens":0}}"#;
+        apply_bedrock_response_usage(resp, &mut o);
+        assert_eq!(o.tokens_before, 15);
+        assert_eq!(o.tokens_after, 15);
+        assert_eq!(o.output_tokens, 4);
+        assert_eq!(o.cache_read_tokens, 0);
+    }
+
+    #[test]
+    fn apply_bedrock_response_usage_noop_on_non_json() {
+        use crate::observability::pricing::PriceBook;
+        use crate::observability::stats::RequestOutcome;
+        let mut o = RequestOutcome::priced(
+            "bedrock",
+            "anthropic.claude-haiku",
+            0,
+            0,
+            "r",
+            &PriceBook::empty(),
+        );
+        apply_bedrock_response_usage(b"not json", &mut o);
+        assert_eq!(o.tokens_before, 0);
+        assert_eq!(o.output_tokens, 0);
     }
 }

@@ -19,10 +19,24 @@ coverage:
         target: auto
         flags:
           - python
+      # The new Rust stats *logic* (the observability modules) must be fully
+      # covered. Scoped to those modules: thin handler wiring (one-line recorder
+      # calls that mirror the integration-tested Anthropic path) is exercised by
+      # tests but not held to a strict 100% patch, since covering every backend's
+      # glue needs full SigV4/ADC handler mocking for marginal value. Project
+      # coverage (below) still tracks the rest.
+      rust:
+        target: 100%
+        flags:
+          - rust
 
 flags:
   python:
     carryforward: false
+  rust:
+    carryforward: false
+    paths:
+      - "crates/headroom-proxy/src/observability/"
 
 ignore:
   - "tests/**"
