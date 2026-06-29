@@ -20,7 +20,7 @@ export function createHeadroomRetrieveTool(config: RetrieveToolConfig) {
 
   return {
     name: "headroom_retrieve",
-    description: "Retrieve original uncompressed content that was compressed to save tokens. Trust kept rows unless you have a concrete gap. Retrieve when you need raw, original, or complete content, or when a targeted follow-up cannot be answered from the kept summary. The hash is provided in compression markers like [N items compressed... hash=abc123].",
+    description: "Retrieve original uncompressed content that was compressed to save tokens. Trust kept rows unless you have a concrete gap. Retrieve when you need raw, original, or complete content, or when you need to inspect the original payload for a specific follow-up. The hash is provided in compression markers like [N items compressed... hash=abc123].",
     parameters: {
       type: "object" as const,
       properties: {
@@ -31,13 +31,13 @@ export function createHeadroomRetrieveTool(config: RetrieveToolConfig) {
         query: {
           type: "string",
           description:
-            "Optional targeted search query for a concrete gap. Use it when the kept summary cannot answer a specific follow-up. If omitted, returns all original items.",
+            "Optional context hint for the concrete gap you are checking. The hint is recorded for feedback and stats; retrieval still returns the full original content.",
         },
       },
       required: ["hash"],
     },
-    execute: async (args: { hash: string }): Promise<string> => {
-      const { hash } = args;
+    execute: async (args: { hash: string; query?: string }): Promise<string> => {
+      const { hash, query } = args;
 
       if (!/^[a-f0-9]{24}$/i.test(hash)) {
         return JSON.stringify({
@@ -46,9 +46,16 @@ export function createHeadroomRetrieveTool(config: RetrieveToolConfig) {
       }
 
       try {
-        const url = `${origin}/v1/retrieve/${hash}`;
+        const url = `${origin}/v1/retrieve`;
+        const body: { hash: string; query?: string } = { hash };
+        if (query) {
+          body.query = query;
+        }
 
         const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
           signal: AbortSignal.timeout(10_000),
         });
 

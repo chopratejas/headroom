@@ -49,31 +49,31 @@ def render_retrieve_tool_description() -> str:
     return (
         "Retrieve original uncompressed content that was compressed to save tokens. "
         "Trust kept rows unless you have a concrete gap. Retrieve when you need raw, "
-        "original, or complete content, or when a targeted follow-up cannot be answered "
-        "from the kept summary. The hash is provided in compression markers like "
+        "original, or complete content, or when you need to inspect the original payload "
+        "for a specific follow-up. The hash is provided in compression markers like "
         "[N items compressed... hash=abc123]."
     )
 
 
 def render_retrieve_query_description() -> str:
     return (
-        "Optional targeted search query for a concrete gap. Use it when the kept summary "
-        "cannot answer a specific follow-up. If omitted, returns all original items."
+        "Optional context hint for the concrete gap you are checking. The hint is recorded "
+        "for feedback and stats; retrieval still returns the full original content."
     )
 
 
 def render_retrieve_cli_guidance() -> str:
     return (
         "Trust kept rows unless you have a concrete gap. Use headroom_retrieve for raw, "
-        "original, or complete content, or for a targeted follow-up the kept summary "
-        "cannot answer."
+        "original, or complete content, or to inspect the original payload for a specific "
+        "follow-up."
     )
 
 
 def render_retrieve_cli_workflow_steps() -> str:
     return (
         "    4. Claude answers from kept rows unless it has a concrete gap\n"
-        "    5. When a raw, original, complete, or targeted follow-up is needed, "
+        "    5. When raw, original, complete, or specific follow-up access is needed, "
         "it calls headroom_retrieve"
     )
 
@@ -81,7 +81,7 @@ def render_retrieve_cli_workflow_steps() -> str:
 def render_retrieve_runtime_prompt_hint() -> str:
     return (
         "Trust kept rows unless you have a concrete gap. Use headroom_retrieve when "
-        "you need raw, original, complete, or targeted follow-up content."
+        "you need raw, original, complete, or specific follow-up access to the original payload."
     )
 
 
@@ -94,13 +94,13 @@ Some tool outputs have been compressed to reduce context size. {CANONICAL_RULE}
 
 Use `{tool_name}` when:
 - the user asks for raw, original, full, or exact content
-- you have a targeted follow-up the kept summary cannot answer
+- you need to inspect the original payload for a specific follow-up
 
 Do not retrieve just because the user asked you to be thorough, careful, or to double-check.
 
 **How to retrieve:**
 - Call `{tool_name}(hash="<hash>")` to get all original items
-- Call `{tool_name}(hash="<hash>", query="search terms")` to search within
+- Call `{tool_name}(hash="<hash>", query="concrete gap")` to record the context for feedback. Retrieval still returns the full original content.
 
 **Available hashes:** {hash_list}
 
@@ -117,7 +117,7 @@ Trust kept rows unless you have a concrete gap.
 ## Use `headroom_retrieve` when
 
 - The user explicitly asks for raw, original, full, exact, or omitted content.
-- You have a targeted follow-up that the kept summary cannot answer.
+- You need to inspect the original payload for a specific follow-up the kept summary cannot answer.
 - You need to inspect or quote a specific row, record, line, or file that was compressed away.
 
 ## Do not use `headroom_retrieve` when
@@ -128,8 +128,8 @@ Trust kept rows unless you have a concrete gap.
 
 ## Retrieval style
 
-- Prefer `headroom_retrieve(hash, query=...)` for a focused gap.
-- Omit `query` only when you truly need the full original payload.
+- Use `query` only as a note about the concrete gap you are checking.
+- Current retrieval still returns the full original payload, even when `query` is present.
 """
 
 
@@ -141,7 +141,7 @@ def render_learn_recommendation() -> str:
     return (
         f"- {CANONICAL_RULE}\n"
         "- Use `headroom_retrieve` for raw, original, or complete-content requests, or for "
-        "a targeted follow-up the kept summary cannot answer.\n"
+        "specific follow-up access to the original payload.\n"
         "- Do not retrieve the full payload just because the user asked you to be thorough, "
         "careful, or to double-check."
     )
@@ -150,13 +150,6 @@ def render_learn_recommendation() -> str:
 def classify_retrieve_need(user_text: str, query: str | None = None) -> RetrieveNeedAssessment:
     normalized = _normalize(user_text)
     query_text = (query or "").strip()
-
-    if query_text:
-        return RetrieveNeedAssessment(
-            should_retrieve=True,
-            is_redundant=False,
-            reason="targeted_query",
-        )
 
     if _matches(_CONCRETE_GAP_PATTERNS, normalized):
         return RetrieveNeedAssessment(
@@ -170,6 +163,13 @@ def classify_retrieve_need(user_text: str, query: str | None = None) -> Retrieve
             should_retrieve=False,
             is_redundant=True,
             reason="thoroughness_without_gap",
+        )
+
+    if query_text:
+        return RetrieveNeedAssessment(
+            should_retrieve=True,
+            is_redundant=False,
+            reason="specific_followup_with_query_hint",
         )
 
     return RetrieveNeedAssessment(

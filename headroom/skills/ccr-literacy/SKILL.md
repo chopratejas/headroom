@@ -5,7 +5,7 @@ Trust kept rows unless you have a concrete gap.
 ## Use `headroom_retrieve` when
 
 - The user explicitly asks for raw, original, full, exact, or omitted content.
-- You have a targeted follow-up that the kept summary cannot answer.
+- You need to inspect the original payload for a specific follow-up the kept summary cannot answer.
 - You need to inspect or quote a specific row, record, line, or file that was compressed away.
 
 ## Do not use `headroom_retrieve` when
@@ -16,5 +16,5 @@ Trust kept rows unless you have a concrete gap.
 
 ## Retrieval style
 
-- Prefer `headroom_retrieve(hash, query=...)` for a focused gap.
-- Omit `query` only when you truly need the full original payload.
+- Use `query` only as a note about the concrete gap you are checking.
+- Current retrieval still returns the full original payload, even when `query` is present.

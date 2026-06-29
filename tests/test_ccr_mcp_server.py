@@ -109,6 +109,36 @@ def test_mcp_retrieve_returns_full_content(fresh_store) -> None:
     assert result["original_content"] == original
 
 
+def test_mcp_retrieve_query_records_feedback_and_returns_full_content(fresh_store) -> None:
+    items = [
+        {"id": 1, "name": "auth middleware"},
+        {"id": 2, "name": "billing worker"},
+    ]
+    original = json.dumps(items)
+    store = get_compression_store()
+    hash_key = store.store(
+        original,
+        json.dumps(items[:1]),
+        original_item_count=2,
+        compressed_item_count=1,
+    )
+
+    server = mcp_server.HeadroomMCPServer(check_proxy=False)
+    content = asyncio.run(
+        server._handle_retrieve({"hash": hash_key, "query": "auth middleware"})
+    )
+
+    result = json.loads(content[0].kwargs["text"])
+    assert result["original_content"] == original
+    assert result["original_item_count"] == 2
+    retrieved_entry = store.retrieve(hash_key)
+    assert retrieved_entry is not None
+    assert retrieved_entry.search_queries == ["auth middleware"]
+    event = next(e for e in store.get_retrieval_events(limit=10) if e.query == "auth middleware")
+    assert event.query == "auth middleware"
+    assert event.retrieval_type == "full"
+
+
 def test_mcp_retrieve_missing_hash_still_errors(fresh_store) -> None:
     """A genuinely missing hash must still report "Content not found"."""
     server = mcp_server.HeadroomMCPServer(check_proxy=False)

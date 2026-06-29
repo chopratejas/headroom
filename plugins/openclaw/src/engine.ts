@@ -133,7 +133,7 @@ export class HeadroomContextEngine {
           estimatedTokens: result.tokensAfter,
           systemPromptAddition:
             result.tokensSaved > 100
-            ? `[Context compressed by Headroom: ${result.tokensSaved} tokens saved. Trust kept rows unless you have a concrete gap. Use headroom_retrieve when you need raw, original, complete, or targeted follow-up content.]`
+              ? `[Context compressed by Headroom: ${result.tokensSaved} tokens saved. Trust kept rows unless you have a concrete gap. Use headroom_retrieve when you need raw, original, complete, or specific follow-up access to the original payload.]`
             : undefined,
         };
     } catch (error) {

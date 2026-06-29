@@ -24,8 +24,9 @@ def test_tool_description_carries_canonical_rule() -> None:
 
 def test_query_description_prefers_targeted_gap() -> None:
     description = render_retrieve_query_description()
-    assert "targeted" in description
     assert "concrete gap" in description
+    assert "feedback and stats" in description
+    assert "full original content" in description
 
 
 def test_system_instructions_warn_against_thoroughness_only_retrieval() -> None:
@@ -78,6 +79,15 @@ def test_openclaw_engine_prompt_uses_canonical_runtime_hint() -> None:
 
 def test_classifier_flags_thoroughness_without_query_as_redundant() -> None:
     assessment = classify_retrieve_need("Be sure the summary did not miss anything.")
+    assert assessment.is_redundant
+    assert not assessment.should_retrieve
+
+
+def test_classifier_flags_thoroughness_with_query_as_redundant() -> None:
+    assessment = classify_retrieve_need(
+        "Be sure the summary did not miss anything.",
+        query="auth",
+    )
     assert assessment.is_redundant
     assert not assessment.should_retrieve
 
