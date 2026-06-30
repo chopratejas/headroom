@@ -87,8 +87,9 @@ Headroom compresses everything your AI agent reads — tool outputs, logs, RAG c
 
 ```bash
 # 1 — Install
-pip install "headroom-ai[all]"          # Python
-npm install headroom-ai                 # Node / TypeScript
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI on macOS Apple Silicon/Linux
+pip install "headroom-ai[all]"                   # Python project env
+npm install headroom-ai                          # Node / TypeScript
 
 # 2 — Pick your mode
 headroom wrap claude                    # wrap a coding agent
@@ -319,14 +320,34 @@ Everything in this repo stays open source (Apache 2.0). The managed offering is 
 ## Install
 
 ```bash
-pip install "headroom-ai[all]"          # Python, everything
-npm install headroom-ai                 # TypeScript / Node
+uv tool install --python 3.13 "headroom-ai[all]"  # CLI, isolated app env
+pip install "headroom-ai[all]"                   # Python project env
+npm install headroom-ai                          # TypeScript / Node
 docker pull ghcr.io/chopratejas/headroom:latest
 ```
 
 Granular extras: `[proxy]`, `[mcp]`, `[ml]` (Kompress-v2-base), `[code]`, `[memory]`, `[vector]` (optional HNSW backend — needs a C++ toolchain, not in `[all]`), `[relevance]`, `[image]`, `[agno]`, `[langchain]`, `[evals]`, `[pytorch-mps]` (Apple-GPU memory-embedder offload — set `HEADROOM_EMBEDDER_RUNTIME=pytorch_mps`). Requires **Python 3.10+**.
 
 > **Note**: `[all]` covers the core stack but excludes framework adapters. Install them separately: `pip install "headroom-ai[langchain]"` (also `[agno]`, `[strands]`, `[anyllm]`, `[bedrock]`).
+
+Using `uv` for the `headroom` CLI? Prefer `uv tool install` so the command lives in an isolated app environment. On macOS, pass `--python 3.13` if your default `python3` is newer than the current wheel set:
+
+```bash
+brew install python@3.13  # if Python 3.13 is not already available
+uv tool install --python 3.13 "headroom-ai[all]"
+uv tool update-shell      # if ~/.local/bin is not already on PATH
+headroom --version
+```
+
+For MCP clients such as Codex that do not inherit your interactive shell `PATH`, configure the absolute executable path returned by `command -v headroom`:
+
+```toml
+[mcp_servers.headroom]
+command = "/Users/you/.local/bin/headroom"
+args = ["mcp", "serve"]
+```
+
+Current native wheels cover macOS Apple Silicon and Linux. On Intel macOS, use Docker-native install until native wheel support lands.
 
 Using `pipx`? Choose a supported interpreter explicitly:
 
