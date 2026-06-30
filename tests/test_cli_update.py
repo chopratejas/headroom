@@ -126,6 +126,7 @@ def test_update_runs_upgrade_with_yes(monkeypatch):
     monkeypatch.setattr(up, "installed_version", lambda: "0.26.0")
     monkeypatch.setattr(up, "fetch_latest_version", lambda **k: "0.27.0")
     monkeypatch.setattr(up, "_in_virtualenv", lambda: True)
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: None)  # Skip integrity checks
 
     class _Result:
         returncode = 0
@@ -167,6 +168,7 @@ def test_update_upgrade_failure_surfaces_command(monkeypatch):
     monkeypatch.setattr(up, "installed_version", lambda: "0.26.0")
     monkeypatch.setattr(up, "fetch_latest_version", lambda **k: "0.27.0")
     monkeypatch.setattr(up, "_in_virtualenv", lambda: True)
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: None)  # Skip file operations in test
 
     class _Result:
         returncode = 1
@@ -175,3 +177,91 @@ def test_update_upgrade_failure_surfaces_command(monkeypatch):
     res = CliRunner().invoke(main, ["update", "--yes"])
     assert res.exit_code != 0
     assert "Upgrade failed" in res.output
+
+
+# --------------------------------------------------------------------------- #
+# safe_update (Windows-specific backup/restore protection)
+# --------------------------------------------------------------------------- #
+def test_safe_update_success(monkeypatch):
+    """Test safe_update returns 0 when the command succeeds."""
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: None)
+    monkeypatch.setattr(up.subprocess, "run", lambda *a, **k: _Result())
+
+    result = up.safe_update([sys.executable, "-m", "pip", "install", "-U", "headroom-ai"])
+    assert result == 0
+
+
+def test_safe_update_handles_missing_pyd(monkeypatch):
+    """Test safe_update when _core.pyd doesn't exist."""
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: None)
+    monkeypatch.setattr(up.subprocess, "run", lambda *a, **k: _Result())
+
+    result = up.safe_update([sys.executable, "-m", "pip", "install", "-U", "headroom-ai"])
+    assert result == 0
+
+
+def test_safe_update_passes_through_failure(monkeypatch):
+    """Test safe_update returns error code when pip fails."""
+    class _Result:
+        returncode = 1
+
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: None)
+    monkeypatch.setattr(up.subprocess, "run", lambda *a, **k: _Result())
+
+    result = up.safe_update([sys.executable, "-m", "pip", "install", "-U", "headroom-ai"])
+    assert result == 1
+
+
+def test_safe_update_warns_but_no_backup_when_locked(monkeypatch, tmp_path):
+    """Quando o .pyd está bloqueado, safe_update avisa mas não faz backup."""
+    fake_pyd = tmp_path / "_core.pyd"
+    fake_pyd.write_bytes(b"fake pyd content")
+
+    monkeypatch.setattr(up.sys, "platform", "win32")
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: fake_pyd)
+    monkeypatch.setattr(up, "_is_pyd_locked", lambda p: True)  # locked!
+
+    class _Result:
+        returncode = 1  # pip fails (expected — file was locked)
+
+    monkeypatch.setattr(up.subprocess, "run", lambda *a, **k: _Result())
+
+    result = up.safe_update([sys.executable, "-m", "pip", "install", "-U", "headroom-ai"])
+
+    assert result == 1
+    # Backup nunca deve ter sido criado — arquivo bloqueado, pip falha sem corromper
+    assert not (tmp_path / "_core.pyd.bak").exists()
+
+
+def test_safe_update_backup_and_restore_on_integrity_failure(monkeypatch, tmp_path):
+    """Test safe_update backs up and restores _core.pyd if integrity check fails."""
+    from pathlib import Path
+
+    # Create a fake .pyd file
+    fake_pyd = tmp_path / "_core.pyd"
+    fake_pyd.write_bytes(b"fake pyd content")
+
+    # Mock Windows and _core.pyd detection
+    monkeypatch.setattr(up.sys, "platform", "win32")
+    monkeypatch.setattr(up, "_find_core_pyd", lambda: fake_pyd)
+    monkeypatch.setattr(up, "_is_pyd_locked", lambda p: False)
+
+    class _Result:
+        returncode = 0
+
+    # Simulate pip success but integrity test failure
+    monkeypatch.setattr(up.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(up, "_test_core_integrity", lambda: False)
+
+    result = up.safe_update([sys.executable, "-m", "pip", "install", "-U", "headroom-ai"])
+
+    # Should return error due to integrity failure
+    assert result == 1
+    # Backup should be cleaned up
+    assert not (tmp_path / "_core.pyd.bak").exists()
