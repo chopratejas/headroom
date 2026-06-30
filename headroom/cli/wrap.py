@@ -462,39 +462,83 @@ def _start_proxy(
         if openai_api_url:
             proxy_env["GITHUB_COPILOT_API_URL"] = openai_api_url
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=stdio_log_file,
-        stderr=stdio_log_file,
-        env=proxy_env,
-        start_new_session=os.name == "posix",
-    )
+    # Detach the proxy from the launching console on Windows so an ungraceful
+    # close of the owning agent (closing the terminal window, taskkill, or a
+    # crash) cannot tree-kill the shared proxy out from under other live
+    # clients. Without this the proxy stays in the owner's console + Job
+    # object; closing that window terminates the whole tree, bypassing the
+    # marker-based reference counting in ``_make_cleanup`` and breaking every
+    # other ``headroom wrap`` instance routed through the same port.
+    #   CREATE_NO_WINDOW         — give the proxy its OWN, invisible console.
+    #                              A separate console means the parent's
+    #                              CTRL_CLOSE_EVENT never reaches it, and no
+    #                              stray console window pops up. DETACHED_PROCESS
+    #                              also isolates the console, but for a console
+    #                              subsystem exe (python.exe) it leaves the proxy
+    #                              consoleless and Windows surfaces a visible
+    #                              console window — closing that window killed
+    #                              the proxy, defeating the whole point.
+    #   CREATE_NEW_PROCESS_GROUP — isolate from the parent's Ctrl-C
+    #   CREATE_BREAKAWAY_FROM_JOB— survive Job kill-on-close (Windows Terminal,
+    #                              VS Code integrated terminal, conhost)
+    # CREATE_NO_WINDOW / DETACHED_PROCESS / CREATE_NEW_CONSOLE are mutually
+    # exclusive — pick exactly one. On POSIX, ``start_new_session`` already
+    # detaches via setsid(). ``sys.platform == "win32"`` (not ``os.name ==
+    # "nt"``) so mypy narrows the platform and resolves the Windows-only
+    # ``subprocess`` constants below.
+    _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = (
+            subprocess.CREATE_NO_WINDOW
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | _CREATE_BREAKAWAY_FROM_JOB
+        )
 
-    # Wait for proxy to be ready.
-    # ML components (Kompress, Magika, Tree-sitter) load synchronously before
-    # uvicorn binds the port. On slower machines this can take 20-30 seconds.
-    for _i in range(timeout_seconds):
-        time.sleep(1)
-        if _check_proxy(port):
-            click.echo(f"  Logs: {log_path}")
-            stdio_log_file.close()
-            return proc
-        # Check if process died
-        if proc.poll() is not None:
-            stdio_log_file.close()
-            # Read last few lines of log for error context
-            try:
-                tail = _read_text(stdio_log_path)[-500:]
-            except Exception:
-                tail = "(no log output)"
-            raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
+    popen_kwargs: dict[str, Any] = {
+        "stdout": stdio_log_file,
+        "stderr": stdio_log_file,
+        "env": proxy_env,
+        "start_new_session": os.name == "posix",
+        "creationflags": creationflags,
+    }
+    # Close the parent's copy of the stdio log handle on every exit path,
+    # including when BOTH spawn attempts raise. The child keeps its own
+    # inherited duplicate, so closing here never starves the proxy's logging.
+    try:
+        try:
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+        except OSError:
+            # The launcher's Job object forbids breakaway. Retry without that flag;
+            # CREATE_NO_WINDOW still spares the proxy from console-close events.
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = creationflags & ~_CREATE_BREAKAWAY_FROM_JOB
+            proc = subprocess.Popen(cmd, **popen_kwargs)
 
-    proc.kill()
-    stdio_log_file.close()
-    raise RuntimeError(
-        f"Proxy failed to start on port {port} within {timeout_seconds} seconds. "
-        f"Set {_WRAP_PROXY_TIMEOUT_ENV} to a larger number of seconds for slow startup."
-    )
+        # Wait for proxy to be ready.
+        # ML components (Kompress, Magika, Tree-sitter) load synchronously before
+        # uvicorn binds the port. On slower machines this can take 20-30 seconds.
+        for _i in range(timeout_seconds):
+            time.sleep(1)
+            if _check_proxy(port):
+                click.echo(f"  Logs: {log_path}")
+                return proc
+            # Check if process died
+            if proc.poll() is not None:
+                # Read last few lines of log for error context
+                try:
+                    tail = _read_text(stdio_log_path)[-500:]
+                except Exception:
+                    tail = "(no log output)"
+                raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
+
+        proc.kill()
+        raise RuntimeError(
+            f"Proxy failed to start on port {port} within {timeout_seconds} seconds. "
+            f"Set {_WRAP_PROXY_TIMEOUT_ENV} to a larger number of seconds for slow startup."
+        )
+    finally:
+        stdio_log_file.close()
 
 
 def _setup_rtk(verbose: bool = False) -> Path | None:
@@ -1350,6 +1394,20 @@ def _strip_codex_headroom_blocks(
 _REDIRECTABLE_KEYS: tuple[str, ...] = ("model_provider", "openai_base_url")
 
 
+def _strip_existing_codex_headroom_provider_table(content: str) -> str:
+    """Remove a pre-existing ``[model_providers.headroom]`` table before wrap."""
+    if "[model_providers.headroom]" not in content:
+        return content
+
+    import re  # local import to match surrounding helper convention
+
+    provider_table = re.compile(
+        r"(?ms)^[ \t]*\[model_providers\.headroom\][^\n]*\n.*?(?=^[ \t]*\[|\Z)"
+    )
+    content = provider_table.sub("", content)
+    return content.lstrip("\n").rstrip() + "\n" if content.strip() else ""
+
+
 def _redirect_existing_top_level_keys(content: str, port: int) -> str:
     """Rewrite user-defined top-level keys so wrap does not create duplicates.
 
@@ -1614,6 +1672,7 @@ def _inject_codex_provider_config(port: int) -> None:
             # Remove any prior Headroom-managed blocks before re-injecting so
             # the operation is idempotent and supports port changes.
             content = _strip_codex_headroom_blocks(content)
+            content = _strip_existing_codex_headroom_provider_table(content)
 
             # Bare top-level keys must precede any [section] in TOML, and
             # TOML rejects duplicate top-level keys.  Rewrite any existing
@@ -5394,7 +5453,10 @@ def opencode(
     if not no_serena:
         from headroom.mcp_registry import OpencodeRegistrar
 
-        _setup_serena_mcp(OpencodeRegistrar(), context="opencode", verbose=verbose, force=True)
+        # Serena ships no "opencode" context (only agent/codex/claude-code/ide/…);
+        # passing --context opencode crashes Serena on launch (#1549/#1572). Use
+        # the generic "agent" context, which OpenCode is.
+        _setup_serena_mcp(OpencodeRegistrar(), context="agent", verbose=verbose, force=True)
     else:
         from headroom.mcp_registry import OpencodeRegistrar
 
