@@ -373,7 +373,7 @@ class ProxyConfig:
     # Precedence: CLI > env > auto-compute.
     anthropic_pre_upstream_concurrency: int | None = None
     # Upper bound for waiting on the Anthropic pre-upstream semaphore
-    # before failing fast with a 503 + Retry-After. Keeps the queue bounded
+    # before failing open to passthrough compression. Keeps the queue bounded
     # when all pre-upstream slots are occupied by slow/hung work.
     anthropic_pre_upstream_acquire_timeout_seconds: float = 15.0
     # Fail-open timeout for Anthropic memory-context lookup while the request
