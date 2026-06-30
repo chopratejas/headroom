@@ -424,6 +424,24 @@ class TestCLIProxyEnvVars:
         assert result.exit_code == 0, result.output
         assert captured_config["config"].openai_api_url == "http://my-vllm:4000"
 
+    def test_openai_chat_path_from_env(self, runner):
+        """HEADROOM_OPENAI_CHAT_PATH env var should be passed to ProxyConfig."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy"],
+                env={"HEADROOM_OPENAI_CHAT_PATH": "/v4/chat/completions"},
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured_config["config"].openai_chat_path == "/v4/chat/completions"
+
     def test_gemini_target_api_url_from_env(self, runner):
         """GEMINI_TARGET_API_URL env var should be passed to ProxyConfig."""
         captured_config = {}
@@ -479,6 +497,26 @@ class TestCLIProxyEnvVars:
 
         assert result.exit_code == 0, result.output
         assert captured_config["config"].openai_api_url == "http://from-cli:4000"
+
+    def test_openai_chat_path_cli_flag(self, runner):
+        """--openai-chat-path CLI flag should take precedence."""
+        captured_config = {}
+
+        def mock_run_server(config, **kwargs):
+            captured_config["config"] = config
+
+        with patch("headroom.proxy.server.run_server", mock_run_server):
+            result = runner.invoke(
+                main,
+                ["proxy", "--openai-chat-path", "/openai/deployments/gpt-4/chat/completions"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            captured_config["config"].openai_chat_path
+            == "/openai/deployments/gpt-4/chat/completions"
+        )
 
     def test_vertex_api_url_cli_flag(self, runner):
         """--vertex-api-url CLI flag should take precedence."""
@@ -1087,6 +1125,16 @@ class TestArgparseBackendValidation:
             config = _proxy_config_from_env()
 
         assert config.disable_kompress_fallback is True
+
+    def test_proxy_config_from_env_reads_openai_chat_path(self):
+        """The direct server env path should honor HEADROOM_OPENAI_CHAT_PATH."""
+        from headroom.proxy import server as server_mod
+
+        with patch.dict(os.environ, {"HEADROOM_OPENAI_CHAT_PATH": "/v4/chat/completions"}):
+            os.environ.pop(server_mod._MULTI_WORKER_CONFIG_ENV, None)
+            config = server_mod._proxy_config_from_env()
+
+        assert config.openai_chat_path == "/v4/chat/completions"
 
     def test_argparse_registers_keepalive_expiry_flag(self):
         """The argparse path (python -m headroom.proxy.server) must register
