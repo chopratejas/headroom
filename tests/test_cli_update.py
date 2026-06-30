@@ -241,8 +241,6 @@ def test_safe_update_warns_but_no_backup_when_locked(monkeypatch, tmp_path):
 
 def test_safe_update_backup_and_restore_on_integrity_failure(monkeypatch, tmp_path):
     """Test safe_update backs up and restores _core.pyd if integrity check fails."""
-    from pathlib import Path
-
     # Create a fake .pyd file
     fake_pyd = tmp_path / "_core.pyd"
     fake_pyd.write_bytes(b"fake pyd content")
