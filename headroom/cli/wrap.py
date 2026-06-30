@@ -164,6 +164,7 @@ _WRAP_PROXY_TIMEOUT_ML_MODULES = ("torch", "sentence_transformers", "spacy")
 _TOOL_SEARCH_ENV = TOOL_SEARCH_ENV
 _TOOL_SEARCH_DEFAULT = TOOL_SEARCH_DEFAULT
 _AGENT_SAVINGS_WRAP_AGENTS = {"claude", "codex", "cursor"}
+_CLAUDE_PROJECT_SETTINGS_ENV = "HEADROOM_CLAUDE_PROJECT_SETTINGS"
 
 # 1M context window for `wrap claude` (#1158). Claude Code only sends the
 # `context-1m` beta header — unlocking the 1M window for entitled subscription
@@ -752,6 +753,17 @@ def _foundry_proxy_url(proxy_url: str) -> str:
     proxy URL Claude Code receives mirrors the real Foundry URL shape.
     """
     return proxy_url.rstrip("/") + "/anthropic"
+
+
+def _claude_project_settings_enabled(project_settings: bool) -> bool:
+    """Return whether wrap claude should write project-local Claude settings."""
+    env_enabled = _env_bool_value(os.environ.get(_CLAUDE_PROJECT_SETTINGS_ENV, ""))
+    return project_settings or env_enabled
+
+
+def _claude_project_settings_skip_reason() -> str:
+    return f"use --project-settings or {_CLAUDE_PROJECT_SETTINGS_ENV}=1 to persist proxy routing"
+
 
 
 def _write_claude_wrap_base_url(
@@ -3370,6 +3382,16 @@ def unwrap() -> None:
 )
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option(
+    "--project-settings",
+    "--project-settings-injection",
+    "project_settings",
+    is_flag=True,
+    help=(
+        "Write .claude/settings.local.json so daemon-spawned Claude workers inherit "
+        "Headroom routing. Env: HEADROOM_CLAUDE_PROJECT_SETTINGS=1."
+    ),
+)
+@click.option(
     "--learn", is_flag=True, help="Enable live traffic learning (patterns saved to MEMORY.md)"
 )
 @click.option("--memory", is_flag=True, help="Enable persistent cross-session memory")
@@ -3421,6 +3443,7 @@ def claude(
     no_serena: bool,
     code_graph: bool,
     no_proxy: bool,
+    project_settings: bool,
     learn: bool,
     memory: bool,
     tool_search: str | None,
@@ -3449,6 +3472,7 @@ def claude(
         headroom wrap claude --no-context-tool  # Skip CLI context-tool setup
         headroom wrap claude --no-mcp           # Skip MCP retrieve tool registration
         headroom wrap claude --no-serena        # Never register the Serena backup
+        headroom wrap claude --project-settings # Persist proxy routing in .claude/settings.local.json
         headroom wrap claude --1m               # Preserve the 1M context window
     """
     if prepare_only:
@@ -3473,6 +3497,7 @@ def claude(
     proxy_holder: list[subprocess.Popen | None] = [None]
     _saved_base_url: list[str | None] = [None]  # previous settings.json value for restore
     _settings_foundry: list[bool] = [False]
+    _wrote_project_settings: list[bool] = [False]
     cleanup = _make_cleanup(proxy_holder, port)
     _register_proxy_client(port)
     signal.signal(signal.SIGINT, _ignore_child_sigint)
@@ -3626,14 +3651,20 @@ def claude(
         else:
             env["ANTHROPIC_BASE_URL"] = proxy_url
 
-        # Issue #951: write to settings.json so daemon-spawned conversation
-        # workers (which read settings.json fresh rather than inheriting the
-        # daemon's environment) also route through Headroom.
+        # Project-local settings are opt-in because synced checkouts can carry stale localhost proxy URLs to machines without Headroom (#1599).
         _settings_foundry[0] = bool(foundry_upstream)
-        _saved_base_url[0] = _write_claude_wrap_base_url(
-            _foundry_proxy_url(proxy_url) if _settings_foundry[0] else proxy_url,
-            foundry_mode=_settings_foundry[0],
-        )
+        if _claude_project_settings_enabled(project_settings):
+            _saved_base_url[0] = _write_claude_wrap_base_url(
+                _foundry_proxy_url(proxy_url) if _settings_foundry[0] else proxy_url,
+                foundry_mode=_settings_foundry[0],
+            )
+            _wrote_project_settings[0] = True
+        elif verbose:
+            skip_reason = _claude_project_settings_skip_reason()
+            click.echo(
+                "  Skipping project-local Claude settings "
+                f"({skip_reason}); daemon-spawned workers may not inherit Headroom."
+            )
 
         # Per-project savings attribution: tag every request with the launch
         # directory's name via X-Headroom-Project (user override wins).
@@ -3672,7 +3703,8 @@ def claude(
         click.echo(f"  Error: {e}")
         raise SystemExit(1) from e
     finally:
-        _restore_claude_wrap_base_url(_saved_base_url[0], foundry_mode=_settings_foundry[0])
+        if _wrote_project_settings[0]:
+            _restore_claude_wrap_base_url(_saved_base_url[0], foundry_mode=_settings_foundry[0])
         cleanup()
 
 
