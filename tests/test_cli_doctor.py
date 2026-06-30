@@ -329,7 +329,7 @@ class TestDoctorCommand:
         result = runner.invoke(main, ["doctor"])
         assert result.exit_code == 1
 
-    def test_all_pass_exits_0(self, runner, isolated, monkeypatch):
+    def test_remote_control_warning_exits_1(self, runner, isolated, monkeypatch):
         monkeypatch.setattr(doctor_mod, "probe_json", self._probe(LIVEZ_OK, STATS_OK))
         monkeypatch.setattr(doctor_mod, "get_version", lambda: "0.26.0")
         (isolated / "settings.json").write_text(

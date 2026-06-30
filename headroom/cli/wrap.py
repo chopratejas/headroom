@@ -3745,7 +3745,12 @@ def claude(
         else:
             click.echo(f"  ANTHROPIC_BASE_URL={proxy_url}")
             if is_custom_anthropic_base_url(proxy_url):
-                click.echo(f"  {remote_control_gate_message(REMOTE_CONTROL_BASE_URL_ENV)}")
+                click.echo(
+                    "  "
+                    + remote_control_gate_message(
+                        f"the wrapped Claude session's {REMOTE_CONTROL_BASE_URL_ENV}"
+                    )
+                )
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
         _print_telemetry_notice()
