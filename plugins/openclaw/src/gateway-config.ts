@@ -4,6 +4,9 @@ export const DEFAULT_GATEWAY_PROVIDER_IDS = ["openai-codex"] as const;
 
 const DEFAULT_PROVIDER_BASE_URLS: Readonly<Record<string, string>> = {
   "openai-codex": "https://chatgpt.com/backend-api",
+  anthropic: "https://api.anthropic.com/v1",
+  google: "https://generativelanguage.googleapis.com/v1beta",
+  openrouter: "https://openrouter.ai/api/v1",
 };
 
 const GATEWAY_PROVIDER_ID_ALIASES: Readonly<Record<string, string>> = {

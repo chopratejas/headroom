@@ -59,6 +59,7 @@ describe("isLocalProxyUrl", () => {
   it("returns true for localhost addresses", () => {
     expect(isLocalProxyUrl("http://127.0.0.1:8787")).toBe(true);
     expect(isLocalProxyUrl("http://localhost:8787")).toBe(true);
+    expect(isLocalProxyUrl("http://[::1]:8787")).toBe(true);
   });
 
   it("returns false for remote addresses", () => {

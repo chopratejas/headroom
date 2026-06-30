@@ -412,7 +412,12 @@ export function normalizeAndValidateProxyUrl(proxyUrl: string): string {
 export function isLocalProxyUrl(proxyUrl: string): boolean {
   try {
     const parsed = new URL(proxyUrl);
-    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+    return (
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "[::1]" ||
+      parsed.hostname === "::1"
+    );
   } catch {
     return false;
   }

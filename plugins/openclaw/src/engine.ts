@@ -255,6 +255,9 @@ export class HeadroomContextEngine {
       .finally(() => {
         this.proxyStartupPromise = null;
       });
+
+    // Attach handler on a branch to prevent unhandled rejection crashes in background runs.
+    this.proxyStartupPromise.catch(() => {});
   }
 
   onProxyReady(listener: (proxyUrl: string) => void | Promise<void>): () => void {

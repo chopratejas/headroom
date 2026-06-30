@@ -185,6 +185,7 @@ export function openAIToAgent(messages: OpenAIMessage[]): any[] {
       }
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
+          if (!tc || !tc.function) continue;
           let input: any;
           try {
             input = JSON.parse(tc.function.arguments);

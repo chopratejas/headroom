@@ -52,15 +52,15 @@ describe("applyGatewayProviderBaseUrls", () => {
     expect(result.changed).toBe(true);
     expect((result.config as any).models.providers).toEqual({
       anthropic: {
-        baseUrl: "http://127.0.0.1:8787",
+        baseUrl: "http://127.0.0.1:8787/v1",
         models: [],
       },
       openrouter: {
-        baseUrl: "http://127.0.0.1:8787",
+        baseUrl: "http://127.0.0.1:8787/api/v1",
         models: [],
       },
       google: {
-        baseUrl: "http://127.0.0.1:8787",
+        baseUrl: "http://127.0.0.1:8787/v1beta",
         models: [],
       },
       "minimax-portal": {
