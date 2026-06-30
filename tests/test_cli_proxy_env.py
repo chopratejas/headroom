@@ -106,6 +106,54 @@ class TestCLIWrapProxyTimeout:
         assert env["GITHUB_COPILOT_API_URL"] == "https://copilot-api.acme.ghe.com"
         assert env["GITHUB_COPILOT_API_TOKEN"] == "copilot-api-token"
 
+    def test_start_proxy_forwards_vertex_api_url_to_proxy(self, monkeypatch, tmp_path):
+        """A custom Vertex gateway URL must reach the proxy as the
+        VERTEX_TARGET_API_URL env var and the --vertex-api-url flag (#1476)."""
+        fake_proc = _FakeProxyProcess()
+        captured: dict[str, object] = {}
+        gateway = "https://my-gateway.example.com/vertex/v1"
+
+        monkeypatch.delenv(wrap_mod._WRAP_PROXY_TIMEOUT_ENV, raising=False)
+        monkeypatch.setattr(wrap_mod, "_ml_wrap_extras_detected", lambda: False)
+        monkeypatch.setattr(wrap_mod, "_get_log_path", lambda: tmp_path / "proxy.log")
+        monkeypatch.setattr(wrap_mod, "_check_proxy", lambda _port: True)
+        monkeypatch.setattr(wrap_mod.time, "sleep", lambda _seconds: None)
+
+        def fake_popen(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return fake_proc
+
+        monkeypatch.setattr(wrap_mod.subprocess, "Popen", fake_popen)
+
+        proc = wrap_mod._start_proxy(8787, agent_type="claude", vertex_api_url=gateway)
+
+        assert proc is fake_proc
+        assert captured["kwargs"]["env"]["VERTEX_TARGET_API_URL"] == gateway
+        cmd = captured["args"][0]
+        assert "--vertex-api-url" in cmd
+        assert gateway in cmd
+
+    def test_ensure_proxy_threads_vertex_api_url_to_start_proxy(self, monkeypatch):
+        """`_ensure_proxy` must forward `vertex_api_url` down to `_start_proxy`
+        (the link `wrap claude` relies on for Vertex gateway routing)."""
+        captured: dict[str, object] = {}
+        gateway = "https://my-gateway.example.com/vertex/v1"
+
+        monkeypatch.setattr(wrap_mod, "_check_proxy", lambda port: False)
+        monkeypatch.setattr(wrap_mod, "_find_persistent_manifest", lambda port: None)
+        monkeypatch.setattr(wrap_mod, "_port_bind_error", lambda port: None)
+
+        def fake_start(*args, **kwargs):  # noqa: ANN002, ANN003
+            captured.update(kwargs)
+            return None
+
+        monkeypatch.setattr(wrap_mod, "_start_proxy", fake_start)
+
+        wrap_mod._ensure_proxy(8787, False, agent_type="claude", vertex_api_url=gateway)
+
+        assert captured.get("vertex_api_url") == gateway
+
     def test_start_proxy_redirects_subprocess_stdio_to_standalone_log(self, monkeypatch, tmp_path):
         fake_proc = _FakeProxyProcess()
         captured: dict[str, object] = {}

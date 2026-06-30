@@ -388,6 +388,7 @@ def _start_proxy(
     region: str | None = None,
     openai_api_url: str | None = None,
     anthropic_api_url: str | None = None,
+    vertex_api_url: str | None = None,
     copilot_api_token: str | None = None,
 ) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
@@ -434,6 +435,9 @@ def _start_proxy(
     if anthropic_api_url:
         cmd.extend(["--anthropic-api-url", anthropic_api_url])
 
+    if vertex_api_url:
+        cmd.extend(["--vertex-api-url", vertex_api_url])
+
     timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
     stdio_log_path = _get_proxy_stdio_log_path()
@@ -453,6 +457,8 @@ def _start_proxy(
         proxy_env["OPENAI_TARGET_API_URL"] = openai_api_url
     if anthropic_api_url:
         proxy_env["ANTHROPIC_TARGET_API_URL"] = anthropic_api_url
+    if vertex_api_url:
+        proxy_env["VERTEX_TARGET_API_URL"] = vertex_api_url
     # Pin the wrapper-validated Copilot token for this proxy instance only.
     # Injected into the subprocess env here (not the parent's os.environ) so it
     # never leaks into shared state. The proxy's CopilotTokenProvider honours
@@ -2624,6 +2630,7 @@ def _ensure_proxy(
     region: str | None = None,
     openai_api_url: str | None = None,
     anthropic_api_url: str | None = None,
+    vertex_api_url: str | None = None,
     copilot_api_token: str | None = None,
 ) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
@@ -2909,6 +2916,7 @@ def _ensure_proxy(
                     region=region,
                     openai_api_url=openai_api_url,
                     anthropic_api_url=anthropic_api_url,
+                    vertex_api_url=vertex_api_url,
                     copilot_api_token=copilot_api_token,
                 ),
             )
@@ -3607,6 +3615,13 @@ def claude(
         # by Headroom. This is the turnkey Vertex compression path.
         use_vertex = bool(os.environ.get("CLAUDE_CODE_USE_VERTEX"))
 
+        # In Vertex mode we overwrite ANTHROPIC_VERTEX_BASE_URL with the proxy
+        # URL below, so capture the user's real Vertex endpoint first and hand
+        # it to the proxy as its upstream target (VERTEX_TARGET_API_URL). Without
+        # this the proxy falls back to the default Google Vertex hosts and a
+        # custom Vertex gateway 404s (#1476).
+        vertex_upstream = os.environ.get("ANTHROPIC_VERTEX_BASE_URL") if use_vertex else None
+
         proxy_holder[0] = _ensure_proxy(
             port,
             no_proxy,
@@ -3617,6 +3632,7 @@ def claude(
             backend=backend,
             region=region,
             anthropic_api_url=foundry_upstream,
+            vertex_api_url=vertex_upstream,
         )
         _push_runtime_env(port, no_proxy)
 
