@@ -288,6 +288,39 @@ def test_handle_openai_responses_routes_chatgpt_auth_to_backend_api(monkeypatch)
     assert response.status_code == 200
 
 
+def test_handle_openai_responses_strips_codex_lite_header_upstream(monkeypatch):
+    # OpenAI rejects newer Codex models when the client-only lite header leaks
+    # upstream. The HTTP POST path must drop it like the WS handler does, while
+    # leaving adjacent headers intact.
+    token = _jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-from-jwt",
+            }
+        }
+    )
+    request = _build_request(
+        {"model": "gpt-5.4", "input": "hello"},
+        {
+            "Authorization": f"Bearer {token}",
+            "X-OpenAI-Internal-Codex-Responses-Lite": "true",
+            "X-OpenAI-Debug": "keep-me",
+        },
+    )
+    handler = _DummyOpenAIHandler()
+
+    monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda model: _DummyTokenizer())
+
+    response = anyio.run(handler.handle_openai_responses, request)
+
+    assert response.status_code == 200
+    assert handler.captured_request is not None
+    _method, _url, headers, _body = handler.captured_request
+    lowered = {k.lower(): v for k, v in headers.items()}
+    assert "x-openai-internal-codex-responses-lite" not in lowered
+    assert lowered.get("x-openai-debug") == "keep-me"
+
+
 def test_handle_openai_responses_chatgpt_codex_timeout_fails_open(monkeypatch):
     token = _jwt(
         {
