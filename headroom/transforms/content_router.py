@@ -1805,13 +1805,23 @@ class ContentRouter(Transform):
                     compressor.ensure_background_load()
                 else:
                     try:
-                        result = compressor.compress(
-                            text_to_compress,
-                            context=context,
-                            question=question,
-                            target_ratio=getattr(self, "_runtime_target_ratio", None),
-                            allow_download=False,
-                        )
+                        compress_kwargs: dict[str, Any] = {
+                            "context": context,
+                            "question": question,
+                            "target_ratio": getattr(self, "_runtime_target_ratio", None),
+                            "allow_download": False,
+                        }
+                        # When custom tags are protected, ``text_to_compress`` is
+                        # the placeholdered intermediate ({{HEADROOM_TAG_N}}). Pass
+                        # the pre-protection ``content`` as ``ccr_original`` so CCR
+                        # stores the real text, not the placeholder — otherwise a
+                        # later full retrieval returns {{HEADROOM_TAG_N}} and the
+                        # protected block is lost from the retrieval path. Only set
+                        # it when tags were protected so callers/compressors that
+                        # don't accept the kwarg are unaffected on the common path.
+                        if protected:
+                            compress_kwargs["ccr_original"] = content
+                        result = compressor.compress(text_to_compress, **compress_kwargs)
                         compressed = result.compressed
                         compressed_tokens = result.compressed_tokens
                     except Exception as e:

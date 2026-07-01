@@ -941,6 +941,7 @@ class KompressCompressor(Transform):
         target_ratio: float | None = None,
         *,
         allow_download: bool = True,
+        ccr_original: str | None = None,
     ) -> KompressResult:
         """Compress content using Kompress model.
 
@@ -957,6 +958,10 @@ class KompressCompressor(Transform):
                 The proxy sets this False so a cold model never blocks the request
                 thread (see ``ensure_background_download``); direct callers keep
                 the historic auto-download-on-first-use behavior.
+            ccr_original: Text to store in CCR instead of ``content``. Used when
+                ``content`` is a tag-protected placeholder intermediate
+                ({{HEADROOM_TAG_N}}); passing the pre-protection original keeps a
+                later full retrieval lossless. Defaults to ``content``.
 
         Returns:
             KompressResult with compressed text.
@@ -1000,6 +1005,7 @@ class KompressCompressor(Transform):
                     question=question,
                     target_ratio=[target_ratio],
                     batch_size=_batch_size(),
+                    ccr_originals=[ccr_original],
                 )
                 if batch_result:
                     return batch_result[0]
@@ -1137,7 +1143,9 @@ class KompressCompressor(Transform):
 
             # CCR marker
             if self.config.enable_ccr and ratio < 0.8:
-                cache_key = self._store_in_ccr(content, compressed, n_words)
+                ccr_source = ccr_original if ccr_original is not None else content
+                ccr_source_tokens = len(ccr_source.split())
+                cache_key = self._store_in_ccr(ccr_source, compressed, ccr_source_tokens)
                 if cache_key:
                     result.cache_key = cache_key
                     result.compressed += (
@@ -1178,6 +1186,8 @@ class KompressCompressor(Transform):
         question: str | None = None,
         target_ratio: float | list[float | None] | None = None,
         batch_size: int = 32,
+        *,
+        ccr_originals: list[str | None] | None = None,
     ) -> list[KompressResult]:
         """Compress multiple texts. Uses batched inference on GPU, sequential on CPU.
 
@@ -1250,6 +1260,18 @@ class KompressCompressor(Transform):
         else:
             ratios = [target_ratio] * n
 
+        # Normalize ccr_originals to a per-text list (CCR stores these instead of
+        # the possibly tag-protected ``contents`` entries; see ``compress``).
+        if ccr_originals is not None:
+            if len(ccr_originals) != n:
+                raise ValueError(
+                    f"ccr_originals list length {len(ccr_originals)} does not match "
+                    f"contents length {n}"
+                )
+            ccr_sources: list[str | None] = list(ccr_originals)
+        else:
+            ccr_sources = [None] * n
+
         # Fast path: on backends where batch-dim parallelism does NOT help
         # (ONNX CPU, PyTorch CPU), fall back to sequential `compress()`
         # internally. This keeps the public API consistent while avoiding the
@@ -1263,8 +1285,9 @@ class KompressCompressor(Transform):
                     content_type=content_type,
                     question=question,
                     target_ratio=r,
+                    ccr_original=ccr_source,
                 )
-                for content, r in zip(contents, ratios, strict=True)
+                for content, r, ccr_source in zip(contents, ratios, ccr_sources, strict=True)
             ]
 
         results: list[KompressResult | None] = [None] * n
@@ -1421,7 +1444,11 @@ class KompressCompressor(Transform):
             )
 
             if self.config.enable_ccr and comp_ratio < 0.8:
-                cache_key = self._store_in_ccr(content, compressed, n_words)
+                ccr_source = ccr_sources[text_idx]
+                if ccr_source is None:
+                    ccr_source = content
+                ccr_source_tokens = len(ccr_source.split())
+                cache_key = self._store_in_ccr(ccr_source, compressed, ccr_source_tokens)
                 if cache_key:
                     result.cache_key = cache_key
                     result.compressed += (
