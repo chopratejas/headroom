@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._shared import claude_config_dir
 from .models import (
     ProjectInfo,
     Recommendation,
@@ -274,10 +275,11 @@ class ClaudeCodeWriter(ContextWriter):
         if self._context_target is not None:
             target = Path(self._context_target).expanduser()
             return target if target.is_absolute() else project.project_path / target
-        # The home directory's CLAUDE.md (~/.claude/CLAUDE.md) is the user's
-        # personal global memory, not a team-shared file, so keep writing there.
+        # The home directory's CLAUDE.md (~/.claude/CLAUDE.md, or
+        # $CLAUDE_CONFIG_DIR/CLAUDE.md) is the user's personal global memory,
+        # not a team-shared file, so keep writing there.
         if project.project_path == Path.home():
-            return Path.home() / ".claude" / "CLAUDE.md"
+            return claude_config_dir() / "CLAUDE.md"
         # Project level: default to the gitignored, personal CLAUDE.local.md so
         # we never pollute the team-shared CLAUDE.md (issue #1072).
         return project.project_path / "CLAUDE.local.md"

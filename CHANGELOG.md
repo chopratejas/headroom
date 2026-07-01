@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- `headroom learn` now honors `CLAUDE_CONFIG_DIR`. It resolved the Claude
+  config directory as `~/.claude` and wrote global memory to
+  `~/.claude/CLAUDE.md`, so users who relocate their Claude config via that
+  env var had `learn` scan the wrong directory and detect no projects. The
+  scanner and memory writer now read/write the configured directory
+  ([#1630](https://github.com/headroomlabs-ai/headroom/issues/1630)).
 - Proactive expansion blocks injected into user turns are now wrapped in
   `<headroom_proactive_expansion>` XML tags, giving downstream consumers
   (LLMs, loggers, attribution parsers) a machine-readable provenance
