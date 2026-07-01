@@ -51,6 +51,30 @@ def _capture_popen_kwargs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> di
     return captured
 
 
+def test_start_proxy_uses_safe_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The proxy subprocess must run with -P so its cwd never shadows the
+    installed package -- e.g. `headroom wrap claude` invoked from inside a
+    checkout that has its own top-level `headroom/` package would otherwise
+    import that unbuilt source tree instead, dropping `headroom._core`."""
+    captured_cmd: list[Any] = []
+
+    def _fake_popen(cmd: Any, **kwargs: Any) -> _FakeProc:
+        captured_cmd.clear()
+        captured_cmd.extend(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr(wrap_cli.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wrap_cli, "_get_log_path", lambda: tmp_path / "proxy.log")
+    monkeypatch.setattr(wrap_cli, "_resolve_wrap_proxy_timeout_seconds", lambda: 1)
+
+    wrap_cli._start_proxy(8787)
+
+    assert captured_cmd[0] == wrap_cli.sys.executable
+    assert captured_cmd[1] == "-P"
+
+
 def test_start_proxy_detaches_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Force the Windows branch regardless of the host OS, and supply the
     # Windows-only ``subprocess`` constants the host lacks on POSIX.

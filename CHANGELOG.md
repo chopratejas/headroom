@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<headroom_proactive_expansion>` XML tags, giving downstream consumers
   (LLMs, loggers, attribution parsers) a machine-readable provenance
   boundary and preventing misattribution in multi-agent threads.
+- `headroom wrap <tool>` now launches its proxy subprocess with `-P`
+  (`PYTHONSAFEPATH`). Without it, running `headroom wrap` from inside a
+  checkout that has its own top-level `headroom/` package (e.g. this repo)
+  shadowed the installed package with the unbuilt source tree, dropping the
+  compiled `headroom._core` extension and failing with
+  `No module named 'headroom._core'`.
 
 ### Changed
 
