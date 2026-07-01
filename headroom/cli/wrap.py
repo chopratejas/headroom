@@ -5704,26 +5704,11 @@ def opencode(
         click.echo("Install OpenCode: https://opencode.ai")
         raise SystemExit(1)
 
-    env, env_vars_display = _build_opencode_launch_env(
-        port, os.environ, project=_project_name_from_cwd(), include_mcp=not no_mcp
-    )
-
-    # Inject Headroom provider into OpenCode config so traffic routes through proxy.
-    inject_opencode_provider_config(port)
-    if memory:
-        mem_dir = Path.cwd() / ".headroom"
-        _inject_memory_mcp_config(
-            os.environ.get("USER", os.environ.get("USERNAME", "default")),
-        )
-
-    _launch_tool(
-        binary=opencode_bin,
-        args=opencode_args,
-        env=env,
-        port=port,
-        no_proxy=no_proxy,
-        tool_label="OPENCODE",
-        env_vars_display=env_vars_display,
+    # Resolve port before config injection so the provider block and MCP
+    # URL both point at the port the proxy will actually be on.
+    _opencode_proxy, actual_port = _ensure_proxy(
+        port,
+        no_proxy,
         learn=learn,
         memory=memory,
         agent_type="opencode",
@@ -5732,6 +5717,54 @@ def opencode(
         anyllm_provider=anyllm_provider,
         region=region,
     )
+
+    # If the proxy fell back, update MCP config so retrieval points at
+    # the correct port.
+    if actual_port != port and not no_mcp:
+        from headroom.mcp_registry import OpencodeRegistrar
+
+        _setup_headroom_mcp(OpencodeRegistrar(), actual_port, verbose=verbose, force=True)
+
+    env, env_vars_display = _build_opencode_launch_env(
+        actual_port, os.environ, project=_project_name_from_cwd(), include_mcp=not no_mcp
+    )
+
+    # Inject Headroom provider into OpenCode config so traffic routes through proxy.
+    inject_opencode_provider_config(actual_port)
+    if memory:
+        mem_dir = Path.cwd() / ".headroom"
+        _inject_memory_mcp_config(
+            os.environ.get("USER", os.environ.get("USERNAME", "default")),
+        )
+
+    # Proxy already started by _ensure_proxy above; tell _launch_tool to
+    # skip duplicate startup.
+    try:
+        _launch_tool(
+            binary=opencode_bin,
+            args=opencode_args,
+            env=env,
+            port=actual_port,
+            no_proxy=True,
+            tool_label="OPENCODE",
+            env_vars_display=env_vars_display,
+            learn=learn,
+            memory=memory,
+            agent_type="opencode",
+            code_graph=code_graph,
+            backend=backend,
+            anyllm_provider=anyllm_provider,
+            region=region,
+        )
+    finally:
+        if _opencode_proxy and _opencode_proxy.poll() is None:
+            _other = _live_proxy_clients(actual_port, exclude_self=True)
+            if not _other:
+                _opencode_proxy.terminate()
+                try:
+                    _opencode_proxy.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _opencode_proxy.kill()
 
 
 def _opencode_home_dir() -> Path:
