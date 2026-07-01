@@ -398,7 +398,12 @@ def _start_proxy(
     `~/.headroom/logs/proxy-stdio.log`, to avoid pipe deadlock risk without
     competing with the rotating `proxy.log` runtime log.
     """
-    cmd = [sys.executable, "-m", "headroom.cli", "proxy", "--port", str(port)]
+    # -P (PYTHONSAFEPATH): don't prepend the launching process's cwd to
+    # sys.path. Without it, running `headroom wrap <tool>` from inside a
+    # checkout that happens to contain a top-level `headroom/` package (e.g.
+    # this repo) shadows the installed package with the unbuilt source tree,
+    # dropping the compiled `headroom._core` extension the proxy needs.
+    cmd = [sys.executable, "-P", "-m", "headroom.cli", "proxy", "--port", str(port)]
 
     # Forward HEADROOM_MODE env var so the proxy respects the user's mode choice
     headroom_mode = os.environ.get("HEADROOM_MODE")
