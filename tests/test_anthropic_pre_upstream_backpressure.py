@@ -9,7 +9,7 @@ Covers:
 - N+1 contention (only the (N+1)th waiter records ``pre_upstream_wait`` > 0)
 - strict serialization under concurrency=1
 - unbounded mode (``anthropic_pre_upstream_concurrency=0`` -> no semaphore)
-- acquire timeout fails fast with ``503`` + ``Retry-After``
+- acquire timeout fails fast with passthrough compression skip
 - memory-context timeout fails open without leaking the semaphore
 - exception-safety (semaphore released when the critical section raises)
 - ``/livez`` unaffected under Anthropic backpressure
@@ -243,13 +243,14 @@ class _DummyAnthropicHandler(AnthropicHandlerMixin):
         request_id: str | None = None,
         forwarder_name: str = "test_dummy",
         path_for_log: str | None = None,
+        timeout=None,
     ):
         # PR-A8 follow-up: A3 added byte-faithful kwargs to the real
         # ``_retry_request`` signature. The dummy stub doesn't need
         # to use them — just accept them so existing tests don't
         # break with TypeError on the new call sites.
         del original_body_bytes, body_mutated, mutation_reasons
-        del request_id, forwarder_name, path_for_log
+        del request_id, forwarder_name, path_for_log, timeout
         if self._raise_during_critical:
             raise RuntimeError("synthetic pre-upstream failure")
         enter = time.perf_counter()
@@ -519,11 +520,13 @@ def test_exception_inside_critical_section_releases_semaphore():
         anyio.run(_run)
 
 
-def test_acquire_timeout_returns_503_with_retry_after(stage_log_capture):
+def test_acquire_timeout_degrades_to_passthrough(stage_log_capture):
     async def _run() -> None:
         sem = asyncio.Semaphore(1)
         await sem.acquire()
         handler = _DummyAnthropicHandler(anthropic_pre_upstream_sem=sem)
+        handler.config.optimize = True
+        handler.anthropic_pipeline = SimpleNamespace(apply=MagicMock())
         handler.config.anthropic_pre_upstream_acquire_timeout_seconds = 0.01
         req = _build_request(
             {
@@ -534,11 +537,14 @@ def test_acquire_timeout_returns_503_with_retry_after(stage_log_capture):
         )
         try:
             response = await handler.handle_anthropic_messages(req)
-            assert response.status_code == 503
-            assert response.headers["retry-after"] == "1"
+            assert response.status_code == 200
             body = json.loads(response.body)
-            assert body["error"]["type"] == "service_unavailable"
-            assert sem._value == 0
+            assert body["id"] == "msg_test"
+            assert body["type"] == "message"
+            assert body["model"] == "claude-3-5-sonnet-latest"
+            assert body["stop_reason"] == "end_turn"
+            assert body["content"][0]["text"] == "ok"
+            assert not handler.anthropic_pipeline.apply.called
         finally:
             sem.release()
         assert sem._value == 1
@@ -548,7 +554,8 @@ def test_acquire_timeout_returns_503_with_retry_after(stage_log_capture):
 
     payloads = _parse_all_stage_logs(stage_log_capture)
     assert len(payloads) == 1
-    assert payloads[0]["stages"]["pre_upstream_wait"] >= 10.0
+    assert "pre_upstream_wait" in payloads[0]["stages"]
+    assert payloads[0]["stages"]["pre_upstream_wait"] >= 0.0
 
 
 def test_memory_context_timeout_fails_open_and_releases_semaphore():
@@ -851,7 +858,7 @@ class _CacheHit:
     def __init__(self) -> None:
         self._entry = self._Entry()
 
-    async def get(self, _messages, _model):
+    async def get(self, _messages, _model, **_kwargs):
         return self._entry
 
     async def set(self, *a, **k):

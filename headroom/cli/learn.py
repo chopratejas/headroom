@@ -78,6 +78,14 @@ Use 'auto' (default) to scan all detected agents."""
     help="Write recommendations to context/memory files (default: dry-run).",
 )
 @click.option(
+    "--target",
+    type=str,
+    default=None,
+    help="Override the context file learnings are written to (Claude Code only). "
+    "Path is relative to the project root, or absolute. Defaults to CLAUDE.local.md "
+    "(personal, gitignored). Pass CLAUDE.md to write to the team-shared file instead.",
+)
+@click.option(
     "--agent",
     type=_AgentChoice(),
     default="auto",
@@ -93,7 +101,7 @@ Use 'auto' (default) to scan all detected agents."""
 @click.option(
     "--workers",
     "-j",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     help="Parallel workers for session scanning. "
     "Default: auto (min of CPU count, 8). Use 1 for serial.",
@@ -124,6 +132,7 @@ def learn(
     project: Path | None,
     analyze_all: bool,
     apply: bool,
+    target: str | None,
     agent: str,
     model: str | None,
     workers: int | None,
@@ -148,17 +157,38 @@ def learn(
         headroom learn --model gpt-4o         # Use GPT-4o for analysis
         headroom learn --all                  # Analyze all projects
         headroom learn --agent codex --all    # Analyze all Codex sessions
+        headroom learn --target CLAUDE.md     # Write to the team-shared file
     """
     import os
 
     from ..learn.analyzer import SessionAnalyzer, _detect_default_model
     from ..learn.registry import auto_detect_plugins, get_plugin
 
+    # Flag-combination validation — reject contradictory/no-op combinations up
+    # front rather than letting one flag silently win or be ignored.
+    if analyze_all and project is not None:
+        raise click.UsageError("--all and --project are mutually exclusive.")
+    if llm_judge and not verbosity_mode:
+        raise click.UsageError("--llm-judge only applies with --verbosity.")
+
     max_workers = workers if workers is not None else min(os.cpu_count() or 4, 8)
 
     # Verbosity learning is a distinct flow: it mines behavioral signals (no
     # failure analysis) and needs no LLM unless --llm-judge is set.
     if verbosity_mode:
+        ignored = [
+            flag
+            for flag, is_set in (
+                ("--target", target is not None),
+                ("--main-only", main_only),
+                ("--workers", workers is not None),
+                ("--model", model is not None and not llm_judge),
+            )
+            if is_set
+        ]
+        if ignored:
+            verb = "is" if len(ignored) == 1 else "are"
+            click.echo(f"Note: {', '.join(ignored)} {verb} ignored with --verbosity.")
         _run_verbosity(
             project=project,
             analyze_all=analyze_all,
@@ -200,8 +230,17 @@ def learn(
 
     for agent_name, plugin in agent_configs:
         writer = plugin.create_writer()
+        if target is not None:
+            if hasattr(writer, "set_context_target"):
+                writer.set_context_target(target)
+            else:
+                click.echo(f"Note: --target is not supported for {agent_name}; ignoring.")
         all_projects = plugin.discover_projects()
         if not all_projects:
+            # An explicitly-selected agent with no data should say so rather than
+            # exiting silently (the auto path aggregates across agents instead).
+            if agent != "auto":
+                click.echo(f"No {plugin.display_name} project data found.")
             continue
         available_projects.extend((agent_name, proj.project_path) for proj in all_projects)
 
@@ -236,9 +275,15 @@ def learn(
             click.echo(f"Path: {proj.project_path}")
             click.echo(f"{'=' * 60}")
 
-            sessions = plugin.scan_project(
-                proj, max_workers=max_workers, include_subagents=not main_only
-            )
+            try:
+                sessions = plugin.scan_project(
+                    proj, max_workers=max_workers, include_subagents=not main_only
+                )
+            except Exception as exc:
+                # One unreadable agent/project must not abort the whole
+                # cross-agent run; skip it with a warning and continue.
+                click.echo(f"  Skipping (could not scan sessions): {exc}")
+                continue
             if not sessions:
                 click.echo("  No conversation data found.")
                 continue
@@ -273,6 +318,9 @@ def learn(
                     f"  Warning: failed to write recommendations for {proj.project_path}: {e}"
                 )
                 continue
+
+            for warning in getattr(result, "warnings", None) or []:
+                click.echo(f"\n  ⚠ {warning}")
 
             for file_path, content in result.content_by_file.items():
                 click.echo(f"\n  {'[WOULD WRITE]' if result.dry_run else '[WROTE]'} {file_path}")
@@ -343,6 +391,41 @@ def _make_llm_judge(model: str) -> Any:
     return judge
 
 
+def _activate_output_shaper(port: int | None = None) -> tuple[str, int]:
+    """Best-effort: turn the output shaper ON for a running local proxy.
+
+    Writing ``verbosity.json`` is inert on its own — the shaper is a live,
+    off-by-default knob, so the learned level does nothing until
+    ``HEADROOM_OUTPUT_SHAPER`` is enabled in the proxy that serves traffic.
+    When a proxy is already running locally we hot-enable it via
+    ``/admin/runtime-env`` (no restart, the same channel ``wrap`` uses), so
+    ``--apply`` actually takes effect. Returns ``(status, port)`` where status is
+    ``"live"`` (enabled on a running proxy), ``"absent"`` (no reachable proxy),
+    or ``"error"``.
+    """
+    import json as _json
+    import os as _os
+    import urllib.error
+    import urllib.request
+
+    resolved_port = port if port is not None else int(_os.environ.get("HEADROOM_PORT", "8787"))
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{resolved_port}/admin/runtime-env",
+        data=_json.dumps({"HEADROOM_OUTPUT_SHAPER": "1"}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            response.read()
+        return "live", resolved_port
+    except (urllib.error.URLError, OSError):
+        # ConnectionRefused (no proxy) or 404 (proxy predates the endpoint).
+        return "absent", resolved_port
+    except ValueError:
+        return "error", resolved_port
+
+
 def _run_verbosity(
     *,
     project: Path | None,
@@ -356,7 +439,7 @@ def _run_verbosity(
     from ..learn.registry import auto_detect_plugins, get_plugin
     from ..learn.verbosity import analyze
     from ..paths import ensure_workspace_dir
-    from ..proxy.output_savings import SavingsLedger
+    from ..proxy.output_savings import BaselineModel, SavingsLedger
 
     # Verbosity mining reads Claude Code transcripts; restrict to that plugin.
     if agent == "auto":
@@ -395,12 +478,26 @@ def _run_verbosity(
 
     judge = _make_llm_judge(model or "claude-sonnet-4-6") if llm_judge else None
 
+    # Aggregate across all targeted projects. The baseline accumulates so the
+    # synthetic control reflects every project's transcripts (not just whichever
+    # one happens to be processed last). The applied verbosity level comes from
+    # the project with the most samples — the strongest, least noisy signal.
+    aggregated = BaselineModel()
+    best_profile = None
+    best_profile_samples = -1
+    analyzed_count = 0
+
     for proj in targets:
         session_paths = sorted(proj.data_path.glob("*.jsonl"))
         if not session_paths:
             continue
         profile, baseline = analyze(session_paths, str(proj.project_path), llm_judge=judge)
         sig = profile.signals
+        analyzed_count += 1
+        aggregated.merge(baseline)
+        if baseline.total_samples > best_profile_samples:
+            best_profile_samples = baseline.total_samples
+            best_profile = profile
 
         click.echo(f"\n{'=' * 60}")
         click.echo(f"Verbosity — {proj.name}")
@@ -427,26 +524,49 @@ def _run_verbosity(
             f"(confidence: {profile.confidence})"
         )
 
-        if apply:
-            ws = ensure_workspace_dir()
-            from datetime import datetime, timezone
+    if analyzed_count == 0 or best_profile is None:
+        click.echo("\n  No transcripts found in the selected project(s); nothing learned.")
+        return
 
-            profile.learned_at = datetime.now(timezone.utc).isoformat()
-            profile.save(ws / "verbosity.json")
-            # Seed the savings baseline: replace baseline, preserve any live
-            # treatment/control already accumulated.
-            ledger_path = ws / "output_savings.json"
-            ledger = SavingsLedger.load(ledger_path)
-            ledger.baseline = baseline
-            ledger.save(ledger_path)
-            click.echo(f"\n  [WROTE] {ws / 'verbosity.json'} (level {profile.level})")
+    if apply:
+        ws = ensure_workspace_dir()
+        from datetime import datetime, timezone
+
+        best_profile.learned_at = datetime.now(timezone.utc).isoformat()
+        best_profile.save(ws / "verbosity.json")
+        # Seed the savings baseline: replace baseline, preserve any live
+        # treatment/control already accumulated.
+        ledger_path = ws / "output_savings.json"
+        ledger = SavingsLedger.load(ledger_path)
+        ledger.baseline = aggregated
+        ledger.save(ledger_path)
+        click.echo(f"\n  [WROTE] {ws / 'verbosity.json'} (level {best_profile.level})")
+        click.echo(
+            f"  [WROTE] {ledger_path} (baseline: {aggregated.total_samples} samples, "
+            f"{len(aggregated.strata)} strata across {analyzed_count} project(s))"
+        )
+        # Writing the level is not enough — the shaper is off by default.
+        # Make --apply actually take effect: hot-enable a running proxy, and
+        # otherwise tell the user exactly how to turn it on.
+        status, shaper_port = _activate_output_shaper()
+        if status == "live":
             click.echo(
-                f"  [WROTE] {ledger_path} (baseline: {baseline.total_samples} samples, "
-                f"{len(baseline.strata)} strata)"
+                f"\n  ✓ Output shaper enabled on the running proxy (port {shaper_port}); "
+                f"level {best_profile.level} is live now (while HEADROOM_VERBOSITY_LEVEL is unset)."
             )
             click.echo(
-                "\n  The output shaper now uses this level when "
-                "HEADROOM_OUTPUT_SHAPER=1 and HEADROOM_VERBOSITY_LEVEL is unset."
+                "    To keep it on across restarts: export HEADROOM_OUTPUT_SHAPER=1 "
+                "before `headroom wrap ...` (wrap pushes it to the proxy)."
             )
         else:
-            click.echo("\n  Dry run — use --apply to persist the level and baseline.")
+            click.echo(
+                "\n  ⚠ Level written, but the output shaper is OFF by default — it is "
+                "NOT shaping output yet."
+            )
+            click.echo(
+                "    Enable it: export HEADROOM_OUTPUT_SHAPER=1 then `headroom wrap ...` "
+                "(or start `headroom proxy` with it set). The learned level is then used "
+                "automatically while HEADROOM_VERBOSITY_LEVEL is unset."
+            )
+    else:
+        click.echo("\n  Dry run — use --apply to persist the level and baseline.")

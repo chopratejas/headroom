@@ -169,7 +169,7 @@ class ClaudeCodePlugin(LearnPlugin, ConversationScanner):
         msg_index = 0
 
         try:
-            with open(jsonl_path) as f:
+            with open(jsonl_path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     try:
                         d = json.loads(line)
@@ -354,10 +354,7 @@ def _decode_project_path(escaped_name: str) -> Path | None:
         drive = win_candidate.drive
         if drive:
             flat_parts = [
-                token
-                for part in win_candidate.parts[1:]
-                for token in part.split("-")
-                if token
+                token for part in win_candidate.parts[1:] for token in part.split("-") if token
             ]
             result = _greedy_path_decode(Path(f"{drive}\\"), flat_parts)
             if result is not None:
