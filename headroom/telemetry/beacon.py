@@ -28,6 +28,10 @@ def is_telemetry_enabled() -> bool:
     feeds the in-process collector and the ``/stats`` endpoint; nothing is
     transmitted to Headroom Labs.
     """
+    from headroom.offline import is_offline
+
+    if is_offline():
+        return False
     val = os.environ.get("HEADROOM_TELEMETRY", "").lower().strip()
     return val in _ON_VALUES
 

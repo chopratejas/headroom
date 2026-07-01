@@ -47,9 +47,10 @@ def test_ensure_proxy_recovers_matching_persistent_deployment(monkeypatch) -> No
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls == ["start:default"]
 
 
@@ -67,9 +68,10 @@ def test_ensure_proxy_recovers_persistent_deployment_when_socket_is_bound(monkey
         "headroom.install.runtime.wait_ready", lambda manifest, timeout_seconds=45: True
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls == ["start:default"]
 
 
@@ -98,9 +100,10 @@ def test_ensure_proxy_falls_back_when_persistent_manifest_is_stale(monkeypatch) 
     monkeypatch.setattr(wrap_cli, "_find_available_port", lambda port, **kw: port)
     monkeypatch.setattr(wrap_cli, "_start_proxy", lambda *args, **kwargs: calls.append("start"))
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls == ["start"]
 
 
@@ -153,9 +156,10 @@ def test_ensure_proxy_restarts_idle_stale_persistent_deployment(monkeypatch) -> 
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls == ["restart:default:8787"]
 
 
@@ -177,9 +181,10 @@ def test_ensure_proxy_leaves_active_stale_persistent_deployment_running(monkeypa
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_ensure_proxy_defers_persistent_restart_when_http_wrapper_attached(
@@ -212,9 +217,10 @@ def test_ensure_proxy_defers_persistent_restart_when_http_wrapper_attached(
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_find_persistent_manifest_prefers_default_profile(monkeypatch) -> None:
@@ -276,9 +282,10 @@ def test_ensure_proxy_restarts_idle_stale_ephemeral_proxy(monkeypatch) -> None:
         lambda *args, **kwargs: calls.append(("start", args, kwargs)),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls[0] == ("kill", 12345, 8787)
     assert calls[1][0] == "start"
 
@@ -312,13 +319,14 @@ def test_ensure_proxy_restarts_ephemeral_proxy_for_openai_api_url_mismatch(monke
         lambda *args, **kwargs: calls.append(("start", args, kwargs)),
     )
 
-    result = wrap_cli._ensure_proxy(
+    proc, actual_port = wrap_cli._ensure_proxy(
         8787,
         False,
         openai_api_url="https://api.individual.githubcopilot.com",
     )
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls[0] == ("kill", 12345, 8787)
     assert calls[1][0] == "start"
     assert calls[1][2]["openai_api_url"] == "https://api.individual.githubcopilot.com"
@@ -350,9 +358,10 @@ def test_ensure_proxy_reuses_agent_proxy_without_savings_profile(monkeypatch) ->
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False, agent_type="codex")
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False, agent_type="codex")
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_ensure_proxy_restarts_for_explicit_agent_savings_profile(monkeypatch) -> None:
@@ -379,9 +388,10 @@ def test_ensure_proxy_restarts_for_explicit_agent_savings_profile(monkeypatch) -
         lambda *args, **kwargs: calls.append(("start", args, kwargs)),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False, agent_type="codex")
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False, agent_type="codex")
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls[0] == ("kill", 12345, 8787)
     assert calls[1][0] == "start"
 
@@ -427,9 +437,10 @@ def test_ensure_proxy_reuses_agent_proxy_with_savings_profile(monkeypatch) -> No
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False, agent_type="cursor")
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False, agent_type="cursor")
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_ensure_proxy_leaves_active_stale_ephemeral_proxy_running(monkeypatch) -> None:
@@ -457,9 +468,10 @@ def test_ensure_proxy_leaves_active_stale_ephemeral_proxy_running(monkeypatch) -
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_ensure_proxy_defers_version_restart_when_http_wrapper_attached(monkeypatch) -> None:
@@ -492,9 +504,10 @@ def test_ensure_proxy_defers_version_restart_when_http_wrapper_attached(monkeypa
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_ensure_proxy_defers_flag_restart_when_other_wrapper_attached(monkeypatch) -> None:
@@ -526,9 +539,10 @@ def test_ensure_proxy_defers_flag_restart_when_other_wrapper_attached(monkeypatc
         ),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False, memory=True)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False, memory=True)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
 
 
 def test_ensure_proxy_restarts_for_flags_when_no_other_wrapper(monkeypatch) -> None:
@@ -557,8 +571,270 @@ def test_ensure_proxy_restarts_for_flags_when_no_other_wrapper(monkeypatch) -> N
         lambda *args, **kwargs: calls.append(("start", args, kwargs)),
     )
 
-    result = wrap_cli._ensure_proxy(8787, False, memory=True)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False, memory=True)
 
-    assert result == (None, 8787)
+    assert proc is None
+    assert actual_port == 8787
     assert calls[0] == ("kill", 12345, 8787)
     assert calls[1][0] == "start"
+
+
+def test_ensure_proxy_restarts_persistent_deployment_for_feature_mismatch(monkeypatch) -> None:
+    """Persistent deployment should restart when requested features differ from running config."""
+    calls: list[object] = []
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": 12345,
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": None,
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    # Persistent proxy is running, so _check_proxy returns True
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_port_bind_error", lambda port: None)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_kill_proxy_by_pid",
+        lambda pid, port: calls.append(("kill", pid, port)) or True,
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+
+    # Request openai_api_url that differs from running config (None)
+    proc, actual_port = wrap_cli._ensure_proxy(
+        8787,
+        False,
+        openai_api_url="https://api.githubcopilot.com",
+    )
+
+    assert proc is None
+    assert actual_port == 8787
+    # Proxy should be killed and restarted due to openai_api_url mismatch
+    assert calls[0] == ("kill", 12345, 8787)
+    assert calls[1][0] == "start"
+    assert calls[1][2]["openai_api_url"] == "https://api.githubcopilot.com"
+
+
+def test_ensure_proxy_restarts_persistent_deployment_for_memory_mismatch(monkeypatch) -> None:
+    """Persistent deployment should restart when memory is requested but not enabled."""
+    calls: list[object] = []
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": 12345,
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": None,
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    # Persistent proxy is running, so _check_proxy returns True
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_port_bind_error", lambda port: None)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_kill_proxy_by_pid",
+        lambda pid, port: calls.append(("kill", pid, port)) or True,
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+
+    # Request memory that differs from running config (False)
+    proc, actual_port = wrap_cli._ensure_proxy(8787, False, memory=True)
+
+    assert proc is None
+    assert actual_port == 8787
+    # Proxy should be killed and restarted due to memory mismatch
+    assert calls[0] == ("kill", 12345, 8787)
+    assert calls[1][0] == "start"
+
+
+def test_ensure_proxy_restarts_recovered_persistent_for_openai_api_url_mismatch(
+    monkeypatch,
+) -> None:
+    calls: list[object] = []
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": 12345,
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": None,
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
+    monkeypatch.setattr(wrap_cli, "_recover_persistent_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_restart_persistent_proxy",
+        lambda manifest, port: calls.append(("restart", manifest.profile, port)) or True,
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ephemeral proxy should not start")
+        ),
+    )
+
+    proc, actual_port = wrap_cli._ensure_proxy(
+        8787,
+        False,
+        openai_api_url="https://api.business.githubcopilot.com",
+    )
+
+    assert proc is None
+    assert actual_port == 8787
+    assert calls == [("restart", "default", 8787)]
+
+
+def test_ensure_proxy_restarts_recovered_persistent_when_config_unavailable(monkeypatch) -> None:
+    calls: list[object] = []
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
+    monkeypatch.setattr(wrap_cli, "_recover_persistent_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: {"version": "x"})
+    monkeypatch.setattr(wrap_cli, "_query_proxy_config", lambda port: None)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_restart_persistent_proxy",
+        lambda manifest, port: calls.append(("restart", manifest.profile, port)) or True,
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ephemeral proxy should not start")
+        ),
+    )
+
+    proc, actual_port = wrap_cli._ensure_proxy(
+        8787,
+        False,
+        openai_api_url="https://api.business.githubcopilot.com",
+    )
+
+    assert proc is None
+    assert actual_port == 8787
+    assert calls == [("restart", "default", 8787)]
+
+
+def test_ensure_proxy_reuses_persistent_deployment_when_features_match(monkeypatch) -> None:
+    """Persistent deployment should be reused when all requested features match."""
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": 12345,
+            "memory": True,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": "https://api.githubcopilot.com",
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_restart_persistent_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("should not restart when features match")
+        ),
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("should not start ephemeral proxy when features match")
+        ),
+    )
+
+    # Request same features as running config
+    proc, actual_port = wrap_cli._ensure_proxy(
+        8787,
+        False,
+        memory=True,
+        openai_api_url="https://api.githubcopilot.com",
+    )
+
+    assert proc is None
+    assert actual_port == 8787
+
+
+def test_ensure_proxy_recovered_persistent_deployment_checks_feature_mismatch(monkeypatch) -> None:
+    """Recovered persistent deployments must still restart on feature mismatch.
+
+    Regression guard for the recover path: when wrap requests a different
+    openai_api_url (Copilot subscription), do not early-return right after
+    recover; run the shared mismatch checks and restart if needed.
+    """
+
+    calls: list[object] = []
+    health = {
+        "version": wrap_cli._HEADROOM_VERSION,
+        "runtime": {"websocket_sessions": {"active_sessions": 0, "active_relay_tasks": 0}},
+        "config": {
+            "pid": "12345",
+            "memory": False,
+            "learn": False,
+            "code_graph": False,
+            "openai_api_url": None,
+        },
+    }
+
+    monkeypatch.setattr(wrap_cli, "_find_persistent_manifest", lambda port: _Manifest())
+    monkeypatch.setattr("headroom.install.health.probe_ready", lambda url: False)
+    monkeypatch.setattr(wrap_cli, "_recover_persistent_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_check_proxy", lambda port: True)
+    monkeypatch.setattr(wrap_cli, "_query_proxy_health", lambda port: health)
+    monkeypatch.setattr(
+        wrap_cli,
+        "_restart_persistent_proxy",
+        lambda manifest, port: calls.append(("restart", manifest.profile, port)) or True,
+    )
+    monkeypatch.setattr(
+        wrap_cli,
+        "_start_proxy",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ephemeral proxy should not start")
+        ),
+    )
+
+    proc, actual_port = wrap_cli._ensure_proxy(
+        8787,
+        False,
+        openai_api_url="https://api.githubcopilot.com",
+    )
+
+    assert proc is None
+    assert actual_port == 8787
+    assert calls == [("restart", "default", 8787)]
