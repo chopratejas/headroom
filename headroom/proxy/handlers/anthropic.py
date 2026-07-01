@@ -819,10 +819,33 @@ class AnthropicHandlerMixin:
             )
             memory_decision.apply_to_tags(tags)
 
+            # Snapshot cache-key fields from the request body ONCE here
+            # (pre-upstream) and reuse them verbatim at the cache.set site
+            # below. The pipeline may mutate body before the response is
+            # cached, so re-reading there would compute a different key and the
+            # cache would never hit (#327). Anthropic system/stop_sequences are
+            # top-level fields, never inside messages. Fold in the response-shaping
+            # fields the request forwards — else two requests with identical
+            # messages but a different tool_choice / thinking / output shape
+            # collide and the second caller is served a response made under other
+            # semantics (#1473 review). Non-generation metadata (metadata,
+            # service_tier) is intentionally excluded.
+            cache_key_fields = {
+                "system": body.get("system"),
+                "tools": body.get("tools"),
+                "tool_choice": body.get("tool_choice"),
+                "temperature": body.get("temperature"),
+                "top_p": body.get("top_p"),
+                "top_k": body.get("top_k"),
+                "max_tokens": body.get("max_tokens"),
+                "stop": body.get("stop_sequences"),
+                "thinking": body.get("thinking"),
+                "output_config": body.get("output_config"),
+            }
             # Check cache (non-streaming only)
             cache_hit = False
             if self.cache and not stream:
-                cached = await self.cache.get(messages, model)
+                cached = await self.cache.get(messages, model, **cache_key_fields)
                 if cached:
                     cache_hit = True
                     self.pipeline_extensions.emit(
@@ -2680,6 +2703,7 @@ class AnthropicHandlerMixin:
                             response.content,
                             dict(response.headers),
                             tokens_saved=tokens_saved,
+                            **cache_key_fields,
                         )
 
                     # Subscription tracker: update headroom contribution

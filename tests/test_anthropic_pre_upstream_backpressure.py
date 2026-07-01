@@ -858,7 +858,7 @@ class _CacheHit:
     def __init__(self) -> None:
         self._entry = self._Entry()
 
-    async def get(self, _messages, _model):
+    async def get(self, _messages, _model, **_kwargs):
         return self._entry
 
     async def set(self, *a, **k):
