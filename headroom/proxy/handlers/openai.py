@@ -632,6 +632,39 @@ def _resolve_openai_upstream_base_url(headers: dict[str, str], default_base_url:
     return normalized
 
 
+def _resolve_openai_upstream_url(
+    headers: dict[str, str],
+    default_base_url: str,
+    fallback_path: str,
+    query: str = "",
+) -> str:
+    """Resolve an OpenAI-compatible upstream URL from Headroom routing hints.
+
+    OpenCode's transport shim normalizes provider requests to Headroom's native
+    ``/v1`` routes, then sends the provider's original path in
+    ``x-headroom-original-path``. Preserve that original path when the custom
+    base URL is valid; otherwise fall back to the canonical OpenAI path.
+    """
+    base_url = _resolve_openai_upstream_base_url(headers, default_base_url)
+    parsed_base = urlparse(base_url)
+    original_path = headers.get("x-headroom-original-path", "").strip()
+
+    if parsed_base.scheme in {"http", "https"} and parsed_base.netloc and original_path:
+        parsed_path = urlparse(original_path)
+        if (
+            original_path.startswith("/")
+            and not parsed_path.scheme
+            and not parsed_path.netloc
+            and not parsed_path.query
+            and not parsed_path.fragment
+        ):
+            url = build_copilot_upstream_url(base_url, original_path)
+            return f"{url}?{query}" if query else url
+
+    url = build_copilot_upstream_url(base_url, fallback_path)
+    return f"{url}?{query}" if query else url
+
+
 class OpenAIHandlerMixin:
     """Mixin providing OpenAI API handler methods for HeadroomProxy."""
 
@@ -2424,7 +2457,12 @@ class OpenAIHandlerMixin:
                 )
 
         # Direct OpenAI API (no backend configured)
-        url = build_copilot_upstream_url(upstream_base_url, "/v1/chat/completions")
+        url = _resolve_openai_upstream_url(
+            dict(request.headers.items()),
+            self.OPENAI_API_URL,
+            "/v1/chat/completions",
+            request.url.query,
+        )
 
         try:
             if stream:
@@ -3168,7 +3206,12 @@ class OpenAIHandlerMixin:
         if is_chatgpt_auth:
             url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            url = build_copilot_upstream_url(upstream_base_url, "/v1/responses")
+            url = _resolve_openai_upstream_url(
+                dict(request.headers.items()),
+                self.OPENAI_API_URL,
+                "/v1/responses",
+                request.url.query,
+            )
 
         # The standalone Rust proxy has native /v1/responses item handling,
         # but the default CLI runtime is this Python proxy. Compress the

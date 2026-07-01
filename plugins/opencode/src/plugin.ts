@@ -118,12 +118,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function ensureProviderOptions(config: Record<string, unknown>, providerId: string): Record<string, unknown> {
-  const providers = isRecord(config.provider) ? config.provider : {};
-  config.provider = providers;
+function getExistingProviderOptions(
+  config: Record<string, unknown>,
+  providerId: string,
+): Record<string, unknown> | undefined {
+  if (!isRecord(config.provider)) {
+    return undefined;
+  }
 
-  const provider = isRecord(providers[providerId]) ? providers[providerId] : {};
-  providers[providerId] = provider;
+  const provider = isRecord(config.provider[providerId])
+    ? config.provider[providerId]
+    : undefined;
+  if (!provider) {
+    return undefined;
+  }
 
   const options = isRecord(provider.options) ? provider.options : {};
   provider.options = options;
@@ -145,26 +153,34 @@ function setOpenAICompatibleUpstreamHeader(
 export function applyNativeProviderOverrides(config: Record<string, unknown>, proxyUrl: string): void {
   const baseURL = proxyBaseUrl(proxyUrl);
   for (const providerId of NATIVE_BASE_URL_PROVIDERS) {
-    const options = ensureProviderOptions(config, providerId);
-    options.baseURL = baseURL;
+    const options = getExistingProviderOptions(config, providerId);
+    if (options) {
+      options.baseURL = baseURL;
+    }
   }
 
-  const opencodeOptions = ensureProviderOptions(config, OPENCODE_PROVIDER_ID);
-  setOpenAICompatibleUpstreamHeader(
-    opencodeOptions,
-    typeof opencodeOptions.baseURL === "string" && opencodeOptions.baseURL.trim() !== ""
-      ? normalizeUpstreamBaseUrl(opencodeOptions.baseURL)
-      : undefined,
-  );
-  opencodeOptions.baseURL = baseURL;
+  const opencodeOptions = getExistingProviderOptions(config, OPENCODE_PROVIDER_ID);
+  if (opencodeOptions) {
+    setOpenAICompatibleUpstreamHeader(
+      opencodeOptions,
+      typeof opencodeOptions.baseURL === "string" && opencodeOptions.baseURL.trim() !== ""
+        ? normalizeUpstreamBaseUrl(opencodeOptions.baseURL)
+        : undefined,
+    );
+    opencodeOptions.baseURL = baseURL;
+  }
 
-  const opencodeGoOptions = ensureProviderOptions(config, OPENCODE_GO_PROVIDER_ID);
-  setOpenAICompatibleUpstreamHeader(opencodeGoOptions, OPENCODE_GO_UPSTREAM_BASE);
-  opencodeGoOptions.baseURL = baseURL;
+  const opencodeGoOptions = getExistingProviderOptions(config, OPENCODE_GO_PROVIDER_ID);
+  if (opencodeGoOptions) {
+    setOpenAICompatibleUpstreamHeader(opencodeGoOptions, OPENCODE_GO_UPSTREAM_BASE);
+    opencodeGoOptions.baseURL = baseURL;
+  }
 
-  const zenmuxOptions = ensureProviderOptions(config, "zenmux");
-  setOpenAICompatibleUpstreamHeader(zenmuxOptions, ZENMUX_UPSTREAM_BASE);
-  zenmuxOptions.baseURL = baseURL;
+  const zenmuxOptions = getExistingProviderOptions(config, "zenmux");
+  if (zenmuxOptions) {
+    setOpenAICompatibleUpstreamHeader(zenmuxOptions, ZENMUX_UPSTREAM_BASE);
+    zenmuxOptions.baseURL = baseURL;
+  }
 }
 
 export const HeadroomPlugin: Plugin = async (input, options = {}) => {

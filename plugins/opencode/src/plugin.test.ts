@@ -58,33 +58,26 @@ describe("HeadroomPlugin", () => {
     expect((config.provider as Record<string, unknown>).headroom).toBeUndefined();
   });
 
-  it("creates provider stubs when native overrides run against empty config", () => {
+  it("does not create provider stubs when native overrides run against empty config", () => {
     const config: Record<string, unknown> = {};
 
     applyNativeProviderOverrides(config, "http://127.0.0.1:8787");
 
+    expect(config).toEqual({});
+  });
+
+  it("only rewrites providers already present in the OpenCode config", () => {
+    const config = {
+      provider: {
+        openai: { options: { apiKey: "test-openai" } },
+      },
+    };
+
+    applyNativeProviderOverrides(config as unknown as Record<string, unknown>, "http://127.0.0.1:8787");
+
     expect(config).toEqual({
       provider: {
-        anthropic: { options: { baseURL: "http://127.0.0.1:8787/v1" } },
-        "github-copilot": { options: { baseURL: "http://127.0.0.1:8787/v1" } },
-        openai: { options: { baseURL: "http://127.0.0.1:8787/v1" } },
-        opencode: { options: { baseURL: "http://127.0.0.1:8787/v1" } },
-        "opencode-go": {
-          options: {
-            baseURL: "http://127.0.0.1:8787/v1",
-            headers: {
-              "x-headroom-base-url": "https://opencode.ai/zen/go",
-            },
-          },
-        },
-        zenmux: {
-          options: {
-            baseURL: "http://127.0.0.1:8787/v1",
-            headers: {
-              "x-headroom-base-url": "https://zenmux.ai/api",
-            },
-          },
-        },
+        openai: { options: { apiKey: "test-openai", baseURL: "http://127.0.0.1:8787/v1" } },
       },
     });
   });
@@ -136,9 +129,6 @@ describe("HeadroomPlugin", () => {
             },
           },
         },
-        anthropic: { options: { baseURL: "http://127.0.0.1:8787/v1" } },
-        "github-copilot": { options: { baseURL: "http://127.0.0.1:8787/v1" } },
-        openai: { options: { baseURL: "http://127.0.0.1:8787/v1" } },
       },
     });
   });
