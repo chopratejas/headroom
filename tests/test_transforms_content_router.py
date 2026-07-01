@@ -864,3 +864,388 @@ def test_detect_content_python_backend_skips_native(
 
     result = _detect_content('[{"id": 1}, {"id": 2}]')
     assert result.content_type is ContentType.JSON_ARRAY
+
+
+# ---------------------------------------------------------------------------
+# Cache-churn fix: HEADROOM_FREEZE_BLOCK_DECISION (default off).
+#
+# Root cause: ``min_ratio`` drifts every turn with context pressure, so a
+# block whose compression ratio sits in [aggressive, relaxed) is compressed
+# on a low-pressure turn and downgraded to passthrough on a high-pressure
+# turn (or vice-versa). The block's prefix bytes flap across turns ⇒
+# cache_write churn. The fix freezes the per-block compress/passthrough
+# verdict on first sighting against the FIXED aggressive threshold.
+# ---------------------------------------------------------------------------
+
+
+class _ChurnTokenizer:
+    """Word-count tokenizer; apply() only calls ``count_text``."""
+
+    def count_text(self, text: str) -> int:
+        return len(str(text).split())
+
+
+def _churn_router(monkeypatch: pytest.MonkeyPatch, ratio: float) -> ContentRouter:
+    """Router whose compress() always emits a deterministic payload at a
+    fixed ratio. ``min_chars`` thresholds are relaxed so a 200-word tool
+    message reaches the compression path."""
+    cfg = ContentRouterConfig()
+    router = ContentRouter(cfg)
+
+    def fake_compress(content, context: str = "", bias: float = 1.0):
+        return SimpleNamespace(
+            # CCR marker keeps the compression recoverable so the #1307
+            # tool-reversibility guard preserves it instead of restoring original.
+            compressed="[C]" + content[:20] + " <<ccr:t>>",
+            compression_ratio=ratio,
+            strategy_used=CompressionStrategy.TEXT,
+        )
+
+    monkeypatch.setattr(router, "compress", fake_compress)
+    # Don't let lazy ML model state interfere with the model_ready signal.
+    monkeypatch.setattr(router, "_kompress_model_ready", lambda: True)
+    return router
+
+
+def _run_turn(router: ContentRouter, content: str, tokens_before: int):
+    """Drive apply() for a single message with a rising context-pressure
+    knob. model_limit fixed at 1000 so larger tokens_before ⇒ higher
+    pressure ⇒ tighter min_ratio."""
+    messages = [{"role": "tool", "tool_call_id": "t1", "content": content}]
+    result = router.apply(
+        messages,
+        _ChurnTokenizer(),
+        model_limit=1000,
+        # Force a known tokens_before by padding nothing — apply recomputes
+        # tokens_before from the messages, so we instead steer pressure via
+        # model_limit below. (kept for clarity)
+    )
+    return result.messages[0]["content"]
+
+
+def _content_of_n_words(n: int) -> str:
+    return " ".join(f"w{i}" for i in range(n))
+
+
+def test_freeze_off_is_byte_identical_flapping_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b) Flag OFF (default): a mid-zone block (ratio 0.75) flaps —
+    compressed on a low-pressure turn, downgraded to passthrough once
+    pressure tightens min_ratio below the ratio. This is the legacy churn
+    and must be preserved byte-for-byte when the flag is off."""
+    monkeypatch.delenv("HEADROOM_FREEZE_BLOCK_DECISION", raising=False)
+    router = _churn_router(monkeypatch, ratio=0.75)
+    content = _content_of_n_words(200)
+
+    # Turn 1: low pressure (small model_limit denom via large limit) ->
+    # min_ratio ~ relaxed (0.85). 0.75 < 0.85 -> compresses.
+    low = router.apply(
+        [{"role": "tool", "tool_call_id": "t1", "content": content}],
+        _ChurnTokenizer(),
+        model_limit=100000,  # pressure ~ 0 -> min_ratio ~ 0.85
+    ).messages[0]["content"]
+    assert low.startswith("[C]"), "turn1 should compress at low pressure"
+
+    # Turn 2: high pressure -> min_ratio ~ aggressive (0.65). 0.75 < 0.65
+    # is False -> cache-hit path downgrades via move_to_skip -> passthrough.
+    high = router.apply(
+        [{"role": "tool", "tool_call_id": "t1", "content": content}],
+        _ChurnTokenizer(),
+        model_limit=100,  # 200 words >> 100 -> pressure 1.0 -> min_ratio 0.65
+    ).messages[0]["content"]
+    assert high == content, "turn2 should flip to passthrough (legacy churn)"
+    # The flap: bytes changed across turns.
+    assert low != high
+
+
+def test_freeze_on_pins_compress_verdict_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(a) Flag ON: a block that compresses on first sighting keeps the SAME
+    verdict AND the SAME bytes on later turns despite rising pressure /
+    drifting min_ratio. Use ratio 0.6 (< aggressive 0.65) so it compresses
+    under the frozen threshold."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = _churn_router(monkeypatch, ratio=0.60)
+    content = _content_of_n_words(200)
+
+    outs = []
+    # Rising pressure across turns: model_limit shrinks -> min_ratio drifts
+    # from ~0.85 down to ~0.65. Without freeze this is the flap zone.
+    for limit in (100000, 1000, 300, 100):
+        out = router.apply(
+            [{"role": "tool", "tool_call_id": "t1", "content": content}],
+            _ChurnTokenizer(),
+            model_limit=limit,
+        ).messages[0]["content"]
+        outs.append(out)
+
+    assert all(o.startswith("[C]") for o in outs), "verdict must stay compress"
+    assert len(set(outs)) == 1, "bytes must be identical across all turns"
+
+
+def test_freeze_on_pins_passthrough_verdict_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(a) Flag ON, mid-zone block (ratio 0.75): the RELAXED first-sighting
+    threshold (0.85) compresses it on turn 1 (low pressure), freezes the
+    compress verdict, and PINS it compressed on every later turn — even as
+    rising pressure pulls ``min_ratio`` below 0.75, where the flag-off path
+    would ``move_to_skip`` and bust the prefix cache. So the bytes stay
+    compressed and identical, and the freeze-pin counter records the
+    busts it avoided. (Contrast with the flag-off flapping baseline.)"""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = _churn_router(monkeypatch, ratio=0.75)
+    content = _content_of_n_words(200)
+
+    outs = []
+    for limit in (100000, 1000, 300, 100):
+        out = router.apply(
+            [{"role": "tool", "tool_call_id": "t1", "content": content}],
+            _ChurnTokenizer(),
+            model_limit=limit,
+        ).messages[0]["content"]
+        outs.append(out)
+
+    assert all(o.startswith("[C]") for o in outs), "verdict must stay compressed"
+    assert len(set(outs)) == 1, "bytes identical (always compressed) across turns"
+    assert router._freeze_pin_hits > 0, "freeze must pin compress over a tightening min_ratio"
+
+
+def test_model_not_ready_passthrough_is_not_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caveat (1): a block that passes through ONLY because the ML model is
+    not ready must NOT have its skip verdict frozen — once the model is
+    ready it must be re-evaluated. We simulate not-ready (compress returns
+    the content unchanged at ratio 1.0) then ready (real compression)."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    cfg = ContentRouterConfig()
+    router = ContentRouter(cfg)
+    content = _content_of_n_words(200)
+
+    # Phase 1: model NOT ready. _try_ml_compressor returns content unchanged
+    # -> ratio 1.0 (passthrough). Verdict must NOT be frozen as skip.
+    monkeypatch.setattr(router, "_kompress_model_ready", lambda: False)
+    monkeypatch.setattr(
+        router,
+        "compress",
+        lambda c, context="", bias=1.0: SimpleNamespace(
+            compressed=c, compression_ratio=1.0, strategy_used=CompressionStrategy.TEXT
+        ),
+    )
+    out1 = router.apply(
+        [{"role": "tool", "tool_call_id": "t1", "content": content}],
+        _ChurnTokenizer(),
+        model_limit=1000,
+    ).messages[0]["content"]
+    assert out1 == content, "not-ready -> passthrough"
+    # The verdict store must NOT contain a frozen skip for this block.
+    assert all(v is True for v in router._frozen_verdicts.values()) or (
+        not router._frozen_verdicts
+    ), "not-ready passthrough must not be frozen as skip"
+
+    # Phase 2: model now ready, real compression below the aggressive
+    # threshold. Because the verdict was never frozen, the block must now be
+    # re-evaluated and compress (not stuck on a frozen passthrough). Note:
+    # the legacy byte skip-cache is keyed on the same content; we clear it to
+    # isolate the verdict behaviour (the freeze fix governs the verdict, not
+    # the existing TTL byte cache).
+    router._cache.clear()
+    monkeypatch.setattr(router, "_kompress_model_ready", lambda: True)
+    monkeypatch.setattr(
+        router,
+        "compress",
+        lambda c, context="", bias=1.0: SimpleNamespace(
+            compressed="[C]"
+            + c[:20]
+            + " <<ccr:t>>",  # recoverable marker so #1307 tool-reversibility guard keeps the compression
+            compression_ratio=0.50,
+            strategy_used=CompressionStrategy.TEXT,
+        ),
+    )
+    out2 = router.apply(
+        [{"role": "tool", "tool_call_id": "t1", "content": content}],
+        _ChurnTokenizer(),
+        model_limit=1000,
+    ).messages[0]["content"]
+    assert out2.startswith("[C]"), "once model ready the block must compress"
+
+
+# ---------------------------------------------------------------------------
+# Cache-churn fix — CONTENT-BLOCK path (tool_result blocks).
+#
+# For Claude Code / Anthropic traffic the prefix is dominated by tool_result
+# content-blocks routed through ``_compress_block_content``, not plain-string
+# messages. These tests mirror the string-path freeze tests above for that
+# dominant path.
+# ---------------------------------------------------------------------------
+
+
+def _tool_result_block_msg(content: str) -> dict:
+    """A user message carrying a single ``tool_result`` content-block — the
+    Anthropic shape that dominates Claude Code prefixes."""
+    return {
+        "role": "user",
+        "content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "content": content},
+        ],
+    }
+
+
+def _block_out(router: ContentRouter, content: str, model_limit: int) -> str:
+    """Run apply() for a tool_result content-block and return the (possibly
+    compressed) string content of that block."""
+    result = router.apply(
+        [_tool_result_block_msg(content)],
+        _ChurnTokenizer(),
+        model_limit=model_limit,
+    )
+    return result.messages[0]["content"][0]["content"]
+
+
+def test_block_freeze_off_is_byte_identical_flapping_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b) Block path, flag OFF (default): a mid-zone tool_result block
+    (ratio 0.75) flaps — compressed at low pressure, downgraded to passthrough
+    once pressure tightens min_ratio below the ratio. Legacy churn preserved."""
+    monkeypatch.delenv("HEADROOM_FREEZE_BLOCK_DECISION", raising=False)
+    router = _churn_router(monkeypatch, ratio=0.75)
+    content = _content_of_n_words(200)
+
+    low = _block_out(router, content, model_limit=100000)
+    assert low.startswith("[C]"), "turn1 should compress at low pressure"
+
+    high = _block_out(router, content, model_limit=100)
+    assert high == content, "turn2 should flip to passthrough (legacy churn)"
+    assert low != high, "flag-off block path must keep flapping (byte change)"
+
+
+def test_block_freeze_on_pins_compress_verdict_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(a) Block path, flag ON: a tool_result block that compresses on first
+    sighting keeps the SAME verdict AND SAME bytes across rising-pressure
+    turns despite drifting min_ratio. ratio 0.6 < aggressive 0.65."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = _churn_router(monkeypatch, ratio=0.60)
+    content = _content_of_n_words(200)
+
+    outs = [_block_out(router, content, model_limit=limit) for limit in (100000, 1000, 300, 100)]
+    assert all(o.startswith("[C]") for o in outs), "verdict must stay compress"
+    assert len(set(outs)) == 1, "block bytes must be identical across all turns"
+
+
+def test_block_freeze_on_pins_passthrough_verdict_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(a) Block path, flag ON, mid-zone block (ratio 0.75): the RELAXED
+    first-sighting threshold (0.85) compresses it on turn 1, freezes the
+    compress verdict, and pins it compressed on every later turn even as
+    rising pressure pulls min_ratio below 0.75 (where flag-off would
+    move_to_skip). Bytes stay compressed/identical and pins are recorded."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = _churn_router(monkeypatch, ratio=0.75)
+    content = _content_of_n_words(200)
+
+    outs = [_block_out(router, content, model_limit=limit) for limit in (100000, 1000, 300, 100)]
+    assert all(o.startswith("[C]") for o in outs), "verdict must stay compressed"
+    assert len(set(outs)) == 1, "block bytes identical (compressed) across turns"
+    assert router._freeze_pin_hits > 0, "freeze must pin compress over a tightening min_ratio"
+
+
+def test_block_model_not_ready_passthrough_is_not_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caveat (1) on the block path: a tool_result block that passes through
+    ONLY because the ML model is not ready must NOT have its skip verdict
+    frozen, so it is re-evaluated once the model is ready."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = ContentRouter(ContentRouterConfig())
+    content = _content_of_n_words(200)
+
+    monkeypatch.setattr(router, "_kompress_model_ready", lambda: False)
+    monkeypatch.setattr(
+        router,
+        "compress",
+        lambda c, context="", bias=1.0: SimpleNamespace(
+            compressed=c, compression_ratio=1.0, strategy_used=CompressionStrategy.TEXT
+        ),
+    )
+    out1 = _block_out(router, content, model_limit=1000)
+    assert out1 == content, "not-ready -> passthrough"
+    assert all(v is True for v in router._frozen_verdicts.values()) or (
+        not router._frozen_verdicts
+    ), "not-ready block passthrough must not be frozen as skip"
+
+    router._cache.clear()
+    monkeypatch.setattr(router, "_kompress_model_ready", lambda: True)
+    monkeypatch.setattr(
+        router,
+        "compress",
+        lambda c, context="", bias=1.0: SimpleNamespace(
+            compressed="[C]"
+            + c[:20]
+            + " <<ccr:t>>",  # recoverable marker so #1307 tool-reversibility guard keeps the compression
+            compression_ratio=0.50,
+            strategy_used=CompressionStrategy.TEXT,
+        ),
+    )
+    out2 = _block_out(router, content, model_limit=1000)
+    assert out2.startswith("[C]"), "once model ready the block must compress"
+
+
+def test_frozen_verdicts_cleared_on_cache_clear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) ``_frozen_verdicts`` is cleared in lock-step with the cache so it
+    cannot outlive the entries it shadows."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = _churn_router(monkeypatch, ratio=0.60)
+    content = _content_of_n_words(200)
+
+    _block_out(router, content, model_limit=1000)
+    assert router._frozen_verdicts, "a verdict should be frozen after a turn"
+
+    router._cache.clear()
+    assert not router._frozen_verdicts, "cache clear must also clear frozen verdicts"
+
+
+def test_frozen_verdicts_is_size_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) ``_frozen_verdicts`` is capped with FIFO eviction so it cannot grow
+    without bound across a long-lived process."""
+    monkeypatch.setenv("HEADROOM_FREEZE_BLOCK_DECISION", "1")
+    router = ContentRouter(ContentRouterConfig())
+    router._frozen_verdicts_max = 8
+
+    for i in range(50):
+        router._record_frozen_verdict(i, True)
+
+    assert len(router._frozen_verdicts) == 8, "store must stay capped at the max"
+    # Oldest keys evicted, newest retained (insertion-order FIFO).
+    assert set(router._frozen_verdicts) == set(range(42, 50))
+
+
+def test_frozen_verdict_refuses_unrecoverable_lossy_block() -> None:
+    """#1307: a "compress" verdict for a lossy-unmarked block with no CCR
+    retrieval marker must NOT be frozen. Pinning it would keep serving an
+    unrecoverable summary across turns, which the reversibility guard forbids.
+    Recoverable compressions (marked, or a non-lossy strategy) may be pinned.
+    """
+    router = ContentRouter(ContentRouterConfig())
+
+    # Lossy + no marker -> unrecoverable -> refuse to freeze.
+    assert router._frozen_verdict_recoverable(CompressionStrategy.TEXT, "plain summary") is False
+    # Lossy + CCR marker -> recoverable -> may freeze.
+    assert router._frozen_verdict_recoverable(CompressionStrategy.TEXT, "summary <<ccr:t>>") is True
+    # Non-lossy strategy -> recoverable regardless of marker.
+    assert (
+        router._frozen_verdict_recoverable(CompressionStrategy.SMART_CRUSHER, "no marker") is True
+    )
+    # Cache-hit path passes the strategy's .value string, not the enum.
+    assert router._frozen_verdict_recoverable("text", "plain") is False
+    assert router._frozen_verdict_recoverable("text", "x Retrieve more: hash=abc123") is True
