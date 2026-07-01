@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import click
 
@@ -161,6 +163,149 @@ def _managed_env_guidance() -> str:
         "Headroom is installed in an externally-managed system Python (PEP 668). "
         f"Don't pip into it — {hint}."
     )
+
+
+def _find_core_pyd() -> Path | None:
+    """Localiza o arquivo _core.pyd no site-packages do headroom."""
+    try:
+        import headroom
+        headroom_path = Path(headroom.__file__).parent
+        core_pyd = headroom_path / "_core.pyd"
+        return core_pyd if core_pyd.exists() else None
+    except Exception:
+        return None
+
+
+def _is_pyd_locked(pyd_path: Path) -> bool:
+    """Verifica se o .pyd está bloqueado no Windows tentando abrir em r+b."""
+    try:
+        with open(pyd_path, "r+b") as f:
+            f.close()
+        return False
+    except (PermissionError, OSError):
+        return True
+
+
+def _make_backup(pyd_path: Path) -> Path:
+    """Cria backup do .pyd como .pyd.bak."""
+    backup_path = pyd_path.with_suffix(pyd_path.suffix + ".bak")
+    shutil.copy2(pyd_path, backup_path)
+    return backup_path
+
+
+def _restore_backup(pyd_path: Path, backup_path: Path) -> None:
+    """Restaura o .pyd atomicamente (os.replace move backup sobre original)."""
+    os.replace(backup_path, pyd_path)
+
+
+def _test_core_integrity() -> bool:
+    """Testa se headroom._core pode ser importado com sucesso."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "from headroom._core import hello"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def safe_update(argv: list[str]) -> int:
+    """Executa atualização com proteção contra corrupção do .pyd no Windows.
+
+    Detecta se o _core.pyd está bloqueado (indicando que headroom proxy está
+    rodando), faz backup, executa a atualização, testa integridade e restaura
+    em caso de falha.
+
+    Retorna 0 se bem-sucedido, código de erro caso contrário.
+    """
+    core_pyd = _find_core_pyd()
+    backup_path = None
+
+    try:
+        # Windows: backup proativo quando o .pyd está acessível (não bloqueado).
+        # Se bloqueado, pip vai falhar antes de tocar no arquivo — apenas avisar.
+        # Se não bloqueado, pip vai tentar substituí-lo — fazer backup como rede de segurança.
+        if sys.platform.startswith("win") and core_pyd:
+            if _is_pyd_locked(core_pyd):
+                click.secho(
+                    "Aviso: headroom._core está bloqueado (headroom proxy está rodando).",
+                    fg="yellow",
+                )
+                click.echo("Se a atualização falhar, pare o proxy e tente novamente.")
+            else:
+                click.echo("Criando backup de headroom._core antes de atualizar...")
+                try:
+                    backup_path = _make_backup(core_pyd)
+                    click.echo(f"Backup criado: {backup_path}")
+                except Exception as e:
+                    raise click.ClickException(
+                        f"Não foi possível fazer backup de {core_pyd}: {e}"
+                    ) from None
+
+        # Executar a atualização
+        result = subprocess.run(argv)  # noqa: S603
+
+        if result.returncode != 0:
+            # Falha na atualização: restaurar backup se disponível
+            if backup_path and backup_path.exists():
+                click.secho("Restaurando backup após falha de atualização...", fg="yellow")
+                try:
+                    _restore_backup(core_pyd, backup_path)
+                    click.echo("Backup restaurado com sucesso.")
+                except Exception as e:
+                    click.secho(
+                        f"ERRO: Não foi possível restaurar o backup: {e}",
+                        fg="red",
+                    )
+            return result.returncode
+
+        # Atualização bem-sucedida: testar integridade
+        if core_pyd:
+            click.echo("Testando integridade do módulo headroom._core...")
+            if not _test_core_integrity():
+                click.secho(
+                    "ERRO: headroom._core não pode ser importado após atualização.",
+                    fg="red",
+                )
+                if backup_path and backup_path.exists():
+                    click.secho("Restaurando backup...", fg="yellow")
+                    try:
+                        _restore_backup(core_pyd, backup_path)
+                        click.echo("Backup restaurado com sucesso.")
+                    except Exception as e:
+                        click.secho(
+                            f"ERRO crítico: Não foi possível restaurar: {e}",
+                            fg="red",
+                        )
+                return 1
+            click.echo("✓ Módulo testado com sucesso.")
+
+        # Limpeza: remover backup se tudo correu bem
+        if backup_path and backup_path.exists():
+            try:
+                backup_path.unlink()
+            except Exception:
+                pass  # Falha ao deletar backup não é crítica
+
+        return 0
+
+    except FileNotFoundError:
+        if backup_path and backup_path.exists():
+            try:
+                _restore_backup(core_pyd, backup_path)
+            except Exception:
+                pass
+        raise
+    except click.ClickException:
+        if backup_path and backup_path.exists():
+            try:
+                _restore_backup(core_pyd, backup_path)
+            except Exception:
+                pass
+        raise
 
 
 def detect_install_method(extras: str | None = None) -> InstallMethod:
@@ -322,15 +467,15 @@ def update(check_only: bool, assume_yes: bool, allow_pre: bool, extras: str | No
 
     click.echo(f"Running: {cmd_str}")
     try:
-        result = subprocess.run(method.argv)  # noqa: S603 — argv built from a fixed allowlist
+        returncode = safe_update(method.argv)
     except FileNotFoundError:
         raise click.ClickException(
             f"`{method.argv[0]}` was not found on PATH. Install it or upgrade manually: {cmd_str}"
         ) from None
 
-    if result.returncode != 0:
+    if returncode != 0:
         raise click.ClickException(
-            f"Upgrade failed (exit {result.returncode}). Run manually: {cmd_str}"
+            f"Upgrade failed (exit {returncode}). Run manually: {cmd_str}"
         )
 
     # ASCII-only output — emoji can raise UnicodeEncodeError on some Windows consoles.
