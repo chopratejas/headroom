@@ -785,7 +785,31 @@ def test_resolve_1m_model_is_idempotent() -> None:
     assert wrap_mod._resolve_1m_model("claude-opus-4-8[1m]") == "claude-opus-4-8[1m]"
 
 
-def test_resolve_1m_model_falls_back_to_default_when_unset() -> None:
-    """With no model selected, fall back to the default Opus carrying [1m]."""
-    assert wrap_mod._resolve_1m_model(None) == "claude-opus-4-8[1m]"
-    assert wrap_mod._resolve_1m_model("  ") == "claude-opus-4-8[1m]"
+def test_resolve_1m_model_returns_none_when_no_model_is_known() -> None:
+    """With no ANTHROPIC_MODEL and no --model arg, return None rather than
+    guessing a default — forcing e.g. Opus would silently override whatever
+    model the user's own picker or subscription default would select."""
+    assert wrap_mod._resolve_1m_model(None) is None
+    assert wrap_mod._resolve_1m_model("  ") is None
+    assert wrap_mod._resolve_1m_model(None, ()) is None
+
+
+def test_resolve_1m_model_reads_model_from_claude_args() -> None:
+    """A model passed via `-- --model <name>` is respected when ANTHROPIC_MODEL
+    is unset, so --1m doesn't clobber an explicit non-Opus selection."""
+    assert wrap_mod._resolve_1m_model(None, ("--model", "sonnet")) == "sonnet[1m]"
+    assert wrap_mod._resolve_1m_model(None, ("--model=claude-sonnet-5",)) == (
+        "claude-sonnet-5[1m]"
+    )
+
+
+def test_resolve_1m_model_prefers_env_over_claude_args() -> None:
+    """ANTHROPIC_MODEL takes precedence over a --model CLI arg when both are set."""
+    assert wrap_mod._resolve_1m_model("opus", ("--model", "sonnet")) == "opus[1m]"
+
+
+def test_model_from_claude_args_finds_space_and_equals_forms() -> None:
+    assert wrap_mod._model_from_claude_args(("--model", "sonnet")) == "sonnet"
+    assert wrap_mod._model_from_claude_args(("--model=sonnet",)) == "sonnet"
+    assert wrap_mod._model_from_claude_args(("--verbose",)) is None
+    assert wrap_mod._model_from_claude_args(()) is None

@@ -172,20 +172,33 @@ _AGENT_SAVINGS_WRAP_AGENTS = {"claude", "codex", "cursor"}
 # so `--1m` forces the suffix via ANTHROPIC_MODEL on the launched process.
 _ANTHROPIC_MODEL_ENV = "ANTHROPIC_MODEL"
 _CONTEXT_1M_SUFFIX = "[1m]"
-# Only used when no model is otherwise selected (no ANTHROPIC_MODEL set). The
-# current default Opus; the suffix logic preserves any model the user did set.
-_DEFAULT_1M_MODEL = "claude-opus-4-8"
 
 
-def _resolve_1m_model(current: str | None) -> str:
+def _model_from_claude_args(claude_args: tuple[str, ...]) -> str | None:
+    """Return the model passed via ``--model``/``--model=<name>`` in ``claude_args``."""
+    for idx, arg in enumerate(claude_args):
+        if arg == "--model" and idx + 1 < len(claude_args):
+            return claude_args[idx + 1]
+        if arg.startswith("--model="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _resolve_1m_model(current: str | None, claude_args: tuple[str, ...] = ()) -> str | None:
     """Return the model id that makes Claude Code request the 1M window (#1158).
 
-    Preserves a model the user already selected via ``ANTHROPIC_MODEL`` (only
-    appending the ``[1m]`` suffix when missing); falls back to the default Opus
-    when none is set. Idempotent — a value already ending in ``[1m]`` is
-    returned unchanged.
+    Preserves a model the user already selected via ``ANTHROPIC_MODEL`` or
+    ``--model``/``--model=<name>`` (only appending the ``[1m]`` suffix when
+    missing). Returns ``None`` when no model can be determined from either
+    source — the caller must skip forcing ``ANTHROPIC_MODEL`` in that case
+    rather than guessing a default, since most users select their model
+    through Claude Code's own `/model` picker or subscription default (not
+    an env var), and silently forcing e.g. Opus would hijack that choice.
+    Idempotent — a value already ending in ``[1m]`` is returned unchanged.
     """
-    base = (current or "").strip() or _DEFAULT_1M_MODEL
+    base = (current or "").strip() or _model_from_claude_args(claude_args)
+    if not base:
+        return None
     return base if base.endswith(_CONTEXT_1M_SUFFIX) else f"{base}{_CONTEXT_1M_SUFFIX}"
 
 
@@ -3533,10 +3546,15 @@ def unwrap() -> None:
     "context_1m",
     is_flag=True,
     help=(
-        "Preserve the 1M context window. Behind a custom ANTHROPIC_BASE_URL "
-        "Claude Code drops the context-1m beta header and caps at 200k; this "
-        "sets ANTHROPIC_MODEL=<opus>[1m] on the launched process so the 1M "
-        "window activates through the proxy (issue #1158)."
+        "Preserve the 1M context window for the model you selected via "
+        "--model or ANTHROPIC_MODEL. Behind a custom ANTHROPIC_BASE_URL Claude "
+        "Code drops the context-1m beta header and caps at 200k; this appends "
+        "the [1m] suffix to that model on the launched process so the window "
+        "activates through the proxy (issue #1158). Requires a model to "
+        "already be known (via --model or ANTHROPIC_MODEL) — it will not "
+        "guess one. Launch-time only: switching models later via Claude "
+        "Code's own /model picker goes through the same broken path and will "
+        "drop back to 200k (anthropics/claude-code#68522)."
     ),
 )
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
@@ -3579,7 +3597,7 @@ def claude(
         headroom wrap claude --no-context-tool  # Skip CLI context-tool setup
         headroom wrap claude --no-mcp           # Skip MCP retrieve tool registration
         headroom wrap claude --no-serena        # Never register the Serena backup
-        headroom wrap claude --1m               # Preserve the 1M context window
+        headroom wrap claude --1m -- --model sonnet  # Preserve 1M for --model
     """
     if prepare_only:
         if not no_rtk:
@@ -3799,11 +3817,21 @@ def claude(
         # context-1m beta header when the model id carries the [1m] suffix, so
         # force it via ANTHROPIC_MODEL on the launched process.
         if context_1m:
-            env[_ANTHROPIC_MODEL_ENV] = _resolve_1m_model(env.get(_ANTHROPIC_MODEL_ENV))
-            click.echo(
-                f"  {_ANTHROPIC_MODEL_ENV}={env[_ANTHROPIC_MODEL_ENV]} "
-                "(1M context window; issue #1158)"
-            )
+            resolved_1m_model = _resolve_1m_model(env.get(_ANTHROPIC_MODEL_ENV), claude_args)
+            if resolved_1m_model is None:
+                click.echo(
+                    "  Note: --1m needs a model to attach the 1M context suffix "
+                    "to. Pass `--model <name>` or set ANTHROPIC_MODEL, e.g.\n"
+                    "    headroom wrap claude --1m -- --model sonnet\n"
+                    "  Skipping without one rather than guessing a default, which "
+                    "would override your own model selection."
+                )
+            else:
+                env[_ANTHROPIC_MODEL_ENV] = resolved_1m_model
+                click.echo(
+                    f"  {_ANTHROPIC_MODEL_ENV}={env[_ANTHROPIC_MODEL_ENV]} "
+                    "(1M context window; issue #1158)"
+                )
 
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
