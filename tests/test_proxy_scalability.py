@@ -6,6 +6,7 @@ These tests verify connection pooling, HTTP/2, and worker configuration.
 import asyncio
 import json
 import os
+from typing import Any
 from unittest.mock import patch
 
 import httpx
@@ -282,19 +283,32 @@ class TestWorkerConfiguration:
         from headroom.proxy.models import ProxyConfig
 
         captured = {}
+        policy_calls: list[Any] = []
 
         def fake_run(app, **kwargs):
             captured["app"] = app
             captured["kwargs"] = kwargs
 
+        def fake_set_policy(policy):
+            policy_calls.append(policy)
+
         monkeypatch.setattr(server_mod.sys, "platform", "win32")
         monkeypatch.setattr(server_mod, "create_app", lambda config: "app")
+        monkeypatch.setattr(server_mod.asyncio, "set_event_loop_policy", fake_set_policy)
 
         with patch("headroom.proxy.server.uvicorn.run", fake_run):
             server_mod.run_server(ProxyConfig(), print_banner=False)
 
         assert captured["app"] == "app"
-        assert captured["kwargs"]["loop"] == "asyncio:SelectorEventLoop"
+        import uvicorn as _uvicorn
+
+        if hasattr(_uvicorn.config.Config, "get_loop_factory"):
+            assert captured["kwargs"]["loop"] == "asyncio:SelectorEventLoop"
+            assert policy_calls == []
+        else:
+            assert "loop" not in captured["kwargs"]
+            assert len(policy_calls) == 1
+            assert policy_calls[0] == server_mod.asyncio.WindowsSelectorEventLoopPolicy()
 
     def test_run_server_keeps_default_loop_off_windows(self, monkeypatch):
         from headroom.proxy import server as server_mod
