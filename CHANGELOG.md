@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- Concurrent large requests no longer 502 on a transient HTTP/2 stream reset.
+  A single upstream `StreamReset` poisons the shared h2 connection and raises
+  `RemoteProtocolError` / `LocalProtocolError` on every in-flight request; those
+  transport errors weren't in the proxy's retry paths, so they collapsed
+  straight to a 502 with no reconnect. The Anthropic non-streaming and streaming
+  retry paths now treat any `httpx.TransportError` (including h2 protocol
+  errors) as retryable — before the first client byte — so the bad connection
+  is dropped and the request re-sent on a fresh one
+  ([#1639](https://github.com/headroomlabs-ai/headroom/issues/1639)).
 - Proactive expansion blocks injected into user turns are now wrapped in
   `<headroom_proactive_expansion>` XML tags, giving downstream consumers
   (LLMs, loggers, attribution parsers) a machine-readable provenance

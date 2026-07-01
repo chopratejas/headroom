@@ -1078,7 +1078,12 @@ class StreamingMixin:
                         await asyncio.sleep(delay_with_jitter / 1000)
                         continue
                     break
-                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                # Retry any transport-level failure while opening the upstream
+                # stream — including HTTP/2 protocol errors (Local/RemoteProtocol
+                # `StreamReset`) from a poisoned shared h2 connection. This runs
+                # before any body byte is forwarded to the client, so re-sending
+                # on a fresh connection is safe and avoids a 502. (#1639)
+                except httpx.TransportError as e:
                     last_connect_error = e
                     if attempt >= retry_attempts - 1:
                         raise
@@ -1097,7 +1102,10 @@ class StreamingMixin:
 
             if upstream_response is None:
                 raise last_connect_error or RuntimeError("upstream connection did not start")
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+        # Retries exhausted (or a transport failure escaped the loop): emit a
+        # clean SSE error instead of letting an h2 StreamReset bubble up as a
+        # 502. Covers ConnectError/timeouts and Local/RemoteProtocolError. (#1639)
+        except httpx.TransportError as e:
             error_msg = str(e) or repr(e)
             logger.error(f"[{request_id}] Connection error to upstream API: {error_msg}")
 

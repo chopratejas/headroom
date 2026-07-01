@@ -1799,7 +1799,12 @@ class HeadroomProxy(
 
                     return response
 
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
+            # httpx.TransportError covers ConnectError, the timeout family, and —
+            # crucially — the protocol errors (Local/RemoteProtocolError, e.g. an
+            # HTTP/2 `StreamReset`) that a poisoned shared h2 connection raises on
+            # every in-flight request. Retrying drops the bad connection and
+            # re-sends on a fresh one instead of collapsing to a 502. (#1639)
+            except (httpx.TransportError, httpx.HTTPStatusError) as e:
                 last_error = e
 
                 if not self.config.retry_enabled or attempt >= self.config.retry_max_attempts - 1:
