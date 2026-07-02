@@ -1,9 +1,12 @@
-"""Tests for headroom._ort — the Windows ORT_DYLIB_PATH auto-pin.
+"""Tests for headroom._ort — the ORT_DYLIB_PATH auto-pin.
 
-The resolver guards the Rust core against the Windows DLL search picking
-up the Windows ML System32 onnxruntime.dll (deadlocks ort session init on
-Win11 24H2+, see headroom/_ort.py). The platform gate is monkeypatched so
-the full logic runs on any CI OS.
+The resolver points the Rust core's ort-load-dynamic runtime at the pip
+onnxruntime package's shared library on every platform: on Windows it
+guards against the DLL search picking up the Windows ML System32
+onnxruntime.dll (deadlocks ort session init on Win11 24H2+), and on
+Linux/macOS it restores ML detection after static ORT linking was
+dropped for pre-AVX2 CPU compatibility (#1278). The platform is
+monkeypatched so every branch runs on any CI OS.
 """
 
 from __future__ import annotations
@@ -37,10 +40,30 @@ def _fake_spec_for(monkeypatch, package_dir):
     )
 
 
-def test_noop_on_non_windows(monkeypatch):
+def test_pins_versioned_so_on_linux(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
-    assert _ort.ensure_ort_dylib_pinned() is None
-    assert "ORT_DYLIB_PATH" not in _ort.os.environ
+    pkg = tmp_path / "onnxruntime"
+    capi = pkg / "capi"
+    capi.mkdir(parents=True)
+    so = capi / "libonnxruntime.so.1.22.0"
+    so.write_bytes(b"not really a shared object")
+    _fake_spec_for(monkeypatch, pkg)
+
+    assert _ort.ensure_ort_dylib_pinned() == str(so)
+    assert _ort.os.environ["ORT_DYLIB_PATH"] == str(so)
+
+
+def test_pins_dylib_on_macos(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    pkg = tmp_path / "onnxruntime"
+    capi = pkg / "capi"
+    capi.mkdir(parents=True)
+    dylib = capi / "libonnxruntime.dylib"
+    dylib.write_bytes(b"not really a dylib")
+    _fake_spec_for(monkeypatch, pkg)
+
+    assert _ort.ensure_ort_dylib_pinned() == str(dylib)
+    assert _ort.os.environ["ORT_DYLIB_PATH"] == str(dylib)
 
 
 def test_respects_existing_env(monkeypatch):

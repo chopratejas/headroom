@@ -122,17 +122,16 @@ redis = { version = "0.27", optional = true, default-features = false }
 # cycling through the proxy crate. Tiny crate (no I/O, just types).
 http = "1"
 
-[target.'cfg(not(windows))'.dependencies]
-fastembed = { version = "5", default-features = false, features = [
-    "hf-hub-rustls-tls",
-    "ort-download-binaries-rustls-tls",
-    "image-models",
-] }
-
-[target.'cfg(windows)'.dependencies]
-# `ort-download-binaries-*` emits DirectML link libs on Windows (`DXCORE`,
-# `DXGI`, `D3D12`, `DirectML`). Users installing `headroom-ai[all]` from
-# sdist often do not have those SDK libs, so load ORT dynamically instead.
+# Load ONNX Runtime dynamically on every platform. The alternative,
+# `ort-download-binaries-*`, statically links Microsoft's prebuilt ORT:
+# on Windows it emits DirectML link libs (`DXCORE`, `DXGI`, `D3D12`,
+# `DirectML`) that sdist installs of `headroom-ai[all]` often lack, and
+# on x86_64 Linux/macOS the prebuilt binary requires AVX2 — its code is
+# mapped and initialized as soon as the `headroom._core` extension
+# loads, so importing headroom SIGILLed on pre-AVX2 CPUs before the
+# runtime AVX2 guard could run (#1278). With `ort-load-dynamic` the
+# library is only dlopen'd at first use, where the AVX2 guard falls
+# back to the non-ONNX detection tiers.
 fastembed = { version = "5", default-features = false, features = [
     "hf-hub-rustls-tls",
     "ort-load-dynamic",

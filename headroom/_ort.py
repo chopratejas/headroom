@@ -1,12 +1,16 @@
-"""Pin the ONNX Runtime dylib for the Rust core on Windows.
+"""Pin the ONNX Runtime dylib for the Rust core.
 
 Why this module exists
 ----------------------
-On Windows, ``headroom._core`` consumers of the ``ort`` crate (magika
-content detection, fastembed embeddings) are built with
-``ort-load-dynamic``: the native ``onnxruntime.dll`` is resolved at
-*runtime*. Unless ``ORT_DYLIB_PATH`` is set, ort falls back to a bare
-``LoadLibrary("onnxruntime.dll")`` and the Windows DLL search order
+``headroom._core`` consumers of the ``ort`` crate (magika content
+detection, fastembed embeddings) are built with ``ort-load-dynamic`` on
+every platform: the native ONNX Runtime library is resolved at
+*runtime* rather than statically linked. (Static `ort-download-binaries`
+linking was dropped on Linux/macOS too because Microsoft's prebuilt
+x86_64 ORT requires AVX2 and executes at extension load, SIGILLing
+`import headroom._core` on pre-AVX2 CPUs — #1278.) Unless
+``ORT_DYLIB_PATH`` is set, ort falls back to a bare dlopen /
+``LoadLibrary("onnxruntime.dll")``; on Windows the DLL search order
 applies — and ``C:\\Windows\\System32`` wins.
 
 Windows 11 24H2+ ships ``System32\\onnxruntime.dll`` as part of Windows
@@ -19,13 +23,15 @@ catch (a hang is not an ``Err``). Reproduced and bracketed with
 package's DLL (which ``headroom-ai[proxy]`` already depends on).
 
 The fix: before anything can import ``headroom._core``, resolve the
-pip-installed ``onnxruntime\\capi\\onnxruntime.dll`` and export it via
-``ORT_DYLIB_PATH``. ``headroom/__init__.py`` calls this hook, which
-guarantees ordering for every package-level consumer.
+pip-installed ``onnxruntime`` package's shared library
+(``capi/onnxruntime.dll`` / ``capi/libonnxruntime.so*`` /
+``capi/libonnxruntime*.dylib``) and export it via ``ORT_DYLIB_PATH``.
+``headroom/__init__.py`` calls this hook, which guarantees ordering for
+every package-level consumer.
 
 Behavior contract
 -----------------
-- Windows-only; a no-op everywhere else.
+- All platforms; pins only when the ``onnxruntime`` package is present.
 - Respects a pre-set ``ORT_DYLIB_PATH`` (user override wins).
 - Locates the ``onnxruntime`` package via ``find_spec`` WITHOUT
   importing it (importing would load its native code; this hook must
@@ -54,11 +60,11 @@ _pinned: object = _UNSET
 
 
 def ensure_ort_dylib_pinned() -> str | None:
-    """Export ``ORT_DYLIB_PATH`` for the Rust core's ort runtime (Windows).
+    """Export ``ORT_DYLIB_PATH`` for the Rust core's ort runtime.
 
     Returns the effective dylib path (pinned now or already present in
-    the environment), or ``None`` when no pin applies (non-Windows, or
-    no ``onnxruntime`` package to point at). Idempotent and exception-free.
+    the environment), or ``None`` when no pin applies (no ``onnxruntime``
+    package to point at). Idempotent and exception-free.
     """
     global _pinned
     if _pinned is not _UNSET:
@@ -67,10 +73,21 @@ def ensure_ort_dylib_pinned() -> str | None:
     return _pinned  # type: ignore[return-value]
 
 
-def _resolve_and_pin() -> str | None:
-    if not sys.platform.startswith("win"):
-        return None
+def _find_dylib(capi: Path) -> Path | None:
+    """Return the platform's ONNX Runtime shared library inside ``capi``."""
+    if sys.platform.startswith("win"):
+        dll = capi / "onnxruntime.dll"
+        return dll if dll.is_file() else None
+    # Linux ships `libonnxruntime.so.<version>`, macOS `libonnxruntime.dylib`
+    # (sometimes versioned). Glob rather than hardcode the suffix.
+    for pattern in ("libonnxruntime.so*", "libonnxruntime*.dylib"):
+        for candidate in sorted(capi.glob(pattern)):
+            if candidate.is_file():
+                return candidate
+    return None
 
+
+def _resolve_and_pin() -> str | None:
     try:
         existing = os.environ.get(_ENV_VAR)
         if existing:
@@ -81,19 +98,21 @@ def _resolve_and_pin() -> str | None:
         if spec is None or not spec.origin:
             logger.debug(
                 "onnxruntime package not found; %s left unset. The Rust ML detection "
-                "may pick up the Windows ML System32 onnxruntime.dll, which is known "
-                "to deadlock ort init on Windows 11 24H2+ (it then degrades to non-ML "
-                "tiers via HEADROOM_MAGIKA_INIT_TIMEOUT_SECS). Install onnxruntime or "
-                "set %s explicitly.",
+                "cannot load ONNX Runtime and degrades to non-ML tiers (on Windows it "
+                "may instead pick up the Windows ML System32 onnxruntime.dll, which is "
+                "known to deadlock ort init on Windows 11 24H2+ and then degrades via "
+                "HEADROOM_MAGIKA_INIT_TIMEOUT_SECS). Install onnxruntime or set %s "
+                "explicitly.",
                 _ENV_VAR,
                 _ENV_VAR,
             )
             return None
 
-        dll = Path(spec.origin).parent / "capi" / "onnxruntime.dll"
-        if not dll.is_file():
+        dll = _find_dylib(Path(spec.origin).parent / "capi")
+        if dll is None:
             logger.debug(
-                "onnxruntime package found but %s is missing; %s left unset", dll, _ENV_VAR
+                "onnxruntime package found but its shared library is missing; %s left unset",
+                _ENV_VAR,
             )
             return None
 
