@@ -360,12 +360,12 @@ def pricing_surface_from_tags(tags: dict[str, str] | None) -> str | None:
         return None
     base_url = (tags.get("base-url") or "").lower()
     original_path = (tags.get("original-path") or "").lower()
-    if "opencode.ai" not in base_url:
-        return None
     if "/zen/go/" in original_path or original_path.startswith("/zen/go"):
         return OPENCODE_GO_SURFACE
     if "/zen/" in original_path or original_path.startswith("/zen"):
         return OPENCODE_ZEN_SURFACE
+    if "opencode.ai" not in base_url:
+        return None
     return None
 
 

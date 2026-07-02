@@ -20,7 +20,7 @@ def test_pricing_surface_from_opencode_tags_detects_zen_and_go():
     assert (
         pricing_surface_from_tags(
             {
-                "base-url": "https://opencode.ai",
+                "base-url": "http://127.0.0.1:8799",
                 "original-path": "/zen/go/v1/chat/completions",
             }
         )
