@@ -24,6 +24,7 @@
     "failure-learning",
     "---Proxy Server---",
     "proxy",
+    "pipeline-extensions",
     "---Integrations---",
     "vercel-ai-sdk",
     "openai-sdk",

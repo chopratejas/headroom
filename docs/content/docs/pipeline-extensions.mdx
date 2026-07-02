@@ -1,0 +1,147 @@
+---
+title: Pipeline Extensions
+description: Extend the Headroom proxy pipeline with custom request/response hooks — normalize upstream provider quirks, inject headers, or route per-request.
+---
+
+Headroom's proxy pipeline emits lifecycle events at every stage of request
+processing.  You can hook into these events with a **pipeline extension** — a
+Python object that implements the `PipelineExtension` protocol and registers
+via the `headroom.pipeline_extension` entry-point group.
+
+## When to Use a Pipeline Extension
+
+- **Normalize messages for a quirky upstream provider** — e.g. a provider that
+  rejects `content: null` on assistant messages with tool calls.
+- **Inject per-request headers** — add authentication, routing, or tracing
+  headers before the request leaves the proxy.
+- **Transform responses** — mutate the `response` field in a `POST_SEND` or
+  `RESPONSE_RECEIVED` handler.
+- **Audit or log** — capture `messages`, `tools`, or `metadata` at any stage
+  without modifying them.
+
+## Available Pipeline Stages
+
+| Stage | When | Typical use |
+|-------|------|-------------|
+| `SETUP` | Proxy config loaded | One-time initialization |
+| `PRE_START` | Before server binds | Pre-flight checks |
+| `POST_START` | Server is listening | Register background tasks |
+| `INPUT_RECEIVED` | Request arrives | Pre-processing |
+| `INPUT_CACHED` | Cache lookup done | Post-cache hooks |
+| `INPUT_ROUTED` | Provider selected | Route-based logic |
+| `INPUT_COMPRESSED` | Compression applied | Post-compression hooks |
+| `INPUT_REMEMBERED` | Memory retrieval done | Memory hooks |
+| **`PRE_SEND`** | **Just before upstream call** | **Normalize messages/headers** |
+| `POST_SEND` | Upstream responded | Post-response hooks |
+| `RESPONSE_RECEIVED` | Full response assembled | Stream completion hooks |
+
+## Recipe: Fix a Provider Quirk (kie.ai `content: null`)
+
+**Problem:** kie.ai's Gemini endpoints reject valid OpenAI-spec messages where
+the assistant returns only a tool call (`content: null` + `tool_calls`).
+
+**Solution:** A `PRE_SEND` pipeline extension that normalizes `content: null` to
+`content: ""` before the request reaches the upstream provider.
+
+### 1. Create the extension module
+
+```python
+# my_headroom_extensions.py
+from headroom.pipeline import PipelineExtension, PipelineEvent, PipelineStage
+
+
+class KieAICompat(PipelineExtension):
+    """Normalize content: null → content: \"\" for kie.ai compatibility."""
+
+    def on_pipeline_event(self, event: PipelineEvent) -> PipelineEvent | None:
+        if event.stage != PipelineStage.PRE_SEND:
+            return event
+        if event.messages is None:
+            return event
+
+        for msg in event.messages:
+            if msg.get("role") == "assistant" and msg.get("content") is None:
+                msg["content"] = ""
+
+        return event
+```
+
+### 2. Register the entry point
+
+In your project's `pyproject.toml` (or `setup.py` / `setup.cfg`):
+
+```toml
+[project.entry-points."headroom.pipeline_extension"]
+kie-ai-compat = "my_headroom_extensions:KieAICompat"
+```
+
+Re-install your package so the entry point is discovered:
+
+```bash
+pip install -e .
+```
+
+### 3. Enable the extension
+
+```bash
+headroom proxy --proxy-extension kie-ai-compat
+```
+
+Or via environment variable:
+
+```bash
+HEADROOM_PROXY_EXTENSIONS=kie-ai-compat headroom proxy
+```
+
+Use `*` to enable every discovered extension:
+
+```bash
+headroom proxy --proxy-extension '*'
+```
+
+## Per-Request Base URL Override
+
+If you need different models to route to different upstream base URLs through a
+single Headroom instance, send the `x-headroom-base-url` header with each
+request:
+
+```bash
+curl http://localhost:8787/v1/chat/completions \
+  -H "x-headroom-base-url: https://api.kie.ai/gemini-3-flash" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gemini-3-flash", "messages": [...]}'
+```
+
+This overrides the globally configured `OPENAI_API_URL` / `OPENAI_TARGET_API_URL`
+for that single request, so you can run one proxy instance that fans out to
+multiple providers.
+
+## Extension Contract
+
+```python
+class PipelineExtension(Protocol):
+    def on_pipeline_event(self, event: PipelineEvent) -> PipelineEvent | None:
+        ...
+```
+
+- **Receive** a `PipelineEvent` with the current `stage`, `operation`,
+  `messages`, `tools`, `headers`, `response`, and `metadata`.
+- **Mutate** the event in place (modify `messages`, inject `headers`, etc.)
+  and return it, or return a **new** `PipelineEvent`.
+- Return `None` to skip the event (does not block downstream extensions).
+- Exceptions are caught and logged; the pipeline continues (fail-open).
+
+## Troubleshooting
+
+**Extension not loading?**
+```bash
+# Check that your entry point is discoverable
+python -c "from importlib.metadata import entry_points; \
+  print([ep.name for ep in entry_points(group='headroom.pipeline_extension')])"
+```
+
+**Still not working?**
+Start the proxy with debug logging:
+```bash
+headroom proxy --log-file ~/.headroom/logs/proxy.jsonl --log-messages --proxy-extension my-extension
+```
