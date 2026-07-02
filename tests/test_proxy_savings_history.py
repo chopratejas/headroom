@@ -343,6 +343,37 @@ def test_litellm_resolution_and_savings_estimation_fallbacks(monkeypatch):
     assert savings_tracker_module._estimate_input_cost_usd("gpt-4o", 100) == 0.0
 
 
+def test_input_cost_counts_cache_reads_when_uncached_input_is_zero(monkeypatch):
+    # Anthropic reports cache reads/writes separately from `input_tokens` (the
+    # uncached portion). A fully prefix-cached request has input_tokens == 0 but
+    # cache_read_tokens > 0 -- it still cost money and must not be priced at 0,
+    # otherwise the day shows compression savings with zero recorded spend.
+    def fake_cost_per_token(*, model, prompt_tokens, completion_tokens):
+        if model == "anthropic/claude-sonnet-4-6":
+            return {"model": model}
+        raise RuntimeError("unknown model")
+
+    fake_litellm = SimpleNamespace(
+        cost_per_token=fake_cost_per_token,
+        model_cost={
+            "anthropic/claude-sonnet-4-6": {
+                "input_cost_per_token": 0.003,
+                "cache_read_input_token_cost": 0.0003,
+                "cache_creation_input_token_cost": 0.00375,
+            },
+        },
+    )
+    monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", True)
+    monkeypatch.setattr(savings_tracker_module, "litellm", fake_litellm)
+
+    cost = savings_tracker_module._estimate_input_cost_usd(
+        "claude-sonnet-4-6",
+        0,
+        cache_read_tokens=1000,
+    )
+    assert cost == pytest.approx(0.3)
+
+
 def test_display_session_rolls_after_inactivity_and_counts_zero_savings_requests(
     tmp_path, monkeypatch
 ):
@@ -835,6 +866,12 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         assert stats_data["persistent_savings"]["lifetime"]["tokens_saved"] == 40
         assert stats_data["persistent_savings"]["storage_path"] == str(savings_path)
 
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert "headroom_tokens_saved_total 40" in metrics.text
+        assert "headroom_persistent_savings_tokens_saved_total 40" in metrics.text
+        assert "headroom_persistent_savings_requests_total 1" in metrics.text
+
         history = client.get("/stats-history")
         assert history.status_code == 200
         history_data = history.json()
@@ -876,6 +913,12 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         assert history.json()["lifetime"]["tokens_saved"] == 40
         assert history.json()["display_session"]["requests"] == 1
 
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert "headroom_tokens_saved_total 0" in metrics.text
+        assert "headroom_persistent_savings_tokens_saved_total 40" in metrics.text
+        assert "headroom_persistent_savings_requests_total 1" in metrics.text
+
         _record_request(client, model="gpt-4o", tokens_saved=15)
 
         updated = client.get("/stats-history").json()
@@ -890,6 +933,12 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         assert updated["display_session"]["savings_percent"] == pytest.approx(18.64)
         assert updated["series"]["daily"][0]["total_input_tokens_delta"] == 240
         assert updated["series"]["daily"][0]["total_input_cost_usd_delta"] == pytest.approx(0.48)
+
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert "headroom_tokens_saved_total 15" in metrics.text
+        assert "headroom_persistent_savings_tokens_saved_total 55" in metrics.text
+        assert "headroom_persistent_savings_requests_total 2" in metrics.text
 
         full = client.get("/stats-history?history_mode=full").json()
         assert full["history_summary"]["mode"] == "full"

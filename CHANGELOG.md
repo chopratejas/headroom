@@ -9,14 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- `headroom learn` now honors `CLAUDE_CONFIG_DIR`. It resolved the Claude
+  config directory as `~/.claude` and wrote global memory to
+  `~/.claude/CLAUDE.md`, so users who relocate their Claude config via that
+  env var had `learn` scan the wrong directory and detect no projects. The
+  scanner and memory writer now read/write the configured directory
+  ([#1630](https://github.com/headroomlabs-ai/headroom/issues/1630)).
+- `--backend bedrock` now fails fast with an actionable error when temporary
+  AWS credentials (`AWS_SESSION_TOKEN`) are used but botocore is not installed
+  (e.g. the slim default Docker image). litellm's session-token auth path
+  imports botocore, so the missing dependency previously surfaced only at
+  request time as a misleading `authentication_error: No module named
+  'botocore'`. The proxy now tells the user to install the `bedrock` extra up
+  front ([#1551](https://github.com/headroomlabs-ai/headroom/issues/1551)).
+- Content detection no longer crashes the proxy on text containing an
+  orphaned `+++ ` target line with no preceding `--- ` source line (common in
+  `set -x` xtrace output and partial diffs). The bundled `unidiff` 0.4.0 parser
+  panics on that input instead of returning an error; the Rust diff detector now
+  contains the panic and treats the fragment as plain text, so the request is
+  compressed and forwarded normally instead of returning HTTP 500
+  ([#1547](https://github.com/headroomlabs-ai/headroom/issues/1547)).
 - Proactive expansion blocks injected into user turns are now wrapped in
   `<headroom_proactive_expansion>` XML tags, giving downstream consumers
   (LLMs, loggers, attribution parsers) a machine-readable provenance
   boundary and preventing misattribution in multi-agent threads.
+- **cli:** the startup banner no longer advertises
+  `HEADROOM_COMPRESSION_STABLE_AFTER_TURN` and
+  `HEADROOM_STALE_READ_COMPRESS_AFTER_TURNS` as tuning knobs. Both were read
+  only to render the `Performance Tuning` banner section and were never wired
+  into the compression path, so setting them changed the banner but had no
+  effect on behavior. The banner now surfaces only the embedding sidecar,
+  which is a real, consumed setting.
+- **memory/embedder:** cap CPU thread oversubscription in the local
+  torch/sentence-transformers embedder. Concurrent encodes previously each
+  fanned out to ~`os.cpu_count()` BLAS/OpenMP threads, so under load the memory
+  path starved the asyncio event loop and spiked `/livez` latency to several
+  seconds. CPU encodes now run on a dedicated, size-limited executor whose
+  workers each pin their thread pool, bounding total embedding threads to
+  `HEADROOM_EMBED_CONCURRENCY` × `HEADROOM_EMBED_NUM_THREADS` (defaults
+  `min(4, cpu)` × 1). The ONNX embedder already capped its threads; this brings
+  the torch path to parity
+  ([#198](https://github.com/headroomlabs-ai/headroom/issues/198)).
 
 ### Changed
 
 * **telemetry:** anonymous usage telemetry is now **opt-in** (off by default) instead of opt-out. Nothing is collected or sent unless you set `HEADROOM_TELEMETRY=on` or pass `--telemetry` to `headroom proxy` / `headroom install apply`. `is_telemetry_enabled()` is fail-closed — only explicit on-values (`on`/`true`/`1`/`yes`/`enable`/`enabled`) enable it; unset, empty, or unrecognized values stay disabled. The existing `--no-telemetry` flag and `HEADROOM_TELEMETRY=off` remain accepted for back-compat, and install manifests now write the `HEADROOM_TELEMETRY` value explicitly so generated deployments are unambiguous.
+* **ccr:** `headroom_stats` now labels its formatted proxy output as a rolling/window-scoped session and adds a lifetime savings section from `/stats persistent_savings.lifetime` when present, while keeping existing summary structure and fallback JSON output behavior.
 
 ### Features
 
@@ -34,8 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+* **install:** stop leaking a file descriptor on every `headroom install start`. `start_detached_agent()` opened the agent log file and handed it to `subprocess.Popen` but never closed the parent's copy, so each call leaked one fd (and pinned the log file open against rotation). The parent now closes its copy in a `try/finally` once the child has inherited it — the close also runs if `Popen` raises ([#1554](https://github.com/headroomlabs-ai/headroom/issues/1554)).
+* **proxy:** include the system prompt, tools, and the response-shaping request fields in the SemanticCache key. `_compute_key` hashed only `{model, messages}`, so two non-streaming requests with identical messages but a different top-level `system` prompt, tool set, sampling config, or output-shaping field collided on one key and the second caller was served the first's cached response — generated under different request semantics, in the default config (`cache_enabled` defaults on). The key now folds the request fields that shape generation — `temperature`/`top_p`/`top_k`/`max_tokens`/`stop`, plus OpenAI `tool_choice`/`response_format`/`parallel_tool_calls`/`seed`/`presence_penalty`/`frequency_penalty`/`logit_bias`/`n`/`logprobs`/`top_logprobs`/`reasoning_effort`/`verbosity`/`modalities` and Anthropic `thinking`/`tool_choice`/`output_config` — canonicalizing `system`/`tools` so a moved `cache_control` breakpoint does not fragment it, and the handlers snapshot the fields once at the cache read and reuse them at write so a body mutated by the pipeline cannot diverge the key. Non-streaming path only.
+* **learn (verbosity):** `--verbosity --apply --all` now aggregates the savings baseline across every project instead of overwriting it per project (last-project-wins), which previously left the output shaper with a tiny, unrepresentative baseline. The applied verbosity level comes from the project with the most samples ([#1288](https://github.com/headroomlabs-ai/headroom/pull/1288)).
 * **proxy/anthropic:** restore token-mode compression on continued Claude Code turns with a frozen prefix and deferred CCR tool injection. Token mode now runs request-side compression even when the client did not pre-register `headroom_retrieve`, relying on the existing marker-triggered injection override to keep emitted CCR markers redeemable ([#1487](https://github.com/headroomlabs-ai/headroom/issues/1487)).
+* **proxy:** the dedicated OpenAI handlers (`/v1/chat/completions`, `/v1/responses`) now honor the `x-headroom-base-url` request header, matching the generic passthrough route. Previously only the catch-all passthrough honored it, so OpenAI-compatible gateways (LiteLLM, CPA, self-hosted vLLM, Azure OpenAI) routed correctly for passthrough traffic but the dedicated chat/responses handlers ignored the header and fell back to the default `OPENAI_API_URL`, sending requests (and the user's provider key) to the wrong upstream.
 * **subscription:** stop zeroing the 5-hour headroom contribution counters on every poll. The rollover check compared `five_hour.resets_at` with a bare `!=`, but the usage API reports that timestamp with second-level jitter (observed flapping between `01:59:59Z` and `02:00:00Z` on consecutive polls within the same window), so a spurious "5h window rolled over" reset fired every poll interval (~5 min) and the dashboard's per-window savings stuck near 0%. Only a forward jump larger than `_ROLLOVER_MIN_ADVANCE` (1 minute) now counts as a real rollover.
+* **wrap:** keep the shared proxy alive when the agent that launched it closes *ungracefully* on Windows. `_start_proxy` spawned the proxy without detaching it, so it stayed in the launcher's console and Job object; closing that terminal window (or `taskkill`/a crash) tree-killed the proxy, bypassing the marker-based reference counting in `_make_cleanup` and breaking every other `headroom wrap` instance routed through the same port. The proxy is now created with `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB` (with a graceful fallback when the launcher's Job forbids breakaway); POSIX behavior is unchanged. `CREATE_NO_WINDOW` (rather than `DETACHED_PROCESS`) gives the proxy its own *hidden* console: `DETACHED_PROCESS` leaves a console-subsystem exe (`python.exe`) consoleless, so Windows surfaces a visible console window whose close button kills the proxy.
 * **transforms/content_router:** stop replacing `role="tool"` output with a lossy-unrecoverable summary on the live compression path (refs [#1307](https://github.com/chopratejas/headroom/issues/1307)). `ContentRouter.apply()` routed OpenAI-style `role="tool"` string messages — `Bash`/`grep`/`ls`/`cat` output — through the ML/word-drop summarizers; when the result carried no CCR retrieve marker (CCR off, ratio >= 0.8, or the size-gate fallback) the original was unrecoverable and the agent acted on a fabricated summary. Tool-role string content is now kept verbatim unless the compressed form is CCR-recoverable. Assistant/user text is unaffected, and structurally-lossless passes (SmartCrusher/Log/Search) still apply. The Anthropic `tool_result` block path is tracked separately.
 * **rtk:** stop `rtk` hook registration from spuriously timing out during `headroom wrap`. Output is captured to a temp file instead of pipes, and `stdin` is closed, so a background process forked by `rtk init` can no longer hold the pipe open and block `subprocess.run` past its 10s timeout after the hooks were already registered.
 * **ccr:** stop re-compressing `headroom_retrieve` output, which created an infinite retrieval loop, and stop emitting retrieval markers when the `headroom_retrieve` tool is not injected, which silently dropped data ([#1077](https://github.com/chopratejas/headroom/issues/1077), [#1006](https://github.com/chopratejas/headroom/issues/1006)).
@@ -71,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **ccr:** make retrieval store TTL configurable with `HEADROOM_CCR_TTL_SECONDS`, expose the effective TTL in `/v1/retrieve/stats`, and distinguish expired retrievals from missing hashes.
 * **proxy:** make `force_kompress` skip ContentRouter auto-detection during compression and pass savings-profile kwargs through Anthropic batch requests.
 * **proxy:** add native Bedrock `/model/{id}/converse-stream` route and forward it through the existing streaming EventStream/SSE pipeline.
+* **proxy/kompress:** make pre-upstream backpressure and kompress execution saturation fail-open, so Anthropic requests no longer return 503 during temporary saturation while healthy capacity still compresses and explicit passthrough markers preserve operator visibility ([#1025](https://github.com/headroomlabs-ai/headroom/issues/1025)).
 * **wrap (codex):** fix `headroom wrap codex` producing a `config.toml` with duplicate top-level `model_provider` / `openai_base_url` keys (TOML-spec error) when the user had already configured their own provider. The injector now rewrites pre-existing top-level `model_provider` and `openai_base_url` lines in place — the previous value is kept in a `# was: …` trailing comment — instead of unconditionally prepending a duplicate, so `codex` can start against the proxy. The pre-wrap snapshot mechanism continues to byte-for-byte restore the original file on `headroom unwrap codex`.
 * **install (macOS):** fix `headroom install restart` / `install start` for launchd `persistent-service` deployments. `stop` `bootout`s the job but `start` only ran `launchctl kickstart`, which cannot recover the un-bootstrapped state `stop`/`restart` leave behind (launchctl error 113), so the proxy was left stopped. `start` now tries `kickstart` (fast path for an already-bootstrapped job) and, on failure, `bootstrap`s the plist fresh — retrying for ~15s to ride out the transient `bootstrap` EIO (error 5) window while launchd releases the label after a `bootout`. `stop` tolerates only the already-absent case (`bootout` ESRCH / error 3) and still raises on any other `bootout` failure ([#1289](https://github.com/headroomlabs-ai/headroom/issues/1289)).
 * **wrap:** isolate wrapped proxy subprocess stdout/stderr into `proxy-stdio.log`, so `proxy.log` remains the canonical rotating runtime log and Windows rollover failures from `RotatingFileHandler` are no longer blocked by wrapper stdio handles ([#1184](https://github.com/chopratejas/headroom/issues/1184)).
