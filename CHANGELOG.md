@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **telemetry:** anonymous usage telemetry is now **opt-in** (off by default) instead of opt-out. Nothing is collected or sent unless you set `HEADROOM_TELEMETRY=on` or pass `--telemetry` to `headroom proxy` / `headroom install apply`. `is_telemetry_enabled()` is fail-closed — only explicit on-values (`on`/`true`/`1`/`yes`/`enable`/`enabled`) enable it; unset, empty, or unrecognized values stay disabled. The existing `--no-telemetry` flag and `HEADROOM_TELEMETRY=off` remain accepted for back-compat, and install manifests now write the `HEADROOM_TELEMETRY` value explicitly so generated deployments are unambiguous.
 * **ccr:** `headroom_stats` now labels its formatted proxy output as a rolling/window-scoped session and adds a lifetime savings section from `/stats persistent_savings.lifetime` when present, while keeping existing summary structure and fallback JSON output behavior.
 
+### Added
+
+* **integrations:** CrewAI tool compression — `wrap_tools_with_headroom()` wraps CrewAI `BaseTool` instances with automatic output compression via `compress_tool_result()`, with per-tool metrics tracking ([#1379](https://github.com/headroomlabs-ai/headroom/issues/1379)).
+* **integrations:** AutoGen tool compression — `wrap_tools_with_headroom()` wraps AutoGen `FunctionTool` instances (sync and async) with automatic output compression, including per-tool metrics tracking ([#1379](https://github.com/headroomlabs-ai/headroom/issues/1379)).
+
 ### Features
 
 * **wrap:** `headroom wrap claude --1m` preserves the 1M context window. Behind a custom `ANTHROPIC_BASE_URL` (the proxy) Claude Code drops the `context-1m` beta header and caps the window at 200k for entitled subscription users; the opt-in flag sets `ANTHROPIC_MODEL=<opus>[1m]` on the launched process so the 1M window activates through Headroom. A model already selected via `ANTHROPIC_MODEL` is preserved (only the `[1m]` suffix is appended) ([#1158](https://github.com/chopratejas/headroom/issues/1158)).

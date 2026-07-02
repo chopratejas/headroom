@@ -203,6 +203,14 @@ agno = [
 strands = [
     "strands-agents>=0.1.0",
 ]
+# CrewAI agent framework integration
+crewai = [
+    "crewai>=1.0",
+]
+# AutoGen agent framework integration
+autogen = [
+    "autogen-agentchat>=0.7",
+]
 # MCP server for Claude Code integration
 mcp = [
     "mcp>=1.0.0",
