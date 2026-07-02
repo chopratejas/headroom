@@ -151,7 +151,15 @@ class ClaudeRegistrar(MCPRegistrar):
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             config = _read_json_for_write(target)
-            servers = config.setdefault("mcpServers", {})
+            servers = config.get("mcpServers")
+            if servers is None:
+                servers = {}
+                config["mcpServers"] = servers
+            elif not isinstance(servers, dict):
+                # Valid JSON, but `mcpServers` isn't an object. Treat it as
+                # malformed rather than crashing on `servers[...] = ...` (or
+                # silently discarding whatever the user had there).
+                raise _MalformedConfigError("'mcpServers' is present but not a JSON object")
             servers[spec.name] = _spec_to_entry(spec)
             _write_json(target, config)
         except _MalformedConfigError as exc:

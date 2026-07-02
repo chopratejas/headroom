@@ -419,6 +419,25 @@ def test_register_via_file_preserves_malformed_config(tmp_path: Path, contents: 
     assert cfg.read_text(encoding="utf-8") == contents
 
 
+@pytest.mark.parametrize("bad_servers", ["oops", 123, ["a", "b"]])
+def test_register_via_file_rejects_non_object_mcpservers(
+    tmp_path: Path, bad_servers: object
+) -> None:
+    """Valid JSON but a non-object `mcpServers` must be treated as malformed —
+    not crash on `servers[name] = ...`, and not overwrite the file."""
+    cfg = tmp_path / ".claude" / ".claude.json"
+    cfg.parent.mkdir()
+    original = json.dumps({"projects": {"/x": 1}, "mcpServers": bad_servers})
+    cfg.write_text(original, encoding="utf-8")
+    reg = _make_registrar(tmp_path, cli=None)
+
+    result = reg.register_server(_spec())
+
+    assert result.status == RegisterStatus.FAILED
+    assert "not valid JSON" in result.detail
+    assert cfg.read_text(encoding="utf-8") == original
+
+
 def test_register_via_file_merges_into_existing_valid_config(tmp_path: Path) -> None:
     """The happy path still merges: unrelated keys are preserved and mcpServers
     gains the headroom entry."""
