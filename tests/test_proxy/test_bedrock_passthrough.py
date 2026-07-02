@@ -56,6 +56,13 @@ class _FakeUpstream:
         for chunk in self._chunks:
             yield chunk
 
+    async def aread(self):
+        return b"".join(self._chunks)
+
+    def json(self):
+        import json
+        return json.loads(b"".join(self._chunks).decode())
+
     async def aclose(self):
         self.closed = True
 
@@ -94,6 +101,7 @@ def _install_fake_client(proxy, upstream: _FakeUpstream) -> MagicMock:
     client = MagicMock()
     client.build_request = MagicMock(return_value=MagicMock(name="upstream_request"))
     client.send = AsyncMock(return_value=upstream)
+    client.request = AsyncMock(return_value=upstream)
     client.aclose = AsyncMock()  # awaited by proxy.shutdown() on lifespan exit
     proxy.http_client = client
     return client
@@ -358,3 +366,55 @@ def test_env_var_feeds_config(monkeypatch):
     monkeypatch.setenv("BEDROCK_TARGET_API_URL", UPSTREAM)
     cfg = _proxy_config_from_env()
     assert cfg.bedrock_api_url == UPSTREAM
+
+
+# ── native intercept (no upstream bedrock url) ────────────────────────
+
+
+def test_native_intercept_returns_anthropic_shape():
+    """When bedrock_api_url is unset, Bedrock URLs natively route to Anthropic
+    and deliberately return Anthropic-compatible responses (not AWS EventStream).
+    This is an explicit compatibility break for strict Bedrock clients."""
+    app = create_app(ProxyConfig())
+    with TestClient(app) as client:
+        proxy = client.app.state.proxy
+        
+        # Mock handle_anthropic_messages to return an Anthropic-style JSON
+        from fastapi.responses import JSONResponse
+        proxy.handle_anthropic_messages = AsyncMock(
+            return_value=JSONResponse(
+                content={"type": "message", "role": "assistant"}
+            )
+        )
+        
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "messages": [{"role": "user", "content": "x"}],
+            "max_tokens": 8,
+        }
+        resp = client.post(INVOKE, json=body)
+
+    assert resp.status_code == 200
+    assert resp.json()["type"] == "message"
+    assert resp.json()["role"] == "assistant"
+
+    with TestClient(app) as client:
+        proxy = client.app.state.proxy
+        
+        # Mock stream response
+        from fastapi.responses import StreamingResponse
+        async def stream_gen():
+            yield b'event: message_start\ndata: {"type": "message_start"}\n\n'
+            
+        proxy.handle_anthropic_messages = AsyncMock(
+            return_value=StreamingResponse(
+                stream_gen(),
+                media_type="text/event-stream"
+            )
+        )
+        
+        resp_stream = client.post(INVOKE_STREAM, json=body)
+
+    assert resp_stream.status_code == 200
+    assert b"event: message_start" in resp_stream.content
+
