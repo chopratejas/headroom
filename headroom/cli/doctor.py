@@ -324,6 +324,8 @@ def _render(checks: list[CheckResult], port: int, installed: str) -> None:
     from rich.markup import escape
     from rich.table import Table
 
+    from . import _diagnostics as diagnostics
+
     console = Console()
     console.print(f"[bold]Headroom Doctor[/bold] [dim]v{installed} · port {port}[/dim]\n")
     table = Table(show_header=True, header_style="bold")
@@ -349,6 +351,33 @@ def _render(checks: list[CheckResult], port: int, installed: str) -> None:
         console.print(f"\n[bold]{fails} failure(s), {warns} warning(s)[/bold]")
     else:
         console.print("\n[green bold]all checks passed[/green bold]")
+
+    runtime = diagnostics.python_runtime()
+    native = diagnostics.native_core()
+    caps = diagnostics.capabilities()
+    summary = diagnostics.capability_summary(caps)
+
+    console.print("\n[bold]Environment capabilities[/bold]")
+    runtime_status = "OK" if runtime["supported"] else "unsupported"
+    console.print(
+        f"Python: {runtime['version']} ({runtime_status}; supported {runtime['supported_range']})"
+    )
+    console.print(f"headroom._core: {'present' if native['present'] else 'missing/broken'}")
+    console.print(f"Native detail: {native['detail']}", markup=False)
+
+    cap_table = Table(show_header=True)
+    cap_table.add_column("feature")
+    cap_table.add_column("status")
+    for cap in caps:
+        cap_table.add_row(str(cap["feature"]), "available" if cap["available"] else "missing")
+    console.print(cap_table)
+
+    missing = [cap for cap in caps if not cap["available"]]
+    if missing:
+        console.print("[bold]Enable missing features[/bold]")
+        for cap in missing:
+            console.print(f"{cap['feature']}: {cap['install']}", markup=False)
+    console.print(f"Runnable surfaces: {', '.join(summary)}")
 
 
 @main.command()
@@ -396,6 +425,10 @@ def doctor(port: int, emit_json: bool) -> None:
         exit_code = 0
 
     if emit_json:
+        from . import _diagnostics as diagnostics
+
+        runtime = diagnostics.python_runtime()
+        capabilities = diagnostics.capabilities()
         click.echo(
             json.dumps(
                 {
@@ -403,6 +436,10 @@ def doctor(port: int, emit_json: bool) -> None:
                     "installed_version": installed,
                     "exit_code": exit_code,
                     "checks": [asdict(c) for c in checks],
+                    "runtime": runtime,
+                    "native": diagnostics.native_core(),
+                    "capabilities": capabilities,
+                    "capability_summary": diagnostics.capability_summary(capabilities),
                 },
                 indent=2,
             )
