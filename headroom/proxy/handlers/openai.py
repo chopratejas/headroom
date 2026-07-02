@@ -1753,7 +1753,6 @@ class OpenAIHandlerMixin:
                     compressor.close()
 
         headers = dict(request.headers.items())
-        upstream_base_url = _resolve_openai_upstream_base_url(headers, self.OPENAI_API_URL)
         headers.pop("host", None)
         headers.pop("content-length", None)
         # Strip accept-encoding so httpx negotiates its own encoding.
@@ -2991,9 +2990,6 @@ class OpenAIHandlerMixin:
         if isinstance(input_data, str):
             messages.append({"role": "user", "content": input_data})
 
-        upstream_base_url = _resolve_openai_upstream_base_url(
-            dict(request.headers.items()), self.OPENAI_API_URL
-        )
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
