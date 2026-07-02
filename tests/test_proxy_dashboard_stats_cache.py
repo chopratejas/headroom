@@ -495,6 +495,39 @@ def test_session_summary_uses_generic_cli_filtering_keys() -> None:
     assert payload["compression"]["rtk_tokens_avoided"] == 7
     assert payload["cost"]["breakdown"]["cli_filtering_savings_usd"] is None
     assert payload["cost"]["breakdown"]["rtk_savings_usd"] is None
+    # Metrics fixture has no codex_ws counters -> no codex_ws block.
+    assert "codex_ws" not in payload
+
+
+def test_session_summary_surfaces_codex_ws_counters() -> None:
+    from headroom.proxy.cost import build_session_summary
+
+    proxy = SimpleNamespace(
+        config=SimpleNamespace(mode="token"),
+        logger=SimpleNamespace(_logs=[]),
+        cost_tracker=SimpleNamespace(stats=lambda: {}),
+    )
+    metrics = SimpleNamespace(
+        requests_by_model={},
+        tokens_saved_total=0,
+        codex_ws_units_total=12,
+        codex_ws_units_modified_total=9,
+        codex_ws_unit_tokens_saved_sum=4321,
+    )
+
+    payload = build_session_summary(
+        proxy,
+        metrics,
+        {},
+        cli_tokens_avoided=0,
+        total_tokens_before=0,
+    )
+
+    assert payload["codex_ws"] == {
+        "units_total": 12,
+        "units_modified": 9,
+        "tokens_saved": 4321,
+    }
 
 
 def test_stats_reset_clears_runtime_proxy_counters(monkeypatch: pytest.MonkeyPatch) -> None:
