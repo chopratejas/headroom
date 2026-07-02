@@ -536,11 +536,14 @@ class TestCodexAdapter:
         assert "Existing instructions" in content  # Preserved
 
     @pytest.mark.asyncio
-    async def test_write_replaces_existing_section(self, agents_md):
+    async def test_write_merges_into_existing_section(self, agents_md):
+        """Additive: an existing managed fact is preserved when a new one is
+        written. ``sync_export`` hands the adapter only the delta, so a
+        replace-the-whole-section write would erase prior memories."""
         agents_md.write_text(
             "# Instructions\n\n"
             "<!-- headroom:memory:start -->\n"
-            "## Old\n- old fact\n"
+            "## Headroom Shared Memory\n\n- old fact\n"
             "<!-- headroom:memory:end -->\n"
         )
 
@@ -549,14 +552,14 @@ class TestCodexAdapter:
 
         content = agents_md.read_text()
         assert "new fact" in content
-        assert "old fact" not in content
+        assert "old fact" in content  # preserved, not clobbered
 
     @pytest.mark.asyncio
-    async def test_write_replaces_existing_section_with_literal_backslashes(self, agents_md):
+    async def test_write_preserves_existing_fact_with_literal_backslashes(self, agents_md):
         agents_md.write_text(
             "# Instructions\n\n"
             "<!-- headroom:memory:start -->\n"
-            "## Old\n- old fact\n"
+            "## Headroom Shared Memory\n\n- old fact\n"
             "<!-- headroom:memory:end -->\n"
         )
 
@@ -564,9 +567,30 @@ class TestCodexAdapter:
         await adapter.write_memories([{"content": r"Use C:\Users\john.doe\repo and literal \u"}])
 
         content = agents_md.read_text()
+        # Backslashes / \u land literally (function replacement, not a template).
         assert r"C:\Users\john.doe\repo" in content
         assert r"literal \u" in content
-        assert "old fact" not in content
+        assert "old fact" in content  # preserved
+
+    @pytest.mark.asyncio
+    async def test_write_accumulates_across_syncs(self, agents_md):
+        """Regression: exporting deltas across successive syncs must accumulate,
+        not thrash between disjoint subsets."""
+        adapter = CodexAdapter(agents_md)
+
+        await adapter.write_memories([{"content": "fact A"}, {"content": "fact B"}])
+        # Second sync only sees the new memory as a delta.
+        added = await adapter.write_memories([{"content": "fact C"}])
+
+        content = agents_md.read_text()
+        assert "fact A" in content
+        assert "fact B" in content
+        assert "fact C" in content
+        assert added == 1
+        # Re-writing an already-present fact adds nothing and keeps the rest.
+        again = await adapter.write_memories([{"content": "fact A"}])
+        assert again == 0
+        assert (await adapter.read_memories()).__len__() == 3
 
     @pytest.mark.asyncio
     async def test_read_empty_agents_md(self, agents_md):
