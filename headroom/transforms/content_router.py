@@ -2945,6 +2945,7 @@ class ContentRouter(Transform):
                     # Didn't compress — add to skip set
                     self._cache.mark_skip(content_key)
                     result_slots[slot_idx] = message
+                    transforms_applied.append(f"router:skipped:ratio_too_high:{slot_idx}")
                     route_counts["ratio_too_high"] += 1
 
         # Build final message list from slots
