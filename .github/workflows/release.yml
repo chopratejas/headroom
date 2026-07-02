@@ -680,16 +680,21 @@ jobs:
         if: matrix.image == '' && runner.os == 'macOS'
         env:
           PYTHON_VERSION: ${{ matrix.python }}
+          WHEEL_TARGET: ${{ matrix.wheel_target }}
         run: |
           set -e
           py_tag=cp$(echo "$PYTHON_VERSION" | tr -d .)
-          # macOS wheels are tagged macosx_*_arm64 (Apple Silicon only).
-          whl=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_arm64.whl" -print -quit)
+          case "$WHEEL_TARGET" in
+            aarch64-apple-darwin) mac_arch=arm64 ;;
+            x86_64-apple-darwin) mac_arch=x86_64 ;;
+            *) echo "ERROR: unknown macOS wheel target $WHEEL_TARGET" >&2; exit 1 ;;
+          esac
+          whl=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_${mac_arch}.whl" -print -quit)
           if [ -z "$whl" ]; then
             # Stable-ABI (abi3) fallback — see the Linux path above. A
             # cp3<floor>-abi3 wheel installs on any CPython >= floor.
             py_minor=${PYTHON_VERSION#*.}
-            abi3=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-abi3-macosx_*_arm64.whl" -print -quit)
+            abi3=$(find dist -maxdepth 1 -type f -name "headroom_ai-*-abi3-macosx_*_${mac_arch}.whl" -print -quit)
             if [ -n "$abi3" ]; then
               abi3_base=${abi3##*/}
               abi3_floor=${abi3_base#*-cp3}
@@ -699,7 +704,7 @@ jobs:
             fi
           fi
           if [ -z "$whl" ]; then
-            echo "ERROR: no macOS wheel matching python=$PYTHON_VERSION"
+            echo "ERROR: no macOS wheel matching python=$PYTHON_VERSION arch=$mac_arch target=$WHEEL_TARGET"
             find dist -maxdepth 1 -type f -exec basename {} \;
             exit 1
           fi

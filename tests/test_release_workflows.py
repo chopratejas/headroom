@@ -333,6 +333,24 @@ def test_build_wheels_matrix_includes_intel_macos_with_dynamic_ort() -> None:
     assert "macos-15-intel" in matrix_os
 
 
+def test_smoke_import_macos_selects_wheel_arch_from_target() -> None:
+    """The macOS smoke-import step must pick the wheel tag from the matrix
+    target (arm64 for Apple Silicon, x86_64 for Intel) instead of
+    hardcoding `_arm64` for every macOS row."""
+    content = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    step_start = content.index("- name: Smoke-import wheel on macOS host")
+    step_end = content.index("- name: Smoke-import wheel on Windows host", step_start)
+    macos_block = content[step_start:step_end]
+
+    assert "WHEEL_TARGET: ${{ matrix.wheel_target }}" in macos_block
+    assert "aarch64-apple-darwin) mac_arch=arm64" in macos_block
+    assert "x86_64-apple-darwin) mac_arch=x86_64" in macos_block
+    assert "macosx_*_${mac_arch}.whl" in macos_block
+    assert "headroom_ai-*-${py_tag}-${py_tag}-macosx_*_arm64.whl" not in macos_block
+    assert "headroom_ai-*-abi3-macosx_*_arm64.whl" not in macos_block
+
+
 def test_aarch64_wheel_uses_native_arm64_runner() -> None:
     """STRUCTURAL INVARIANT: the aarch64 wheel matrix row must run on a
     native arm64 runner (`ubuntu-24.04-arm`), NOT a QEMU-emulated x64
