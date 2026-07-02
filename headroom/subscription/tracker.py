@@ -356,8 +356,9 @@ class SubscriptionTracker(QuotaTracker):
 
         Returns ``0`` (never negative) when:
         - ``HEADROOM_RTK_WIRING=disabled`` — operator opt-out.
-        - ``_get_rtk_stats()`` returns ``None`` — RTK not selected / not
-          installed; explicit zero is the right answer.
+        - ``_get_rtk_stats()`` returns ``None`` — RTK not selected, or the
+          stat read failed this poll ("no data"); explicit zero contribution
+          is the right answer and the high-water mark is preserved.
         - ``_get_rtk_stats()`` raises — transient error, logged loudly.
         - The session counter regressed (RTK reset / new project) — that
           path also re-baselines ``_last_rtk_tokens_saved`` to the new
@@ -429,7 +430,8 @@ class SubscriptionTracker(QuotaTracker):
         # the pre-Headroom RTK history. Falls back to the top-level
         # ``tokens_saved`` (which is also session-scoped in the canonical
         # payload; see ``_get_context_tool_stats``) and finally to 0 for
-        # synthetic-zero payloads.
+        # not-installed zero payloads (failed reads arrive as ``None`` and
+        # returned above).
         session_payload = stats.get("session")
         if isinstance(session_payload, dict) and "tokens_saved" in session_payload:
             current_total_raw = session_payload.get("tokens_saved", 0)
