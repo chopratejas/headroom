@@ -20,7 +20,6 @@ import io
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import socket
@@ -580,66 +579,48 @@ def _setup_rtk(verbose: bool = False) -> Path | None:
     if register_claude_hooks(rtk_path):
         if verbose:
             click.echo("  rtk hooks registered in Claude Code")
-        try:
-            patched = _patch_rtk_hook_absolute_path(rtk_path)
-            if patched and verbose:
-                click.echo("  rtk hook script patched to use absolute path")
-        except Exception as e:
-            if verbose:
-                click.echo(f"  rtk hook absolute-path patch skipped: {e}")
     else:
         click.echo("  rtk hook registration failed — continuing without it")
 
     return rtk_path
 
 
-def _patch_rtk_hook_absolute_path(rtk_path: Path, hook_script_path: Path | None = None) -> bool:
-    """Rewrite bare ``rtk`` invocations in the generated Claude hook script
-    to use the absolute path to the RTK binary Headroom manages.
-
-    ``rtk init --global --auto-patch`` writes ``~/.claude/hooks/rtk-rewrite.sh``
-    with a bare ``rtk`` command that depends on PATH lookup. Since
-    ``~/.headroom/bin`` (where Headroom installs rtk) is not automatically
-    added to PATH, that lookup fails and the hook silently does nothing.
-
-    This rewrites bare ``rtk`` command tokens to the absolute, shell-quoted
-    path of the rtk binary so the hook works regardless of PATH.
-
-    Idempotent: only rewrites bare ``rtk`` tokens (not paths that already
-    point elsewhere), and only writes the file back if content changed.
-
-    Returns True if the hook script was modified.
-    """
-    if hook_script_path is None:
-        hook_script_path = Path.home() / ".claude" / "hooks" / "rtk-rewrite.sh"
-
-    if not hook_script_path.exists():
+def _append_path_entry(env: dict[str, str], directory: Path) -> bool:
+    """Append ``directory`` to ``env['PATH']`` if it is not already present."""
+    raw_entry = str(directory)
+    if not raw_entry:
         return False
 
-    original = _read_text(hook_script_path)
+    path_value = env.get("PATH", "")
+    entries = [entry for entry in path_value.split(os.pathsep) if entry] if path_value else []
 
-    # Quote the absolute path safely for POSIX shells. This matters because
-    # paths containing spaces or other shell-special characters (e.g.
-    # "/Users/Alice Smith/.headroom/bin/rtk") must be quoted, or the
-    # generated script will break when the shell splits on whitespace.
-    quoted_path = shlex.quote(str(rtk_path))
+    normalized_entry = os.path.normcase(os.path.normpath(raw_entry))
+    normalized_entries = {os.path.normcase(os.path.normpath(entry)) for entry in entries if entry}
+    if normalized_entry in normalized_entries:
+        return False
 
-    # Replace bare `rtk` command tokens with the quoted absolute path.
-    # Matches `rtk` as a standalone word (preceded by start-of-line or
-    # whitespace/operators, followed by whitespace or end-of-line), so it
-    # won't touch things like "rtkfoo" or "/some/path/rtk" that are already
-    # absolute.
-    patched, count = re.subn(
-        r"(?<![\w/-])rtk(?=\s|$)",
-        lambda _match: quoted_path,
-        original,
-    )
+    env["PATH"] = os.pathsep.join([*entries, raw_entry]) if entries else raw_entry
+    return True
 
-    if count and patched != original:
-        _write_text(hook_script_path, patched)
-        return True
 
-    return False
+def _ensure_rtk_on_path(env: dict[str, str], rtk_path: Path | None = None) -> bool:
+    """Make the chosen RTK binary resolvable by bare ``rtk`` in ``env``.
+
+    RTK's canonical hook and ``rtk rewrite`` output intentionally invoke a bare
+    ``rtk`` command. Headroom must therefore adjust the wrapped process PATH
+    instead of mutating RTK's generated hook script, whose contents are protected
+    by RTK's own integrity check.
+    """
+    if rtk_path is None:
+        from headroom.rtk import get_rtk_path
+
+        rtk_path = get_rtk_path()
+    if rtk_path is None:
+        return False
+
+    if shutil.which(rtk_path.name, path=env.get("PATH", "")):
+        return False
+    return _append_path_entry(env, rtk_path.parent)
 
 
 def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
@@ -3176,6 +3157,7 @@ def _launch_tool(
     region: str | None = None,
     openai_api_url: str | None = None,
     copilot_api_token: str | None = None,
+    rtk_path: Path | None = None,
 ) -> None:
     """Common logic: start proxy, launch tool, clean up."""
     proxy_holder: list[subprocess.Popen | None] = [None]
@@ -3219,6 +3201,8 @@ def _launch_tool(
         _print_telemetry_notice()
         click.echo()
 
+        if rtk_path is not None:
+            _ensure_rtk_on_path(env, rtk_path)
         result = subprocess.run([binary, *args], env=env)
         raise SystemExit(result.returncode)
 
@@ -3688,13 +3672,14 @@ def claude(
         )
         _push_runtime_env(port, no_proxy)
 
+        rtk_path: Path | None = None
         if not no_rtk:
             if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
                 click.echo("  Setting up lean-ctx...")
                 _setup_lean_ctx_agent("claude", verbose=verbose)
             else:
                 click.echo("  Setting up rtk...")
-                _setup_rtk(verbose=verbose)
+                rtk_path = _setup_rtk(verbose=verbose)
         elif verbose:
             click.echo("  Skipping CLI context tool (--no-context-tool)")
 
@@ -3804,6 +3789,8 @@ def claude(
                 "(1M context window; issue #1158)"
             )
 
+        if rtk_path is not None:
+            _ensure_rtk_on_path(env, rtk_path)
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
 
@@ -4024,6 +4011,7 @@ def copilot(
         backend=effective_backend,
     )
 
+    rtk_path: Path | None = None
     if not no_rtk:
         if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
             click.echo("  Setting up lean-ctx for Copilot...")
@@ -4181,6 +4169,7 @@ def copilot(
         region=region,
         openai_api_url=openai_api_url,
         copilot_api_token=copilot_proxy_token,
+        rtk_path=rtk_path,
     )
 
 
@@ -4314,6 +4303,7 @@ def codex(
     _snapshot_codex_config_if_unwrapped(_codex_config_file, _codex_backup_file)
 
     # Setup CLI context tool for Codex.
+    rtk_path: Path | None = None
     if not no_rtk:
         if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
             click.echo("  Setting up lean-ctx for Codex...")
@@ -4436,6 +4426,7 @@ def codex(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
+        rtk_path=rtk_path,
     )
 
 
@@ -4500,6 +4491,7 @@ def aider(
         headroom wrap aider --backend litellm-vertex --region us-central1
     """
     # Setup CLI context tool for aider.
+    rtk_path: Path | None = None
     if not no_rtk:
         if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
             click.echo("  Setting up lean-ctx for aider...")
@@ -4540,6 +4532,7 @@ def aider(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
+        rtk_path=rtk_path,
     )
 
 
@@ -5008,9 +5001,10 @@ def goose(
     # Pre-compute the marker path so the KeyboardInterrupt handler can report
     # its location even if the interrupt fires before _inject_rtk_instructions
     # returns (e.g., during the inner _ensure_rtk_binary download).
+    rtk_path: Path | None = None
     goosehints: Path | None = Path.cwd() / ".goosehints" if not no_rtk else None
     if not no_rtk:
-        _setup_context_tool_for_agent(
+        rtk_path = _setup_context_tool_for_agent(
             agent="goose",
             agent_display="Goose",
             marker_path=goosehints,
@@ -5056,6 +5050,7 @@ def goose(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
+        rtk_path=rtk_path,
     )
 
 
@@ -5199,6 +5194,7 @@ def openhands(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
+        rtk_path=rtk_path,
     )
 
 
@@ -5513,6 +5509,7 @@ def opencode(
     snapshot_opencode_config_if_unwrapped(_opencode_config_file, _opencode_backup_file)
 
     # Setup CLI context tool for OpenCode.
+    rtk_path: Path | None = None
     if not no_rtk:
         if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
             click.echo("  Setting up lean-ctx for OpenCode...")
@@ -5596,6 +5593,7 @@ def opencode(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
+        rtk_path=rtk_path,
     )
 
 
