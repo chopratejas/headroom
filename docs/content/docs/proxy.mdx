@@ -92,11 +92,13 @@ headroom proxy --mode cache
 | `--no-learn` | `false` | Explicitly disable traffic learning |
 | `--min-evidence` | `5` | Minimum observations before a learned pattern is persisted |
 | `--codex-wire-debug` | `false` | Write local Codex wire snapshots and matching proxy log traces |
+| `--compress-passthrough` | `false` | Also compress custom proxy paths that fall through to the catch-all handler (OpenAI Responses-shaped bodies, path ends in `/responses`). Also `HEADROOM_COMPRESS_PASSTHROUGH=1` |
 
 ```bash
 headroom proxy --memory
 headroom proxy --learn --min-evidence 3
 headroom proxy --codex-wire-debug
+headroom proxy --compress-passthrough
 ```
 
 <Callout type="info" title="LLMLingua removed from the proxy CLI">
