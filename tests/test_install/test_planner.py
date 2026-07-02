@@ -102,3 +102,47 @@ def test_resolve_targets_manual_dedupes_and_filters_invalid() -> None:
     )
 
     assert targets == [ToolTarget.CLAUDE.value, ToolTarget.COPILOT.value]
+
+
+def test_build_manifest_omits_no_http2_by_default() -> None:
+    manifest = build_manifest(
+        profile="default",
+        preset=InstallPreset.PERSISTENT_SERVICE.value,
+        runtime_kind="python",
+        scope="user",
+        provider_mode="manual",
+        targets=["claude"],
+        port=8787,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        proxy_mode="token",
+        memory_enabled=False,
+        telemetry_enabled=True,
+        image="ghcr.io/chopratejas/headroom:latest",
+    )
+
+    assert "--no-http2" not in manifest.proxy_args
+
+
+def test_build_manifest_persists_no_http2_override() -> None:
+    manifest = build_manifest(
+        profile="default",
+        preset=InstallPreset.PERSISTENT_SERVICE.value,
+        runtime_kind="python",
+        scope="user",
+        provider_mode="manual",
+        targets=["claude"],
+        port=8787,
+        backend="anthropic",
+        anyllm_provider=None,
+        region=None,
+        proxy_mode="token",
+        memory_enabled=False,
+        telemetry_enabled=True,
+        image="ghcr.io/chopratejas/headroom:latest",
+        no_http2=True,
+    )
+
+    assert manifest.proxy_args.count("--no-http2") == 1
+    assert "HEADROOM_HTTP2" not in manifest.base_env

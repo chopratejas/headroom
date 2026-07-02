@@ -202,6 +202,11 @@ def _reject_task_lifecycle(manifest: DeploymentManifest, action: str) -> None:
     show_default=True,
     help="Docker image to use when runtime=docker or preset=persistent-docker.",
 )
+@click.option(
+    "--no-http2",
+    is_flag=True,
+    help="Disable HTTP/2 in the persistent runtime (enabled by default).",
+)
 def install_apply(
     preset: str,
     runtime: str,
@@ -218,6 +223,7 @@ def install_apply(
     telemetry: bool,
     no_telemetry: bool,
     image: str,
+    no_http2: bool,
 ) -> None:
     """Install a persistent Headroom deployment."""
 
@@ -245,6 +251,7 @@ def install_apply(
         memory_enabled=memory,
         telemetry_enabled=telemetry and not no_telemetry,
         image=image,
+        no_http2=no_http2,
     )
 
     try:
