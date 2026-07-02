@@ -38,6 +38,7 @@
     "mcp",
     "---Configuration---",
     "configuration",
+    "pipeline-extensions",
     "filesystem-contract",
     "---Observability---",
     "savings",
