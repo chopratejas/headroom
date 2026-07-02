@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from headroom.providers.claude import DEFAULT_API_URL as DEFAULT_ANTHROPIC_API_URL
 from headroom.providers.codex import DEFAULT_API_URL as DEFAULT_OPENAI_API_URL
@@ -21,6 +22,131 @@ if TYPE_CHECKING:
 
 AnyLLMBackendType: Any = None
 LiteLLMBackendType: Any = None
+
+_UPSTREAM_ROUTES_ENV = "HEADROOM_UPSTREAM_ROUTES"
+_route_logger = logging.getLogger("headroom.proxy.routes")
+
+
+@dataclass(frozen=True)
+class PassthroughAuth:
+    """Forward the inbound Authorization / x-api-key headers verbatim."""
+
+
+@dataclass(frozen=True)
+class BearerAuth:
+    """Replace inbound auth with a bearer token sourced at request time."""
+
+    env_var: str
+
+
+AuthMode = PassthroughAuth | BearerAuth
+
+
+class UpstreamAuthUnavailable(Exception):
+    """A matched BearerAuth route has no token in its configured env var.
+
+    Raised by the proxy's ``resolve_upstream`` so call sites fail closed
+    (return 502 / a WS error event) *before* contacting the upstream rather
+    than forwarding the request with inbound auth stripped and no
+    replacement ``Authorization`` header. Carries the offending ``env_var``
+    and the request ``model`` for logging; the message is intentionally
+    generic so it can be surfaced to clients without leaking the env-var
+    name.
+    """
+
+    def __init__(self, env_var: str, model: str | None) -> None:
+        self.env_var = env_var
+        self.model = model
+        super().__init__(
+            f"upstream route auth env var {env_var!r} is empty (model={model!r}); failing closed"
+        )
+
+
+@dataclass(frozen=True)
+class UpstreamRoute:
+    """One entry in the HEADROOM_UPSTREAM_ROUTES table.
+
+    ``model_prefix`` is matched as a case-insensitive prefix of the request's
+    ``model`` field; ``"*"`` is the catch-all fallback. ``upstream`` overrides
+    the base URL; if omitted, the route's ``protocol`` slot selects the default
+    ``api_targets`` URL. ``auth`` selects passthrough vs. an env-sourced bearer.
+    """
+
+    model_prefix: str
+    upstream: str | None = None
+    auth: AuthMode = field(default_factory=PassthroughAuth)
+    protocol: Literal["openai", "anthropic"] = "openai"
+
+
+@dataclass(frozen=True)
+class UpstreamResolution:
+    """The result of resolve_upstream(): where to send the request and how."""
+
+    base_url: str
+    auth: AuthMode
+
+
+def _parse_auth(spec: str) -> AuthMode:
+    if spec == "passthrough":
+        return PassthroughAuth()
+    if spec.startswith("env:"):
+        return BearerAuth(env_var=spec[len("env:") :])
+    _route_logger.warning(
+        "HEADROOM_UPSTREAM_ROUTES: unknown auth spec %r, falling back to passthrough",
+        spec,
+    )
+    return PassthroughAuth()
+
+
+def parse_upstream_routes(env: Mapping[str, str]) -> tuple[UpstreamRoute, ...]:
+    """Parse HEADROOM_UPSTREAM_ROUTES (JSON array) into an immutable tuple.
+
+    Empty / unset / malformed returns an empty tuple (legacy single-upstream
+    behavior).
+    """
+    raw = env.get(_UPSTREAM_ROUTES_ENV, "").strip()
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _route_logger.error("HEADROOM_UPSTREAM_ROUTES: invalid JSON (%s); ignoring routes", exc)
+        return ()
+    if not isinstance(parsed, list):
+        _route_logger.error(
+            "HEADROOM_UPSTREAM_ROUTES: expected a JSON array, got %s; ignoring",
+            type(parsed).__name__,
+        )
+        return ()
+    routes: list[UpstreamRoute] = []
+    for idx, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            _route_logger.warning("HEADROOM_UPSTREAM_ROUTES[%d]: not an object; skipping", idx)
+            continue
+        prefix = str(entry.get("model_prefix", "")).strip()
+        if not prefix:
+            _route_logger.warning("HEADROOM_UPSTREAM_ROUTES[%d]: empty model_prefix; skipping", idx)
+            continue
+        protocol = entry.get("protocol", "openai")
+        if protocol not in ("openai", "anthropic"):
+            _route_logger.warning(
+                "HEADROOM_UPSTREAM_ROUTES[%d]: protocol %r not in (openai, anthropic); defaulting to openai",
+                idx,
+                protocol,
+            )
+            protocol = "openai"
+        upstream = entry.get("upstream")
+        if isinstance(upstream, str):
+            upstream = upstream.rstrip("/") or None
+        routes.append(
+            UpstreamRoute(
+                model_prefix=prefix.lower(),
+                upstream=upstream,
+                auth=_parse_auth(str(entry.get("auth", "passthrough"))),
+                protocol=protocol,  # type: ignore[arg-type]
+            )
+        )
+    return tuple(routes)
 
 
 @dataclass(frozen=True)
@@ -51,6 +177,7 @@ class ProxyProviderRuntime:
 
     api_targets: ProviderApiTargets
     pipeline_providers: dict[str, Provider]
+    upstream_routes: tuple[UpstreamRoute, ...] = ()
 
     def api_target(self, provider_name: str) -> str:
         """Return the resolved upstream target for a provider."""
@@ -81,6 +208,45 @@ class ProxyProviderRuntime:
             if azure_base:
                 return azure_base.rstrip("/")
         return self.api_targets.openai
+
+    def resolve_upstream(
+        self,
+        *,
+        protocol: str,
+        model: str | None,
+        headers: Mapping[str, str],
+    ) -> UpstreamResolution:
+        """Resolve the per-request upstream base URL and auth mode.
+
+        With no ``upstream_routes`` configured, returns the legacy resolution
+        (``select_passthrough_base_url`` + passthrough auth) so behavior is
+        byte-identical to a build without this feature.
+        """
+        if not self.upstream_routes:
+            return UpstreamResolution(
+                base_url=self.select_passthrough_base_url(headers),
+                auth=PassthroughAuth(),
+            )
+        lowered = (model or "").lower()
+        matched: UpstreamRoute | None = None
+        for route in self.upstream_routes:
+            prefix = route.model_prefix
+            if prefix == "*" or lowered.startswith(prefix):
+                matched = route
+                break
+        if matched is None:
+            return UpstreamResolution(
+                base_url=self.select_passthrough_base_url(headers),
+                auth=PassthroughAuth(),
+            )
+        if matched.upstream:
+            base_url = matched.upstream
+        else:
+            try:
+                base_url = self.api_target(matched.protocol)
+            except KeyError:
+                base_url = self.api_target(protocol)
+        return UpstreamResolution(base_url=base_url, auth=matched.auth)
 
 
 def _normalize_api_url(url: str | None, *, default: str) -> str:
@@ -132,6 +298,9 @@ def build_proxy_provider_runtime(config: Any) -> ProxyProviderRuntime:
     from headroom.providers.openai import OpenAIProvider
 
     api_targets = resolve_api_targets(config.provider_api_overrides)
+    upstream_routes = parse_upstream_routes(os.environ)
+    if upstream_routes:
+        _route_logger.info("HEADROOM_UPSTREAM_ROUTES: %d route(s) loaded", len(upstream_routes))
     return ProxyProviderRuntime(
         api_targets=api_targets,
         pipeline_providers={
@@ -140,6 +309,7 @@ def build_proxy_provider_runtime(config: Any) -> ProxyProviderRuntime:
             "anthropic": AnthropicProvider(warn=False),
             "openai": OpenAIProvider(),
         },
+        upstream_routes=upstream_routes,
     )
 
 
