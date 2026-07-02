@@ -2211,6 +2211,7 @@
                     if ((row.input_cost_usd || 0) > 0 || (row.savings_usd || 0) > 0) return null;
                     return {
                         pricing,
+                        input_cost_usd: ((row.input_tokens || 0) * inputPer1m) / 1000000,
                         savings_usd: ((row.tokens_saved || 0) * inputPer1m) / 1000000,
                     };
                 },
@@ -2235,7 +2236,7 @@
                     return Object.values(totals)
                         .map(row => {
                             const reference = this.estimateHistoricalModelReference(row);
-                            const inputCost = row.input_cost_usd;
+                            const inputCost = reference?.input_cost_usd ?? row.input_cost_usd;
                             const savings = reference?.savings_usd ?? row.savings_usd;
                             return {
                                 ...row,
