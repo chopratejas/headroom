@@ -323,6 +323,8 @@ constraint-dependencies = [
     "gitpython>=3.1.50",
     # GHSA-f4xh-w4cj-qxq8 (High) — transitive via langchain-core; fix at 0.8.18
     "langsmith>=0.9.0",
+    # CVE-2026-4372 (High) — direct via transformers; fix at 5.3.0
+    "transformers>=5.3.0",
 ]
 
 # Pin the project's package index to public PyPI. Without this, `uv lock`

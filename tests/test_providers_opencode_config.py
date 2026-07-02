@@ -56,7 +56,7 @@ def test_opencode_config_paths_default_jsonc(tmp_path: Path, monkeypatch: pytest
     base_dir.mkdir(parents=True, exist_ok=True)
     jsonc_path = base_dir / "opencode.jsonc"
     jsonc_path.write_text("{}")
-    
+
     config_file, backup_file = opencode_config_paths()
     assert config_file == jsonc_path
     assert backup_file == base_dir / "opencode.jsonc.headroom-backup"
@@ -69,10 +69,10 @@ def test_opencode_config_paths_env_overrides_jsonc(tmp_path: Path, monkeypatch: 
     base_dir.mkdir(parents=True, exist_ok=True)
     jsonc_path = base_dir / "opencode.jsonc"
     jsonc_path.write_text("{}")
-    
+
     custom_path = tmp_path / "custom" / "opencode.json"
     monkeypatch.setenv("OPENCODE_CONFIG", str(custom_path))
-    
+
     config_file, backup_file = opencode_config_paths()
     assert config_file == custom_path
     assert backup_file == tmp_path / "custom" / "opencode.json.headroom-backup"
