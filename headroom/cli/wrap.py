@@ -365,8 +365,7 @@ def _find_available_port(start_port: int, max_attempts: int = 100) -> int:
         if error.errno not in (errno.EADDRINUSE, errno.EACCES):
             raise error
     raise RuntimeError(
-        f"No available port found in range "
-        f"{start_port}-{start_port + max_attempts - 1}"
+        f"No available port found in range {start_port}-{start_port + max_attempts - 1}"
     )
 
 
@@ -382,7 +381,6 @@ def _get_log_path() -> Path:
 def _get_proxy_stdio_log_path() -> Path:
     """Get path for dedicated proxy stdio capture."""
     return _get_log_path().with_name("proxy-stdio.log")
-
 
 
 def _start_proxy(
@@ -2959,16 +2957,12 @@ def _ensure_proxy(
         try:
             actual_port = helpers._find_available_port(port)
         except OSError as e:
-            raise click.ClickException(
-                f"Port {port} is unavailable: {e}"
-            ) from e
+            raise click.ClickException(f"Port {port} is unavailable: {e}") from e
         except RuntimeError as e:
             raise click.ClickException(str(e)) from e
 
         if actual_port != port:
-            click.echo(
-                f"  Port {port} is in use, using port {actual_port} instead."
-            )
+            click.echo(f"  Port {port} is in use, using port {actual_port} instead.")
 
         click.echo(f"  Starting Headroom proxy on port {actual_port}...")
         try:

@@ -1503,9 +1503,7 @@ class TestCodexPortResolution:
         captured_port: list[int] = []
 
         # Mock _ensure_proxy to capture the requested port
-        def mock_ensure_proxy(
-            port: int, no_proxy: bool, **kwargs: object
-        ) -> tuple[None, int]:
+        def mock_ensure_proxy(port: int, no_proxy: bool, **kwargs: object) -> tuple[None, int]:
             captured_port.append(port)
             # Simulate port fallback: requested 8787, actual 8788
             return None, 8788
@@ -1513,7 +1511,9 @@ class TestCodexPortResolution:
         monkeypatch.setattr(wrap_mod, "_ensure_proxy", mock_ensure_proxy)
 
         # Mock all heavy dependencies
-        monkeypatch.setattr(wrap_mod, "_codex_config_paths", lambda: (Path("/dev/null"), Path("/dev/null")))
+        monkeypatch.setattr(
+            wrap_mod, "_codex_config_paths", lambda: (Path("/dev/null"), Path("/dev/null"))
+        )
         monkeypatch.setattr(wrap_mod, "_snapshot_codex_config_if_unwrapped", lambda *a, **kw: None)
         monkeypatch.setattr(wrap_mod, "_ensure_rtk_binary", lambda *a, **kw: None)
         monkeypatch.setattr(wrap_mod, "_setup_lean_ctx_agent", lambda *a, **kw: None)

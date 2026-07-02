@@ -802,26 +802,31 @@ class TestFindAvailablePort:
 
     def test_port_busy_finds_next(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When port is busy, returns the next free port."""
+
         def mock_bind(port: int) -> OSError | None:
             if port == 8787:
                 return OSError(errno.EADDRINUSE, "Address in use")
             return None
+
         monkeypatch.setattr(wrap_mod, "_port_bind_error", mock_bind)
         assert wrap_mod._find_available_port(8787) == 8788
 
     def test_multiple_busy_ports(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When multiple consecutive ports are busy, skips all of them."""
+
         def mock_bind(port: int) -> OSError | None:
             if port in (8787, 8788, 8789):
                 return OSError(errno.EADDRINUSE, "Address in use")
             return None
+
         monkeypatch.setattr(wrap_mod, "_port_bind_error", mock_bind)
         assert wrap_mod._find_available_port(8787) == 8790
 
     def test_propagates_unexpected_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Errors other than EADDRINUSE/EACCES (e.g. EADDRNOTAVAIL) propagate."""
         monkeypatch.setattr(
-            wrap_mod, "_port_bind_error",
+            wrap_mod,
+            "_port_bind_error",
             lambda port: OSError(errno.EADDRNOTAVAIL, "Address not available"),
         )
         with pytest.raises(OSError, match="Address not available"):
@@ -829,17 +834,20 @@ class TestFindAvailablePort:
 
     def test_propagates_eaddrinuse_with_eacces(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both EADDRINUSE and EACCES are skipped (not propagated)."""
+
         def mock_bind(port: int) -> OSError | None:
             if port == 8787:
                 return OSError(errno.EACCES, "Permission denied")
             return None
+
         monkeypatch.setattr(wrap_mod, "_port_bind_error", mock_bind)
         assert wrap_mod._find_available_port(8787) == 8788
 
     def test_exhausts_range(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When all ports in range are busy, raises RuntimeError."""
         monkeypatch.setattr(
-            wrap_mod, "_port_bind_error",
+            wrap_mod,
+            "_port_bind_error",
             lambda port: OSError(errno.EADDRINUSE, "Address in use"),
         )
         with pytest.raises(RuntimeError, match="No available port found"):
