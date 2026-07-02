@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 from headroom.install.models import DeploymentManifest, InstallPreset
@@ -11,7 +12,6 @@ from headroom.install.runtime import (
     _clear_pid,
     _deployment_env,
     _mount_source,
-    _pid_alive,
     _read_pid,
     _runtime_env,
     _write_pid,
@@ -467,9 +467,7 @@ def test_start_stop_wait_and_runtime_status_branches(monkeypatch, tmp_path: Path
     assert runtime_status(python_manifest) == "stopped"
 
     _write_pid("default", 125)
-    monkeypatch.setattr(
-        "headroom.install.runtime.os.kill", lambda pid, sig: (_ for _ in ()).throw(OSError())
-    )
+    monkeypatch.setattr("headroom.install.runtime.pid_alive", lambda pid: False)
     assert runtime_status(python_manifest) == "stopped"
 
 
@@ -530,9 +528,8 @@ def test_runtime_status_reads_container_and_pid_state(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     pid_file = tmp_path / ".headroom" / "deploy" / "default" / "runner.pid"
     pid_file.parent.mkdir(parents=True)
-    # Use a genuinely live PID (this test process) so the liveness probe
-    # reports "running" without any os.kill monkeypatch.
-    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    pid_file.write_text("123", encoding="utf-8")
+    monkeypatch.setattr("headroom.install.runtime.pid_alive", lambda pid: True)
     python_manifest = DeploymentManifest(
         profile="default",
         preset="persistent-service",
@@ -548,7 +545,7 @@ def test_runtime_status_reads_container_and_pid_state(monkeypatch, tmp_path: Pat
     assert runtime_status(python_manifest) == "running"
 
 
-def _python_manifest() -> DeploymentManifest:
+def _python_service_manifest() -> DeploymentManifest:
     return DeploymentManifest(
         profile="default",
         preset="persistent-service",
@@ -563,53 +560,39 @@ def _python_manifest() -> DeploymentManifest:
     )
 
 
-def test_pid_alive_rejects_nonpositive_pids() -> None:
-    assert _pid_alive(0) is False
-    assert _pid_alive(-1) is False
-
-
-def test_pid_alive_true_for_current_process() -> None:
-    assert _pid_alive(os.getpid()) is True
-
-
-def test_pid_alive_swallows_systemerror_from_os_kill(monkeypatch) -> None:
-    """Regression for #1544: on Windows os.kill against a stale/detached PID
-    can raise SystemError (WinError 87), which is not an OSError. The probe
-    must treat that as 'not alive', never let it escape."""
-
-    class _Boom:
-        @staticmethod
-        def pid_exists(_pid):
-            raise RuntimeError("force the os.kill fallback path")
-
-    monkeypatch.setitem(sys.modules, "psutil", _Boom)
-
-    def _raise_systemerror(_pid, _sig):
-        raise SystemError("os.kill returned a result with an exception set")
-
-    monkeypatch.setattr("headroom.install.runtime.os.kill", _raise_systemerror)
-
-    assert _pid_alive(123456) is False
-
-
-def test_runtime_status_does_not_kill_the_live_proxy(monkeypatch, tmp_path: Path) -> None:
-    """Regression for #1544: `headroom install status` must report a live
-    deployment as running WITHOUT calling os.kill (on Windows os.kill(pid, 0)
-    runs TerminateProcess and would kill the proxy)."""
+def test_runtime_status_reports_live_pid_without_terminating(monkeypatch, tmp_path: Path) -> None:
+    """#1544: status on a live detached PID stays 'running' and never signals it."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    _write_pid("default", os.getpid())
+    pid_file = tmp_path / ".headroom" / "deploy" / "default" / "runner.pid"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("25212", encoding="utf-8")
 
-    def _fail_if_called(_pid, _sig):
-        raise AssertionError("runtime_status must not signal the process")
+    def fail_kill(pid: int, sig: int) -> None:
+        raise AssertionError(f"status must not signal the live proxy (pid={pid}, sig={sig})")
 
-    monkeypatch.setattr("headroom.install.runtime.os.kill", _fail_if_called)
+    monkeypatch.setattr("headroom.install.runtime.os.kill", fail_kill)
+    monkeypatch.setattr("headroom.install.runtime.pid_alive", lambda pid: True)
 
-    assert runtime_status(_python_manifest()) == "running"
+    assert runtime_status(_python_service_manifest()) == "running"
+    assert pid_file.exists()  # status left the deployment untouched
 
 
-def test_runtime_status_stopped_when_pid_not_alive(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_status_survives_winerror87_systemerror(monkeypatch, tmp_path: Path) -> None:
+    """#1544: a WinError 87 SystemError from the liveness probe yields 'stopped', not a crash."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    _write_pid("default", os.getpid())
-    monkeypatch.setattr("headroom.install.runtime._pid_alive", lambda pid: False)
+    pid_file = tmp_path / ".headroom" / "deploy" / "default" / "runner.pid"
+    pid_file.parent.mkdir(parents=True)
+    pid_file.write_text("25212", encoding="utf-8")
 
-    assert runtime_status(_python_manifest()) == "stopped"
+    # Force the psutil fast-path to bail so the os.kill fallback runs...
+    fake_psutil = types.SimpleNamespace(
+        pid_exists=lambda pid: (_ for _ in ()).throw(RuntimeError("no psutil"))
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    # ...where Windows surfaces WinError 87 as a SystemError, not an OSError.
+    monkeypatch.setattr(
+        "headroom._subprocess.os.kill",
+        lambda pid, sig: (_ for _ in ()).throw(SystemError("WinError 87")),
+    )
+
+    assert runtime_status(_python_service_manifest()) == "stopped"

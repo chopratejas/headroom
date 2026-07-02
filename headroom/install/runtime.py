@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
-from headroom._subprocess import run
+from headroom._subprocess import pid_alive, run
 
 from .health import probe_ready
 from .models import DeploymentManifest, InstallPreset, RuntimeKind
@@ -179,35 +179,6 @@ def _clear_pid(profile: str) -> None:
         path.unlink()
 
 
-def _pid_alive(pid: int) -> bool:
-    """Return True if ``pid`` names a live process, without killing it.
-
-    Windows-safe liveness probe. ``os.kill(pid, 0)`` is NOT a no-op on
-    Windows — for a signal other than ``CTRL_C_EVENT``/``CTRL_BREAK_EVENT``
-    CPython calls ``TerminateProcess``, so a "liveness check" against a live
-    detached proxy would actually terminate it, and against a stale PID it can
-    fail with ``WinError 87`` surfaced as ``SystemError`` (not ``OSError``),
-    crashing the caller. ``psutil.pid_exists`` checks existence without
-    signalling; the ``os.kill`` fallback (POSIX-only in practice) catches
-    ``SystemError`` too. Mirrors ``headroom.cli.wrap._pid_alive`` (#1315).
-    """
-    if pid <= 0:
-        return False
-    try:
-        import psutil  # type: ignore[import-untyped]  # optional dep, used elsewhere
-
-        return bool(psutil.pid_exists(pid))
-    except Exception:
-        pass
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        return True  # exists but owned by another user
-    except (ProcessLookupError, OSError, SystemError):
-        return False
-    return True
-
-
 @contextmanager
 def acquire_runtime_start_lock(profile: str) -> Iterator[bool]:
     """Try to hold the profile-local runtime start lock."""
@@ -350,7 +321,8 @@ def stop_runtime(manifest: DeploymentManifest) -> None:
         return
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError:
+    except (OSError, SystemError):
+        # SystemError covers the Windows WinError 87 surfacing described in #1544.
         pass
     _clear_pid(manifest.profile)
 
@@ -380,4 +352,7 @@ def runtime_status(manifest: DeploymentManifest) -> str:
     pid = _read_pid(manifest.profile)
     if pid is None:
         return "stopped"
-    return "running" if _pid_alive(pid) else "stopped"
+    # Windows-safe liveness probe: a bare os.kill(pid, 0) here raised WinError 87
+    # as a SystemError against the detached agent, crashing status and taking the
+    # live proxy down with it (#1544).
+    return "running" if pid_alive(pid) else "stopped"
