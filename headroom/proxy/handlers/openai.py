@@ -1992,6 +1992,7 @@ class OpenAIHandlerMixin:
         if _decision.should_compress:
             try:
                 context_limit = self.openai_provider.get_context_limit(model)
+                pipeline_kwargs = proxy_pipeline_kwargs(self.config)
 
                 # F2.1 c5/5: per-request CompressionPolicy. Hoisted out of
                 # the is_token_mode branch so the else (non-token) branch
@@ -2019,6 +2020,7 @@ class OpenAIHandlerMixin:
                             frozen_message_count=openai_frozen_count,
                             biases=_hook_biases,
                             compression_policy=compression_policy,
+                            **pipeline_kwargs,
                         ),
                         timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
@@ -2043,6 +2045,7 @@ class OpenAIHandlerMixin:
                             frozen_message_count=openai_frozen_count,
                             biases=_hook_biases,
                             compression_policy=compression_policy,
+                            **pipeline_kwargs,
                         ),
                         timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
@@ -2299,6 +2302,21 @@ class OpenAIHandlerMixin:
             if remembered_event.tools is not None:
                 tools = remembered_event.tools
 
+        tool_tokens_before_compaction = 0
+        tool_tokens_after_compaction = 0
+        if _decision.should_compress and not _bypass and tools is not None:
+            try:
+                compacted_tool_payload, tools_modified, _, _ = _compact_openai_responses_tools(
+                    {"tools": tools}
+                )
+                if tools_modified and compacted_tool_payload.get("tools") is not None:
+                    tool_tokens_before_compaction = tokenizer.count_text(_json_debug_dumps(tools))
+                    tools = compacted_tool_payload["tools"]
+                    if "openai:chat:tool_schema_compaction" not in transforms_applied:
+                        transforms_applied.append("openai:chat:tool_schema_compaction")
+            except Exception as e:
+                logger.debug(f"[{request_id}] tool schema compaction failed: {e}")
+
         body["messages"] = optimized_messages
         if tools or _original_tools is not None:
             body["tools"] = tools
@@ -2323,6 +2341,14 @@ class OpenAIHandlerMixin:
         if presend_event.headers is not None:
             headers = presend_event.headers
         optimized_tokens = tokenizer.count_messages(body["messages"])
+        if tool_tokens_before_compaction > 0:
+            try:
+                tool_tokens_after_compaction = tokenizer.count_text(_json_debug_dumps(tools))
+            except Exception:
+                tool_tokens_after_compaction = tool_tokens_before_compaction
+        if 0 < tool_tokens_after_compaction < tool_tokens_before_compaction:
+            original_tokens += tool_tokens_before_compaction
+            optimized_tokens += tool_tokens_after_compaction
         tokens_saved = original_tokens - optimized_tokens
 
         # Route through LiteLLM/any-llm backend if configured

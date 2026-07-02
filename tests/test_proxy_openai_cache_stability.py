@@ -12,6 +12,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from headroom.proxy.server import ProxyConfig, create_app
+from headroom.transforms.content_router import ContentRouter
 
 
 class _FakePrefixTracker:
@@ -100,6 +101,126 @@ def test_openai_cache_mode_freezes_previous_turns() -> None:
 
         assert response.status_code == 200
         assert captured["frozen_message_count"] == 2
+
+
+def test_openai_chat_completions_receives_agent_savings_kwargs() -> None:
+    captured = {}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = True
+        proxy.config.mode = "token"
+        proxy.config.savings_profile = "agent-90"
+
+        def _fake_apply(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                messages=kwargs["messages"],
+                transforms_applied=[],
+                timing={},
+                tokens_before=600,
+                tokens_after=60,
+                waste_signals=None,
+            )
+
+        proxy.openai_pipeline.apply = _fake_apply
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_agent_90",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 60, "completion_tokens": 3, "total_tokens": 63},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "large pasted context"}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured["compress_user_messages"] is True
+        assert captured["compress_system_messages"] is True
+        assert captured["protect_recent"] == 2
+        assert captured["protect_analysis_context"] is True
+        assert captured["target_ratio"] == 0.10
+        assert captured["min_tokens_to_compress"] == 120
+        assert captured["max_items_after_crush"] == 8
+        assert captured["smart_crusher_with_compaction"] is False
+        assert captured["force_kompress"] is True
+        assert captured["read_protection_window"] == 2
+
+
+def test_openai_chat_completions_compresses_user_text_content_blocks() -> None:
+    captured = {}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = True
+        proxy.config.mode = "token"
+        proxy.config.savings_profile = "agent-90"
+
+        router = next(
+            transform
+            for transform in proxy.openai_pipeline.transforms
+            if isinstance(transform, ContentRouter)
+        )
+
+        def _fake_compress(content: str, **kwargs):  # noqa: ANN003
+            return SimpleNamespace(
+                compressed="compressed content",
+                original=content,
+                strategy_used=SimpleNamespace(value="text"),
+                compression_ratio=0.05,
+            )
+
+        router.compress = _fake_compress
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            captured["body"] = body
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_text_blocks",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+        long_text = "OpenCode payload " * 200
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": long_text}]}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert int(response.headers["x-headroom-tokens-saved"]) > 0
+        sent_text = captured["body"]["messages"][0]["content"][0]["text"]
+        assert sent_text == "compressed content"
 
 
 def test_openai_cache_mode_restores_mutated_frozen_prefix() -> None:
@@ -280,3 +401,86 @@ def test_issue_327_openai_handler_does_not_call_walker_functions() -> None:
     # Sanity: the safe positional methods DID fire.
     assert "compute_frozen_count" in method_names
     assert "apply_cached" in method_names
+
+
+def test_openai_chat_completions_compacts_tools_when_profile_enabled() -> None:
+    captured = {}
+    with _make_proxy_client() as client:
+        proxy = client.app.state.proxy
+        proxy.config.optimize = True
+        proxy.config.mode = "token"
+        proxy.config.savings_profile = "agent-90"
+
+        def _fake_apply(**kwargs):  # noqa: ANN003
+            return SimpleNamespace(
+                messages=kwargs["messages"],
+                transforms_applied=[],
+                timing={},
+                tokens_before=10,
+                tokens_after=10,
+                waste_signals=None,
+            )
+
+        proxy.openai_pipeline.apply = _fake_apply
+
+        async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+            captured["body"] = body
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_tools",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 3, "total_tokens": 503},
+                },
+            )
+
+        proxy._retry_request = _fake_retry
+        verbose_schema_note = "schema annotation repeated for opencode tool definitions " * 50
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "read file helper",
+                    "parameters": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "title": "ReadFileParameters",
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "title": "Path",
+                                "description": verbose_schema_note,
+                                "examples": [verbose_schema_note],
+                            }
+                        },
+                        "required": ["path"],
+                    },
+                },
+            }
+        ]
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"authorization": "Bearer test-key"},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "inspect this file"}],
+                "tools": tools,
+            },
+        )
+
+        assert response.status_code == 200
+        assert "openai:chat:tool_schema_compaction" in response.headers["x-headroom-transforms"]
+        assert int(response.headers["x-headroom-tokens-saved"]) > 0
+        sent_params = captured["body"]["tools"][0]["function"]["parameters"]
+        assert "$schema" not in sent_params
+        assert "title" not in sent_params
+        assert "title" not in sent_params["properties"]["path"]
+        assert "examples" not in sent_params["properties"]["path"]
