@@ -15,6 +15,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 import headroom.proxy.savings_tracker as savings_tracker_module
+import headroom.proxy.server as server_module
 from headroom.proxy.savings_tracker import HEADROOM_SAVINGS_PATH_ENV_VAR, SavingsTracker
 from headroom.proxy.server import ProxyConfig, create_app
 
@@ -767,6 +768,63 @@ def test_savings_tracker_rollup_attributes_savings_per_model(tmp_path, monkeypat
     )
 
 
+def test_history_reference_pricing_covers_zero_cost_opencode_rollups(monkeypatch):
+    marker = object()
+
+    def fake_get_reference_pricing(model, pricing_surface):
+        assert pricing_surface == "opencode-go"
+        return marker if model == "mimo-v2.5-pro" else None
+
+    def fake_reference_metadata(model, pricing_surface, pricing):
+        assert pricing is marker
+        return {
+            "source": "opencode_reference",
+            "surface": pricing_surface,
+            "reference_only": True,
+            "model": model,
+            "input_per_1m": 1.74,
+        }
+
+    monkeypatch.setattr(
+        server_module,
+        "get_opencode_reference_pricing",
+        fake_get_reference_pricing,
+    )
+    monkeypatch.setattr(
+        server_module,
+        "reference_pricing_metadata",
+        fake_reference_metadata,
+    )
+
+    reference = server_module._history_opencode_pricing_reference(
+        {
+            "series": {
+                "daily": [
+                    {
+                        "by_model": {
+                            "mimo-v2.5-pro": {
+                                "tokens_saved": 681_046,
+                                "compression_savings_usd_delta": 0.0,
+                                "total_input_cost_usd_delta": 0.0,
+                            },
+                            "gpt-5.4": {
+                                "tokens_saved": 25_204,
+                                "compression_savings_usd_delta": 0.063,
+                                "total_input_cost_usd_delta": 0.466,
+                            },
+                        }
+                    }
+                ]
+            }
+        }
+    )
+
+    assert reference["has_reference_prices"] is True
+    assert reference["models"]["mimo-v2.5-pro"]["input_per_1m"] == pytest.approx(1.74)
+    assert reference["models"]["mimo-v2.5-pro"]["historical_reference_only"] is True
+    assert "gpt-5.4" not in reference["models"]
+
+
 def test_legacy_checkpoints_without_model_collapse_into_unknown(tmp_path):
     path = tmp_path / "proxy_savings.json"
     legacy_state = {
@@ -1035,6 +1093,9 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         # Non-top-5 breakdown rows swap into the last chart slot when selected.
         assert "topModels[topModels.length - 1] = selected;" in html
         assert "Reference pricing:" in html
+        assert "Reference ' + (info.pricing.surface || 'pricing') + ' price" not in html
+        assert "historicalReferencePricingForModel" in html
+        assert "estimateHistoricalModelReference" in html
 
 
 def test_stats_history_includes_cli_filtering(tmp_path, monkeypatch):

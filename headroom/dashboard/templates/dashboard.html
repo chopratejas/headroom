@@ -1154,10 +1154,6 @@
                                 <tr class="hover:bg-border/30 transition-colors">
                                     <td class="px-4 py-3 text-left">
                                         <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(model)"></span>
-                                        <template x-if="info.pricing?.reference_only">
-                                            <div class="mt-1 text-[10px] text-amber-300"
-                                                 x-text="'Reference ' + (info.pricing.surface || 'pricing') + ' price'"></div>
-                                        </template>
                                     </td>
                                     <td class="px-4 py-3 text-right font-mono tabular-nums" x-text="info.requests"></td>
                                     <td class="px-4 py-3 text-right font-mono tabular-nums text-accent" x-text="formatNumber(info.tokens_saved)"></td>
@@ -2202,6 +2198,24 @@
                     });
                 },
 
+                historicalReferencePricingForModel(model) {
+                    return this.historyStats.pricing_reference?.models?.[model]
+                        || this.stats.cost?.pricing_reference?.models?.[model]
+                        || null;
+                },
+
+                estimateHistoricalModelReference(row) {
+                    const pricing = this.historicalReferencePricingForModel(row.model);
+                    const inputPer1m = Number(pricing?.input_per_1m || 0);
+                    if (!pricing || inputPer1m <= 0) return null;
+                    if ((row.input_cost_usd || 0) > 0 || (row.savings_usd || 0) > 0) return null;
+                    return {
+                        pricing,
+                        input_cost_usd: ((row.input_tokens || 0) * inputPer1m) / 1000000,
+                        savings_usd: ((row.tokens_saved || 0) * inputPer1m) / 1000000,
+                    };
+                },
+
                 get historyModelBreakdown() {
                     const totals = {};
                     for (const bucket of this.historyModelSourceSeries) {
@@ -2210,19 +2224,33 @@
                                 model,
                                 tokens_saved: 0,
                                 savings_usd: 0,
+                                input_tokens: 0,
                                 input_cost_usd: 0,
                             });
                             row.tokens_saved += entry.tokens_saved || 0;
                             row.savings_usd += entry.compression_savings_usd_delta || 0;
+                            row.input_tokens += entry.total_input_tokens_delta || 0;
                             row.input_cost_usd += entry.total_input_cost_usd_delta || 0;
                         }
                     }
                     return Object.values(totals)
-                        .map(row => ({
-                            ...row,
-                            expected_cost_usd: row.input_cost_usd + row.savings_usd,
-                        }))
+                        .map(row => {
+                            const reference = this.estimateHistoricalModelReference(row);
+                            const inputCost = reference?.input_cost_usd ?? row.input_cost_usd;
+                            const savings = reference?.savings_usd ?? row.savings_usd;
+                            return {
+                                ...row,
+                                input_cost_usd: inputCost,
+                                savings_usd: savings,
+                                expected_cost_usd: inputCost + savings,
+                                reference_pricing: reference?.pricing || null,
+                            };
+                        })
                         .sort((a, b) => b.tokens_saved - a.tokens_saved);
+                },
+
+                get historyModelBreakdownUsesReference() {
+                    return this.historyModelBreakdown.some(row => row.reference_pricing);
                 },
 
                 get historyActiveModel() {

@@ -93,6 +93,11 @@ from headroom.observability import (
 )
 from headroom.offline import apply_offline_env, is_offline
 from headroom.pipeline import PipelineExtensionManager, PipelineStage
+from headroom.pricing.opencode_prices import (
+    OPENCODE_GO_SURFACE,
+    get_opencode_reference_pricing,
+    reference_pricing_metadata,
+)
 from headroom.providers.proxy_routes import register_provider_routes
 from headroom.providers.registry import (
     DEFAULT_ANTHROPIC_API_URL,
@@ -1889,6 +1894,60 @@ def _register_memory_components(proxy: HeadroomProxy, tracker: MemoryTracker) ->
     # registered when the memory system is initialized with specific backends.
 
 
+def _history_opencode_pricing_reference(history: dict[str, Any]) -> dict[str, Any]:
+    """Build display-only OpenCode reference prices for historical rollups."""
+
+    models: set[str] = set()
+
+    def _float(value: object) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    series = history.get("series")
+    if isinstance(series, dict):
+        for buckets in series.values():
+            if not isinstance(buckets, list):
+                continue
+            for bucket in buckets:
+                if not isinstance(bucket, dict):
+                    continue
+                by_model = bucket.get("by_model")
+                if not isinstance(by_model, dict):
+                    continue
+                for model, entry in by_model.items():
+                    if not isinstance(model, str) or not isinstance(entry, dict):
+                        continue
+                    # Older checkpoints can have useful token deltas but zero
+                    # dollars because OpenCode pricing was not known then.
+                    if (
+                        _float(entry.get("compression_savings_usd_delta")) == 0
+                        and _float(entry.get("total_input_cost_usd_delta")) == 0
+                    ):
+                        models.add(model)
+
+    refs: dict[str, Any] = {}
+    for model in sorted(models):
+        pricing = get_opencode_reference_pricing(model, OPENCODE_GO_SURFACE)
+        if pricing is None:
+            continue
+        metadata = reference_pricing_metadata(model, OPENCODE_GO_SURFACE, pricing)
+        metadata["historical_reference_only"] = True
+        metadata["historical_reference_assumption"] = OPENCODE_GO_SURFACE
+        refs[model] = metadata
+
+    return {
+        "has_reference_prices": bool(refs),
+        "models": refs,
+        "note": (
+            "Historical OpenCode reference prices are display-only estimates "
+            "for checkpoints recorded before route-specific pricing metadata "
+            "existed. They do not represent budget billing."
+        ),
+    }
+
+
 def _request_is_loopback(request: Request) -> bool:
     """Return True iff the caller is on loopback by *both* peer IP and Host header.
 
@@ -3423,6 +3482,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             )
 
         history = proxy.metrics.savings_tracker.history_response(history_mode=history_mode)
+        history["pricing_reference"] = await asyncio.to_thread(
+            _history_opencode_pricing_reference,
+            history,
+        )
 
         # Augment with live RTK/cli-filtering lifetime stats so the Historical
         # tab can display them.  These live in the context-tool's own stats file
