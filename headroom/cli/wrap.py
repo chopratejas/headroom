@@ -20,7 +20,6 @@ import io
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import socket
@@ -581,65 +580,89 @@ def _setup_rtk(verbose: bool = False) -> Path | None:
         if verbose:
             click.echo("  rtk hooks registered in Claude Code")
         try:
-            patched = _patch_rtk_hook_absolute_path(rtk_path)
-            if patched and verbose:
-                click.echo("  rtk hook script patched to use absolute path")
+            linked = _ensure_rtk_on_path(rtk_path)
+            if linked and verbose:
+                click.echo(f"  rtk linked onto PATH at {linked}")
         except Exception as e:
             if verbose:
-                click.echo(f"  rtk hook absolute-path patch skipped: {e}")
+                click.echo(f"  rtk PATH link skipped: {e}")
     else:
         click.echo("  rtk hook registration failed — continuing without it")
 
     return rtk_path
 
 
-def _patch_rtk_hook_absolute_path(rtk_path: Path, hook_script_path: Path | None = None) -> bool:
-    """Rewrite bare ``rtk`` invocations in the generated Claude hook script
-    to use the absolute path to the RTK binary Headroom manages.
+def _ensure_rtk_on_path(rtk_path: Path, path_dirs: list[str] | None = None) -> Path | None:
+    """Make the Headroom-managed rtk resolvable as a bare ``rtk`` on PATH.
 
-    ``rtk init --global --auto-patch`` writes ``~/.claude/hooks/rtk-rewrite.sh``
-    with a bare ``rtk`` command that depends on PATH lookup. Since
-    ``~/.headroom/bin`` (where Headroom installs rtk) is not automatically
-    added to PATH, that lookup fails and the hook silently does nothing.
+    ``rtk init --global --auto-patch`` writes ``~/.claude/hooks/rtk-rewrite.sh``,
+    and ``rtk rewrite`` emits a bare ``rtk`` token at runtime that the hook feeds
+    back to the shell — so bare ``rtk`` has to resolve on PATH regardless of the
+    hook's contents. Since ``~/.headroom/bin`` (where Headroom installs rtk) is
+    not on PATH by default, that lookup fails and compression silently never
+    runs (issue #487).
 
-    This rewrites bare ``rtk`` command tokens to the absolute, shell-quoted
-    path of the rtk binary so the hook works regardless of PATH.
+    An earlier fix rewrote the generated hook to hard-code rtk's absolute path.
+    That mutates the hook *after* ``rtk init`` bakes in its expected SHA-256, so
+    rtk's integrity guard rejects it (``hook integrity check FAILED … RTK will
+    not execute``) and only absolutizes the hook's own ``rtk`` call — not the
+    bare ``rtk`` that ``rtk rewrite`` emits at runtime (issue #1631). Instead,
+    leave the canonical hook untouched and link the managed binary into a PATH
+    directory so bare ``rtk`` resolves.
 
-    Idempotent: only rewrites bare ``rtk`` tokens (not paths that already
-    point elsewhere), and only writes the file back if content changed.
+    Idempotent and conservative:
+      * no-op if a ``rtk`` already resolves on PATH (managed or system);
+      * no-op on Windows (symlinks need privilege; hooks resolve differently);
+      * only creates/refreshes a symlink Headroom owns — never clobbers an
+        existing real file or foreign binary.
 
-    Returns True if the hook script was modified.
+    Returns the link path that was created or already correct, else ``None``.
     """
-    if hook_script_path is None:
-        hook_script_path = Path.home() / ".claude" / "hooks" / "rtk-rewrite.sh"
+    if sys.platform == "win32":
+        return None
 
-    if not hook_script_path.exists():
-        return False
+    # A bare `rtk` already resolves — the hook will find it, nothing to do.
+    if shutil.which("rtk"):
+        return None
 
-    original = _read_text(hook_script_path)
+    if path_dirs is None:
+        path_dirs = os.environ.get("PATH", "").split(os.pathsep)
 
-    # Quote the absolute path safely for POSIX shells. This matters because
-    # paths containing spaces or other shell-special characters (e.g.
-    # "/Users/Alice Smith/.headroom/bin/rtk") must be quoted, or the
-    # generated script will break when the shell splits on whitespace.
-    quoted_path = shlex.quote(str(rtk_path))
+    preferred = Path.home() / ".local" / "bin"
 
-    # Replace bare `rtk` command tokens with the quoted absolute path.
-    # Matches `rtk` as a standalone word (preceded by start-of-line or
-    # whitespace/operators, followed by whitespace or end-of-line), so it
-    # won't touch things like "rtkfoo" or "/some/path/rtk" that are already
-    # absolute.
-    patched, count = re.subn(
-        r"(?<![\w/-])rtk(?=\s|$)",
-        lambda _match: quoted_path,
-        original,
-    )
+    # Prefer ~/.local/bin (conventionally on PATH), then any other PATH dir.
+    ordered: list[Path] = []
+    if str(preferred) in path_dirs:
+        ordered.append(preferred)
+    for entry in path_dirs:
+        if not entry:
+            continue
+        candidate = Path(entry)
+        if candidate not in ordered:
+            ordered.append(candidate)
 
-    if count and patched != original:
-        _write_text(hook_script_path, patched)
-        return True
+    target = rtk_path.resolve()
 
-    return False
+    for target_dir in ordered:
+        link = target_dir / "rtk"
+        try:
+            # Existing correct link — done.
+            if link.is_symlink() and link.resolve() == target:
+                return link
+            # Never clobber a real file or a link pointing elsewhere.
+            if link.exists() or link.is_symlink():
+                continue
+            # Create ~/.local/bin on demand; other PATH dirs must already exist.
+            if target_dir == preferred:
+                target_dir.mkdir(parents=True, exist_ok=True)
+            if not target_dir.is_dir() or not os.access(target_dir, os.W_OK):
+                continue
+            link.symlink_to(target)
+            return link
+        except OSError:
+            continue
+
+    return None
 
 
 def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
