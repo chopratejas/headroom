@@ -845,7 +845,7 @@ def test_wrap_codex_aborts_before_mutating_config_when_proxy_deps_missing(
     with (
         patch("headroom.cli.wrap._ensure_rtk_binary", return_value=None),
         patch(
-            "headroom.cli.proxy.ensure_proxy_dependencies",
+            "headroom.cli.wrap.ensure_proxy_dependencies",
             side_effect=SystemExit(1),
         ),
     ):
@@ -871,7 +871,7 @@ def test_wrap_codex_skips_proxy_dependency_check_with_no_proxy(
     with (
         patch("headroom.cli.wrap._ensure_rtk_binary", return_value=None),
         patch(
-            "headroom.cli.proxy.ensure_proxy_dependencies",
+            "headroom.cli.wrap.ensure_proxy_dependencies",
             side_effect=AssertionError("should not run with --no-proxy"),
         ),
     ):
