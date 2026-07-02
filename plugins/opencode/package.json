@@ -39,7 +39,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.5.0",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.5"
   },
   "license": "Apache-2.0"
