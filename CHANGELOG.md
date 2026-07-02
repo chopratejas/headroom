@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- **proxy:** `headroom proxy` on Windows no longer crashes with `KeyError: 'asyncio:SelectorEventLoop'` when running against uvicorn < 0.36. Older uvicorn builds only accept built-in loop names, so Headroom now sets `WindowsSelectorEventLoopPolicy` on those versions while keeping the selector-loop import path on uvicorn >= 0.36 ([#1650](https://github.com/headroomlabs-ai/headroom/issues/1650), [#1621](https://github.com/headroomlabs-ai/headroom/issues/1621)).
 - `headroom learn` now honors `CLAUDE_CONFIG_DIR`. It resolved the Claude
   config directory as `~/.claude` and wrote global memory to
   `~/.claude/CLAUDE.md`, so users who relocate their Claude config via that
