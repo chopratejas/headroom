@@ -1103,6 +1103,62 @@ def _token_kind(token: str) -> str:
     return "unknown" if t else "empty"
 
 
+def _maybe_capture_outbound(url: str, headers: dict[str, str]) -> None:
+    """Debug hook: when ``HEADROOM_COPILOT_DEBUG_OUTBOUND`` is set, append a
+    secret-free record of the request Headroom is about to forward to the Copilot
+    API. Lets us tell a Headroom bug (wrong host / integration-id / token kind)
+    apart from an upstream entitlement 400.
+
+    Records only the host + URL + fixed credential labels (scheme + token type
+    prefix). No token bytes and no request headers are written or logged — the
+    auth header is reduced to constant labels via prefix tests, never a slice.
+    (The integration-id / editor-version a request carries are surfaced by the
+    read-only doctor's reconstruction instead.)
+    """
+
+    if os.environ.get("HEADROOM_COPILOT_DEBUG_OUTBOUND", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return
+    try:
+        auth = next((v for k, v in headers.items() if k.lower() == "authorization"), "")
+        # Constant labels only — `scheme_label`/`token_label` are literals chosen by
+        # prefix tests, so no token-derived string reaches the file or the log sink.
+        if not auth:
+            scheme_label, token_label = "(none)", "none"
+        else:
+            scheme_label = "Bearer" if auth[:7].lower() == "bearer " else "(other)"
+            rest = auth.partition(" ")[2]
+            token_label = "present"
+            for known in ("tid_", "gho_", "ghs_", "ghp_", "github_pat_"):
+                if rest.startswith(known):
+                    token_label = known + "***"
+                    break
+        record = {
+            "host": urlparse(url).netloc,
+            "url": url,
+            "auth_scheme": scheme_label,
+            "token_kind": token_label,
+        }
+        default_path = Path.home() / ".headroom" / "copilot_outbound.jsonl"
+        out = Path(os.environ.get("HEADROOM_COPILOT_DEBUG_OUTBOUND_FILE", str(default_path)))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        logger.warning(
+            "[copilot-outbound] host=%s url=%s token=%s/%s",
+            record["host"],
+            record["url"],
+            scheme_label,
+            token_label,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("copilot outbound capture failed: %s", exc)
+
+
 async def apply_copilot_api_auth(headers: dict[str, str], *, url: str) -> dict[str, str]:
     """Apply Copilot auth headers for GitHub Copilot API requests."""
     resolved = dict(headers)
@@ -1123,6 +1179,7 @@ async def apply_copilot_api_auth(headers: dict[str, str], *, url: str) -> dict[s
             for key in list(resolved):
                 if key.lower() == "x-api-key":
                     resolved.pop(key)
+            _maybe_capture_outbound(url, resolved)
             return resolved
         logger.info(
             "apply_copilot_api_auth: incoming token not suitable (kind=%s), will replace",
@@ -1134,4 +1191,5 @@ async def apply_copilot_api_auth(headers: dict[str, str], *, url: str) -> dict[s
         if key.lower() in {"authorization", "x-api-key"}:
             resolved.pop(key)
     resolved["Authorization"] = f"Bearer {token.token}"
+    _maybe_capture_outbound(url, resolved)
     return resolved

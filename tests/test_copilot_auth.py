@@ -831,6 +831,50 @@ def test_apply_copilot_api_auth_preserves_existing_headers_case_insensitively(
     assert "Copilot-Integration-Id" not in headers
 
 
+def test_capture_outbound_redacts_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The debug capture must never write any token bytes — only fixed labels."""
+
+    out = tmp_path / "cap.jsonl"
+    monkeypatch.setenv("HEADROOM_COPILOT_DEBUG_OUTBOUND", "1")
+    monkeypatch.setenv("HEADROOM_COPILOT_DEBUG_OUTBOUND_FILE", str(out))
+    secret = "tid_SUPERSECRET_cafef00d"
+
+    asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {"authorization": f"Bearer {secret}", "x-api-key": "sk-drop"},
+            url="https://api.enterprise.githubcopilot.com/chat/completions",
+        )
+    )
+
+    body = out.read_text()
+    assert "SUPERSECRET" not in body  # no token bytes leak into the capture
+    assert secret not in body
+    rec = json.loads(body.strip().splitlines()[-1])
+    assert rec["auth_scheme"] == "Bearer"
+    assert rec["token_kind"] == "tid_***"  # masked label only
+    assert "token_prefix" not in rec
+    assert rec["host"] == "api.enterprise.githubcopilot.com"
+
+
+def test_capture_outbound_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No file is written unless HEADROOM_COPILOT_DEBUG_OUTBOUND is set."""
+
+    out = tmp_path / "cap.jsonl"
+    monkeypatch.delenv("HEADROOM_COPILOT_DEBUG_OUTBOUND", raising=False)
+    monkeypatch.setenv("HEADROOM_COPILOT_DEBUG_OUTBOUND_FILE", str(out))
+
+    asyncio.run(
+        copilot_auth.apply_copilot_api_auth(
+            {"authorization": "Bearer tid_abc"},
+            url="https://api.githubcopilot.com/chat/completions",
+        )
+    )
+
+    assert not out.exists()
+
+
 def test_token_provider_reuses_oauth_token_without_exchange(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
