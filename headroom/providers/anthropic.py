@@ -83,12 +83,18 @@ def sanitize_anthropic_model_metadata(value: Any) -> Any:
 # Anthropic model context limits
 # All Claude 3+ models have 200K context
 ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
+    # Claude 4.8 (Opus 4.8) - 1M context
+    "claude-opus-4-8": 1000000,
     # Claude 4.7 (Opus 4.7) - 1M context
     "claude-opus-4-7": 1000000,
     # Claude 4.6 (Opus 4.6) - 1M context
     "claude-opus-4-6": 1000000,
     # Claude 4.5 (Opus 4.5)
     "claude-opus-4-5-20251101": 200000,
+    # Claude Sonnet 4.6 — 1M context window (long-context pricing tier)
+    "claude-sonnet-4-6": 1000000,
+    # Claude Sonnet 4.5
+    "claude-sonnet-4-5": 200000,
     # Claude 4 (Sonnet 4, Haiku 4)
     "claude-sonnet-4-20250514": 200000,
     "claude-haiku-4-5-20251001": 200000,
@@ -110,17 +116,23 @@ ANTHROPIC_CONTEXT_LIMITS: dict[str, int] = {
 
 # Fallback pricing - LiteLLM is preferred source
 # NOTE: These are ESTIMATES. Always verify against actual Anthropic billing.
-# Last updated: 2025-01-14
+# Last updated: 2026-06-27
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
-    # Claude 4.7 (Opus tier pricing)
-    "claude-opus-4-7": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
-    # Claude 4.6 (Opus tier pricing)
-    "claude-opus-4-6": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
-    # Claude 4.5 (Opus tier pricing)
-    "claude-opus-4-5-20251101": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
+    # Claude 4.8 — current Opus tier (anthropic.com/pricing): $5 in / $25 out,
+    # prompt-cache read = 0.1x input ($0.50).
+    "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+    # Claude 4.7 (current Opus tier)
+    "claude-opus-4-7": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+    # Claude 4.6 (current Opus tier)
+    "claude-opus-4-6": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+    # Claude 4.5 (current Opus tier — same rates as 4.6–4.8)
+    "claude-opus-4-5-20251101": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
+    # Claude Sonnet 4.6 / 4.5 (current Sonnet tier): $3 in / $15 out, cache read $0.30
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
     # Claude 4 (Sonnet/Haiku tier pricing)
     "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00, "cached_input": 0.08},
+    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00, "cached_input": 0.10},
     # Claude 3.5
     "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
     "claude-3-5-sonnet-latest": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
