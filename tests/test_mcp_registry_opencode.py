@@ -330,17 +330,19 @@ def test_register_then_re_register_with_different_env_returns_mismatch(tmp_path:
 
 
 def test_register_server_on_malformed_config_file(tmp_path: Path) -> None:
-    """register_server overwrites a malformed config file, preserving nothing."""
+    """register_server refuses to overwrite a malformed config file."""
     registrar = _registrar(tmp_path)
-    (tmp_path / "opencode.json").write_text("not valid json at all")
+    config_path = tmp_path / "opencode.json"
+    contents = "not valid json at all"
+    config_path.write_text(contents, encoding="utf-8")
     from headroom.mcp_registry.base import ServerSpec
 
     spec = ServerSpec(name="headroom", command="headroom", args=("mcp", "serve"))
     result = registrar.register_server(spec)
-    assert result.status == RegisterStatus.REGISTERED
+    assert result.status == RegisterStatus.FAILED
+    assert "not valid JSON" in result.detail
 
-    data = json.loads((tmp_path / "opencode.json").read_text())
-    assert "headroom" in data["mcp"]
+    assert config_path.read_text(encoding="utf-8") == contents
 
 
 def test_entry_to_spec_command_as_string() -> None:
