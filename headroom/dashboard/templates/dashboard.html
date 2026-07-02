@@ -1561,8 +1561,10 @@
                                                             :class="historySelectedModel === row.model ? 'underline' : ''"
                                                             x-text="truncateModel(row.model)"></td>
                                                         <td class="py-2 pr-4 text-right tabular-nums" x-text="formatNumber(row.tokens_saved)"></td>
-                                                        <td class="py-2 pr-4 text-right tabular-nums" x-text="'$' + formatCurrency(row.input_cost_usd)"></td>
-                                                        <td class="py-2 pr-4 text-right tabular-nums" x-text="'$' + formatCurrency(row.expected_cost_usd)"></td>
+                                                        <td class="py-2 pr-4 text-right tabular-nums"
+                                                            x-text="row.reference_pricing ? 'n/a' : '$' + formatCurrency(row.input_cost_usd)"></td>
+                                                        <td class="py-2 pr-4 text-right tabular-nums"
+                                                            x-text="row.reference_pricing ? 'n/a' : '$' + formatCurrency(row.expected_cost_usd)"></td>
                                                         <td class="py-2 text-right tabular-nums text-accent" x-text="'$' + formatCurrency(row.savings_usd)"></td>
                                                     </tr>
                                                 </template>
@@ -2211,7 +2213,6 @@
                     if ((row.input_cost_usd || 0) > 0 || (row.savings_usd || 0) > 0) return null;
                     return {
                         pricing,
-                        input_cost_usd: ((row.input_tokens || 0) * inputPer1m) / 1000000,
                         savings_usd: ((row.tokens_saved || 0) * inputPer1m) / 1000000,
                     };
                 },
@@ -2236,13 +2237,13 @@
                     return Object.values(totals)
                         .map(row => {
                             const reference = this.estimateHistoricalModelReference(row);
-                            const inputCost = reference?.input_cost_usd ?? row.input_cost_usd;
+                            const inputCost = row.input_cost_usd;
                             const savings = reference?.savings_usd ?? row.savings_usd;
                             return {
                                 ...row,
                                 input_cost_usd: inputCost,
                                 savings_usd: savings,
-                                expected_cost_usd: inputCost + savings,
+                                expected_cost_usd: reference ? null : inputCost + savings,
                                 reference_pricing: reference?.pricing || null,
                             };
                         })

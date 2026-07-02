@@ -1096,6 +1096,9 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         assert "Reference ' + (info.pricing.surface || 'pricing') + ' price" not in html
         assert "historicalReferencePricingForModel" in html
         assert "estimateHistoricalModelReference" in html
+        assert "input_cost_usd: ((row.input_tokens || 0) * inputPer1m)" not in html
+        assert "expected_cost_usd: reference ? null : inputCost + savings" in html
+        assert "row.reference_pricing ? 'n/a'" in html
 
 
 def test_stats_history_includes_cli_filtering(tmp_path, monkeypatch):
