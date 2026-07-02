@@ -934,6 +934,7 @@ class HeadroomProxy(
             backend=config.backend,
             anyllm_provider=config.anyllm_provider,
             bedrock_region=config.bedrock_region,
+            bedrock_profile=config.bedrock_profile,
             logger=logger,
             openai_api_url=config.openai_api_url,
             anyllm_backend_cls=AnyLLMBackend,

@@ -148,6 +148,7 @@ def create_proxy_backend(
     backend: str,
     anyllm_provider: str,
     bedrock_region: str | None,
+    bedrock_profile: str | None = None,
     logger: logging.Logger,
     openai_api_url: str | None = None,
     anyllm_backend_cls: Any | None = None,
@@ -181,7 +182,10 @@ def create_proxy_backend(
         provider = "vertex_ai"
     try:
         backend_cls = litellm_backend_cls or _load_litellm_backend()
-        instance = cast("Backend", backend_cls(provider=provider, region=bedrock_region))
+        instance = cast(
+            "Backend",
+            backend_cls(provider=provider, region=bedrock_region, profile_name=bedrock_profile),
+        )
         logger.info("LiteLLM backend enabled (provider=%s, region=%s)", provider, bedrock_region)
         return instance
     except ImportError as exc:
