@@ -577,9 +577,11 @@ class PrometheusMetrics:
         cache_write_5m_tokens: int = 0,
         cache_write_1h_tokens: int = 0,
         uncached_input_tokens: int = 0,
+        cache_inferred: bool = False,
         attempted_input_tokens: int = 0,
         project: str | None = None,
         client: str | None = None,
+        pricing_surface: str | None = None,
     ):
         """Record metrics for a request."""
         async with self._lock:
@@ -661,18 +663,17 @@ class PrometheusMetrics:
             if len(self.savings_history) > 500:
                 self.savings_history = self.savings_history[-500:]
 
-            total_input_tokens, total_input_cost_usd = self._current_savings_tracker_totals()
             self.savings_tracker.record_request(
                 model=model,
                 input_tokens=input_tokens,
                 tokens_saved=tokens_saved,
                 provider=provider,
                 project=project,
+                pricing_surface=pricing_surface,
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 uncached_input_tokens=uncached_input_tokens,
-                total_input_tokens=total_input_tokens,
-                total_input_cost_usd=total_input_cost_usd,
+                cache_write_inferred=cache_inferred,
             )
 
             # Also append to the durable, multi-process savings ledger so

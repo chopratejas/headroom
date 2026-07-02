@@ -19,8 +19,6 @@ import importlib.util
 import io
 import json
 import os
-import re
-import shlex
 import shutil
 import signal
 import socket
@@ -43,7 +41,6 @@ if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
 
 import click
 
-from headroom import fsutil
 from headroom._version import __version__ as _HEADROOM_VERSION
 from headroom.agent_savings import (
     apply_agent_savings_env_defaults,
@@ -125,26 +122,11 @@ from headroom.providers.opencode.config import (
     opencode_config_paths,
     snapshot_opencode_config_if_unwrapped,
     strip_opencode_headroom_blocks,
+    strip_opencode_runtime_plugin_config,
 )
 from headroom.proxy.project_context import with_project_prefix as _with_project_prefix
 
 from .main import main
-
-
-def _read_text(path: Path) -> str:
-    """Read a text file as UTF-8, falling back to the system locale encoding."""
-    return fsutil.read_text(path)
-
-
-def _write_text(path: Path, content: str) -> None:
-    """Write a text file as UTF-8 without translating line endings (preserves CRLF)."""
-    fsutil.write_text(path, content)
-
-
-def _append_text(path: Path, content: str) -> None:
-    """Append to a text file as UTF-8 without translating line endings."""
-    fsutil.append_text(path, content)
-
 
 _CONTEXT_TOOL_ENV = "HEADROOM_CONTEXT_TOOL"
 _CONTEXT_TOOL_RTK = "rtk"
@@ -391,8 +373,6 @@ def _start_proxy(
     region: str | None = None,
     openai_api_url: str | None = None,
     anthropic_api_url: str | None = None,
-    vertex_api_url: str | None = None,
-    clear_vertex_api_url: bool = False,
     copilot_api_token: str | None = None,
 ) -> subprocess.Popen:
     """Start Headroom proxy as a background subprocess.
@@ -439,13 +419,10 @@ def _start_proxy(
     if anthropic_api_url:
         cmd.extend(["--anthropic-api-url", anthropic_api_url])
 
-    if vertex_api_url:
-        cmd.extend(["--vertex-api-url", vertex_api_url])
-
     timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
     stdio_log_path = _get_proxy_stdio_log_path()
-    stdio_log_file = open(stdio_log_path, "a", encoding="utf-8")  # noqa: SIM115
+    stdio_log_file = open(stdio_log_path, "a", encoding="utf-8", errors="replace")  # noqa: SIM115
 
     # Ensure proxy subprocess uses UTF-8 (Windows defaults to cp1252)
     proxy_env = os.environ.copy()
@@ -465,10 +442,6 @@ def _start_proxy(
         proxy_env["OPENAI_TARGET_API_URL"] = openai_api_url
     if anthropic_api_url:
         proxy_env["ANTHROPIC_TARGET_API_URL"] = anthropic_api_url
-    if clear_vertex_api_url:
-        proxy_env.pop("VERTEX_TARGET_API_URL", None)
-    if vertex_api_url:
-        proxy_env["VERTEX_TARGET_API_URL"] = vertex_api_url
     # Pin the wrapper-validated Copilot token for this proxy instance only.
     # Injected into the subprocess env here (not the parent's os.environ) so it
     # never leaks into shared state. The proxy's CopilotTokenProvider honours
@@ -478,83 +451,39 @@ def _start_proxy(
         if openai_api_url:
             proxy_env["GITHUB_COPILOT_API_URL"] = openai_api_url
 
-    # Detach the proxy from the launching console on Windows so an ungraceful
-    # close of the owning agent (closing the terminal window, taskkill, or a
-    # crash) cannot tree-kill the shared proxy out from under other live
-    # clients. Without this the proxy stays in the owner's console + Job
-    # object; closing that window terminates the whole tree, bypassing the
-    # marker-based reference counting in ``_make_cleanup`` and breaking every
-    # other ``headroom wrap`` instance routed through the same port.
-    #   CREATE_NO_WINDOW         — give the proxy its OWN, invisible console.
-    #                              A separate console means the parent's
-    #                              CTRL_CLOSE_EVENT never reaches it, and no
-    #                              stray console window pops up. DETACHED_PROCESS
-    #                              also isolates the console, but for a console
-    #                              subsystem exe (python.exe) it leaves the proxy
-    #                              consoleless and Windows surfaces a visible
-    #                              console window — closing that window killed
-    #                              the proxy, defeating the whole point.
-    #   CREATE_NEW_PROCESS_GROUP — isolate from the parent's Ctrl-C
-    #   CREATE_BREAKAWAY_FROM_JOB— survive Job kill-on-close (Windows Terminal,
-    #                              VS Code integrated terminal, conhost)
-    # CREATE_NO_WINDOW / DETACHED_PROCESS / CREATE_NEW_CONSOLE are mutually
-    # exclusive — pick exactly one. On POSIX, ``start_new_session`` already
-    # detaches via setsid(). ``sys.platform == "win32"`` (not ``os.name ==
-    # "nt"``) so mypy narrows the platform and resolves the Windows-only
-    # ``subprocess`` constants below.
-    _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = (
-            subprocess.CREATE_NO_WINDOW
-            | subprocess.CREATE_NEW_PROCESS_GROUP
-            | _CREATE_BREAKAWAY_FROM_JOB
-        )
+    proc = subprocess.Popen(
+        cmd,
+        stdout=stdio_log_file,
+        stderr=stdio_log_file,
+        env=proxy_env,
+        start_new_session=os.name == "posix",
+    )
 
-    popen_kwargs: dict[str, Any] = {
-        "stdout": stdio_log_file,
-        "stderr": stdio_log_file,
-        "env": proxy_env,
-        "start_new_session": os.name == "posix",
-        "creationflags": creationflags,
-    }
-    # Close the parent's copy of the stdio log handle on every exit path,
-    # including when BOTH spawn attempts raise. The child keeps its own
-    # inherited duplicate, so closing here never starves the proxy's logging.
-    try:
-        try:
-            proc = subprocess.Popen(cmd, **popen_kwargs)
-        except OSError:
-            # The launcher's Job object forbids breakaway. Retry without that flag;
-            # CREATE_NO_WINDOW still spares the proxy from console-close events.
-            if sys.platform == "win32":
-                popen_kwargs["creationflags"] = creationflags & ~_CREATE_BREAKAWAY_FROM_JOB
-            proc = subprocess.Popen(cmd, **popen_kwargs)
+    # Wait for proxy to be ready.
+    # ML components (Kompress, Magika, Tree-sitter) load synchronously before
+    # uvicorn binds the port. On slower machines this can take 20-30 seconds.
+    for _i in range(timeout_seconds):
+        time.sleep(1)
+        if _check_proxy(port):
+            click.echo(f"  Logs: {log_path}")
+            stdio_log_file.close()
+            return proc
+        # Check if process died
+        if proc.poll() is not None:
+            stdio_log_file.close()
+            # Read last few lines of log for error context
+            try:
+                tail = stdio_log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+            except Exception:
+                tail = "(no log output)"
+            raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
 
-        # Wait for proxy to be ready.
-        # ML components (Kompress, Magika, Tree-sitter) load synchronously before
-        # uvicorn binds the port. On slower machines this can take 20-30 seconds.
-        for _i in range(timeout_seconds):
-            time.sleep(1)
-            if _check_proxy(port):
-                click.echo(f"  Logs: {log_path}")
-                return proc
-            # Check if process died
-            if proc.poll() is not None:
-                # Read last few lines of log for error context
-                try:
-                    tail = _read_text(stdio_log_path)[-500:]
-                except Exception:
-                    tail = "(no log output)"
-                raise RuntimeError(f"Proxy exited with code {proc.returncode}: {tail}")
-
-        proc.kill()
-        raise RuntimeError(
-            f"Proxy failed to start on port {port} within {timeout_seconds} seconds. "
-            f"Set {_WRAP_PROXY_TIMEOUT_ENV} to a larger number of seconds for slow startup."
-        )
-    finally:
-        stdio_log_file.close()
+    proc.kill()
+    stdio_log_file.close()
+    raise RuntimeError(
+        f"Proxy failed to start on port {port} within {timeout_seconds} seconds. "
+        f"Set {_WRAP_PROXY_TIMEOUT_ENV} to a larger number of seconds for slow startup."
+    )
 
 
 def _setup_rtk(verbose: bool = False) -> Path | None:
@@ -580,66 +509,10 @@ def _setup_rtk(verbose: bool = False) -> Path | None:
     if register_claude_hooks(rtk_path):
         if verbose:
             click.echo("  rtk hooks registered in Claude Code")
-        try:
-            patched = _patch_rtk_hook_absolute_path(rtk_path)
-            if patched and verbose:
-                click.echo("  rtk hook script patched to use absolute path")
-        except Exception as e:
-            if verbose:
-                click.echo(f"  rtk hook absolute-path patch skipped: {e}")
     else:
         click.echo("  rtk hook registration failed — continuing without it")
 
     return rtk_path
-
-
-def _patch_rtk_hook_absolute_path(rtk_path: Path, hook_script_path: Path | None = None) -> bool:
-    """Rewrite bare ``rtk`` invocations in the generated Claude hook script
-    to use the absolute path to the RTK binary Headroom manages.
-
-    ``rtk init --global --auto-patch`` writes ``~/.claude/hooks/rtk-rewrite.sh``
-    with a bare ``rtk`` command that depends on PATH lookup. Since
-    ``~/.headroom/bin`` (where Headroom installs rtk) is not automatically
-    added to PATH, that lookup fails and the hook silently does nothing.
-
-    This rewrites bare ``rtk`` command tokens to the absolute, shell-quoted
-    path of the rtk binary so the hook works regardless of PATH.
-
-    Idempotent: only rewrites bare ``rtk`` tokens (not paths that already
-    point elsewhere), and only writes the file back if content changed.
-
-    Returns True if the hook script was modified.
-    """
-    if hook_script_path is None:
-        hook_script_path = Path.home() / ".claude" / "hooks" / "rtk-rewrite.sh"
-
-    if not hook_script_path.exists():
-        return False
-
-    original = _read_text(hook_script_path)
-
-    # Quote the absolute path safely for POSIX shells. This matters because
-    # paths containing spaces or other shell-special characters (e.g.
-    # "/Users/Alice Smith/.headroom/bin/rtk") must be quoted, or the
-    # generated script will break when the shell splits on whitespace.
-    quoted_path = shlex.quote(str(rtk_path))
-
-    # Replace bare `rtk` command tokens with the quoted absolute path.
-    # Matches `rtk` as a standalone word (preceded by start-of-line or
-    # whitespace/operators, followed by whitespace or end-of-line), so it
-    # won't touch things like "rtkfoo" or "/some/path/rtk" that are already
-    # absolute.
-    patched, count = re.subn(
-        r"(?<![\w/-])rtk(?=\s|$)",
-        lambda _match: quoted_path,
-        original,
-    )
-
-    if count and patched != original:
-        _write_text(hook_script_path, patched)
-        return True
-
-    return False
 
 
 def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
@@ -714,7 +587,7 @@ def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
         return False
 
     try:
-        payload = json.loads(_read_text(path))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     if not isinstance(payload, dict):
@@ -782,7 +655,7 @@ def _remove_claude_rtk_hooks(settings_path: Path | None = None) -> bool:
     if not changed:
         return False
 
-    _write_text(path, json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return True
 
 
@@ -814,72 +687,39 @@ def _foundry_proxy_url(proxy_url: str) -> str:
     return proxy_url.rstrip("/") + "/anthropic"
 
 
-def _vertex_target_api_url_from_claude_env(proxy_url: str) -> str | None:
-    """Return the Vertex upstream that the proxy should use for Claude Code."""
-    explicit_target = os.environ.get("VERTEX_TARGET_API_URL", "").strip()
-    if explicit_target:
-        return (
-            None
-            if _normalize_proxy_api_url(explicit_target) == _normalize_proxy_api_url(proxy_url)
-            else explicit_target
-        )
-
-    vertex_url = os.environ.get("ANTHROPIC_VERTEX_BASE_URL", "").strip()
-    if not vertex_url:
-        return None
-
-    from headroom.providers.registry import DEFAULT_VERTEX_API_URL
-
-    normalized_vertex_url = _normalize_proxy_api_url(vertex_url)
-    if normalized_vertex_url == _normalize_proxy_api_url(DEFAULT_VERTEX_API_URL):
-        return None
-    if normalized_vertex_url == _normalize_proxy_api_url(proxy_url):
-        return None
-    return vertex_url
-
-
-def _claude_wrap_base_url_env_key(*, foundry_mode: bool = False, vertex_mode: bool = False) -> str:
-    if vertex_mode:
-        return "ANTHROPIC_VERTEX_BASE_URL"
-    if foundry_mode:
-        return "ANTHROPIC_FOUNDRY_BASE_URL"
-    return "ANTHROPIC_BASE_URL"
-
-
 def _write_claude_wrap_base_url(
     proxy_url: str,
     *,
     foundry_mode: bool = False,
-    vertex_mode: bool = False,
     settings_path: Path | None = None,
 ) -> str | None:
     """Persist proxy URL into project-local settings env key for daemon child inheritance.
 
     Claude Code's cc-daemon pre-forks conversation workers using spawn (not
     fork), so those workers read settings.json fresh rather than inheriting
-    the daemon's environment.  Writing the mode-specific Claude base URL env
-    key into the project-local settings file (.claude/settings.local.json in
-    cwd) ensures every new conversation — including those started after the
-    initial launch — routes through the Headroom proxy without touching the
-    global user settings file or affecting sessions in other projects. Returns
-    the previous value so the caller can restore it on exit (issue #951).
+    the daemon's environment.  Writing env.ANTHROPIC_BASE_URL into the
+    project-local settings file (.claude/settings.local.json in cwd) ensures
+    every new conversation — including those started after the initial launch —
+    routes through the Headroom proxy without touching the global user settings
+    file or affecting sessions in other projects.  Returns the previous value
+    so the caller can restore it on exit (issue #951).
     """
     path = settings_path or (Path.cwd() / ".claude" / "settings.local.json")
     payload: dict[str, Any] = {}
     if path.exists():
         try:
-            payload = json.loads(_read_text(path))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             payload = {}
     if not isinstance(payload, dict):
         payload = {}
     env_map = dict(payload.get("env") or {}) if isinstance(payload.get("env"), dict) else {}
-    key = _claude_wrap_base_url_env_key(foundry_mode=foundry_mode, vertex_mode=vertex_mode)
+    key = "ANTHROPIC_FOUNDRY_BASE_URL" if foundry_mode else "ANTHROPIC_BASE_URL"
     previous = env_map.get(key)
     env_map[key] = proxy_url
     payload["env"] = env_map
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_text(path, json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return previous
 
 
@@ -887,7 +727,6 @@ def _restore_claude_wrap_base_url(
     previous: str | None,
     *,
     foundry_mode: bool = False,
-    vertex_mode: bool = False,
     settings_path: Path | None = None,
 ) -> None:
     """Restore (or remove) the env key written by _write_claude_wrap_base_url.
@@ -901,7 +740,7 @@ def _restore_claude_wrap_base_url(
     if not path.exists():
         return
     try:
-        payload = json.loads(_read_text(path))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return
     if not isinstance(payload, dict):
@@ -909,7 +748,7 @@ def _restore_claude_wrap_base_url(
     env_map = payload.get("env")
     if not isinstance(env_map, dict):
         return
-    key = _claude_wrap_base_url_env_key(foundry_mode=foundry_mode, vertex_mode=vertex_mode)
+    key = "ANTHROPIC_FOUNDRY_BASE_URL" if foundry_mode else "ANTHROPIC_BASE_URL"
     if previous is None:
         if key not in env_map:
             return
@@ -922,7 +761,7 @@ def _restore_claude_wrap_base_url(
         env_map[key] = previous
         payload["env"] = env_map
     if payload:
-        _write_text(path, json.dumps(payload, indent=2) + "\n")
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     else:
         path.unlink(missing_ok=True)
 
@@ -1035,18 +874,15 @@ def _remove_headroom_installed_serena_mcp(registrar: Any) -> str:
     return "failed"
 
 
-def _disable_serena_mcp(
-    registrar: Any, *, verbose: bool = False, reason: str = "--no-serena"
-) -> None:
-    """Actively disable a Headroom-installed Serena entry, not merely skip it.
+def _disable_serena_mcp(registrar: Any, *, verbose: bool = False) -> None:
+    """Make ``--no-serena`` actively disable Serena, not merely skip adding it.
 
-    Serena used to be registered by default, so a prior ``headroom wrap``
-    persists a ``serena`` entry into the agent's MCP config; the agent then
-    keeps launching Serena on startup. Just *skipping* registration on a later
-    run leaves that stale entry in place — so this removes the entry Headroom
-    installed. A user-managed Serena (absent from our ledger) is reported but
-    left untouched. ``reason`` is surfaced in the message: ``--no-serena`` when
-    the user opted out, or a note that tokensave is now the primary compressor.
+    Serena is registered by default, so a prior ``headroom wrap`` persists a
+    ``serena`` entry into the agent's MCP config; the agent then keeps
+    launching Serena on startup. Just *skipping* registration on a later
+    ``--no-serena`` run leaves that stale entry in place — so the flag has to
+    remove the entry Headroom installed. A user-managed Serena (absent from
+    our ledger) is reported but left untouched.
     """
     if not registrar.detect():
         if verbose:
@@ -1055,12 +891,12 @@ def _disable_serena_mcp(
 
     if registrar.get_server("serena") is None:
         if verbose:
-            click.echo(f"  Skipping Serena MCP ({reason})")
+            click.echo("  Skipping Serena MCP (--no-serena)")
         return
 
     status = _remove_headroom_installed_serena_mcp(registrar)
     if status == "removed":
-        click.echo(f"  Removed previously-installed Serena MCP ({reason})")
+        click.echo("  Removed previously-installed Serena MCP (--no-serena)")
         click.echo(f"    restart {registrar.display_name} if it was already running")
     elif status == "not_headroom_owned":
         click.echo(
@@ -1073,219 +909,122 @@ def _disable_serena_mcp(
         )
 
 
-# =============================================================================
-# tokensave — primary coding-task compressor (Serena is the backup)
-# =============================================================================
-
-
-def _ensure_tokensave_binary(verbose: bool = False) -> Path | None:
-    """Resolve the tokensave binary, fetching the release asset if missing.
-
-    Returns the binary path, or ``None`` when tokensave is unavailable
-    (offline, unsupported platform, or download failure) — the caller then
-    falls back to Serena.
-    """
-    from headroom.graph.tokensave_installer import ensure_tokensave, get_tokensave_path
-
-    existing = get_tokensave_path()
-    if existing:
-        return existing
-
-    click.echo("  tokensave: fetching code-graph binary...")
-    path = ensure_tokensave()
-    if path:
-        click.echo(f"  tokensave: installed at {path}")
-    else:
-        click.echo(
-            "  tokensave: no prebuilt binary available for this platform "
-            "(try 'cargo install tokensave') — falling back to Serena"
-        )
-    return path
-
-
-def _index_tokensave_project(bin_path: Path, *, verbose: bool = False) -> None:
-    """Index the current project into the tokensave graph (non-fatal).
-
-    Runs ``tokensave init`` the first time (creates ``.tokensave/``), then
-    ``tokensave sync`` for incremental updates. tokensave also re-checks
-    staleness on demand, so a failure here is logged but never blocks the
-    wrap — the MCP server still indexes lazily on first query.
-    """
-    project_dir = Path.cwd()
-    subcommand = "sync" if (project_dir / ".tokensave").exists() else "init"
-    try:
-        result = run(
-            [str(bin_path), subcommand],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode == 0:
-            click.echo("  Code graph: indexed (tokensave)")
-        elif verbose:
-            click.echo(f"  Code graph: tokensave {subcommand} failed ({result.stderr[:100]})")
-    except subprocess.TimeoutExpired:
-        click.echo("  Code graph: tokensave indexing timed out (will complete on demand)")
-    except Exception as e:
-        if verbose:
-            click.echo(f"  Code graph: tokensave indexing skipped ({e})")
-
-
-def _setup_tokensave_mcp(registrar: Any, *, verbose: bool = False, force: bool = False) -> bool:
-    """Register tokensave MCP with the given agent (idempotent).
-
-    Returns ``True`` when tokensave is available and set up, ``False`` when the
-    binary is unavailable — the caller then falls back to Serena. Mirrors
-    :func:`_setup_serena_mcp`'s ledger-aware migration: a stale
-    Headroom-installed ``tokensave`` entry is force-updated to the current
-    spec, while a user-managed entry is left untouched.
-    """
-    from headroom.mcp_registry import build_tokensave_spec, format_result
-    from headroom.mcp_registry.base import RegisterStatus
-    from headroom.mcp_registry.ledger import headroom_installed_matching, record_install
-
-    if not registrar.detect():
-        if verbose:
-            click.echo(f"  tokensave MCP: {registrar.display_name} not detected — skipping")
-        return False
-
-    bin_path = _ensure_tokensave_binary(verbose=verbose)
-    if bin_path is None:
-        return False
-
-    # Warm the graph so the first query is instant (non-fatal).
-    _index_tokensave_project(bin_path, verbose=verbose)
-
-    spec = build_tokensave_spec(str(bin_path))
-    result = registrar.register_server(spec, force=force)
-
-    # Migrate a stale Headroom-installed entry (e.g. an older binary path or
-    # pinned version), mirroring the Serena migration path. Only force-update
-    # when the ledger proves Headroom installed the entry on disk.
-    if (
-        result.status == RegisterStatus.MISMATCH
-        and not force
-        and headroom_installed_matching(registrar.name, registrar.get_server("tokensave"))
-    ):
-        result = registrar.register_server(spec, force=True)
-        if result.status == RegisterStatus.REGISTERED:
-            click.echo("  tokensave MCP: migrated previously-installed entry to current spec")
-
-    if result.status == RegisterStatus.REGISTERED:
-        record_install(registrar.name, spec)
-
-    line = format_result(
-        registrar.name,
-        result,
-        label="tokensave MCP",
-        verbose=verbose,
-        overwrite_hint="update or remove the existing tokensave MCP entry, then rerun headroom wrap",
-        restart_hint=f"restart {registrar.display_name} if it was already running",
-    )
-    if line is not None:
-        click.echo(line)
-    return True
-
-
-def _remove_headroom_installed_tokensave_mcp(registrar: Any) -> str:
-    """Remove the tokensave MCP entry only if the ledger proves Headroom installed it."""
-    from headroom.mcp_registry.ledger import clear_install, headroom_installed_matching
-
-    current = registrar.get_server("tokensave")
-    if not headroom_installed_matching(registrar.name, current):
-        return "not_headroom_owned"
-    if registrar.unregister_server("tokensave"):
-        clear_install(registrar.name, "tokensave")
-        return "removed"
-    return "failed"
-
-
-def _disable_tokensave_mcp(registrar: Any, *, verbose: bool = False) -> None:
-    """Make ``--no-tokensave`` actively remove a Headroom-installed tokensave entry."""
-    if not registrar.detect():
-        if verbose:
-            click.echo(f"  tokensave MCP: {registrar.display_name} not detected — skipping")
-        return
-
-    if registrar.get_server("tokensave") is None:
-        if verbose:
-            click.echo("  Skipping tokensave MCP (--no-tokensave)")
-        return
-
-    status = _remove_headroom_installed_tokensave_mcp(registrar)
-    if status == "removed":
-        click.echo("  Removed previously-installed tokensave MCP (--no-tokensave)")
-        click.echo(f"    restart {registrar.display_name} if it was already running")
-    elif status == "not_headroom_owned":
-        click.echo(
-            "  tokensave MCP is present but user-managed — leaving it in place "
-            "(--no-tokensave only removes entries Headroom installed)"
-        )
-    else:  # "failed"
-        click.echo(
-            "  tokensave MCP: removal failed — remove the 'tokensave' entry "
-            "from your MCP config manually"
-        )
-
-
-def _setup_coding_compressor(registrar: Any, *, serena_context: str, **kwargs: Any) -> None:
-    """Set up the coding-task compressor: tokensave primary, Serena backup.
-
-    Policy (decided per the integration):
-
-    * ``no_tokensave`` — skip/disable tokensave entirely.
-    * tokensave is set up by default; on success it becomes the primary
-      compressor and any Headroom-installed Serena entry is removed.
-    * Serena is the backup: registered automatically when tokensave is
-      unavailable (unless ``no_serena``), or forced on with ``serena=True``.
-
-    ``kwargs`` carries the boolean flags ``serena``, ``no_serena``,
-    ``no_tokensave`` and the per-agent registrar ``force`` semantics.
-    """
-    serena = bool(kwargs.get("serena"))
-    no_serena = bool(kwargs.get("no_serena"))
-    no_tokensave = bool(kwargs.get("no_tokensave"))
-    force = bool(kwargs.get("force"))
-    verbose = bool(kwargs.get("verbose"))
-
-    tokensave_ok = False
-    if no_tokensave:
-        _disable_tokensave_mcp(registrar, verbose=verbose)
-    else:
-        tokensave_ok = _setup_tokensave_mcp(registrar, verbose=verbose, force=force)
-
-    if serena or (not tokensave_ok and not no_serena):
-        _setup_serena_mcp(registrar, context=serena_context, verbose=verbose, force=force)
-    else:
-        # tokensave is primary (or Serena was explicitly disabled): drop any
-        # Serena entry a prior wrap installed; user-managed entries are kept.
-        reason = (
-            "--no-serena" if no_serena else "tokensave is now the primary code-graph compressor"
-        )
-        _disable_serena_mcp(registrar, verbose=verbose, reason=reason)
-
-
 _CBM_MCP_SERVER_NAME = "codebase-memory-mcp"
 
 
-def _setup_code_graph(verbose: bool = False) -> bool:
-    """Ensure the tokensave code graph is set up and the project indexed.
+def _register_cbm_mcp_server(cbm_bin: str) -> None:
+    """Register codebase-memory-mcp as an MCP server in Claude Code.
 
-    tokensave is Headroom's primary code-graph compressor and is normally
-    installed by default (it builds a semantic knowledge graph the LLM can
-    query for call chains, definitions, and impact analysis instead of
-    reading whole files). ``--code-graph`` is kept for backward compatibility
-    and as an explicit "set up the graph and force an index now" switch, even
-    when tokensave registration was otherwise skipped.
-
-    Returns True if the graph is ready, False if tokensave is unavailable.
-    Earlier releases backed this flag with ``codebase-memory-mcp``; that
-    server is no longer installed, and ``headroom unwrap`` still cleans up any
-    legacy ``codebase-memory-mcp`` entry a prior wrap left behind.
+    Uses ``claude mcp add`` so the tools appear in ``/mcp`` automatically.
+    Idempotent — skips if already registered.
     """
-    from headroom.mcp_registry import ClaudeRegistrar
+    claude_cli = shutil.which("claude")
+    if not claude_cli:
+        return
 
-    return _setup_tokensave_mcp(ClaudeRegistrar(), verbose=verbose, force=True)
+    # Check if already registered
+    check = run(
+        [claude_cli, "mcp", "get", _CBM_MCP_SERVER_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode == 0:
+        return  # Already registered
+
+    result = run(
+        [claude_cli, "mcp", "add", _CBM_MCP_SERVER_NAME, "-s", "user", "--", cbm_bin],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        click.echo(f"  Code graph: registered {_CBM_MCP_SERVER_NAME} MCP server")
+    else:
+        pass  # Non-critical — tools won't appear in /mcp but graph still works
+
+
+def _setup_code_graph(verbose: bool = False) -> bool:
+    """Ensure codebase-memory-mcp is installed, registered as MCP server, and project is indexed.
+
+    codebase-memory-mcp builds a knowledge graph of the codebase using
+    tree-sitter, enabling the LLM to query code structure (call chains,
+    function definitions, impact analysis) instead of reading entire files.
+
+    Steps:
+    1. Download the binary if not already present.
+    2. Register as an MCP server in Claude Code (``claude mcp add``).
+    3. Index the current project (fast, idempotent).
+
+    With Claude Code's MCP Tool Search, the 14 graph tools add ~200 tokens
+    overhead per request (not the full ~1,915) — they're lazy-loaded.
+
+    Returns True if graph is ready, False if setup failed.
+    """
+    from headroom.graph.installer import ensure_cbm, get_cbm_path
+
+    cbm_path = get_cbm_path()
+    if not cbm_path:
+        click.echo("  Code graph: downloading codebase-memory-mcp...")
+        cbm_path = ensure_cbm()
+        if cbm_path:
+            click.echo(f"  Code graph: installed at {cbm_path}")
+        else:
+            click.echo("  Code graph: download failed — skipping")
+            return False
+
+    cbm_bin = str(cbm_path)
+
+    # Register as MCP server so tools appear in /mcp
+    _register_cbm_mcp_server(cbm_bin)
+
+    # Index current project (fast — ~1s for most repos, idempotent)
+    project_dir = str(Path.cwd())
+    try:
+        result = run(
+            [
+                cbm_bin,
+                "cli",
+                "index_repository",
+                json.dumps({"repo_path": project_dir, "mode": "fast"}),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            # Parse node/edge counts from output
+            for line in result.stdout.splitlines():
+                if '"nodes"' in line:
+                    try:
+                        # Parse the JSON response to extract node/edge counts
+                        import re
+
+                        m_nodes = re.search(r'"nodes":(\d+)', line)
+                        m_edges = re.search(r'"edges":(\d+)', line)
+                        if m_nodes and m_edges:
+                            nodes = int(m_nodes.group(1))
+                            edges = int(m_edges.group(1))
+                            click.echo(
+                                f"  Code graph: indexed ({nodes:,} symbols, "
+                                f"{edges:,} relationships)"
+                            )
+                        else:
+                            click.echo("  Code graph: indexed")
+                    except (ValueError, AttributeError):
+                        click.echo("  Code graph: indexed")
+                    return True
+            click.echo("  Code graph: indexed")
+            return True
+        else:
+            if verbose:
+                click.echo(f"  Code graph: indexing failed ({result.stderr[:100]})")
+            return False
+    except subprocess.TimeoutExpired:
+        click.echo("  Code graph: indexing timed out (will complete in background)")
+        return False
+    except Exception as e:
+        if verbose:
+            click.echo(f"  Code graph: setup failed ({e})")
+        return False
 
 
 # rtk instructions for tools without hook support (Codex, Cursor, Aider).
@@ -1444,20 +1183,6 @@ def _strip_codex_headroom_blocks(
 _REDIRECTABLE_KEYS: tuple[str, ...] = ("model_provider", "openai_base_url")
 
 
-def _strip_existing_codex_headroom_provider_table(content: str) -> str:
-    """Remove a pre-existing ``[model_providers.headroom]`` table before wrap."""
-    if "[model_providers.headroom]" not in content:
-        return content
-
-    import re  # local import to match surrounding helper convention
-
-    provider_table = re.compile(
-        r"(?ms)^[ \t]*\[model_providers\.headroom\][^\n]*\n.*?(?=^[ \t]*\[|\Z)"
-    )
-    content = provider_table.sub("", content)
-    return content.lstrip("\n").rstrip() + "\n" if content.strip() else ""
-
-
 def _redirect_existing_top_level_keys(content: str, port: int) -> str:
     """Rewrite user-defined top-level keys so wrap does not create duplicates.
 
@@ -1545,7 +1270,7 @@ def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) ->
     if not config_file.exists():
         return
     try:
-        content = _read_text(config_file)
+        content = config_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return
     if _codex_config_has_headroom_markers(content):
@@ -1718,11 +1443,10 @@ def _inject_codex_provider_config(port: int) -> None:
         _snapshot_codex_config_if_unwrapped(config_file, backup_file)
 
         if config_file.exists():
-            content = _read_text(config_file)
+            content = config_file.read_text(encoding="utf-8", errors="replace")
             # Remove any prior Headroom-managed blocks before re-injecting so
             # the operation is idempotent and supports port changes.
             content = _strip_codex_headroom_blocks(content)
-            content = _strip_existing_codex_headroom_provider_table(content)
 
             # Bare top-level keys must precede any [section] in TOML, and
             # TOML rejects duplicate top-level keys.  Rewrite any existing
@@ -1760,7 +1484,7 @@ def _inject_codex_provider_config(port: int) -> None:
                 f"\n{provider_section}"
             )
 
-        _write_text(config_file, content)
+        config_file.write_text(content, encoding="utf-8")
         click.echo(f"  Codex config: injected Headroom provider (WS + HTTP) into {config_file}")
         # Pull existing native threads into the headroom-provider menu so Codex's
         # history list stays whole once it routes through Headroom. Best-effort.
@@ -1792,7 +1516,7 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
 
     # Case 2: no backup, but config file exists and has markers — strip them.
     if config_file.exists():
-        original = _read_text(config_file)
+        original = config_file.read_text(encoding="utf-8", errors="replace")
         if _codex_config_has_headroom_markers(original):
             # Without a backup, only remove named MCP blocks when this file
             # also carries wrap-owned provider markers from a full wrap.
@@ -1815,7 +1539,7 @@ def _restore_codex_provider_config() -> tuple[str, Path]:
                 # so Codex falls back to its default config.
                 config_file.unlink()
                 return "removed", config_file
-            _write_text(config_file, cleaned)
+            config_file.write_text(cleaned, encoding="utf-8")
             return "cleaned", config_file
 
     # Nothing to undo.
@@ -1986,16 +1710,17 @@ def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
     Returns True if instructions were written.
     """
     if file_path.exists():
-        existing = _read_text(file_path)
+        existing = file_path.read_text(encoding="utf-8", errors="replace")
         if _RTK_MARKER in existing:
             if verbose:
                 click.echo(f"  rtk instructions already in {file_path.name}")
             return True
         # Append to existing file
-        _append_text(file_path, "\n\n" + RTK_INSTRUCTIONS_BLOCK)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + RTK_INSTRUCTIONS_BLOCK)
     else:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_text(file_path, RTK_INSTRUCTIONS_BLOCK)
+        file_path.write_text(RTK_INSTRUCTIONS_BLOCK, encoding="utf-8")
 
     click.echo(f"  rtk instructions injected into {file_path}")
     return True
@@ -2006,7 +1731,7 @@ def _remove_rtk_instructions(file_path: Path) -> bool:
     if not file_path.exists():
         return False
 
-    content = _read_text(file_path)
+    content = file_path.read_text(encoding="utf-8", errors="replace")
     end_marker = "<!-- /headroom:rtk-instructions -->"
     start = content.find(_RTK_MARKER)
     if start < 0:
@@ -2023,7 +1748,7 @@ def _remove_rtk_instructions(file_path: Path) -> bool:
         cleaned = cleaned.rstrip() + "\n"
 
     if cleaned:
-        _write_text(file_path, cleaned)
+        file_path.write_text(cleaned, encoding="utf-8")
     else:
         file_path.unlink()
     return True
@@ -2062,7 +1787,7 @@ def _inject_memory_mcp_config(user_id: str) -> None:
         _snapshot_codex_config_if_unwrapped(config_file, backup_file)
 
         if config_file.exists():
-            content = _read_text(config_file)
+            content = config_file.read_text(encoding="utf-8", errors="replace")
             if _MEMORY_MCP_MARKER in content:
                 start = content.index(_MEMORY_MCP_MARKER)
                 end = content.index(_MEMORY_MCP_END) + len(_MEMORY_MCP_END)
@@ -2072,7 +1797,7 @@ def _inject_memory_mcp_config(user_id: str) -> None:
         else:
             content = mcp_section
 
-        _write_text(config_file, content)
+        config_file.write_text(content, encoding="utf-8")
         click.echo(f"  Memory MCP: registered in {config_file}")
     except Exception as e:
         click.echo(f"  Warning: could not register memory MCP: {e}")
@@ -2096,13 +1821,14 @@ def _inject_memory_agents_md(file_path: Path) -> bool:
     )
 
     if file_path.exists():
-        existing = _read_text(file_path)
+        existing = file_path.read_text(encoding="utf-8", errors="replace")
         if _MEMORY_AGENTS_MARKER in existing:
             return True  # Already injected
-        _append_text(file_path, "\n\n" + memory_block)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write("\n\n" + memory_block)
     else:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_text(file_path, memory_block)
+        file_path.write_text(memory_block, encoding="utf-8")
 
     click.echo(f"  Memory guidance injected into {file_path.name}")
     return True
@@ -2184,7 +1910,7 @@ def _inject_continue_rtk_systemmessage(config_file: Path, verbose: bool = False)
     """
     if config_file.exists():
         try:
-            content = _read_text(config_file)
+            content = config_file.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             click.echo(f"  Warning: could not read {config_file}: {exc}")
             return False
@@ -2237,7 +1963,7 @@ def _inject_continue_rtk_systemmessage(config_file: Path, verbose: bool = False)
 
     if any_changed:
         config_file.parent.mkdir(parents=True, exist_ok=True)
-        _write_text(config_file, json.dumps(data, indent=2) + "\n")
+        config_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         click.echo(f"  rtk instructions injected into {config_file}")
     elif all_ok and verbose:
         # Idempotent re-run with no refusals — nothing to do.
@@ -2674,19 +2400,10 @@ def _ensure_proxy(
     region: str | None = None,
     openai_api_url: str | None = None,
     anthropic_api_url: str | None = None,
-    vertex_api_url: str | None = None,
-    clear_vertex_api_url: bool = False,
     copilot_api_token: str | None = None,
 ) -> subprocess.Popen | None:
     """Start or verify proxy. Returns process handle if we started it."""
     helpers = _live_wrap_module()
-    # --no-proxy reuses an already-running proxy, so backend/region/provider
-    # flags (which only apply when we start one) would be silently dropped.
-    if no_proxy and (backend or anyllm_provider or region):
-        click.echo(
-            "  Warning: --backend/--region/--anyllm-provider have no effect with --no-proxy "
-            "(reusing the existing proxy)."
-        )
     if not no_proxy:
         manifest = helpers._find_persistent_manifest(port)
         if manifest is not None:
@@ -2719,100 +2436,15 @@ def _ensure_proxy(
                         f"Persistent deployment '{manifest.profile}' on port {port} "
                         f"is running stale Headroom {running_version} and could not be restarted."
                     )
-                # Check if the running proxy has the features we need.
-                # Without this, a persistent deployment started for one use case
-                # (e.g. --backend anthropic) would be silently reused for another
-                # (e.g. --subscription --provider-type openai) causing auth failures.
-                running_config = helpers._proxy_health_config(health_payload)
-                if running_config is None:
-                    running_config = helpers._query_proxy_config(port)
-                if running_config is not None:
-                    missing = []
-                    if memory and not running_config.get("memory"):
-                        missing.append("memory")
-                    if learn and not running_config.get("learn"):
-                        missing.append("learn")
-                    if code_graph and not running_config.get("code_graph"):
-                        missing.append("code_graph")
-                    if openai_api_url:
-                        running_openai_url = _normalize_proxy_api_url(
-                            running_config.get("openai_api_url")
-                        )
-                        requested_openai_url = _normalize_proxy_api_url(openai_api_url)
-                        if running_openai_url != requested_openai_url:
-                            missing.append("openai-api-url")
-                    if not missing:
-                        click.echo(f"  Proxy already running on port {port}")
-                        click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
-                        return None
-                # Features mismatch or config unavailable — fall through to
-                # the non-persistent path which handles proxy restart.
-            else:
-                if helpers._recover_persistent_proxy(port):
-                    # If the caller requested feature-sensitive config (e.g.
-                    # openai_api_url for Copilot subscription), continue into
-                    # the shared running-proxy checks below so mismatch-driven
-                    # restart logic can run. For plain recover-only calls,
-                    # preserve the historical fast return.
-                    if not any((memory, learn, code_graph, openai_api_url)):
-                        return None
-                    if not helpers._check_proxy(port):
-                        return None
-
-                    # A freshly recovered persistent proxy may not expose
-                    # a full config payload yet. In feature-sensitive flows
-                    # (e.g. Copilot subscription), treat missing or mismatched
-                    # config as restart-required and refresh the persistent
-                    # deployment directly instead of silently reusing it.
-                    health_payload = helpers._query_proxy_health(port)
-                    running_config = helpers._proxy_health_config(health_payload)
-                    if running_config is None:
-                        running_config = helpers._query_proxy_config(port)
-
-                    if running_config is None:
-                        click.echo(
-                            f"  Recovered persistent deployment '{manifest.profile}' "
-                            "did not expose config; restarting with requested features..."
-                        )
-                        if helpers._restart_persistent_proxy(manifest, port):
-                            return None
-                        raise click.ClickException(
-                            f"Persistent deployment '{manifest.profile}' on port {port} "
-                            "could not be restarted after recovery."
-                        )
-
-                    missing = []
-                    if memory and not running_config.get("memory"):
-                        missing.append("memory")
-                    if learn and not running_config.get("learn"):
-                        missing.append("learn")
-                    if code_graph and not running_config.get("code_graph"):
-                        missing.append("code-graph")
-                    if openai_api_url:
-                        running_openai_url = _normalize_proxy_api_url(
-                            running_config.get("openai_api_url")
-                        )
-                        requested_openai_url = _normalize_proxy_api_url(openai_api_url)
-                        if running_openai_url != requested_openai_url:
-                            missing.append("openai-api-url")
-
-                    if missing:
-                        flags_str = ", ".join(f"--{f}" for f in missing)
-                        click.echo(
-                            f"  Recovered persistent deployment '{manifest.profile}' is missing: "
-                            f"{flags_str}; restarting..."
-                        )
-                        if helpers._restart_persistent_proxy(manifest, port):
-                            return None
-                        raise click.ClickException(
-                            f"Persistent deployment '{manifest.profile}' on port {port} "
-                            "could not be restarted with requested features."
-                        )
-                    return None
-                elif helpers._check_proxy(port):
-                    raise click.ClickException(
-                        f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
-                    )
+                click.echo(f"  Proxy already running on port {port}")
+                click.echo(f"  Dashboard:    http://127.0.0.1:{port}/dashboard")
+                return None
+            if helpers._recover_persistent_proxy(port):
+                return None
+            if helpers._check_proxy(port):
+                raise click.ClickException(
+                    f"Persistent deployment '{manifest.profile}' on port {port} is not healthy."
+                )
             click.echo(
                 f"  Warning: persistent deployment '{manifest.profile}' on port {port} "
                 "is stale; starting a fresh proxy instead."
@@ -2888,13 +2520,6 @@ def _ensure_proxy(
                     requested_openai_url = _normalize_proxy_api_url(openai_api_url)
                     if running_openai_url != requested_openai_url:
                         missing.append("openai-api-url")
-                if vertex_api_url or clear_vertex_api_url:
-                    running_vertex_url = _normalize_proxy_api_url(
-                        running_config.get("vertex_api_url")
-                    )
-                    requested_vertex_url = _normalize_proxy_api_url(vertex_api_url)
-                    if running_vertex_url != requested_vertex_url:
-                        missing.append("vertex-api-url")
 
                 if missing:
                     flags_str = ", ".join(
@@ -2968,8 +2593,6 @@ def _ensure_proxy(
                     region=region,
                     openai_api_url=openai_api_url,
                     anthropic_api_url=anthropic_api_url,
-                    vertex_api_url=vertex_api_url,
-                    clear_vertex_api_url=clear_vertex_api_url,
                     copilot_api_token=copilot_api_token,
                 ),
             )
@@ -2982,23 +2605,6 @@ def _ensure_proxy(
     else:
         if not helpers._check_proxy(port):
             click.echo(f"  Warning: No proxy detected on port {port}")
-        elif vertex_api_url or clear_vertex_api_url:
-            health_payload = helpers._query_proxy_health(port)
-            running_config = helpers._proxy_health_config(health_payload)
-            if running_config is None:
-                running_config = helpers._query_proxy_config(port)
-            running_vertex_url = (
-                _normalize_proxy_api_url(running_config.get("vertex_api_url"))
-                if running_config is not None
-                else None
-            )
-            requested_vertex_url = _normalize_proxy_api_url(vertex_api_url)
-            if running_vertex_url != requested_vertex_url:
-                click.echo(
-                    "  Warning: --no-proxy is set, but the running proxy does not "
-                    "advertise the requested Vertex target. Requests may still go "
-                    "to the proxy's existing Vertex upstream."
-                )
         return None
 
 
@@ -3050,7 +2656,7 @@ def _register_proxy_client(port: int) -> None:
         ident = _proc_identity(os.getpid())
         if ident is not None:
             payload["start_src"], payload["start_time"] = ident
-        _write_text(_client_marker_path(port), json.dumps(payload))
+        _client_marker_path(port).write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass
 
@@ -3080,7 +2686,7 @@ def _marker_pid_reused(marker: Path, pid: int) -> bool:
     mismatched source) returns ``False`` so a real client is never pruned.
     """
     try:
-        rec = json.loads(_read_text(marker))
+        rec = json.loads(marker.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return False
     src = rec.get("start_src")
@@ -3094,6 +2700,27 @@ def _marker_pid_reused(marker: Path, pid: int) -> bool:
     return abs(ident[1] - float(recorded)) > 1.0
 
 
+def _marker_pid(marker: Path) -> int | None:
+    """Resolve the live client PID recorded by ``marker``.
+
+    Legacy wrap markers use the PID as the filename stem. Newer non-wrapper
+    clients such as the OpenCode plugin use a prefixed filename and store the
+    PID in the JSON payload instead.
+    """
+    try:
+        return int(marker.stem)
+    except ValueError:
+        pass
+
+    try:
+        rec = json.loads(marker.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+
+    pid = rec.get("pid")
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
 def _live_proxy_clients(port: int, *, exclude_self: bool = True) -> list[int]:
     """Live wrap-client PIDs for ``port``, pruning stale markers as we go."""
     from headroom import paths as _paths
@@ -3104,9 +2731,8 @@ def _live_proxy_clients(port: int, *, exclude_self: bool = True) -> list[int]:
     me = os.getpid()
     live: list[int] = []
     for marker in d.glob("*.json"):
-        try:
-            pid = int(marker.stem)
-        except ValueError:
+        pid = _marker_pid(marker)
+        if pid is None:
             continue
         # Stale if the PID is gone, or recycled by an unrelated process.
         if not _pid_alive(pid) or _marker_pid_reused(marker, pid):
@@ -3458,9 +3084,7 @@ def unwrap() -> None:
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -3473,22 +3097,11 @@ def unwrap() -> None:
     is_flag=True,
     help="Skip headroom MCP server registration (compression markers will be unactionable)",
 )
-@click.option(
-    "--no-tokensave",
-    is_flag=True,
-    help="Skip the tokensave code-graph MCP server (primary coding-task compressor)",
-)
-@click.option(
-    "--serena",
-    is_flag=True,
-    help="Force the Serena MCP backup compressor on (registered automatically when "
-    "tokensave is unavailable)",
-)
-@click.option("--no-serena", is_flag=True, help="Never register the Serena backup compressor")
+@click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
 @click.option(
     "--code-graph",
     is_flag=True,
-    help="Force a tokensave code-graph index now (tokensave is the default compressor)",
+    help="Enable code graph indexing via codebase-memory-mcp (optional)",
 )
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option(
@@ -3538,8 +3151,6 @@ def claude(
     port: int,
     no_rtk: bool,
     no_mcp: bool,
-    no_tokensave: bool,
-    serena: bool,
     no_serena: bool,
     code_graph: bool,
     no_proxy: bool,
@@ -3565,12 +3176,10 @@ def claude(
         headroom wrap claude --memory           # With persistent memory
         headroom wrap claude --resume <id>      # Resume a session
         headroom wrap claude -- -p              # Claude in print mode
-        headroom wrap claude                    # tokensave code graph (primary)
-        headroom wrap claude --no-tokensave     # Skip tokensave; fall back to Serena
-        headroom wrap claude --serena           # Also register the Serena backup
+        headroom wrap claude --code-graph        # With code graph intelligence
         headroom wrap claude --no-context-tool  # Skip CLI context-tool setup
         headroom wrap claude --no-mcp           # Skip MCP retrieve tool registration
-        headroom wrap claude --no-serena        # Never register the Serena backup
+        headroom wrap claude --no-serena        # Skip Serena MCP registration
         headroom wrap claude --1m               # Preserve the 1M context window
     """
     if prepare_only:
@@ -3595,7 +3204,6 @@ def claude(
     proxy_holder: list[subprocess.Popen | None] = [None]
     _saved_base_url: list[str | None] = [None]  # previous settings.json value for restore
     _settings_foundry: list[bool] = [False]
-    _settings_vertex: list[bool] = [False]
     cleanup = _make_cleanup(proxy_holder, port)
     _register_proxy_client(port)
     signal.signal(signal.SIGINT, _ignore_child_sigint)
@@ -3670,8 +3278,6 @@ def claude(
         # location) using Claude Code's own ADC token — no API key, no creds held
         # by Headroom. This is the turnkey Vertex compression path.
         use_vertex = bool(os.environ.get("CLAUDE_CODE_USE_VERTEX"))
-        proxy_url = _claude_proxy_base_url(port)
-        vertex_upstream = _vertex_target_api_url_from_claude_env(proxy_url) if use_vertex else None
 
         proxy_holder[0] = _ensure_proxy(
             port,
@@ -3683,8 +3289,6 @@ def claude(
             backend=backend,
             region=region,
             anthropic_api_url=foundry_upstream,
-            vertex_api_url=vertex_upstream,
-            clear_vertex_api_url=use_vertex and vertex_upstream is None,
         )
         _push_runtime_env(port, no_proxy)
 
@@ -3705,21 +3309,19 @@ def claude(
         elif verbose:
             click.echo("  Skipping MCP retrieve tool (--no-mcp)")
 
-        # Coding-task compressor: tokensave primary, Serena backup.
-        from headroom.mcp_registry import ClaudeRegistrar
+        if not no_serena:
+            from headroom.mcp_registry import ClaudeRegistrar
 
-        _setup_coding_compressor(
-            ClaudeRegistrar(),
-            serena_context="claude-code",
-            serena=serena,
-            no_serena=no_serena,
-            no_tokensave=no_tokensave,
-            verbose=verbose,
-        )
+            _setup_serena_mcp(ClaudeRegistrar(), context="claude-code", verbose=verbose)
+        else:
+            from headroom.mcp_registry import ClaudeRegistrar
+
+            _disable_serena_mcp(ClaudeRegistrar(), verbose=verbose)
 
         if code_graph:
             _setup_code_graph(verbose=verbose)
 
+        proxy_url = _claude_proxy_base_url(port)
         click.echo()
         click.echo("  Launching Claude Code (API routed through Headroom)...")
         if use_vertex:
@@ -3762,18 +3364,10 @@ def claude(
         # Issue #951: write to settings.json so daemon-spawned conversation
         # workers (which read settings.json fresh rather than inheriting the
         # daemon's environment) also route through Headroom.
-        _settings_vertex[0] = bool(use_vertex)
-        _settings_foundry[0] = bool(foundry_upstream) and not _settings_vertex[0]
+        _settings_foundry[0] = bool(foundry_upstream)
         _saved_base_url[0] = _write_claude_wrap_base_url(
-            (
-                _foundry_proxy_url(proxy_url)
-                if _settings_foundry[0]
-                else env["ANTHROPIC_VERTEX_BASE_URL"]
-                if _settings_vertex[0]
-                else proxy_url
-            ),
+            _foundry_proxy_url(proxy_url) if _settings_foundry[0] else proxy_url,
             foundry_mode=_settings_foundry[0],
-            vertex_mode=_settings_vertex[0],
         )
 
         # Per-project savings attribution: tag every request with the launch
@@ -3813,11 +3407,7 @@ def claude(
         click.echo(f"  Error: {e}")
         raise SystemExit(1) from e
     finally:
-        _restore_claude_wrap_base_url(
-            _saved_base_url[0],
-            foundry_mode=_settings_foundry[0],
-            vertex_mode=_settings_vertex[0],
-        )
+        _restore_claude_wrap_base_url(_saved_base_url[0], foundry_mode=_settings_foundry[0])
         cleanup()
 
 
@@ -3827,9 +3417,7 @@ def claude(
 
 
 @unwrap.command("claude")
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
 @click.option("--keep-mcp", is_flag=True, help="Keep Headroom MCP registrations")
 @click.option("--keep-rtk", is_flag=True, help="Keep rtk Claude hooks")
@@ -3853,20 +3441,13 @@ def unwrap_claude(
         if registrar.detect():
             removed_headroom = registrar.unregister_server("headroom")
             removed_code_graph = registrar.unregister_server(_CBM_MCP_SERVER_NAME)
-            tokensave_status = _remove_headroom_installed_tokensave_mcp(registrar)
             serena_status = _remove_headroom_installed_serena_mcp(registrar)
             if removed_headroom:
                 click.echo("  Removed Headroom MCP retrieve tool from Claude.")
             else:
                 click.echo("  Headroom MCP retrieve tool was not registered in Claude.")
             if removed_code_graph:
-                click.echo("  Removed legacy codebase-memory-mcp code graph server from Claude.")
-            if tokensave_status == "removed":
-                click.echo("  Removed Headroom-installed tokensave MCP server from Claude.")
-            elif tokensave_status == "failed":
-                click.echo(
-                    "  tokensave MCP server matched Headroom ledger but could not be removed."
-                )
+                click.echo("  Removed code graph MCP server from Claude.")
             if serena_status == "removed":
                 click.echo("  Removed Headroom-installed Serena MCP server from Claude.")
             elif serena_status == "failed":
@@ -3886,7 +3467,6 @@ def unwrap_claude(
 
     _restore_claude_wrap_base_url(None)
     _restore_claude_wrap_base_url(None, foundry_mode=True)
-    _restore_claude_wrap_base_url(None, vertex_mode=True)
 
     click.echo()
     click.echo("✓ Claude is no longer durably wrapped by Headroom.")
@@ -3901,9 +3481,7 @@ def unwrap_claude(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4190,9 +3768,7 @@ def copilot(
 
 
 @unwrap.command("copilot")
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
 def unwrap_copilot(port: int, no_stop_proxy: bool) -> None:
     """Undo durable setup from ``headroom wrap copilot``."""
@@ -4212,9 +3788,7 @@ def unwrap_copilot(port: int, no_stop_proxy: bool) -> None:
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4227,22 +3801,11 @@ def unwrap_copilot(port: int, no_stop_proxy: bool) -> None:
     is_flag=True,
     help="Skip headroom MCP server registration (compression markers will be unactionable)",
 )
-@click.option(
-    "--no-tokensave",
-    is_flag=True,
-    help="Skip the tokensave code-graph MCP server (primary coding-task compressor)",
-)
-@click.option(
-    "--serena",
-    is_flag=True,
-    help="Force the Serena MCP backup compressor on (registered automatically when "
-    "tokensave is unavailable)",
-)
-@click.option("--no-serena", is_flag=True, help="Never register the Serena backup compressor")
+@click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
 @click.option(
     "--code-graph",
     is_flag=True,
-    help="Force a tokensave code-graph index now (tokensave is the default compressor)",
+    help="Enable code graph indexing via codebase-memory-mcp (optional)",
 )
 @click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.option(
@@ -4269,8 +3832,6 @@ def codex(
     port: int,
     no_rtk: bool,
     no_mcp: bool,
-    no_tokensave: bool,
-    serena: bool,
     no_serena: bool,
     code_graph: bool,
     no_proxy: bool,
@@ -4298,9 +3859,7 @@ def codex(
         headroom wrap codex -- "fix the bug"        # Pass prompt to codex
         headroom wrap codex --no-context-tool       # Skip CLI context-tool setup
         headroom wrap codex --no-mcp                # Skip MCP retrieve tool registration
-        headroom wrap codex --no-tokensave          # Skip tokensave; fall back to Serena
-        headroom wrap codex --serena                # Also register the Serena backup
-        headroom wrap codex --no-serena             # Never register the Serena backup
+        headroom wrap codex --no-serena             # Skip Serena MCP registration
         headroom wrap codex --port 9999             # Custom proxy port
         headroom wrap codex --backend anyllm --anyllm-provider groq
     """
@@ -4338,19 +3897,14 @@ def codex(
     elif verbose:
         click.echo("  Skipping MCP retrieve tool (--no-mcp)")
 
-    # Coding-task compressor: tokensave primary, Serena backup. Codex starts
-    # long-lived MCP subprocesses from config.toml, so force re-registration.
-    from headroom.mcp_registry import CodexRegistrar
+    if not no_serena:
+        from headroom.mcp_registry import CodexRegistrar
 
-    _setup_coding_compressor(
-        CodexRegistrar(),
-        serena_context="codex",
-        serena=serena,
-        no_serena=no_serena,
-        no_tokensave=no_tokensave,
-        verbose=verbose,
-        force=True,
-    )
+        _setup_serena_mcp(CodexRegistrar(), context="codex", verbose=verbose, force=True)
+    else:
+        from headroom.mcp_registry import CodexRegistrar
+
+        _disable_serena_mcp(CodexRegistrar(), verbose=verbose)
 
     # Setup memory MCP server for Codex (native tool integration)
     if memory:
@@ -4445,9 +3999,7 @@ def codex(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4549,9 +4101,7 @@ def aider(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4628,9 +4178,7 @@ def vibe(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4714,9 +4262,7 @@ def cursor(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4816,9 +4362,7 @@ def cline(
 
 
 @wrap.command("continue", context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -4940,9 +4484,7 @@ def continue_dev(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -5065,9 +4607,7 @@ def goose(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -5230,9 +4770,7 @@ def openhands(
     is_flag=True,
     help="Install by copying plugin path instead of using --link",
 )
-@click.option(
-    "--proxy-port", default=8787, type=click.IntRange(1, 65535), help="Headroom proxy port"
-)
+@click.option("--proxy-port", default=8787, type=int, help="Headroom proxy port")
 @click.option("--startup-timeout-ms", default=20000, type=int, help="Proxy startup timeout")
 @click.option(
     "--gateway-provider-id",
@@ -5446,9 +4984,7 @@ def openclaw(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
     "--no-rtk",
@@ -5540,10 +5076,7 @@ def opencode(
     if not no_serena:
         from headroom.mcp_registry import OpencodeRegistrar
 
-        # Serena ships no "opencode" context (only agent/codex/claude-code/ide/…);
-        # passing --context opencode crashes Serena on launch (#1549/#1572). Use
-        # the generic "agent" context, which OpenCode is.
-        _setup_serena_mcp(OpencodeRegistrar(), context="agent", verbose=verbose, force=True)
+        _setup_serena_mcp(OpencodeRegistrar(), context="opencode", verbose=verbose, force=True)
     else:
         from headroom.mcp_registry import OpencodeRegistrar
 
@@ -5563,6 +5096,13 @@ def opencode(
         inject_opencode_provider_config(port)
         return
 
+    try:
+        strip_opencode_runtime_plugin_config(_opencode_config_file)
+    except OSError as exc:
+        raise click.ClickException(
+            f"could not clean stale Headroom OpenCode plugin config at {_opencode_config_file}: {exc}"
+        ) from exc
+
     opencode_bin = shutil.which("opencode")
     if not opencode_bin:
         click.echo("Error: 'opencode' not found in PATH.")
@@ -5573,8 +5113,6 @@ def opencode(
         port, os.environ, project=_project_name_from_cwd(), include_mcp=not no_mcp
     )
 
-    # Inject Headroom provider into OpenCode config so traffic routes through proxy.
-    inject_opencode_provider_config(port)
     if memory:
         mem_dir = Path.cwd() / ".headroom"
         _inject_memory_mcp_config(
@@ -5613,9 +5151,7 @@ def _opencode_home_dir() -> Path:
 
 
 @unwrap.command("opencode")
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
 def unwrap_opencode(port: int, no_stop_proxy: bool) -> None:
     """Undo ``headroom wrap opencode`` edits to the active OpenCode config file.
@@ -5651,16 +5187,27 @@ def unwrap_opencode(port: int, no_stop_proxy: bool) -> None:
                 f"could not restore OpenCode config from backup: {exc}"
             ) from exc
     elif config_file.exists():
-        content = _read_text(config_file)
+        content = config_file.read_text(encoding="utf-8", errors="replace")
         if _PROVIDER_MARKER_START in content or _MCP_MARKER_START in content:
             cleaned = strip_opencode_headroom_blocks(content)
             if cleaned.strip():
-                _write_text(config_file, cleaned + "\n")
+                config_file.write_text(cleaned + "\n", encoding="utf-8")
                 click.echo(f"  Removed Headroom block from {config_file}; other content preserved.")
                 status = "cleaned"
             else:
                 config_file.unlink()
                 click.echo(f"  Removed {config_file} (contained only Headroom-written config).")
+                status = "removed"
+        elif strip_opencode_runtime_plugin_config(config_file):
+            if config_file.exists():
+                click.echo(
+                    f"  Removed persisted Headroom OpenCode plugin from {config_file}; other content preserved."
+                )
+                status = "cleaned"
+            else:
+                click.echo(
+                    f"  Removed {config_file} (contained only persisted Headroom plugin config)."
+                )
                 status = "removed"
         else:
             click.echo(f"  Nothing to undo: {config_file} has no Headroom wrap markers.")
@@ -5691,9 +5238,7 @@ def unwrap_opencode(port: int, no_stop_proxy: bool) -> None:
 
 
 @unwrap.command("openclaw")
-@click.option(
-    "--proxy-port", default=8787, type=click.IntRange(1, 65535), help="Headroom proxy port"
-)
+@click.option("--proxy-port", default=8787, type=int, help="Headroom proxy port")
 @click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
 @click.option("--no-restart", is_flag=True, help="Do not restart OpenClaw gateway at the end")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
@@ -5772,9 +5317,7 @@ def unwrap_openclaw(
 
 
 @unwrap.command("codex")
-@click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
-)
+@click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option("--no-stop-proxy", is_flag=True, help="Do not stop the local Headroom proxy")
 def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
     """Undo ``headroom wrap codex`` edits to the active Codex config file.
@@ -5821,21 +5364,15 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
             )
         click.echo(f"  Nothing to undo: {config_file} has no Headroom wrap markers.")
 
-    # tokensave and Serena are each written as their own [mcp_servers.<name>]
-    # table with Headroom markers, separate from the provider block handled
-    # above — a "cleaned" restore leaves them behind. Remove them explicitly
-    # (only if we installed them), mirroring unwrap_claude. Runs after the
-    # restore so a backup-restore that already dropped them is a safe no-op.
+    # Serena is written as its own [mcp_servers.serena] table with Headroom
+    # markers, separate from the provider block handled above — a "cleaned"
+    # restore leaves it behind. Remove it explicitly (only if we installed it),
+    # mirroring unwrap_claude. Runs after the restore so a backup-restore that
+    # already dropped Serena makes this a safe no-op.
     from headroom.mcp_registry import CodexRegistrar
 
     codex_registrar = CodexRegistrar()
     if codex_registrar.detect():
-        tokensave_status = _remove_headroom_installed_tokensave_mcp(codex_registrar)
-        if tokensave_status == "removed":
-            click.echo("  Removed Headroom-installed tokensave MCP server from Codex.")
-        elif tokensave_status == "failed":
-            click.echo("  tokensave MCP server matched Headroom ledger but could not be removed.")
-
         serena_status = _remove_headroom_installed_serena_mcp(codex_registrar)
         if serena_status == "removed":
             click.echo("  Removed Headroom-installed Serena MCP server from Codex.")

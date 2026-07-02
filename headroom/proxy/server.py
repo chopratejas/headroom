@@ -93,6 +93,11 @@ from headroom.observability import (
 )
 from headroom.offline import apply_offline_env, is_offline
 from headroom.pipeline import PipelineExtensionManager, PipelineStage
+from headroom.pricing.opencode_prices import (
+    OPENCODE_GO_SURFACE,
+    get_opencode_reference_pricing,
+    reference_pricing_metadata,
+)
 from headroom.providers.proxy_routes import register_provider_routes
 from headroom.providers.registry import (
     DEFAULT_ANTHROPIC_API_URL,
@@ -1889,6 +1894,60 @@ def _register_memory_components(proxy: HeadroomProxy, tracker: MemoryTracker) ->
     # registered when the memory system is initialized with specific backends.
 
 
+def _history_opencode_pricing_reference(history: dict[str, Any]) -> dict[str, Any]:
+    """Build display-only OpenCode reference prices for historical rollups."""
+
+    models: set[str] = set()
+
+    def _float(value: object) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    series = history.get("series")
+    if isinstance(series, dict):
+        for buckets in series.values():
+            if not isinstance(buckets, list):
+                continue
+            for bucket in buckets:
+                if not isinstance(bucket, dict):
+                    continue
+                by_model = bucket.get("by_model")
+                if not isinstance(by_model, dict):
+                    continue
+                for model, entry in by_model.items():
+                    if not isinstance(model, str) or not isinstance(entry, dict):
+                        continue
+                    # Older checkpoints can have useful token deltas but zero
+                    # dollars because OpenCode pricing was not known then.
+                    if (
+                        _float(entry.get("compression_savings_usd_delta")) == 0
+                        and _float(entry.get("total_input_cost_usd_delta")) == 0
+                    ):
+                        models.add(model)
+
+    refs: dict[str, Any] = {}
+    for model in sorted(models):
+        pricing = get_opencode_reference_pricing(model, OPENCODE_GO_SURFACE)
+        if pricing is None:
+            continue
+        metadata = reference_pricing_metadata(model, OPENCODE_GO_SURFACE, pricing)
+        metadata["historical_reference_only"] = True
+        metadata["historical_reference_assumption"] = OPENCODE_GO_SURFACE
+        refs[model] = metadata
+
+    return {
+        "has_reference_prices": bool(refs),
+        "models": refs,
+        "note": (
+            "Historical OpenCode reference prices are display-only estimates "
+            "for checkpoints recorded before route-specific pricing metadata "
+            "existed. They do not represent budget billing."
+        ),
+    }
+
+
 def _request_is_loopback(request: Request) -> bool:
     """Return True iff the caller is on loopback by *both* peer IP and Host header.
 
@@ -2169,8 +2228,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "upstream": _component_health(
                 enabled=os.environ.get("HEADROOM_SKIP_UPSTREAM_CHECK", "").strip() != "1",
                 ready=bool(_upstream_check_cache["ok"]),
+                provider=_upstream_check_cache["provider"],
                 url=_upstream_check_cache["url"],
                 error=_upstream_check_cache["error"],
+                scope="configured_provider_target",
+                dynamic_request_base_url_header="x-headroom-base-url",
+                dynamic_request_base_urls_probed=False,
             ),
         }
 
@@ -2279,6 +2342,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "gemini_api_url": config.gemini_api_url,
                 "cloudcode_api_url": config.cloudcode_api_url,
                 "vertex_api_url": config.vertex_api_url,
+                "provider_api_targets": _json_ready(proxy.provider_runtime.api_targets),
                 "savings_profile": config.savings_profile,
                 "target_ratio": effective_target_ratio,
                 "target_savings_percent": (
@@ -2337,15 +2401,24 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         "expires_at": 0.0,
         "ok": True,
         "error": None,
+        "provider": "anthropic",
         "url": None,
     }
     _upstream_check_lock = asyncio.Lock()
 
-    def _upstream_target_url() -> str:
-        """Return the primary upstream base URL to probe."""
+    def _upstream_probe_target() -> tuple[str, str]:
+        """Return the configured provider target used by the static readiness probe.
+
+        OpenAI-compatible integrations such as OpenCode Go/Zen may forward to a
+        per-request upstream from ``x-headroom-base-url``.  That dynamic target
+        is intentionally not probed here because /readyz has no request context;
+        the health payload labels this as a configured-provider probe instead.
+        """
         # Use the resolved API target from the provider runtime so we respect
         # any overrides set by ProxyConfig.anthropic_api_url / env vars.
-        return proxy.provider_runtime.api_targets.anthropic
+        if config.backend == "anthropic":
+            return "anthropic", proxy.provider_runtime.api_targets.anthropic
+        return "openai", proxy.provider_runtime.api_targets.openai
 
     async def _check_upstream() -> None:
         """Probe the upstream API endpoint and update the cached result.
@@ -2370,7 +2443,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             # Re-check inside the lock to handle concurrent waiters.
             if time.monotonic() < _upstream_check_cache["expires_at"]:
                 return
-            url = _upstream_target_url()
+            provider, url = _upstream_probe_target()
+            _upstream_check_cache["provider"] = provider
             _upstream_check_cache["url"] = url
             client = proxy.http_client
             if client is None:
@@ -2616,19 +2690,23 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     _install_extensions(app, config, enabled=getattr(config, "proxy_extensions", None))
 
     # Health & Metrics
+    def _live_payload() -> dict[str, Any]:
+        return {
+            "service": "headroom-proxy",
+            "status": "healthy",
+            "alive": True,
+            "version": __version__,
+            "timestamp": _iso_utc_now(),
+            "uptime_seconds": _uptime_seconds(),
+        }
+
     @app.get("/livez")
     async def livez():
-        return JSONResponse(
-            status_code=200,
-            content={
-                "service": "headroom-proxy",
-                "status": "healthy",
-                "alive": True,
-                "version": __version__,
-                "timestamp": _iso_utc_now(),
-                "uptime_seconds": _uptime_seconds(),
-            },
-        )
+        return JSONResponse(status_code=200, content=_live_payload())
+
+    @app.get("/healthz")
+    async def healthz():
+        return JSONResponse(status_code=200, content=_live_payload())
 
     @app.get("/readyz")
     async def readyz():
@@ -3404,6 +3482,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             )
 
         history = proxy.metrics.savings_tracker.history_response(history_mode=history_mode)
+        history["pricing_reference"] = await asyncio.to_thread(
+            _history_opencode_pricing_reference,
+            history,
+        )
 
         # Augment with live RTK/cli-filtering lifetime stats so the Historical
         # tab can display them.  These live in the context-tool's own stats file
