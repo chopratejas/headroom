@@ -157,6 +157,21 @@ class ContextTracker:
         if not self.config.enabled:
             return
 
+        # Refuse to track under an empty workspace_key: the workspace
+        # filter in ``analyze_query`` short-circuits on empty, so any
+        # entry tracked under "" would be permanently un-matchable —
+        # it would just consume an LRU slot and eventually evict a
+        # legitimately-scoped entry. The Anthropic handler already
+        # gates this upstream, but defending here too keeps the
+        # invariant local to the tracker.
+        if not workspace_key:
+            logger.debug(
+                "CCR Tracker: refusing to track hash=%s under empty workspace_key "
+                "(would be un-matchable; check the handler's workspace gate)",
+                hash_key,
+            )
+            return
+
         context = CompressedContext(
             hash_key=hash_key,
             turn_number=turn_number,

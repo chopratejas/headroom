@@ -14,6 +14,7 @@ calls ``search_memories`` on the backend it received (not on the legacy
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -316,3 +317,146 @@ def test_unresolved_project_returns_no_context(tmp_path: Path) -> None:
         )
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Tool-call methods also fail-closed on the unresolved-project sentinel.
+# Original PR #501 only gated `search_and_format_context` (the inject path).
+# Tool methods (memory_save / memory_search / memory_update / memory_delete /
+# memory_list) ran on the sentinel scope unchecked — so a save call in an
+# unresolved-project session would still land in `global_db_path`, just
+# unreadable from the same-mode session (search short-circuits). The moment
+# anyone opts into `unresolved_project_fallback="global"` or runs
+# `--memory-storage=global`, those orphaned writes become readable.
+#
+# This PR extends the gate to all 5 tool methods.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def project_mode_handler(tmp_path: Path) -> MemoryHandler:
+    """Handler in PROJECT mode with the default `empty` fallback."""
+    cfg = MemoryConfig(
+        enabled=True,
+        backend="local",
+        db_path=str(tmp_path / "memory.db"),
+        inject_context=True,
+        mode=MemoryMode.AUTO_TAIL,
+        storage_mode=sr_mod.MemoryStorageMode.PROJECT,
+    )
+    return MemoryHandler(cfg, agent_type="test")
+
+
+def _unresolved_ctx() -> Any:
+    """RequestContext with no project-resolution signal."""
+    return sr_mod.RequestContext(
+        headers={},
+        system_prompt="You are helpful.",  # No <env> cwd: block.
+        base_user_id="alice",
+    )
+
+
+def test_save_fails_closed_under_unresolved_project(
+    project_mode_handler: MemoryHandler,
+) -> None:
+    """memory_save returns status=skipped instead of writing to global pool."""
+
+    async def run() -> None:
+        await project_mode_handler._ensure_initialized()
+        result_str = await project_mode_handler._execute_save(
+            {"content": "Note that should NOT be saved"},
+            "alice",
+            "anthropic",
+            request_context=_unresolved_ctx(),
+        )
+        result = json.loads(result_str)
+        assert result["status"] == "skipped"
+        assert "project unresolved" in result["reason"]
+        # No backend should have received this content. _FakeBackend tracks
+        # saved_contents per instance; verify none contain our test string.
+        leaked = [
+            b for b in _FakeBackend.instances if "Note that should NOT" in str(b.saved_contents)
+        ]
+        assert not leaked, (
+            f"save leaked into {len(leaked)} backend(s) despite sentinel scope — "
+            "the fail-closed gate is supposed to refuse writes to global_db_path"
+        )
+
+    asyncio.run(run())
+
+
+def test_search_tool_fails_closed_under_unresolved_project(
+    project_mode_handler: MemoryHandler,
+) -> None:
+    """memory_search tool call returns skipped (distinct from inject-path None)."""
+
+    async def run() -> None:
+        await project_mode_handler._ensure_initialized()
+        # Seed backends so search WOULD return something if the gate is off.
+        for backend in _FakeBackend.instances:
+            backend.search_results = [
+                SimpleNamespace(
+                    memory=SimpleNamespace(id="leak-1", content="leaked", metadata={}),
+                    score=0.99,
+                    related_entities=[],
+                )
+            ]
+        result_str = await project_mode_handler._execute_search(
+            {"query": "anything"},
+            "alice",
+            request_context=_unresolved_ctx(),
+        )
+        result = json.loads(result_str)
+        assert result["status"] == "skipped"
+        # Important: NOT {"status": "found", "memories": [...]} even though
+        # backends had seeded results.
+        assert "memories" not in result
+
+
+def test_update_fails_closed_under_unresolved_project(
+    project_mode_handler: MemoryHandler,
+) -> None:
+    """memory_update tool call returns skipped without mutating anything."""
+
+    async def run() -> None:
+        await project_mode_handler._ensure_initialized()
+        result_str = await project_mode_handler._execute_update(
+            {"memory_id": "some-id", "new_content": "rewritten"},
+            "alice",
+            "anthropic",
+            request_context=_unresolved_ctx(),
+        )
+        result = json.loads(result_str)
+        assert result["status"] == "skipped"
+
+
+def test_delete_fails_closed_under_unresolved_project(
+    project_mode_handler: MemoryHandler,
+) -> None:
+    """memory_delete tool call returns skipped without removing anything."""
+
+    async def run() -> None:
+        await project_mode_handler._ensure_initialized()
+        result_str = await project_mode_handler._execute_delete(
+            {"memory_id": "some-id"},
+            "alice",
+            request_context=_unresolved_ctx(),
+        )
+        result = json.loads(result_str)
+        assert result["status"] == "skipped"
+
+
+def test_list_fails_closed_under_unresolved_project(
+    project_mode_handler: MemoryHandler,
+) -> None:
+    """memory_list tool call returns skipped without enumerating anything."""
+
+    async def run() -> None:
+        await project_mode_handler._ensure_initialized()
+        result_str = await project_mode_handler._execute_list(
+            {"limit": 10},
+            "alice",
+            request_context=_unresolved_ctx(),
+        )
+        result = json.loads(result_str)
+        assert result["status"] == "skipped"

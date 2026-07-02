@@ -269,7 +269,10 @@ def test_router_invalid_unresolved_fallback_raises(
         global_db_path=tmp_path / "memory.db",
         max_open_backends=4,
         backend_config_template=LocalBackendConfig(db_path=str(tmp_path / "memory.db")),
-        unresolved_project_fallback="nonsense_value",
+        # Bypass the Literal["empty", "global"] type to verify the
+        # runtime ValueError still fires for dynamic / non-typed
+        # config-loading paths.
+        unresolved_project_fallback="nonsense_value",  # type: ignore[arg-type]
     )
     router = BackendRouter(cfg)
 

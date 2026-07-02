@@ -832,3 +832,43 @@ def test_resolve_ccr_workspace_malformed_request_returns_empty() -> None:
     key, label = AnthropicHandlerMixin._resolve_ccr_workspace(request, body)
     assert key == ""
     assert label is None
+
+
+def test_resolve_ccr_workspace_uses_project_root_override(tmp_path) -> None:
+    """CLI/config-level `project_root_override` resolves to its basename.
+
+    Pre-this-PR the helper hardcoded `project_root_override=None`, so CCR
+    could resolve to a different project_key than memory whenever memory's
+    CLI override was set. This test pins the new behavior: when no
+    header signal is present but the override is provided, the override
+    drives the resolution (matching memory's tier 3).
+    """
+    project_dir = tmp_path / "my-pinned-project"
+    project_dir.mkdir()
+
+    request = _fake_request({})
+    body = {}
+    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(
+        request,
+        body,
+        project_root_override=str(project_dir),
+    )
+    assert label == "my-pinned-project"
+    assert key.startswith("my-pinned-project-")
+
+
+def test_resolve_ccr_workspace_explicit_header_beats_override() -> None:
+    """Tier 1 (x-headroom-project-id) wins over tier 3 (project_root_override).
+
+    Mirror the resolver's documented tier order so CCR's behavior is
+    legible and consistent with memory's resolver.
+    """
+    request = _fake_request({"x-headroom-project-id": "explicit-priority"})
+    body = {}
+    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(
+        request,
+        body,
+        project_root_override="/some/other/path/that-should-be-ignored",
+    )
+    assert label == "explicit-priority"
+    assert key == "explicit-priority"

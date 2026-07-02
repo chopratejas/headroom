@@ -926,3 +926,54 @@ class TestWorkspaceScoping:
         # read, not purging on write — workspace A could come back and use
         # them again within the age window).
         assert len(tracker.get_tracked_hashes()) == 5
+
+
+# ---------------------------------------------------------------------------
+# Defensive: track_compression refuses empty workspace_key at the entry
+# point so a future caller that bypasses the handler's upstream gate can't
+# silently create un-matchable entries that LRU-evict legitimate ones.
+# ---------------------------------------------------------------------------
+
+
+class TestTrackCompressionRefusesEmptyWorkspace:
+    def test_track_with_empty_workspace_does_not_record_entry(self):
+        config = ContextTrackerConfig()
+        tracker = ContextTracker(config)
+        tracker.track_compression(
+            hash_key="hash-empty-ws",
+            turn_number=1,
+            tool_name="Read",
+            original_count=10,
+            compressed_count=2,
+            workspace_key="",
+            sample_content="some content",
+        )
+        assert tracker.get_stats()["tracked_contexts"] == 0, (
+            "track_compression with empty workspace_key must noop — an entry "
+            "tracked under '' would be un-matchable in analyze_query (which "
+            "fail-closes on empty workspace) and would just waste an LRU slot."
+        )
+
+    def test_track_with_real_workspace_after_empty_still_records(self):
+        """An empty-workspace call must not poison subsequent valid calls."""
+        config = ContextTrackerConfig()
+        tracker = ContextTracker(config)
+        tracker.track_compression(
+            hash_key="hash-1",
+            turn_number=1,
+            tool_name="Read",
+            original_count=10,
+            compressed_count=2,
+            workspace_key="",
+            sample_content="ignored",
+        )
+        tracker.track_compression(
+            hash_key="hash-2",
+            turn_number=2,
+            tool_name="Read",
+            original_count=20,
+            compressed_count=3,
+            workspace_key="ws-a",
+            sample_content="kept",
+        )
+        assert tracker.get_stats()["tracked_contexts"] == 1

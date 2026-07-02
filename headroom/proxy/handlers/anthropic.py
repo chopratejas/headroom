@@ -45,14 +45,26 @@ class AnthropicHandlerMixin:
     def _resolve_ccr_workspace(
         request: Any,
         body: Any,
+        project_root_override: str | None = None,
     ) -> tuple[str, str | None]:
         """Resolve (workspace_key, workspace_label) for CCR scoping.
 
         Uses the same ``ProjectResolver`` the memory subsystem uses
-        (``headroom/memory/storage_router.py``) so CCR and memory always
-        agree on which project a request belongs to. Tier order matches:
-        ``x-headroom-project-id`` → ``x-headroom-cwd`` → CLI override →
-        ``cwd:`` line in the system prompt.
+        (``headroom/memory/storage_router.py``) so CCR and memory agree
+        on which project a request belongs to. Tier order matches:
+        ``x-headroom-project-id`` → ``x-headroom-cwd`` →
+        ``project_root_override`` (typically from the CLI/memory config)
+        → ``cwd:`` line in the system prompt.
+
+        Args:
+            request: FastAPI request (for headers).
+            body: Parsed request body (for system prompt extraction).
+            project_root_override: Optional CLI/config-level override.
+                Callers should pass ``self.memory_handler.config
+                .project_root_override or None`` so CCR and memory
+                resolve to the same project key. Previously hardcoded
+                to ``None``, which let the two subsystems disagree
+                when the CLI override was set.
 
         Returns:
             ``(workspace_key, workspace_label)``. If no signal yields a
@@ -81,7 +93,7 @@ class AnthropicHandlerMixin:
                 headers=dict(request.headers),
                 system_prompt=_extract_sys_prompt(body),
                 base_user_id=request.headers.get("x-headroom-user-id", ""),
-                project_root_override=None,
+                project_root_override=project_root_override,
             )
             ident = ProjectResolver().resolve(ctx)
         except Exception as exc:  # noqa: BLE001
@@ -1583,7 +1595,20 @@ class AnthropicHandlerMixin:
                 # `headroom/ccr/context_tracker.py` module docstring for
                 # the 2026-05-26 leak report (Python from tamag0
                 # injected into a daphni-rails Ruby session).
-                ccr_workspace_key, ccr_workspace_label = self._resolve_ccr_workspace(request, body)
+                # Mirror memory's RequestContext construction at the
+                # earlier memory-injection block: pass the same CLI/
+                # config-level project_root_override so CCR and memory
+                # agree on which project_key a request resolves to.
+                ccr_project_root_override = (
+                    getattr(self.memory_handler.config, "project_root_override", "") or None
+                    if self.memory_handler
+                    else None
+                )
+                ccr_workspace_key, ccr_workspace_label = self._resolve_ccr_workspace(
+                    request,
+                    body,
+                    project_root_override=ccr_project_root_override,
+                )
 
                 if injector.has_compressed_content:
                     # Track compression in context tracker for multi-turn awareness.

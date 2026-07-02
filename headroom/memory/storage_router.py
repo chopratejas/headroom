@@ -32,7 +32,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from headroom.memory.backends.local import LocalBackend, LocalBackendConfig
 
@@ -134,7 +134,10 @@ class BackendRouterConfig:
     global_db_path: Path
     max_open_backends: int = 16
     backend_config_template: LocalBackendConfig = field(default_factory=LocalBackendConfig)
-    unresolved_project_fallback: str = "empty"
+    # Typed as Literal so mypy catches typos at compile time; the runtime
+    # ValueError below is defence-in-depth for non-typed call sites
+    # (e.g. dynamic config loaders).
+    unresolved_project_fallback: Literal["empty", "global"] = "empty"
 
 
 class ProjectResolver:
@@ -142,8 +145,8 @@ class ProjectResolver:
 
     Looks at request signals in priority order and returns ``None`` when
     no signal yields a project. The router uses that ``None`` to apply
-    the configured fallback (today: ``GLOBAL`` per the user's choice in
-    the bug-fix design discussion).
+    the configured ``BackendRouterConfig.unresolved_project_fallback``
+    (default: ``"empty"`` — fail-closed; ``"global"`` is opt-in legacy).
     """
 
     def resolve(self, ctx: RequestContext) -> tuple[str, str] | None:

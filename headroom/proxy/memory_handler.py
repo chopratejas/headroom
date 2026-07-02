@@ -655,6 +655,53 @@ class MemoryHandler:
         return self._backend, scope, composed
 
     @staticmethod
+    def _scope_is_unresolved_project(scope: ResolvedScope | None) -> bool:
+        """Return True for the fail-closed sentinel produced by the router.
+
+        The sentinel is ``mode=PROJECT`` + ``project_key=None``, emitted by
+        ``BackendRouter._resolve_scope`` when running in PROJECT mode,
+        ``unresolved_project_fallback="empty"``, and no resolver tier
+        produced an identity. Every memory tool method (save/search/
+        update/delete/list) and the auto-injection path gate on this so
+        we never read/write through the GLOBAL-pool path that surfaced
+        the 2026-05-26 TAM-550 cross-thread instruction misread.
+        """
+        return (
+            scope is not None
+            and scope.mode is MemoryStorageMode.PROJECT
+            and scope.project_key is None
+        )
+
+    @staticmethod
+    def _unresolved_project_skip_response(
+        op: str, effective_user_id: str, scope: ResolvedScope | None
+    ) -> str:
+        """Structured ``status=skipped`` payload + log for a gated tool call.
+
+        Tool methods (unlike the inject path) MUST return SOMETHING to
+        the model — silent no-ops would leave the model thinking the
+        operation succeeded. The model can read this status and tell
+        the user why the operation didn't run.
+        """
+        logger.info(
+            "event=memory_%s_skipped reason=project_unresolved user_id=%s scope_display=%s",
+            op,
+            effective_user_id,
+            scope.display_name if scope else "<none>",
+        )
+        return json.dumps(
+            {
+                "status": "skipped",
+                "reason": (
+                    "project unresolved (PROJECT mode + "
+                    "unresolved_project_fallback=empty); set x-headroom-cwd "
+                    "or x-headroom-project-id header to enable memory ops "
+                    "for this request"
+                ),
+            }
+        )
+
+    @staticmethod
     def _format_memory_block_header(scope: ResolvedScope | None) -> str:
         """Workspace / scope provenance header for the injected memory block.
 
@@ -745,25 +792,15 @@ class MemoryHandler:
 
         backend, scope, effective_user_id = self._resolve_for_request(user_id, request_context)
 
-        # Fail-closed when the router was unable to resolve a project in
-        # PROJECT mode and `unresolved_project_fallback="empty"` (the
-        # default after the 2026-05-26 incident). The sentinel signal is
-        # `mode=PROJECT` + `project_key=None`: project mode was requested
-        # but no x-headroom-project-id / x-headroom-cwd / system-prompt
-        # cwd: was available, so we have no idea which project this
-        # request belongs to. Returning None here skips injection
-        # entirely — better than pooling into GLOBAL and surfacing
-        # memories from unrelated past sessions (the TAM-550 imperative-
-        # misread bug).
-        if (
-            scope is not None
-            and scope.mode is MemoryStorageMode.PROJECT
-            and scope.project_key is None
-        ):
+        # Fail-closed on the unresolved-project sentinel. The inject
+        # path returns None (silent skip) — there is no tool-call
+        # response for the model to read a structured status from. See
+        # ``_scope_is_unresolved_project`` for sentinel semantics.
+        if self._scope_is_unresolved_project(scope):
             logger.info(
                 "event=memory_inject_skipped reason=project_unresolved user_id=%s scope_display=%s",
                 effective_user_id,
-                scope.display_name,
+                scope.display_name if scope else "<none>",
             )
             return None
 
@@ -1188,6 +1225,15 @@ your responses, not to drive new actions."""
 
         backend, scope, effective_user_id = self._resolve_for_request(user_id, request_context)
 
+        # Fail-closed: refuse to write into the GLOBAL pool when the
+        # router couldn't resolve a project (sentinel scope). The
+        # search/inject paths are already gated; without this gate the
+        # save path leaves a write surface — entries here would
+        # become readable to anyone running `--memory-storage=global`
+        # or with `unresolved_project_fallback="global"` opted in.
+        if self._scope_is_unresolved_project(scope):
+            return self._unresolved_project_skip_response("save", effective_user_id, scope)
+
         # Agent provenance metadata. Workspace lineage is recorded on
         # the memory itself so cross-project leaks (if any ever
         # reappear) are forensically attributable.
@@ -1329,7 +1375,9 @@ your responses, not to drive new actions."""
         include_related = input_data.get("include_related", True)
         entities_filter = input_data.get("entities")
 
-        backend, _scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        backend, scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        if self._scope_is_unresolved_project(scope):
+            return self._unresolved_project_skip_response("search", effective_user_id, scope)
 
         results = await backend.search_memories(
             query=query,
@@ -1385,7 +1433,9 @@ your responses, not to drive new actions."""
             "reason": reason,
         }
 
-        backend, _scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        backend, scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        if self._scope_is_unresolved_project(scope):
+            return self._unresolved_project_skip_response("update", effective_user_id, scope)
 
         # Check if backend has update_memory method
         if hasattr(backend, "update_memory"):
@@ -1445,7 +1495,9 @@ your responses, not to drive new actions."""
         if not memory_id:
             return json.dumps({"status": "error", "error": "memory_id is required"})
 
-        backend, _scope, _effective = self._resolve_for_request(user_id, request_context)
+        backend, scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        if self._scope_is_unresolved_project(scope):
+            return self._unresolved_project_skip_response("delete", effective_user_id, scope)
         deleted = await backend.delete_memory(memory_id)
 
         return json.dumps(
@@ -1483,7 +1535,9 @@ your responses, not to drive new actions."""
         if not self._backend:
             return json.dumps({"status": "error", "error": "Memory backend not initialized"})
 
-        backend, _scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        backend, scope, effective_user_id = self._resolve_for_request(user_id, request_context)
+        if self._scope_is_unresolved_project(scope):
+            return self._unresolved_project_skip_response("list", effective_user_id, scope)
 
         # Prefer a native list_memories if the backend has one (LocalBackend
         # does); fall back to a recency-keyed search when not available.
