@@ -663,7 +663,7 @@ class HeadroomProxy(
         router_config = ContentRouterConfig(
             enable_code_aware=config.code_aware_enabled,
             prefer_code_aware_for_code=_get_env_bool(
-                "HEADROOM_PREFER_CODE_AWARE_FOR_CODE", False
+                "HEADROOM_PREFER_CODE_AWARE_FOR_CODE", True
             ),
             tool_profiles=config.tool_profiles,
             read_lifecycle=ReadLifecycleConfig(enabled=config.read_lifecycle),
