@@ -116,10 +116,10 @@ def classify_auth_mode(headers: Mapping[str, Any] | Any) -> AuthMode:
     1. **Subscription UA prefix** → :data:`AuthMode.SUBSCRIPTION`.
        The CLI's own auth-mode wins over the bearer token shape it
        happens to be carrying — a Claude Code session uses a
-       ``sk-ant-oat-*`` token but is a subscription client, not OAuth.
-    2. **``Authorization: Bearer sk-ant-oat-*``** → :data:`AuthMode.OAUTH`
+       ``sk-ant-oat*`` token but is a subscription client, not OAuth.
+    2. **``Authorization: Bearer sk-ant-oat*``** → :data:`AuthMode.OAUTH`
        (Claude Pro / Max OAuth). Checked before the broader ``sk-``
-       PAYG rule because ``sk-ant-oat-`` shares the ``sk-`` prefix.
+       PAYG rule because ``sk-ant-oat`` shares the ``sk-`` prefix.
     3. **``Authorization: Bearer sk-ant-api*`` or ``Bearer sk-*``** →
        :data:`AuthMode.PAYG` (Anthropic / OpenAI API key).
     4. **``Authorization: Bearer <jwt>``** (3 dot-separated segments)
@@ -151,9 +151,13 @@ def classify_auth_mode(headers: Mapping[str, Any] | Any) -> AuthMode:
 
     if auth.startswith("Bearer "):
         token = auth[len("Bearer ") :]
-        # Order matters: `sk-ant-oat-*` shares a prefix with
+        # Order matters: `sk-ant-oat*` shares a prefix with
         # `sk-ant-api*` only at `sk-ant-`, so check OAuth first.
-        if token.startswith("sk-ant-oat-"):
+        # Real Anthropic OAuth access tokens are `sk-ant-oat01-...`
+        # (a version number, no dash after `oat`), so match on the
+        # dash-less `sk-ant-oat` prefix — matching on `sk-ant-oat-`
+        # missed every real token and let it fall through to PAYG.
+        if token.startswith("sk-ant-oat"):
             return AuthMode.OAUTH
         if token.startswith("sk-ant-api") or token.startswith("sk-"):
             return AuthMode.PAYG
