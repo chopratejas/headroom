@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 LITELLM_AVAILABLE = importlib.util.find_spec("litellm") is not None
 litellm: Any | None = None
+_UNKNOWN_PRICE_MODELS: set[str] = set()
 
 
 def _get_litellm_module() -> Any | None:
@@ -39,6 +40,39 @@ def _get_litellm_module() -> Any | None:
 
     litellm = imported_litellm
     return litellm
+
+
+def _has_litellm_pricing_entry(litellm_module: Any, model: str) -> bool:
+    """Return true when LiteLLM has direct or obvious prefixed pricing."""
+    model_cost = getattr(litellm_module, "model_cost", {}) or {}
+    if not isinstance(model_cost, dict):
+        return True
+    if model in model_cost:
+        return True
+
+    try:
+        from headroom.pricing import litellm_pricing
+
+        if model in getattr(litellm_pricing, "_MODEL_ALIASES", {}):
+            return True
+    except Exception:
+        pass
+
+    prefixes = {
+        "claude-": "anthropic/",
+        "gpt-": "openai/",
+        "o1-": "openai/",
+        "o3-": "openai/",
+        "o4-": "openai/",
+        "gemini-": "google/",
+        "minimax-": "minimax/",
+        "deepseek-": "deepseek/",
+    }
+    model_lower = model.lower()
+    for pattern, prefix in prefixes.items():
+        if model_lower.startswith(pattern):
+            return f"{prefix}{model}" in model_cost
+    return False
 
 
 logger = logging.getLogger("headroom.proxy")
@@ -660,6 +694,13 @@ class CostTracker:
             logger.warning("LiteLLM not available - cannot calculate costs")
             return None
 
+        if model in _UNKNOWN_PRICE_MODELS:
+            return None
+        if not _has_litellm_pricing_entry(litellm, model):
+            _UNKNOWN_PRICE_MODELS.add(model)
+            logger.debug("No LiteLLM pricing available for model %s", model)
+            return None
+
         try:
             from headroom.pricing.litellm_pricing import resolve_litellm_model
 
@@ -679,7 +720,8 @@ class CostTracker:
             return float(total_cost) if total_cost > 0 else None
 
         except Exception as e:
-            logger.warning(f"Failed to get pricing for model {model}: {e}")
+            _UNKNOWN_PRICE_MODELS.add(model)
+            logger.debug("Failed to get pricing for model %s: %s", model, e)
             return None
 
     def _prune_old_costs(self):

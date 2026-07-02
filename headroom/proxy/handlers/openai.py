@@ -53,7 +53,6 @@ from headroom.proxy.auth_mode import (
 )
 from headroom.proxy.compression_decision import CompressionDecision
 from headroom.proxy.cost import _summarize_transforms, header_safe_transforms
-from headroom.proxy.handlers._debug_dump import _debug_dump_mode, _redact_debug_value
 from headroom.proxy.outcome import RequestOutcome
 from headroom.proxy.project_context import classify_project, set_current_project
 
@@ -69,11 +68,6 @@ _OPENAI_RESPONSES_UNIT_EXECUTOR_LOCK = threading.RLock()
 _OPENAI_RESPONSES_UNIT_EXECUTOR: ThreadPoolExecutor | None = None
 _WS_ALLOWED_ORIGINS_ENV = "HEADROOM_WS_ORIGINS"
 _CORS_ALLOWED_ORIGINS_ENV = "HEADROOM_CORS_ORIGINS"
-_CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
-_OPENAI_CHAT_COMPLETIONS_PATH = "/chat/completions"
-_OPENAI_RESPONSES_PATH = "/responses"
-_OPENAI_ORIGINAL_PATH_HEADER = "x-headroom-original-path"
-_OPENAI_BASE_URL_HEADER = "x-headroom-base-url"
 
 
 def _header_get(headers: dict[str, str], name: str) -> str | None:
@@ -83,51 +77,6 @@ def _header_get(headers: dict[str, str], name: str) -> str | None:
         if key.lower() == lowered:
             return value
     return None
-
-
-def _resolve_openai_handler_path(
-    request_headers: dict[str, str],
-    *,
-    handler_path: str,
-) -> str:
-    raw_path = _header_get(request_headers, _OPENAI_ORIGINAL_PATH_HEADER)
-    upstream_path = raw_path.strip() if raw_path is not None else None
-
-    default_path = f"/v1{handler_path}"
-    if upstream_path is None:
-        return default_path
-
-    if not upstream_path.startswith("/") or upstream_path.startswith("//"):
-        return default_path
-
-    parsed = urlparse(upstream_path)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        return default_path
-
-    if not parsed.path.endswith(handler_path):
-        return f"/v1{handler_path}"
-
-    return parsed.path
-
-
-def _resolve_openai_upstream_base(request_headers: dict[str, str]) -> str | None:
-    raw_base_url = _header_get(request_headers, _OPENAI_BASE_URL_HEADER)
-    if raw_base_url is None:
-        return None
-
-    normalized = _normalize_origin(raw_base_url)
-    if normalized is None:
-        return None
-    if urlparse(normalized).scheme not in {"http", "https"}:
-        return None
-    return normalized
-
-
-def _append_request_query(url: str, query: str) -> str:
-    if not query:
-        return url
-    separator = "&" if "?" in url else "?"
-    return f"{url}{separator}{query}"
 
 
 def _normalize_origin(origin: str) -> str | None:
@@ -742,6 +691,54 @@ def _prefers_http1_passthrough(base_url: str) -> bool:
     """
     host = (urlparse(base_url).hostname or "").lower()
     return host == "chatgpt.com" or host.endswith(".chatgpt.com")
+
+
+def _resolve_openai_upstream_base_url(headers: dict[str, str], default_base_url: str) -> str:
+    """Resolve an OpenAI-compatible upstream base URL for this request.
+
+    Native OpenAI routes historically pinned to ``OPENAI_API_URL`` and ignored
+    ``x-headroom-base-url``. OpenCode provider-preserving routing for
+    OpenAI-compatible providers needs that override to survive on the native
+    path too, not only the generic passthrough catch-all.
+    """
+    base_url = headers.get("x-headroom-base-url", "").strip() or default_base_url.strip()
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        return normalized[:-3]
+    return normalized
+
+
+def _resolve_openai_upstream_url(
+    headers: dict[str, str],
+    default_base_url: str,
+    fallback_path: str,
+    query: str = "",
+) -> str:
+    """Resolve an OpenAI-compatible upstream URL from Headroom routing hints.
+
+    OpenCode's transport shim normalizes provider requests to Headroom's native
+    ``/v1`` routes, then sends the provider's original path in
+    ``x-headroom-original-path``. Preserve that original path when the custom
+    base URL is valid; otherwise fall back to the canonical OpenAI path.
+    """
+    base_url = _resolve_openai_upstream_base_url(headers, default_base_url)
+    parsed_base = urlparse(base_url)
+    original_path = headers.get("x-headroom-original-path", "").strip()
+
+    if parsed_base.scheme in {"http", "https"} and parsed_base.netloc and original_path:
+        parsed_path = urlparse(original_path)
+        if (
+            original_path.startswith("/")
+            and not parsed_path.scheme
+            and not parsed_path.netloc
+            and not parsed_path.query
+            and not parsed_path.fragment
+        ):
+            url = build_copilot_upstream_url(base_url, original_path)
+            return f"{url}?{query}" if query else url
+
+    url = build_copilot_upstream_url(base_url, fallback_path)
+    return f"{url}?{query}" if query else url
 
 
 class OpenAIHandlerMixin:
@@ -1838,39 +1835,9 @@ class OpenAIHandlerMixin:
                     detail=f"Rate limited. Retry after {wait_seconds:.1f}s",
                 )
 
-        # Snapshot cache-key fields ONCE here (pre-upstream), reused verbatim
-        # at the cache.set site below — re-reading body at set risks a mutated
-        # body (e.g. tools reassigned) and a key mismatch (#327). OpenAI's
-        # system prompt lives inside `messages` (already in the key), so it is
-        # not folded separately. Fold in the response-shaping fields the request
-        # forwards — else two requests with identical messages but a different
-        # reasoning_effort / response_format / sampling config collide and the
-        # second caller is served a response made under other semantics (#1473
-        # review). Transport/metadata fields (stream, store, user, service_tier)
-        # and the deprecated functions API are intentionally excluded.
-        cache_key_fields = {
-            "tools": body.get("tools"),
-            "tool_choice": body.get("tool_choice"),
-            "response_format": body.get("response_format"),
-            "parallel_tool_calls": body.get("parallel_tool_calls"),
-            "temperature": body.get("temperature"),
-            "top_p": body.get("top_p"),
-            "max_tokens": body.get("max_tokens") or body.get("max_completion_tokens"),
-            "stop": body.get("stop"),
-            "seed": body.get("seed"),
-            "presence_penalty": body.get("presence_penalty"),
-            "frequency_penalty": body.get("frequency_penalty"),
-            "logit_bias": body.get("logit_bias"),
-            "n": body.get("n"),
-            "logprobs": body.get("logprobs"),
-            "top_logprobs": body.get("top_logprobs"),
-            "reasoning_effort": body.get("reasoning_effort"),
-            "verbosity": body.get("verbosity"),
-            "modalities": body.get("modalities"),
-        }
         # Check cache
         if self.cache and not stream:
-            cached = await self.cache.get(messages, model, **cache_key_fields)
+            cached = await self.cache.get(messages, model)
             if cached:
                 self.pipeline_extensions.emit(
                     PipelineStage.INPUT_CACHED,
@@ -2577,19 +2544,12 @@ class OpenAIHandlerMixin:
                 )
 
         # Direct OpenAI API (no backend configured)
-        upstream_base_url = _resolve_openai_upstream_base(request.headers)
-        handler_path = (
-            _resolve_openai_handler_path(
-                request.headers, handler_path=_OPENAI_CHAT_COMPLETIONS_PATH
-            )
-            if upstream_base_url is not None
-            else "/v1/chat/completions"
+        url = _resolve_openai_upstream_url(
+            dict(request.headers.items()),
+            self.OPENAI_API_URL,
+            "/v1/chat/completions",
+            request.url.query,
         )
-        url = build_copilot_upstream_url(
-            upstream_base_url or self.OPENAI_API_URL,
-            handler_path,
-        )
-        url = _append_request_query(url, request.url.query)
 
         try:
             if stream:
@@ -2683,75 +2643,57 @@ class OpenAIHandlerMixin:
                         f"stream={stream}"
                     )
 
-                    # Diagnostic dump — OFF by default (can contain cleartext
-                    # prompt/tool/system content). Opt in via HEADROOM_DEBUG_DUMP
-                    # (=1 redacted, =full with content); never in stateless mode.
-                    dump_mode = _debug_dump_mode(self.config)
-                    if dump_mode != "off":
-                        try:
-                            from headroom import paths as _hr_paths
+                    try:
+                        from headroom import paths as _hr_paths
 
-                            debug_dir = _hr_paths.debug_400_dir()
-                            debug_dir.mkdir(parents=True, exist_ok=True)
-                            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                            debug_file = debug_dir / f"{ts}_{request_id}.json"
+                        debug_dir = _hr_paths.debug_400_dir()
+                        debug_dir.mkdir(parents=True, exist_ok=True)
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        debug_file = debug_dir / f"{ts}_{request_id}.json"
 
-                            safe_headers = {}
-                            for k, v in headers.items():
-                                if k.lower() in ("x-api-key", "authorization"):
-                                    safe_headers[k] = v[:12] + "..." if v else ""
-                                else:
-                                    safe_headers[k] = v
+                        safe_headers = {}
+                        for k, v in headers.items():
+                            if k.lower() in ("x-api-key", "authorization"):
+                                safe_headers[k] = v[:12] + "..." if v else ""
+                            else:
+                                safe_headers[k] = v
 
-                            redact = dump_mode == "redacted"
-                            messages_sent = body.get("messages")
-                            original_dump: Any = (
+                        debug_payload = {
+                            "request_id": request_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "status_code": response.status_code,
+                            "error_response": err_body,
+                            "model": model,
+                            "stream": stream,
+                            "headers": safe_headers,
+                            "compression": {
+                                "was_compressed": bool(transforms_applied),
+                                "transforms": transforms_applied,
+                                "original_tokens": original_tokens,
+                                "optimized_tokens": optimized_tokens,
+                                "tokens_saved": tokens_saved,
+                                "compression_failed": _compression_failed,
+                            },
+                            "tools_sent": body.get("tools"),
+                            "tool_count": len(body.get("tools") or []),
+                            "original_tool_count": len(_original_tools or []),
+                            "messages_sent": body.get("messages"),
+                            "message_count": len(body.get("messages", [])),
+                            "original_messages": (
                                 original_messages
                                 if original_messages is not body.get("messages")
                                 else "__same_as_sent__"
-                            )
-                            tools_sent = body.get("tools")
-                            system_prompt = body.get("system")
-                            if redact:
-                                messages_sent = _redact_debug_value(messages_sent)
-                                if original_dump != "__same_as_sent__":
-                                    original_dump = _redact_debug_value(original_dump)
-                                tools_sent = _redact_debug_value(tools_sent)
-                                system_prompt = _redact_debug_value(system_prompt)
+                            ),
+                            "original_message_count": len(original_messages),
+                            "system_prompt": body.get("system"),
+                        }
 
-                            debug_payload = {
-                                "request_id": request_id,
-                                "timestamp": datetime.now().isoformat(),
-                                "dump_mode": dump_mode,
-                                "status_code": response.status_code,
-                                "error_response": err_body,
-                                "model": model,
-                                "stream": stream,
-                                "headers": safe_headers,
-                                "compression": {
-                                    "was_compressed": bool(transforms_applied),
-                                    "transforms": transforms_applied,
-                                    "original_tokens": original_tokens,
-                                    "optimized_tokens": optimized_tokens,
-                                    "tokens_saved": tokens_saved,
-                                    "compression_failed": _compression_failed,
-                                },
-                                "tools_sent": tools_sent,
-                                "tool_count": len(body.get("tools") or []),
-                                "original_tool_count": len(_original_tools or []),
-                                "messages_sent": messages_sent,
-                                "message_count": len(body.get("messages", [])),
-                                "original_messages": original_dump,
-                                "original_message_count": len(original_messages),
-                                "system_prompt": system_prompt,
-                            }
+                        with open(debug_file, "w") as f:
+                            json.dump(debug_payload, f, indent=2, default=str)
 
-                            with open(debug_file, "w") as f:
-                                json.dump(debug_payload, f, indent=2, default=str)
-
-                            logger.warning(f"[{request_id}] Debug dump ({dump_mode}): {debug_file}")
-                        except Exception as dump_err:
-                            logger.error(f"[{request_id}] Failed to write debug dump: {dump_err}")
+                        logger.warning(f"[{request_id}] Full debug dump: {debug_file}")
+                    except Exception as dump_err:
+                        logger.error(f"[{request_id}] Failed to write debug dump: {dump_err}")
 
                 total_latency = (time.time() - start_time) * 1000
 
@@ -2848,7 +2790,6 @@ class OpenAIHandlerMixin:
                         response.content,
                         dict(response.headers),
                         tokens_saved,
-                        **cache_key_fields,
                     )
 
                 # Capture Codex rate-limit window data from response headers
@@ -2965,8 +2906,7 @@ class OpenAIHandlerMixin:
 
         from headroom.proxy.helpers import (
             MAX_REQUEST_BODY_SIZE,
-            BodyMutationTracker,
-            read_request_json_with_bytes,
+            _read_request_json,
         )
         from headroom.tokenizers import get_tokenizer
         from headroom.utils import extract_user_query
@@ -2998,7 +2938,7 @@ class OpenAIHandlerMixin:
 
         # Parse request
         try:
-            body, original_body_bytes = await read_request_json_with_bytes(request)
+            body = await _read_request_json(request)
         except (json.JSONDecodeError, ValueError) as e:
             return JSONResponse(
                 status_code=400,
@@ -3013,7 +2953,6 @@ class OpenAIHandlerMixin:
 
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
-        body_mutation_tracker = BodyMutationTracker()
         _bypass = self._headroom_bypass_enabled(request.headers)
         if _bypass:
             logger.info(
@@ -3054,10 +2993,6 @@ class OpenAIHandlerMixin:
         headers = dict(request.headers.items())
         headers.pop("host", None)
         headers.pop("content-length", None)
-        # The parsed request body has already been content-decoded. Remove
-        # entity headers that described the client-to-proxy wire body.
-        headers.pop("content-encoding", None)
-        headers.pop("transfer-encoding", None)
         # Strip accept-encoding so httpx negotiates its own encoding.
         # Cloudflare Workers forward "br, zstd" which OpenAI may honor;
         # if httpx lacks brotli support the response body is undecipherable → 502.
@@ -3244,7 +3179,6 @@ class OpenAIHandlerMixin:
                                     if current_input
                                     else memory_context
                                 )
-                                body_mutation_tracker.mark_mutated("responses_memory_context")
                                 log_memory_injection(
                                     request_id=request_id,
                                     session_id=None,
@@ -3258,7 +3192,6 @@ class OpenAIHandlerMixin:
                                 )
                                 if bytes_appended > 0:
                                     body["input"] = new_input
-                                    body_mutation_tracker.mark_mutated("responses_memory_context")
                                     log_memory_injection(
                                         request_id=request_id,
                                         session_id=None,
@@ -3323,14 +3256,12 @@ class OpenAIHandlerMixin:
                 )
                 if mem_tools_injected:
                     body["tools"] = resp_tools
-                    body_mutation_tracker.mark_mutated("responses_memory_tools")
                     logger.info(f"[{request_id}] Memory: Injected memory tools (openai/responses)")
 
                     if _ensure_responses_store_for_memory_tools(
                         body,
                         memory_tools_injected=True,
                     ):
-                        body_mutation_tracker.mark_mutated("responses_memory_store")
                         logger.info(
                             f"[{request_id}] Memory: forced store=true for Responses memory tool continuation"
                         )
@@ -3359,17 +3290,12 @@ class OpenAIHandlerMixin:
         if is_chatgpt_auth:
             url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            upstream_base_url = _resolve_openai_upstream_base(request.headers)
-            handler_path = (
-                _resolve_openai_handler_path(request.headers, handler_path=_OPENAI_RESPONSES_PATH)
-                if upstream_base_url is not None
-                else "/v1/responses"
+            url = _resolve_openai_upstream_url(
+                dict(request.headers.items()),
+                self.OPENAI_API_URL,
+                "/v1/responses",
+                request.url.query,
             )
-            url = build_copilot_upstream_url(
-                upstream_base_url or self.OPENAI_API_URL,
-                handler_path,
-            )
-            url = _append_request_query(url, request.url.query)
 
         # The standalone Rust proxy has native /v1/responses item handling,
         # but the default CLI runtime is this Python proxy. Compress the
@@ -3396,7 +3322,6 @@ class OpenAIHandlerMixin:
                 )
                 attempted_input_tokens = int(_attempted_tokens)
                 if _modified:
-                    body_mutation_tracker.mark_mutated("responses_compression")
                     tokens_saved = int(_tokens_saved)
                     optimized_tokens = max(0, original_tokens - tokens_saved)
                     transforms_applied = [*_transforms, *list(transforms_applied)]
@@ -3522,25 +3447,11 @@ class OpenAIHandlerMixin:
                     optimization_latency,
                     memory_user_id=memory_user_id,
                     memory_request_ctx=memory_request_ctx,
-                    original_body_bytes=original_body_bytes,
-                    body_mutated=body_mutation_tracker.mutated,
-                    mutation_reasons=body_mutation_tracker.reasons,
                     waste_signals=waste_signals_dict,
                 )
             else:
                 headers = await apply_copilot_api_auth(headers, url=url)
-                response = await self._retry_request(
-                    "POST",
-                    url,
-                    headers,
-                    body,
-                    original_body_bytes=original_body_bytes,
-                    body_mutated=body_mutation_tracker.mutated,
-                    mutation_reasons=body_mutation_tracker.reasons,
-                    request_id=request_id,
-                    forwarder_name="openai_responses",
-                    path_for_log=url,
-                )
+                response = await self._retry_request("POST", url, headers, body)
                 _response_body_for_debug: Any = None
                 _response_raw_for_debug: str | None = None
                 try:
@@ -3860,6 +3771,7 @@ class OpenAIHandlerMixin:
             headers=ws_headers,
             metadata={"path": _ws_path},
         )
+        upstream_base_url = _resolve_openai_upstream_base_url(ws_headers, self.OPENAI_API_URL)
         # Extract per-request tags from headers up front so the
         # session-end RequestLog can attach them. `_extract_tags` is
         # the same helper the HTTP handlers use; on a WebSocket the
@@ -3920,12 +3832,6 @@ class OpenAIHandlerMixin:
         )
 
         upstream_headers, is_chatgpt_auth = _resolve_codex_routing_headers(upstream_headers)
-        # OpenAI rejects newer Codex models when this client-only lite header leaks upstream.
-        upstream_headers = {
-            key: value
-            for key, value in upstream_headers.items()
-            if key.lower() != _CODEX_RESPONSES_LITE_HEADER
-        }
         _lower_headers = {k.lower(): v for k, v in upstream_headers.items()}
 
         # Build upstream WebSocket URL based on auth mode
@@ -3937,7 +3843,7 @@ class OpenAIHandlerMixin:
             )
         else:
             # API key auth → route to configured OpenAI API URL
-            base = self.OPENAI_API_URL
+            base = upstream_base_url
             ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
             upstream_url = build_copilot_upstream_url(ws_base, "/v1/responses")
 
@@ -5740,7 +5646,12 @@ class OpenAIHandlerMixin:
                     f"falling back to HTTP POST streaming"
                 )
                 await self._ws_http_fallback(
-                    websocket, body, first_msg_raw, upstream_headers, request_id
+                    websocket,
+                    body,
+                    first_msg_raw,
+                    upstream_headers,
+                    request_id,
+                    upstream_base_url,
                 )
 
             # ── WS session-end metric + RequestLog ──────────────────
@@ -6003,6 +5914,7 @@ class OpenAIHandlerMixin:
         first_msg_raw: str,
         upstream_headers: dict[str, str],
         request_id: str,
+        upstream_base_url: str | None = None,
     ) -> None:
         """Fall back to HTTP POST streaming when upstream WS fails.
 
@@ -6016,7 +5928,10 @@ class OpenAIHandlerMixin:
         if "chatgpt-account-id" in _lower:
             http_url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-            http_url = build_copilot_upstream_url(self.OPENAI_API_URL, "/v1/responses")
+            base_url = _resolve_openai_upstream_base_url(
+                {"x-headroom-base-url": upstream_base_url or ""}, self.OPENAI_API_URL
+            )
+            http_url = build_copilot_upstream_url(base_url, "/v1/responses")
 
         # Build HTTP body from the WS response.create payload.
         # WS messages use {"type": "response.create", "response": {...}} wrapper.
@@ -6298,18 +6213,10 @@ class OpenAIHandlerMixin:
             if protect_analysis_context is not None:
                 pipeline_kwargs["protect_analysis_context"] = bool(protect_analysis_context)
 
-            # Offload the CPU-bound pipeline to the bounded compression executor
-            # (mirrors the request handlers above). Running apply() inline blocked
-            # the single event loop on a large payload, so even GET /health stalled
-            # until it finished (#718). The executor also enforces a timeout so a
-            # too-large body fails fast instead of hanging forever.
-            result = await self._run_compression_in_executor(
-                lambda: self.openai_pipeline.apply(
-                    messages=messages,
-                    model=model,
-                    **pipeline_kwargs,
-                ),
-                timeout=COMPRESSION_TIMEOUT_SECONDS,
+            result = self.openai_pipeline.apply(
+                messages=messages,
+                model=model,
+                **pipeline_kwargs,
             )
 
             return JSONResponse(
@@ -6327,23 +6234,6 @@ class OpenAIHandlerMixin:
                     "transforms_summary": result.transforms_summary,
                     "ccr_hashes": result.markers_inserted,
                 }
-            )
-        except TimeoutError:
-            logger.warning(
-                "Compression timed out after %.0fs (payload too large)",
-                COMPRESSION_TIMEOUT_SECONDS,
-            )
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "error": {
-                        "type": "compression_timeout",
-                        "message": (
-                            "Compression exceeded "
-                            f"{COMPRESSION_TIMEOUT_SECONDS:.0f}s; payload too large."
-                        ),
-                    }
-                },
             )
         except Exception as e:
             logger.exception("Compression failed: %s", e)
