@@ -25,7 +25,7 @@ vi.mock("../src/tools/headroom-retrieve.js", () => ({
   createHeadroomRetrieveTool: mocked.createHeadroomRetrieveTool,
 }));
 
-import headroomPlugin from "../src/plugin/index.js";
+import plugin from "../src/plugin/index.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -131,7 +131,7 @@ describe("headroomPlugin runtime routing", () => {
       },
     };
 
-    headroomPlugin(api);
+    plugin.register(api);
     await Promise.resolve();
 
     // With no active or configured proxy URL, initial routing defers without
@@ -204,7 +204,7 @@ describe("headroomPlugin runtime routing", () => {
       }),
     };
 
-    headroomPlugin(api);
+    plugin.register(api);
     await Promise.resolve();
 
     await gatewayHandlers.get("gateway_start")?.();
@@ -247,7 +247,7 @@ describe("headroomPlugin runtime routing", () => {
       }),
     };
 
-    headroomPlugin(api);
+    plugin.register(api);
     await gatewayHandlers.get("gateway_start")?.();
 
     // Configured proxyUrl is probe-gated before provider mutation.
@@ -290,7 +290,7 @@ describe("headroomPlugin runtime routing", () => {
       }),
     };
 
-    headroomPlugin(api);
+    plugin.register(api);
     await Promise.resolve();
     await Promise.resolve();
     await gatewayHandlers.get("gateway_start")?.();
@@ -336,7 +336,7 @@ describe("headroomPlugin runtime routing", () => {
       }),
     };
 
-    headroomPlugin(api);
+    plugin.register(api);
     await gatewayHandlers.get("gateway_start")?.();
 
     expect(api.config.models.providers.anthropic).toEqual({
@@ -373,7 +373,7 @@ describe("headroomPlugin runtime routing", () => {
       on: vi.fn(),
     };
 
-    headroomPlugin(api);
+    plugin.register(api);
     const [toolFactory] = api.registerTool.mock.calls[0];
     const tool = toolFactory({});
 

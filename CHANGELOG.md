@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- **openclaw:** harden headroom plugin integrations and fix defaults: prevent unhandled promise rejections on background proxy startup failure, ensure correct default base URLs for Anthropic, Google, and OpenRouter, add IPv6 loopback hostname (`[::1]`) support to local proxy checks, guard tool call parser against missing function definitions, and guard retrieve tool against null/undefined arguments.
 - Content detection no longer crashes the proxy on text containing an
   orphaned `+++ ` target line with no preceding `--- ` source line (common in
   `set -x` xtrace output and partial diffs). The bundled `unidiff` 0.4.0 parser

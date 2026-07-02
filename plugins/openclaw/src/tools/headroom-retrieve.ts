@@ -32,8 +32,8 @@ export function createHeadroomRetrieveTool(config: RetrieveToolConfig) {
       },
       required: ["hash"],
     },
-    execute: async (args: { hash: string }): Promise<string> => {
-      const { hash } = args;
+    execute: async (args: { hash: string; query?: string }): Promise<string> => {
+      const { hash, query } = args ?? {};
 
       // Validate hash format
       if (!/^[a-f0-9]{24}$/i.test(hash)) {

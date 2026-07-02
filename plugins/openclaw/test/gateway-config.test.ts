@@ -52,15 +52,15 @@ describe("applyGatewayProviderBaseUrls", () => {
     expect(result.changed).toBe(true);
     expect((result.config as any).models.providers).toEqual({
       anthropic: {
-        baseUrl: "http://127.0.0.1:8787",
+        baseUrl: "http://127.0.0.1:8787/v1",
         models: [],
       },
       openrouter: {
-        baseUrl: "http://127.0.0.1:8787",
+        baseUrl: "http://127.0.0.1:8787/api/v1",
         models: [],
       },
       google: {
-        baseUrl: "http://127.0.0.1:8787",
+        baseUrl: "http://127.0.0.1:8787/v1beta",
         models: [],
       },
       "minimax-portal": {
@@ -229,11 +229,11 @@ describe("applyGatewayProviderBaseUrls", () => {
     expect((result.config as any).models?.providers?.["github-copilot"]).toBeUndefined();
   });
 
-  it("documents the Gate-D risk: anthropic without an explicit baseUrl routes to the bare proxy origin", () => {
-    const result = applyGatewayProviderBaseUrls({}, "http://127.0.0.1:8787", ["anthropic"]);
+  it("documents the Gate-D risk: minimax-portal without an explicit baseUrl routes to the bare proxy origin", () => {
+    const result = applyGatewayProviderBaseUrls({}, "http://127.0.0.1:8787", ["minimax-portal"]);
 
     expect(result.changed).toBe(true);
-    expect((result.config as any).models.providers.anthropic).toEqual({
+    expect((result.config as any).models.providers["minimax-portal"]).toEqual({
       baseUrl: "http://127.0.0.1:8787",
       models: [],
     });

@@ -196,4 +196,14 @@ describe("HeadroomContextEngine proxy startup helpers", () => {
     });
     expect(mocked.start).toHaveBeenCalledTimes(1);
   });
+
+  it("does not cause unhandled promise rejection on proxy startup failure", async () => {
+    mocked.start.mockRejectedValue(new Error("Startup failed"));
+    const engine = new HeadroomContextEngine();
+
+    engine.ensureProxyStarted();
+
+    // Await the URL resolution to verify it rejects, but verify it was caught internally as a background branch
+    await expect(engine.ensureProxyUrl()).rejects.toThrow("Startup failed");
+  });
 });
