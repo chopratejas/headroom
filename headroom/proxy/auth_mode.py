@@ -116,10 +116,10 @@ def classify_auth_mode(headers: Mapping[str, Any] | Any) -> AuthMode:
     1. **Subscription UA prefix** → :data:`AuthMode.SUBSCRIPTION`.
        The CLI's own auth-mode wins over the bearer token shape it
        happens to be carrying — a Claude Code session uses a
-       ``sk-ant-oat-*`` token but is a subscription client, not OAuth.
-    2. **``Authorization: Bearer sk-ant-oat-*``** → :data:`AuthMode.OAUTH`
+       ``sk-ant-oat*`` token but is a subscription client, not OAuth.
+    2. **``Authorization: Bearer sk-ant-oat*``** → :data:`AuthMode.OAUTH`
        (Claude Pro / Max OAuth). Checked before the broader ``sk-``
-       PAYG rule because ``sk-ant-oat-`` shares the ``sk-`` prefix.
+       PAYG rule because ``sk-ant-oat`` shares the ``sk-`` prefix.
     3. **``Authorization: Bearer sk-ant-api*`` or ``Bearer sk-*``** →
        :data:`AuthMode.PAYG` (Anthropic / OpenAI API key).
     4. **``Authorization: Bearer <jwt>``** (3 dot-separated segments)
