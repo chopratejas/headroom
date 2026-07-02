@@ -1561,10 +1561,8 @@
                                                             :class="historySelectedModel === row.model ? 'underline' : ''"
                                                             x-text="truncateModel(row.model)"></td>
                                                         <td class="py-2 pr-4 text-right tabular-nums" x-text="formatNumber(row.tokens_saved)"></td>
-                                                        <td class="py-2 pr-4 text-right tabular-nums"
-                                                            x-text="row.reference_pricing ? 'n/a' : '$' + formatCurrency(row.input_cost_usd)"></td>
-                                                        <td class="py-2 pr-4 text-right tabular-nums"
-                                                            x-text="row.reference_pricing ? 'n/a' : '$' + formatCurrency(row.expected_cost_usd)"></td>
+                                                        <td class="py-2 pr-4 text-right tabular-nums" x-text="'$' + formatCurrency(row.input_cost_usd)"></td>
+                                                        <td class="py-2 pr-4 text-right tabular-nums" x-text="'$' + formatCurrency(row.expected_cost_usd)"></td>
                                                         <td class="py-2 text-right tabular-nums text-accent" x-text="'$' + formatCurrency(row.savings_usd)"></td>
                                                     </tr>
                                                 </template>
@@ -2243,7 +2241,7 @@
                                 ...row,
                                 input_cost_usd: inputCost,
                                 savings_usd: savings,
-                                expected_cost_usd: reference ? null : inputCost + savings,
+                                expected_cost_usd: inputCost + savings,
                                 reference_pricing: reference?.pricing || null,
                             };
                         })
