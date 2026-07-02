@@ -3744,6 +3744,10 @@ def claude(
             env["ANTHROPIC_FOUNDRY_BASE_URL"] = _foundry_proxy_url(proxy_url)
         else:
             env["ANTHROPIC_BASE_URL"] = proxy_url
+        if not no_rtk:
+            from headroom.rtk import RTK_BIN_DIR
+
+            env["PATH"] = f"{RTK_BIN_DIR}{os.pathsep}{env['PATH']}"
 
         # Issue #951: write to settings.json so daemon-spawned conversation
         # workers (which read settings.json fresh rather than inheriting the
