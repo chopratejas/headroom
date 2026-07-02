@@ -8,12 +8,22 @@ reference prices into budget-enforcement data.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
+import tempfile
 import threading
-import time
 import urllib.request
 from dataclasses import dataclass
+from datetime import date
 from html import unescape
+from pathlib import Path
+from typing import Any
+
+from headroom import paths
+
+logger = logging.getLogger(__name__)
 
 SOURCE_URL = "https://opencode.ai/docs/zen/"
 GO_SOURCE_URL = "https://opencode.ai/docs/es/go/"
@@ -60,10 +70,11 @@ def _per_token(price_per_1m: float) -> float:
     return price_per_1m / 1_000_000
 
 
-_SCRAPE_TTL_SECONDS = 6 * 60 * 60
 _SCRAPE_TIMEOUT_SECONDS = 1.5
-_SCRAPE_CACHE: dict[str, tuple[float, dict[str, OpenCodeReferencePricing]]] = {}
+_SCRAPE_CACHE: dict[str, dict[str, OpenCodeReferencePricing]] = {}
+_SCRAPE_CACHE_DATE: dict[str, str] = {}
 _SCRAPE_LOCK = threading.Lock()
+_CACHE_VERSION = 1
 
 
 def _pricing_from_1m(
@@ -163,20 +174,171 @@ def _fetch_docs_pricing(pricing_surface: str) -> dict[str, OpenCodeReferencePric
     return _parse_pricing_table(html, source_url=source_url)
 
 
+def _serialize_pricing(pricing: OpenCodeReferencePricing) -> dict[str, Any]:
+    return {
+        "model": pricing.model,
+        "input_cost_per_token": pricing.input_cost_per_token,
+        "output_cost_per_token": pricing.output_cost_per_token,
+        "cache_read_input_token_cost": pricing.cache_read_input_token_cost,
+        "cache_write_input_token_cost": pricing.cache_write_input_token_cost,
+        "source": pricing.source,
+        "source_url": pricing.source_url,
+        "note": pricing.note,
+    }
+
+
+def _deserialize_pricing(data: dict[str, Any]) -> OpenCodeReferencePricing:
+    def _opt_float(key: str) -> float | None:
+        value = data.get(key)
+        if value is None:
+            return None
+        return float(value)
+
+    source_url_raw = data.get("source_url")
+    return OpenCodeReferencePricing(
+        model=str(data["model"]),
+        input_cost_per_token=float(data["input_cost_per_token"]),
+        output_cost_per_token=float(data["output_cost_per_token"]),
+        cache_read_input_token_cost=_opt_float("cache_read_input_token_cost"),
+        cache_write_input_token_cost=_opt_float("cache_write_input_token_cost"),
+        source=str(data.get("source", "fallback")),
+        source_url=source_url_raw if isinstance(source_url_raw, str) else None,
+        note=str(data.get("note", "")),
+    )
+
+
+def _load_disk_cache() -> dict[str, tuple[str, dict[str, OpenCodeReferencePricing]]]:
+    """Return ``{surface: (date_str, prices)}`` from the disk cache.
+
+    Missing or corrupt files yield an empty dict; per-surface entries that
+    fail to deserialize are skipped so a bad row never blocks the others.
+    """
+
+    try:
+        with open(paths.opencode_pricing_cache_path(), encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    surfaces = payload.get("surfaces")
+    if not isinstance(surfaces, dict):
+        return {}
+    out: dict[str, tuple[str, dict[str, OpenCodeReferencePricing]]] = {}
+    for surface in OPENCODE_SURFACES:
+        entry = surfaces.get(surface)
+        if not isinstance(entry, dict):
+            continue
+        date_str = entry.get("date")
+        raw_prices = entry.get("prices")
+        if not isinstance(date_str, str) or not isinstance(raw_prices, dict):
+            continue
+        prices: dict[str, OpenCodeReferencePricing] = {}
+        for model, raw in raw_prices.items():
+            if not isinstance(raw, dict):
+                continue
+            try:
+                prices[model] = _deserialize_pricing(raw)
+            except (KeyError, ValueError, TypeError):
+                continue
+        out[surface] = (date_str, prices)
+    return out
+
+
+def _write_surface_disk_cache(
+    pricing_surface: str,
+    prices: dict[str, OpenCodeReferencePricing],
+    date_str: str,
+) -> None:
+    """Atomically update one surface's entry in the disk cache file.
+
+    Stateless mode skips the write. A read-modify-write preserves the other
+    surface's entry so an opencode-zen refresh does not clobber opencode-go.
+    """
+
+    if paths.process_is_stateless():
+        return
+    try:
+        cache_path = paths.opencode_pricing_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = _load_disk_cache()
+        surfaces_payload: dict[str, dict[str, Any]] = {}
+        for surface in OPENCODE_SURFACES:
+            prior = existing.get(surface)
+            if prior is None:
+                continue
+            surfaces_payload[surface] = {
+                "date": prior[0],
+                "prices": {model: _serialize_pricing(p) for model, p in prior[1].items()},
+            }
+        surfaces_payload[pricing_surface] = {
+            "date": date_str,
+            "prices": {model: _serialize_pricing(p) for model, p in prices.items()},
+        }
+        payload = {"version": _CACHE_VERSION, "surfaces": surfaces_payload}
+        json_data = json.dumps(payload, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=cache_path.parent,
+            prefix=".opencode_pricing_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json_data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            Path(tmp_path).replace(cache_path)
+        except Exception:
+            try:
+                Path(tmp_path).unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _scraped_prices(pricing_surface: str) -> dict[str, OpenCodeReferencePricing]:
+    """Return scraped OpenCode prices for a surface, with a daily disk cache.
+
+    Cache layering: in-memory (hot) -> disk (``date == today``) -> fetch.
+    On fetch failure a stale disk entry (any date) is preferred over the
+    hardcoded fallback tables so a transient outage does not lose recent
+    prices. A failed fetch is still marked served-for-today so we do not
+    hammer the docs endpoint on every request while it is down.
+    """
+
     if pricing_surface not in OPENCODE_SURFACES:
         return {}
-    now = time.monotonic()
+    today = date.today().isoformat()
     with _SCRAPE_LOCK:
-        cached = _SCRAPE_CACHE.get(pricing_surface)
-        if cached and now - cached[0] < _SCRAPE_TTL_SECONDS:
-            return cached[1]
+        if _SCRAPE_CACHE_DATE.get(pricing_surface) == today:
+            return _SCRAPE_CACHE.get(pricing_surface, {})
+        disk = _load_disk_cache()
+        entry = disk.get(pricing_surface)
+        if entry is not None and entry[0] == today:
+            prices = entry[1]
+            _SCRAPE_CACHE[pricing_surface] = prices
+            _SCRAPE_CACHE_DATE[pricing_surface] = today
+            return prices
+        stale_disk = entry[1] if entry is not None else None
         try:
             prices = _fetch_docs_pricing(pricing_surface)
         except Exception:
+            logger.warning(
+                "opencode pricing fetch failed for %s; using fallback",
+                pricing_surface,
+                exc_info=True,
+            )
             prices = {}
-        _SCRAPE_CACHE[pricing_surface] = (now, prices)
-        return prices
+        if prices:
+            _write_surface_disk_cache(pricing_surface, prices, today)
+            _SCRAPE_CACHE[pricing_surface] = prices
+            _SCRAPE_CACHE_DATE[pricing_surface] = today
+            return prices
+        fallback = stale_disk or _SCRAPE_CACHE.get(pricing_surface) or {}
+        _SCRAPE_CACHE[pricing_surface] = fallback
+        _SCRAPE_CACHE_DATE[pricing_surface] = today
+        return fallback
 
 
 # Prices from OpenCode Zen docs, USD per 1M tokens. Tiered context-window rows
