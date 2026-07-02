@@ -182,6 +182,8 @@ class ClaudeRegistrar(MCPRegistrar):
         except OSError:
             return False
         servers = config.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            return False
         if server_name not in servers:
             return False
         del servers[server_name]
@@ -198,7 +200,10 @@ class ClaudeRegistrar(MCPRegistrar):
             config = _read_json(path)
         except OSError:
             return None
-        entry = config.get("mcpServers", {}).get(server_name)
+        servers = config.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            return None
+        entry = servers.get(server_name)
         if not isinstance(entry, dict):
             return None
         return _entry_to_spec(server_name, entry)
