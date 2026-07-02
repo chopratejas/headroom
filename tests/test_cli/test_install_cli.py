@@ -52,6 +52,53 @@ def test_install_apply_starts_service_supervisor(monkeypatch) -> None:
     assert calls == ["save", "start_service"]
 
 
+def test_install_apply_forwards_no_http2_to_build_manifest(monkeypatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    class Manifest:
+        profile = "default"
+        preset = "persistent-service"
+        runtime_kind = "python"
+        supervisor_kind = "service"
+        scope = "user"
+        health_url = "http://127.0.0.1:8787/readyz"
+        targets = ["claude"]
+        mutations = []
+        artifacts = []
+
+    manifest = Manifest()
+
+    def fake_build_manifest(**kwargs):
+        captured.update(kwargs)
+        return manifest
+
+    monkeypatch.setattr("headroom.cli.install.build_manifest", fake_build_manifest)
+    monkeypatch.setattr("headroom.cli.install.load_manifest", lambda profile: None)
+    monkeypatch.setattr("headroom.cli.install.apply_mutations", lambda deployment: [])
+    monkeypatch.setattr("headroom.cli.install.install_supervisor", lambda deployment: [])
+    monkeypatch.setattr("headroom.cli.install.save_manifest", lambda deployment: None)
+    monkeypatch.setattr("headroom.cli.install.start_supervisor", lambda deployment: None)
+    monkeypatch.setattr("headroom.cli.install.start_detached_agent", lambda profile: None)
+    monkeypatch.setattr(
+        "headroom.cli.install.wait_ready", lambda deployment, timeout_seconds=45: True
+    )
+
+    result = runner.invoke(main, ["install", "apply", "--no-http2"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["no_http2"] is True
+
+
+def test_install_apply_help_lists_no_http2() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["install", "apply", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--no-http2" in result.output
+
+
 def test_install_status_includes_backend_from_health_probe(monkeypatch) -> None:
     runner = CliRunner()
 
