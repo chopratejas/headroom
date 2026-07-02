@@ -397,6 +397,8 @@ _OPENAI_TOOL_SCHEMA_DROP_KEYS = {
     "title",
     "writeOnly",
 }
+# Kept for backward compatibility with evals that import this symbol.
+# The canonical set lives in headroom.proxy.tool_schema_compaction.
 
 
 def _json_byte_len(value: Any) -> int:
@@ -407,45 +409,18 @@ def _compact_openai_tool_schema_value(
     value: Any,
     _parent_key: str | None = None,
 ) -> Any:
-    if isinstance(value, list):
-        return [_compact_openai_tool_schema_value(item, _parent_key) for item in value]
+    # Delegate to shared compaction logic.
+    from headroom.proxy.tool_schema_compaction import compact_tool_schema_value
 
-    if not isinstance(value, dict):
-        return value
-
-    compacted: dict[str, Any] = {}
-    for key, child in value.items():
-        # Don't drop keys that are property *names* inside a JSON Schema
-        # `properties` object — only drop them when they are schema annotations.
-        # e.g. a tool with a field literally named "title" must not be stripped.
-        if _parent_key != "properties" and key in _OPENAI_TOOL_SCHEMA_DROP_KEYS:
-            continue
-
-        if key == "description" and isinstance(child, str):
-            compacted[key] = " ".join(child.split())
-            continue
-
-        compacted[key] = _compact_openai_tool_schema_value(child, key)
-
-    return compacted
+    return compact_tool_schema_value(value, _parent_key)
 
 
 def _compact_openai_responses_tools(
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], bool, int, int]:
-    tools = payload.get("tools")
-    if not isinstance(tools, list) or not tools:
-        return payload, False, 0, 0
+    from headroom.proxy.tool_schema_compaction import compact_tools
 
-    compacted_tools = _compact_openai_tool_schema_value(tools)
-    before = _json_byte_len(tools)
-    after = _json_byte_len(compacted_tools)
-    if after >= before:
-        return payload, False, before, after
-
-    updated = copy.deepcopy(payload)
-    updated["tools"] = compacted_tools
-    return updated, True, before, after
+    return compact_tools(payload)
 
 
 def _ensure_responses_store_for_memory_tools(
@@ -1445,6 +1420,48 @@ class OpenAIHandlerMixin:
                     tools_bytes_after=tools_after_bytes,
                     tools_bytes_saved=tools_before_bytes - tools_after_bytes,
                 )
+
+        # Layer 2: Tool description truncation (opt-in via
+        # HEADROOM_TOOL_DESC_MAX_CHARS).
+        try:
+            from headroom.proxy.tool_schema_compaction import (
+                compact_tool_descriptions,
+                tool_desc_max_chars,
+            )
+
+            _desc_max = tool_desc_max_chars()
+            if _desc_max > 0:
+                _desc_compact_started = time.perf_counter()
+                desc_payload, desc_modified, desc_before, desc_after = compact_tool_descriptions(
+                    working, _desc_max
+                )
+                _add_timing("compression_tool_desc_compaction", _desc_compact_started)
+                if desc_modified:
+                    working = desc_payload
+                    modified = True
+                    transforms.append("openai:responses:tool_desc_compaction")
+                    try:
+                        tokenizer = self.openai_provider.get_token_counter(model)
+                        tokens_saved += max(
+                            0,
+                            tokenizer.count_text(_json_debug_dumps(payload.get("tools")))
+                            - tokenizer.count_text(_json_debug_dumps(working.get("tools"))),
+                        )
+                    except Exception:
+                        pass
+                    if debug_enabled:
+                        _log_codex_compression_debug(
+                            "codex_tool_desc_compaction",
+                            request_id=request_id,
+                            pass_id=pass_id,
+                            model=model,
+                            modified=True,
+                            tools_bytes_before=desc_before,
+                            tools_bytes_after=desc_after,
+                            tools_bytes_saved=desc_before - desc_after,
+                        )
+        except Exception:
+            pass
 
         live_units_started = time.perf_counter()
         (
