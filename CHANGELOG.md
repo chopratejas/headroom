@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+* **proxy:** a transient rtk/lean-ctx stat-read failure (timeout, non-zero exit, bad JSON) no longer corrupts the dashboard's CLI-filtering session metrics. Failed reads now return "no data" instead of a synthetic zero payload, and the session baseline is only ever pinned from successful installed-tool reads — previously one hiccup re-pinned the baseline to zero and the next successful read inflated session savings by the tool's entire lifetime, at every proxy boot and `POST /stats/reset`.
 - `headroom learn` now honors `CLAUDE_CONFIG_DIR`. It resolved the Claude
   config directory as `~/.claude` and wrote global memory to
   `~/.claude/CLAUDE.md`, so users who relocate their Claude config via that

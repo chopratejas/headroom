@@ -578,10 +578,11 @@ def test_rtk_subprocess_failure_logs_structured_warning(
     mock_warning = MagicMock()
     monkeypatch.setattr(_helpers.logger, "warning", mock_warning)
 
+    # Failed reads return None ("no data") rather than a synthetic zero
+    # payload — the zero re-pinned the session baseline and inflated session
+    # savings by the tool's whole lifetime on recovery.
     payload = _helpers._read_rtk_lifetime_stats()
-    assert payload is not None
-    assert payload["scope"] == "global"
-    assert payload["tokens_saved"] == 0
+    assert payload is None
 
     # Concatenate all warning call args so the failure message shows what
     # the helper actually emitted (debug aid for CI flakes).
@@ -636,3 +637,32 @@ def test_multi_worker_only_one_polls(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     # Cleanup so subsequent tests don't see a stale lock.
     tracker_a._release_rtk_poll_lock()
     tracker_b._release_rtk_poll_lock()
+
+
+def test_rtk_stats_mid_window_failure_preserves_high_water_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed poll (None) mid-window must not reset the high-water mark.
+
+    Failed stat reads now arrive as None ("no data"); the recovery poll's
+    delta is computed against the preserved mark, so no phantom contribution
+    lands and nothing is lost.
+    """
+
+    tracker = _build_tracker(monkeypatch)
+    monkeypatch.delenv(tracker_module._RTK_WIRING_ENV, raising=False)
+    _stub_rtk_stats(monkeypatch, [_session_payload(100), None, _session_payload(150)])
+
+    tracker.update_contribution()
+    assert tracker._state.contribution.tokens_saved_rtk == 100
+    assert tracker._last_rtk_tokens_saved == 100
+
+    tracker.update_contribution()
+    # Outage poll: zero contribution, mark preserved.
+    assert tracker._state.contribution.tokens_saved_rtk == 100
+    assert tracker._last_rtk_tokens_saved == 100
+
+    tracker.update_contribution()
+    # Recovery: only the true delta lands.
+    assert tracker._state.contribution.tokens_saved_rtk == 150
+    assert tracker._last_rtk_tokens_saved == 150

@@ -1243,35 +1243,25 @@ def _read_rtk_lifetime_stats() -> dict[str, Any] | None:
                 summary=summary if isinstance(summary, dict) else {},
             )
         else:
-            # PR-G2 remediation (H2): structured log the synthetic-zero path
-            # so downstream consumers (subscription tracker, dashboards) can
-            # distinguish a healthy "RTK ran and saved nothing" from a broken
-            # "RTK failed and we faked zero".
+            # A failed read is "no data", never a zero counter — a synthetic
+            # zero here re-pins the session baseline and inflates session
+            # savings by the tool's whole lifetime on recovery.
             stderr_excerpt = (result.stderr or "")[:200]
             logger.warning(
                 "event=rtk_stats_subprocess_failed reason=non_zero_exit rc=%s stderr=%r",
                 result.returncode,
                 stderr_excerpt,
             )
-            return _context_tool_zero_payload(
-                tool=_CONTEXT_TOOL_RTK,
-                installed=True,
-                scope=scope,
-            )
+            return None
     except Exception as exc:
-        # PR-G2 remediation (H2): log the exception path too. Reason is the
-        # exception class name (without payload — RTK exceptions can carry
-        # filesystem paths).
+        # Reason is the exception class name (without payload — RTK
+        # exceptions can carry filesystem paths).
         logger.warning(
             "event=rtk_stats_subprocess_failed reason=%s error=%s",
             type(exc).__name__,
             exc,
         )
-        return _context_tool_zero_payload(
-            tool=_CONTEXT_TOOL_RTK,
-            installed=True,
-            scope=scope,
-        )
+        return None
 
     return payload
 
@@ -1285,8 +1275,6 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
     if not lean_ctx_path:
         return _context_tool_zero_payload(tool=_CONTEXT_TOOL_LEAN_CTX, installed=False)
 
-    base_payload = _context_tool_zero_payload(tool=_CONTEXT_TOOL_LEAN_CTX, installed=True)
-
     try:
         result = run(
             [str(lean_ctx_path), "gain", "--json"],
@@ -1294,21 +1282,32 @@ def _read_lean_ctx_lifetime_stats() -> dict[str, Any] | None:
             text=True,
             timeout=5,
         )
+        # Failed reads return None ("no data") — mirrors the rtk reader so
+        # the baseline logic never sees synthetic zeros from either tool.
         if result.returncode != 0 or not result.stdout.strip():
-            return dict(base_payload)
+            logger.warning(
+                "event=lean_ctx_stats_subprocess_failed reason=non_zero_exit rc=%s",
+                result.returncode,
+            )
+            return None
 
         data = json.loads(result.stdout)
         summary = data.get("summary", data) if isinstance(data, dict) else {}
         if not isinstance(summary, dict):
-            return dict(base_payload)
+            logger.warning("event=lean_ctx_stats_subprocess_failed reason=bad_payload")
+            return None
 
         return _context_tool_summary_payload(
             tool=_CONTEXT_TOOL_LEAN_CTX,
             installed=True,
             summary=summary,
         )
-    except Exception:
-        return dict(base_payload)
+    except Exception as exc:
+        logger.warning(
+            "event=lean_ctx_stats_subprocess_failed reason=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _read_context_tool_lifetime_stats(tool: str) -> dict[str, Any] | None:
@@ -1323,18 +1322,36 @@ async def initialize_context_tool_session_baseline() -> None:
     tool = _selected_context_tool()
     payload = await asyncio.to_thread(_read_context_tool_lifetime_stats, tool)
     with _context_tool_stats_cache_lock:
-        _context_tool_session_baseline.update(
-            {
-                "initialized": True,
-                "tool": tool,
-                "total_commands": int((payload or {}).get("total_commands", 0) or 0),
-                "input_tokens": int((payload or {}).get("input_tokens", 0) or 0),
-                "output_tokens": int((payload or {}).get("output_tokens", 0) or 0),
-                "tokens_saved": int((payload or {}).get("tokens_saved", 0) or 0),
-                "total_time_ms": int((payload or {}).get("total_time_ms", 0) or 0),
-                "captured_at": time.time(),
-            }
-        )
+        if payload is None or not payload.get("installed", False):
+            # Failed or tool-absent read: defer the pin to the first
+            # successful read (guarded lazy-init) — pinning zeros here would
+            # inflate session savings by the tool's whole lifetime once it
+            # recovers or gets installed.
+            _context_tool_session_baseline.update(
+                {
+                    "initialized": False,
+                    "tool": tool,
+                    "total_commands": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "tokens_saved": 0,
+                    "total_time_ms": 0,
+                    "captured_at": time.time(),
+                }
+            )
+        else:
+            _context_tool_session_baseline.update(
+                {
+                    "initialized": True,
+                    "tool": tool,
+                    "total_commands": int(payload.get("total_commands", 0) or 0),
+                    "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                    "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                    "tokens_saved": int(payload.get("tokens_saved", 0) or 0),
+                    "total_time_ms": int(payload.get("total_time_ms", 0) or 0),
+                    "captured_at": time.time(),
+                }
+            )
         _context_tool_stats_cache.update(
             {
                 "expires_at": 0.0,
@@ -1372,19 +1389,28 @@ def _get_context_tool_stats() -> dict[str, Any] | None:
 
     payload = _read_context_tool_lifetime_stats(tool)
     with _context_tool_stats_cache_lock:
+        # Baseline mutations only happen on successful reads from an
+        # installed tool — a failed read (None) or a tool-absent zero payload
+        # must never pin or re-pin, or session deltas inflate by the whole
+        # lifetime when the tool comes back.
+        tool_installed = payload is not None and bool(payload.get("installed", False))
         if (
-            not _context_tool_session_baseline["initialized"]
-            or _context_tool_session_baseline.get("tool") != tool
+            payload is not None
+            and tool_installed
+            and (
+                not _context_tool_session_baseline["initialized"]
+                or _context_tool_session_baseline.get("tool") != tool
+            )
         ):
             _context_tool_session_baseline.update(
                 {
                     "initialized": True,
                     "tool": tool,
-                    "total_commands": int((payload or {}).get("total_commands", 0) or 0),
-                    "input_tokens": int((payload or {}).get("input_tokens", 0) or 0),
-                    "output_tokens": int((payload or {}).get("output_tokens", 0) or 0),
-                    "tokens_saved": int((payload or {}).get("tokens_saved", 0) or 0),
-                    "total_time_ms": int((payload or {}).get("total_time_ms", 0) or 0),
+                    "total_commands": int(payload.get("total_commands", 0) or 0),
+                    "input_tokens": int(payload.get("input_tokens", 0) or 0),
+                    "output_tokens": int(payload.get("output_tokens", 0) or 0),
+                    "tokens_saved": int(payload.get("tokens_saved", 0) or 0),
+                    "total_time_ms": int(payload.get("total_time_ms", 0) or 0),
                     "captured_at": time.time(),
                 }
             )
@@ -1400,7 +1426,10 @@ def _get_context_tool_stats() -> dict[str, Any] | None:
             baseline_output_tokens = int(_context_tool_session_baseline["output_tokens"])
             baseline_tokens_saved = int(_context_tool_session_baseline["tokens_saved"])
             baseline_total_time_ms = int(_context_tool_session_baseline["total_time_ms"])
-            counter_reset_detected = (
+            # A tool-absent payload carries zero counters that are not a
+            # genuine external reset — only successful installed reads may
+            # re-pin the baseline.
+            counter_reset_detected = tool_installed and (
                 lifetime_total_commands < baseline_total_commands
                 or lifetime_input_tokens < baseline_input_tokens
                 or lifetime_output_tokens < baseline_output_tokens
