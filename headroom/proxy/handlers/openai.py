@@ -3359,17 +3359,17 @@ class OpenAIHandlerMixin:
         if is_chatgpt_auth:
             url = "https://chatgpt.com/backend-api/codex/responses"
         else:
-          upstream_base_url = _resolve_openai_upstream_base(request.headers)
-          handler_path = (
-              _resolve_openai_handler_path(request.headers, handler_path=_OPENAI_RESPONSES_PATH)
-              if upstream_base_url is not None
-              else "/v1/responses"
-          )
-          url = build_copilot_upstream_url(
-              upstream_base_url or self.OPENAI_API_URL,
-              handler_path,
-          )
-          url = _append_request_query(url, request.url.query)
+            upstream_base_url = _resolve_openai_upstream_base(request.headers)
+            handler_path = (
+                _resolve_openai_handler_path(request.headers, handler_path=_OPENAI_RESPONSES_PATH)
+                if upstream_base_url is not None
+                else "/v1/responses"
+            )
+            url = build_copilot_upstream_url(
+                upstream_base_url or self.OPENAI_API_URL,
+                handler_path,
+            )
+            url = _append_request_query(url, request.url.query)
 
         # The standalone Rust proxy has native /v1/responses item handling,
         # but the default CLI runtime is this Python proxy. Compress the
