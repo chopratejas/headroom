@@ -128,8 +128,8 @@ def test_version_sync_explicit_version(temp_project: dict[str, Path]) -> None:
     github_plugin = json.loads(temp_project["github_plugin"].read_text())
     assert github_plugin["version"] == "0.7.0"
 
-    # Verify .releaseetadata was created
-    release_metadata = root / ".releaseetadata"
+    # Verify .releasemetadata was created
+    release_metadata = root / ".releasemetadata"
     assert release_metadata.exists()
     metadata = json.loads(release_metadata.read_text())
     assert metadata["version"] == "0.7.0"
@@ -230,7 +230,7 @@ def test_bump_major(temp_project: dict[str, Path]) -> None:
 
 
 def test_release_metadata_written(temp_project: dict[str, Path]) -> None:
-    """Test .releaseetadata is written correctly."""
+    """Test .releasemetadata is written correctly."""
     root = temp_project["root"]
     script = Path(__file__).parent.parent / "version-sync.py"
 
@@ -242,7 +242,7 @@ def test_release_metadata_written(temp_project: dict[str, Path]) -> None:
 
     assert result.returncode == 0, f"Script failed: {result.stderr}"
 
-    release_metadata = root / ".releaseetadata"
+    release_metadata = root / ".releasemetadata"
     assert release_metadata.exists()
 
     metadata = json.loads(release_metadata.read_text())
@@ -288,4 +288,4 @@ def test_plugin_manifests_only_leaves_package_versions_unchanged(
         json.loads(temp_project["repo_github_marketplace"].read_text())["metadata"]["version"]
         == "0.8.0"
     )
-    assert not (root / ".releaseetadata").exists()
+    assert not (root / ".releasemetadata").exists()
