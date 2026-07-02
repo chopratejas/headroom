@@ -134,6 +134,13 @@ def parse_tabular(
 
     if not headers or not rows:
         return None
+    # Ragged tables (rows whose cell count differs from the header count)
+    # can't be zipped into records without shifting values under the wrong
+    # column — a compressed table must never state facts the original
+    # didn't (#1652). Treat them as non-tabular and pass through verbatim.
+    width = len(headers)
+    if any(len(row) != width for row in rows):
+        return None
     return headers, rows, fmt
 
 

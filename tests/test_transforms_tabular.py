@@ -153,6 +153,54 @@ def test_parse_markdown_table_drops_separator() -> None:
     assert all("---" not in cell for row in rows for cell in row)
 
 
+def test_parse_tabular_rejects_ragged_fixed_width(monkeypatch) -> None:
+    # Rows with differing cell counts can't be zipped under the headers
+    # without misattributing columns (#1652) — must pass through.
+    import headroom.transforms.tabular_ingest as ti
+
+    monkeypatch.setattr(
+        ti,
+        "detect_content_type",
+        lambda _c: DetectionResult(ContentType.TABULAR, 0.9, {"format": "fixed_width"}),
+    )
+    ragged = (
+        "tool  installed  latest  status\n"
+        "rtk  0.42.4  0.43.0  update available\n"
+        "rtk  ✓  0.42.4  0.42.4  -  up-to-date"
+    )
+    assert ti.parse_tabular(ragged) is None
+
+
+def test_parse_tabular_rejects_ragged_markdown(monkeypatch) -> None:
+    import headroom.transforms.tabular_ingest as ti
+
+    monkeypatch.setattr(
+        ti,
+        "detect_content_type",
+        lambda _c: DetectionResult(ContentType.TABULAR, 0.9, {"format": "markdown"}),
+    )
+    ragged = "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n| 4 | 5 |"
+    assert ti.parse_tabular(ragged) is None
+
+
+def test_compress_passes_through_ragged_table(monkeypatch) -> None:
+    import headroom.transforms.tabular_ingest as ti
+
+    monkeypatch.setattr(
+        ti,
+        "detect_content_type",
+        lambda _c: DetectionResult(ContentType.TABULAR, 0.9, {"format": "fixed_width"}),
+    )
+    ragged = (
+        "tool  installed  latest  status\n"
+        "rtk  0.42.4  0.43.0  update available\n"
+        "rtk  ✓  0.42.4  0.42.4  -  up-to-date"
+    )
+    result = TabularCompressor().compress(ragged)
+    assert not result.was_modified
+    assert result.compressed == ragged
+
+
 def test_parse_tabular_returns_none_for_non_tabular() -> None:
     assert parse_tabular("just a normal paragraph here") is None
 
