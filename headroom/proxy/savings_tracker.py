@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from headroom import paths as _paths
+from headroom.pricing.opencode_prices import get_opencode_reference_pricing
 
 logger = logging.getLogger(__name__)
 
@@ -186,21 +187,30 @@ def _resolve_litellm_model(model: str) -> str:
     return model
 
 
-def _estimate_compression_savings_usd(model: str, tokens_saved: int) -> float:
+def _estimate_compression_savings_usd(
+    model: str,
+    tokens_saved: int,
+    pricing_surface: str | None = None,
+) -> float:
     """Estimate compression savings in USD from saved input tokens."""
     litellm = _get_litellm_module()
-    if tokens_saved <= 0 or litellm is None:
+    if tokens_saved <= 0:
         return 0.0
 
-    try:
-        resolved = _resolve_litellm_model(model)
-        info = litellm.model_cost.get(resolved, {})
-        input_cost_per_token = info.get("input_cost_per_token")
-        if not input_cost_per_token:
-            return 0.0
-        return float(tokens_saved) * float(input_cost_per_token)
-    except Exception:
+    if litellm is not None:
+        try:
+            resolved = _resolve_litellm_model(model)
+            info = litellm.model_cost.get(resolved, {})
+            input_cost_per_token = info.get("input_cost_per_token")
+            if input_cost_per_token:
+                return float(tokens_saved) * float(input_cost_per_token)
+        except Exception:
+            pass
+
+    reference_pricing = get_opencode_reference_pricing(model, pricing_surface)
+    if reference_pricing is None:
         return 0.0
+    return float(tokens_saved) * float(reference_pricing.input_cost_per_token)
 
 
 def _estimate_input_cost_usd(
@@ -210,6 +220,7 @@ def _estimate_input_cost_usd(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     uncached_input_tokens: int = 0,
+    pricing_surface: str | None = None,
 ) -> float:
     """Estimate input spend in USD for a request.
 
@@ -226,34 +237,47 @@ def _estimate_input_cost_usd(
     # fully prefix-cached request has input_tokens == 0 while cache_read > 0.
     # Bailing on `input_tokens <= 0` alone dropped the real cache-read cost,
     # leaving days with compression savings but zero recorded spend.
-    if total_input_tokens + cache_read + cache_write + uncached <= 0 or litellm is None:
+    if total_input_tokens + cache_read + cache_write + uncached <= 0:
         return 0.0
 
-    try:
-        resolved = _resolve_litellm_model(model)
-        info = litellm.model_cost.get(resolved, {})
-        input_cost_per_token = info.get("input_cost_per_token")
-        if not input_cost_per_token:
-            return 0.0
+    if litellm is not None:
+        try:
+            resolved = _resolve_litellm_model(model)
+            info = litellm.model_cost.get(resolved, {})
+            input_cost_per_token = info.get("input_cost_per_token")
+            if input_cost_per_token:
+                if cache_read + cache_write + uncached > 0:
+                    cache_read_cost = info.get(
+                        "cache_read_input_token_cost",
+                        input_cost_per_token,
+                    )
+                    cache_write_cost = info.get(
+                        "cache_creation_input_token_cost",
+                        input_cost_per_token,
+                    )
+                    return (
+                        float(cache_read) * float(cache_read_cost)
+                        + float(cache_write) * float(cache_write_cost)
+                        + float(uncached) * float(input_cost_per_token)
+                    )
 
-        if cache_read + cache_write + uncached > 0:
-            cache_read_cost = info.get(
-                "cache_read_input_token_cost",
-                input_cost_per_token,
-            )
-            cache_write_cost = info.get(
-                "cache_creation_input_token_cost",
-                input_cost_per_token,
-            )
-            return (
-                float(cache_read) * float(cache_read_cost)
-                + float(cache_write) * float(cache_write_cost)
-                + float(uncached) * float(input_cost_per_token)
-            )
+                return float(total_input_tokens) * float(input_cost_per_token)
+        except Exception:
+            pass
 
-        return float(total_input_tokens) * float(input_cost_per_token)
-    except Exception:
+    reference_pricing = get_opencode_reference_pricing(model, pricing_surface)
+    if reference_pricing is None:
         return 0.0
+    input_cost_per_token = reference_pricing.input_cost_per_token
+    if cache_read + cache_write + uncached > 0:
+        cache_read_cost = reference_pricing.cache_read_input_token_cost
+        cache_write_cost = reference_pricing.cache_write_input_token_cost
+        return (
+            float(cache_read) * float(cache_read_cost or input_cost_per_token)
+            + float(cache_write) * float(cache_write_cost or input_cost_per_token)
+            + float(uncached) * float(input_cost_per_token)
+        )
+    return float(total_input_tokens) * float(input_cost_per_token)
 
 
 def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
@@ -456,6 +480,7 @@ class SavingsTracker:
         model: str,
         tokens_saved: int,
         provider: str | None = None,
+        pricing_surface: str | None = None,
         total_input_tokens: int | None = None,
         total_input_cost_usd: float | None = None,
         timestamp: datetime | str | None = None,
@@ -475,7 +500,11 @@ class SavingsTracker:
         if timestamp_dt is None:
             timestamp_dt = _utc_now()
 
-        delta_usd = _estimate_compression_savings_usd(model, delta_tokens)
+        delta_usd = _estimate_compression_savings_usd(
+            model,
+            delta_tokens,
+            pricing_surface=pricing_surface,
+        )
 
         with self._lock:
             lifetime = self._state["lifetime"]
@@ -521,6 +550,7 @@ class SavingsTracker:
         tokens_saved: int,
         provider: str | None = None,
         project: str | None = None,
+        pricing_surface: str | None = None,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         uncached_input_tokens: int = 0,
@@ -541,13 +571,18 @@ class SavingsTracker:
 
         delta_tokens_saved = _coerce_int(tokens_saved)
         delta_input_tokens = _coerce_int(input_tokens)
-        delta_savings_usd = _estimate_compression_savings_usd(model, delta_tokens_saved)
+        delta_savings_usd = _estimate_compression_savings_usd(
+            model,
+            delta_tokens_saved,
+            pricing_surface=pricing_surface,
+        )
         delta_input_cost_usd = _estimate_input_cost_usd(
             model,
             delta_input_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             uncached_input_tokens=uncached_input_tokens,
+            pricing_surface=pricing_surface,
         )
 
         with self._lock:

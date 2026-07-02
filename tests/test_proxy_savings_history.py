@@ -339,8 +339,22 @@ def test_litellm_resolution_and_savings_estimation_fallbacks(monkeypatch):
     assert savings_tracker_module._estimate_compression_savings_usd("mystery-model", 100) == 0.0
 
     monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", False)
+    import headroom.pricing.opencode_prices as opencode_prices
+
+    opencode_prices._SCRAPE_CACHE.clear()
+    monkeypatch.setattr(opencode_prices, "_fetch_docs_pricing", lambda surface: {})
     assert savings_tracker_module._estimate_compression_savings_usd("gpt-4o", 100) == 0.0
     assert savings_tracker_module._estimate_input_cost_usd("gpt-4o", 100) == 0.0
+    assert savings_tracker_module._estimate_compression_savings_usd(
+        "glm-5.2",
+        100_000,
+        pricing_surface="opencode-zen",
+    ) == pytest.approx(0.14)
+    assert savings_tracker_module._estimate_input_cost_usd(
+        "glm-5.2",
+        200_000,
+        pricing_surface="opencode-go",
+    ) == pytest.approx(0.28)
 
 
 def test_input_cost_counts_cache_reads_when_uncached_input_is_zero(monkeypatch):
@@ -1020,6 +1034,7 @@ def test_dashboard_includes_history_toggle_and_endpoint(tmp_path, monkeypatch):
         assert "historyModelSourceSeriesLabel + ' buckets'" in html
         # Non-top-5 breakdown rows swap into the last chart slot when selected.
         assert "topModels[topModels.length - 1] = selected;" in html
+        assert "Reference pricing:" in html
 
 
 def test_stats_history_includes_cli_filtering(tmp_path, monkeypatch):

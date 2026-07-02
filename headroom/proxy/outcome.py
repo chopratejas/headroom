@@ -329,6 +329,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     and is awaitable-compatible. We could lift this to a typing.Protocol
     if/when another contract surface emerges, but YAGNI.
     """
+    from headroom.pricing.opencode_prices import pricing_surface_from_tags
     from headroom.proxy.cost import _summarize_transforms
     from headroom.proxy.models import RequestLog
     from headroom.proxy.project_context import get_current_project
@@ -348,6 +349,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     # Project attribution: explicit outcome field wins, else the value the
     # HTTP middleware / WS accept captured from ``X-Headroom-Project``.
     project = outcome.project or get_current_project()
+    pricing_surface = pricing_surface_from_tags(outcome.tags)
 
     # 1. Prometheus / SavingsTracker.
     await handler.metrics.record_request(
@@ -370,6 +372,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         attempted_input_tokens=outcome.attempted_input_tokens,
         project=project,
         client=outcome.client,
+        pricing_surface=pricing_surface,
     )
 
     # 2. Cost tracker (optional).
@@ -385,6 +388,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
             cache_write_1h_tokens=outcome.cache_write_1h_tokens,
             uncached_tokens=outcome.uncached_input_tokens,
             output_tokens=outcome.output_tokens,
+            pricing_surface=pricing_surface,
         )
 
     # 3. Per-request log (optional). The ``client`` outcome field is

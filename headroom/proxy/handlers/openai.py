@@ -46,6 +46,7 @@ import httpx
 from headroom.agent_savings import proxy_pipeline_kwargs
 from headroom.copilot_auth import apply_copilot_api_auth, build_copilot_upstream_url
 from headroom.pipeline import PipelineStage, summarize_routing_markers
+from headroom.pricing.opencode_prices import pricing_surface_from_tags
 from headroom.proxy.auth_mode import (
     classify_auth_mode,
     classify_client,
@@ -2726,6 +2727,7 @@ class OpenAIHandlerMixin:
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
                         uncached_tokens=uncached_input_tokens,
+                        pricing_surface=pricing_surface_from_tags(tags),
                     )
 
                 # Memory: handle memory tool calls in OpenAI Chat Completions response.
@@ -3582,6 +3584,7 @@ class OpenAIHandlerMixin:
                         cache_read_tokens=cache_read_tokens,
                         cache_write_tokens=cache_write_tokens,
                         uncached_tokens=uncached_input_tokens,
+                        pricing_surface=pricing_surface_from_tags(tags),
                     )
                 else:
                     cache_write_tokens = _infer_openai_cache_write_tokens(

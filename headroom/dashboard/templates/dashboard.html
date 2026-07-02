@@ -443,6 +443,12 @@
                         </div>
                     </template>
                 </div>
+                <template x-if="stats.cost?.pricing_reference?.has_reference_prices">
+                    <div class="mt-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                        <span class="font-medium">Reference pricing:</span>
+                        <span x-text="stats.cost?.pricing_reference?.note"></span>
+                    </div>
+                </template>
             </div>
         </template>
 
@@ -1148,6 +1154,10 @@
                                 <tr class="hover:bg-border/30 transition-colors">
                                     <td class="px-4 py-3 text-left">
                                         <span class="px-2 py-0.5 bg-border rounded text-xs" x-text="truncateModel(model)"></span>
+                                        <template x-if="info.pricing?.reference_only">
+                                            <div class="mt-1 text-[10px] text-amber-300"
+                                                 x-text="'Reference ' + (info.pricing.surface || 'pricing') + ' price'"></div>
+                                        </template>
                                     </td>
                                     <td class="px-4 py-3 text-right font-mono tabular-nums" x-text="info.requests"></td>
                                     <td class="px-4 py-3 text-right font-mono tabular-nums text-accent" x-text="formatNumber(info.tokens_saved)"></td>

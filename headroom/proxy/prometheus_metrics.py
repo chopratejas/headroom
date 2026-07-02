@@ -580,6 +580,7 @@ class PrometheusMetrics:
         attempted_input_tokens: int = 0,
         project: str | None = None,
         client: str | None = None,
+        pricing_surface: str | None = None,
     ):
         """Record metrics for a request."""
         async with self._lock:
@@ -668,6 +669,7 @@ class PrometheusMetrics:
                 tokens_saved=tokens_saved,
                 provider=provider,
                 project=project,
+                pricing_surface=pricing_surface,
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 uncached_input_tokens=uncached_input_tokens,
