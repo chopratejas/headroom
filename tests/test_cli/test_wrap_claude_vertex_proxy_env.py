@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -50,11 +51,23 @@ def _invoke_wrap_claude(
     monkeypatch: pytest.MonkeyPatch,
     *,
     env: dict[str, str],
+    use_context_tool: bool = False,
 ) -> tuple[dict[str, Any], str]:
     captured: dict[str, Any] = {}
 
     _clear_claude_mode_env(monkeypatch)
-    monkeypatch.setattr(wrap_mod.shutil, "which", lambda _name: "/usr/bin/claude")
+
+    def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
+        if name == "claude":
+            return "/usr/bin/claude"
+        if name == "rtk":
+            for entry in str(kwargs.get("path", "")).split(os.pathsep):
+                candidate = Path(entry) / "rtk"
+                if candidate.exists():
+                    return str(candidate)
+        return None
+
+    monkeypatch.setattr(wrap_mod.shutil, "which", fake_which)
     monkeypatch.setattr(wrap_mod, "_register_proxy_client", lambda _port: None)
     monkeypatch.setattr(wrap_mod, "_make_cleanup", lambda _holder, _port: lambda: None)
     monkeypatch.setattr(wrap_mod.signal, "signal", lambda *_args, **_kwargs: None)
@@ -81,18 +94,11 @@ def _invoke_wrap_claude(
     monkeypatch.setattr(wrap_mod, "_ensure_proxy", fake_ensure_proxy)
     monkeypatch.setattr(wrap_mod.subprocess, "run", fake_run)
 
-    result = runner.invoke(
-        main,
-        [
-            "wrap",
-            "claude",
-            "--no-context-tool",
-            "--no-mcp",
-            "--no-tokensave",
-            "--no-serena",
-        ],
-        env=env,
-    )
+    args = ["wrap", "claude", "--no-mcp", "--no-tokensave", "--no-serena"]
+    if not use_context_tool:
+        args.append("--no-context-tool")
+
+    result = runner.invoke(main, args, env=env)
 
     assert result.exit_code == 0, result.output
     return captured, result.output
@@ -106,6 +112,54 @@ def test_wrap_claude_plain_mode_warns_about_remote_control_gate(
     assert captured["child_cmd"] == ["/usr/bin/claude"]
     assert "Remote Control" in output
     assert "wrapped Claude session's ANTHROPIC_BASE_URL" in output
+
+
+def test_wrap_claude_appends_rtk_bin_to_child_path(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_rtk = tmp_path / ".headroom" / "bin" / "rtk"
+    fake_rtk.parent.mkdir(parents=True)
+    fake_rtk.write_text("#!/bin/sh\n")
+    other_bin = tmp_path / "other-bin"
+    other_bin.mkdir()
+
+    monkeypatch.setattr(wrap_mod, "_setup_rtk", lambda verbose=False: fake_rtk)
+
+    captured, _output = _invoke_wrap_claude(
+        runner,
+        monkeypatch,
+        env={"PATH": str(other_bin)},
+        use_context_tool=True,
+    )
+
+    assert captured["child_env"]["PATH"].split(os.pathsep) == [
+        str(other_bin),
+        str(fake_rtk.parent),
+    ]
+
+
+def test_wrap_claude_keeps_existing_rtk_child_path(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_rtk = tmp_path / ".headroom" / "bin" / "rtk"
+    fake_rtk.parent.mkdir(parents=True)
+    fake_rtk.write_text("#!/bin/sh\n")
+    system_bin = tmp_path / "system-bin"
+    system_bin.mkdir()
+    system_rtk = system_bin / "rtk"
+    system_rtk.write_text("#!/bin/sh\n")
+    system_rtk.chmod(0o755)
+
+    monkeypatch.setattr(wrap_mod, "_setup_rtk", lambda verbose=False: fake_rtk)
+
+    captured, _output = _invoke_wrap_claude(
+        runner,
+        monkeypatch,
+        env={"PATH": str(system_bin)},
+        use_context_tool=True,
+    )
+
+    assert captured["child_env"]["PATH"] == str(system_bin)
 
 
 def test_wrap_claude_vertex_passes_custom_base_url_to_proxy_before_child_redirect(
