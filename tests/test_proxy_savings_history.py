@@ -16,6 +16,8 @@ from fastapi.testclient import TestClient
 
 import headroom.proxy.savings_tracker as savings_tracker_module
 import headroom.proxy.server as server_module
+from headroom.proxy.cost import CostTracker
+from headroom.proxy.prometheus_metrics import PrometheusMetrics
 from headroom.proxy.savings_tracker import HEADROOM_SAVINGS_PATH_ENV_VAR, SavingsTracker
 from headroom.proxy.server import ProxyConfig, create_app
 
@@ -387,6 +389,143 @@ def test_input_cost_counts_cache_reads_when_uncached_input_is_zero(monkeypatch):
         cache_read_tokens=1000,
     )
     assert cost == pytest.approx(0.3)
+
+
+def test_input_cost_ignores_inferred_cache_writes(monkeypatch):
+    fake_litellm = SimpleNamespace(
+        model_cost={
+            "gpt-4o": {
+                "input_cost_per_token": 0.001,
+                "cache_read_input_token_cost": 0.0001,
+                "cache_creation_input_token_cost": 0.00125,
+            },
+        }
+    )
+    monkeypatch.setattr(savings_tracker_module, "LITELLM_AVAILABLE", True)
+    monkeypatch.setattr(savings_tracker_module, "litellm", fake_litellm)
+
+    cost = savings_tracker_module._estimate_input_cost_usd(
+        "gpt-4o",
+        100,
+        cache_read_tokens=20,
+        cache_write_tokens=80,
+        uncached_input_tokens=80,
+        cache_write_inferred=True,
+    )
+    assert cost == pytest.approx(0.082)
+
+
+def test_prometheus_metrics_does_not_import_unrelated_cost_tracker_totals(tmp_path, monkeypatch):
+    tracker = SavingsTracker(path=str(tmp_path / "proxy_savings.json"))
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_input_cost_usd",
+        lambda model, input_tokens, **kwargs: input_tokens / 1000.0,
+    )
+
+    metrics = PrometheusMetrics(
+        savings_tracker=tracker,
+        cost_tracker=SimpleNamespace(
+            stats=lambda: {
+                "total_input_tokens": 9999,
+                "total_input_cost_usd": 9.999,
+            }
+        ),
+    )
+
+    asyncio.run(
+        metrics.record_request(
+            provider="openai",
+            model="gpt-4o",
+            input_tokens=120,
+            output_tokens=24,
+            tokens_saved=10,
+            latency_ms=15.0,
+        )
+    )
+
+    snapshot = tracker.snapshot()
+    assert snapshot["lifetime"]["total_input_tokens"] == 120
+    assert snapshot["lifetime"]["total_input_cost_usd"] == pytest.approx(0.12)
+
+
+def test_savings_tracker_persists_raw_cache_breakdown_when_available(tmp_path, monkeypatch):
+    tracker = SavingsTracker(path=str(tmp_path / "proxy_savings.json"))
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_compression_savings_usd",
+        lambda model, tokens_saved, pricing_surface=None: tokens_saved / 1000.0,
+    )
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_input_cost_usd",
+        lambda model, input_tokens, **kwargs: 0.5,
+    )
+
+    tracker.record_request(
+        model="mimo-v2.5-pro",
+        provider="openai",
+        pricing_surface="opencode-go",
+        input_tokens=100,
+        tokens_saved=10,
+        cache_read_tokens=20,
+        cache_write_tokens=80,
+        uncached_input_tokens=80,
+        cache_write_inferred=True,
+        timestamp="2026-03-27T09:00:00Z",
+    )
+
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_utc_now",
+        lambda: datetime(2026, 3, 27, 9, 1, tzinfo=timezone.utc),
+    )
+    snapshot = tracker.snapshot()
+    assert snapshot["lifetime"]["total_cache_read_tokens"] == 20
+    assert snapshot["lifetime"]["total_cache_write_tokens"] == 80
+    assert snapshot["lifetime"]["total_uncached_input_tokens"] == 80
+    assert snapshot["lifetime"]["total_inferred_cache_write_tokens"] == 80
+    assert snapshot["display_session"]["total_cache_read_tokens"] == 20
+    assert snapshot["display_session"]["total_cache_write_tokens"] == 80
+    assert snapshot["history"] == [
+        {
+            "timestamp": "2026-03-27T09:00:00Z",
+            "provider": "openai",
+            "model": "mimo-v2.5-pro",
+            "total_tokens_saved": 10,
+            "compression_savings_usd": 0.01,
+            "total_input_tokens": 100,
+            "total_input_cost_usd": 0.5,
+            "total_cache_read_tokens": 20,
+            "total_cache_write_tokens": 80,
+            "total_uncached_input_tokens": 80,
+            "total_inferred_cache_write_tokens": 80,
+        }
+    ]
+
+
+def test_cost_tracker_does_not_bill_inferred_openai_cache_writes(monkeypatch):
+    tracker = CostTracker()
+    monkeypatch.setattr(
+        tracker,
+        "_get_display_cache_prices",
+        lambda model: (0.0145 / 1_000_000, 1.74 / 1_000_000, 1.74 / 1_000_000),
+    )
+
+    tracker.record_tokens(
+        "mimo-v2.5-pro",
+        0,
+        1000,
+        cache_read_tokens=200,
+        cache_write_tokens=800,
+        uncached_tokens=800,
+        cache_write_inferred=True,
+        pricing_surface="opencode-go",
+    )
+
+    stats = tracker.stats()
+    assert stats["total_input_tokens"] == 1000
+    assert stats["total_input_cost_usd"] == pytest.approx(0.0014)
 
 
 def test_display_session_rolls_after_inactivity_and_counts_zero_savings_requests(
@@ -919,6 +1058,11 @@ def test_stats_history_persists_across_restarts_and_stats_stays_compatible(tmp_p
         "headroom.proxy.server.CostTracker._get_cache_prices",
         lambda self, model: (0.001, 0.0015, 0.002),
     )
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_input_cost_usd",
+        lambda model, input_tokens, **kwargs: input_tokens * 0.002,
+    )
 
     config = ProxyConfig(
         cache_enabled=False,
@@ -1012,6 +1156,11 @@ def test_stats_history_csv_export_is_frontend_friendly(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "headroom.proxy.server.CostTracker._get_cache_prices",
         lambda self, model: (0.001, 0.0015, 0.002),
+    )
+    monkeypatch.setattr(
+        savings_tracker_module,
+        "_estimate_input_cost_usd",
+        lambda model, input_tokens, **kwargs: input_tokens * 0.002,
     )
 
     config = ProxyConfig(

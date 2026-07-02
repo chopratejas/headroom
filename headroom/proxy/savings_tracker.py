@@ -137,6 +137,13 @@ def _normalize_provider(value: Any) -> str:
 
 MODEL_UNKNOWN = "unknown"
 
+_RAW_BREAKDOWN_FIELDS = (
+    "total_cache_read_tokens",
+    "total_cache_write_tokens",
+    "total_uncached_input_tokens",
+    "total_inferred_cache_write_tokens",
+)
+
 
 def _normalize_model(value: Any) -> str:
     """Normalize a model label, falling back to a stable sentinel.
@@ -149,6 +156,36 @@ def _normalize_model(value: Any) -> str:
         return MODEL_UNKNOWN
     cleaned = value.strip()
     return cleaned or MODEL_UNKNOWN
+
+
+def _merge_raw_breakdown_totals(
+    target: dict[str, Any],
+    *,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    uncached_input_tokens: int = 0,
+    inferred_cache_write_tokens: int = 0,
+) -> None:
+    deltas = {
+        "total_cache_read_tokens": _coerce_int(cache_read_tokens),
+        "total_cache_write_tokens": _coerce_int(cache_write_tokens),
+        "total_uncached_input_tokens": _coerce_int(uncached_input_tokens),
+        "total_inferred_cache_write_tokens": _coerce_int(inferred_cache_write_tokens),
+    }
+    for key, delta in deltas.items():
+        if delta > 0:
+            target[key] = _coerce_int(target.get(key)) + delta
+
+
+def _raw_breakdown_totals(entry: Any) -> dict[str, int]:
+    if not isinstance(entry, dict):
+        return {}
+    totals: dict[str, int] = {}
+    for key in _RAW_BREAKDOWN_FIELDS:
+        value = _coerce_int(entry.get(key))
+        if value > 0:
+            totals[key] = value
+    return totals
 
 
 def _resolve_litellm_model(model: str) -> str:
@@ -220,6 +257,7 @@ def _estimate_input_cost_usd(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     uncached_input_tokens: int = 0,
+    cache_write_inferred: bool = False,
     pricing_surface: str | None = None,
 ) -> float:
     """Estimate input spend in USD for a request.
@@ -231,6 +269,7 @@ def _estimate_input_cost_usd(
     cache_read = _coerce_int(cache_read_tokens)
     cache_write = _coerce_int(cache_write_tokens)
     uncached = _coerce_int(uncached_input_tokens)
+    billed_cache_write = 0 if cache_write_inferred else cache_write
     litellm = _get_litellm_module()
     # Gate on tokens actually sent. Providers like Anthropic report cache
     # reads/writes separately from `input_tokens` (the uncached portion), so a
@@ -257,7 +296,7 @@ def _estimate_input_cost_usd(
                     )
                     return (
                         float(cache_read) * float(cache_read_cost)
-                        + float(cache_write) * float(cache_write_cost)
+                        + float(billed_cache_write) * float(cache_write_cost)
                         + float(uncached) * float(input_cost_per_token)
                     )
 
@@ -274,7 +313,7 @@ def _estimate_input_cost_usd(
         cache_write_cost = reference_pricing.cache_write_input_token_cost
         return (
             float(cache_read) * float(cache_read_cost or input_cost_per_token)
-            + float(cache_write) * float(cache_write_cost or input_cost_per_token)
+            + float(billed_cache_write) * float(cache_write_cost or input_cost_per_token)
             + float(uncached) * float(input_cost_per_token)
         )
     return float(total_input_tokens) * float(input_cost_per_token)
@@ -313,7 +352,7 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
     if timestamp is None:
         return None
 
-    return {
+    normalized = {
         "timestamp": _to_utc_iso(timestamp),
         "provider": provider,
         "model": model,
@@ -322,6 +361,8 @@ def _normalize_history_entry(entry: Any) -> dict[str, Any] | None:
         "total_input_tokens": total_input_tokens,
         "total_input_cost_usd": round(total_input_cost_usd, 6),
     }
+    normalized.update(_raw_breakdown_totals(entry))
+    return normalized
 
 
 def _empty_display_session() -> dict[str, Any]:
@@ -383,6 +424,7 @@ def _normalize_projects(raw: Any) -> dict[str, dict[str, Any]]:
         normalized["total_input_cost_usd"] = round(
             _coerce_float(entry.get("total_input_cost_usd")), 6
         )
+        normalized.update(_raw_breakdown_totals(entry))
         last_activity = _parse_timestamp(entry.get("last_activity_at"))
         normalized["last_activity_at"] = _to_utc_iso(last_activity) if last_activity else None
         projects[cleaned_name] = normalized
@@ -416,7 +458,7 @@ def _normalize_display_session(entry: Any) -> dict[str, Any]:
         2,
     )
 
-    return {
+    normalized = {
         "requests": _coerce_int(entry.get("requests")),
         "tokens_saved": tokens_saved,
         "compression_savings_usd": round(
@@ -432,6 +474,8 @@ def _normalize_display_session(entry: Any) -> dict[str, Any]:
         "started_at": _to_utc_iso(started_at),
         "last_activity_at": _to_utc_iso(last_activity_at),
     }
+    normalized.update(_raw_breakdown_totals(entry))
+    return normalized
 
 
 class SavingsTracker:
@@ -500,11 +544,14 @@ class SavingsTracker:
         if timestamp_dt is None:
             timestamp_dt = _utc_now()
 
-        delta_usd = _estimate_compression_savings_usd(
-            model,
-            delta_tokens,
-            pricing_surface=pricing_surface,
-        )
+        if pricing_surface is None:
+            delta_usd = _estimate_compression_savings_usd(model, delta_tokens)
+        else:
+            delta_usd = _estimate_compression_savings_usd(
+                model,
+                delta_tokens,
+                pricing_surface=pricing_surface,
+            )
 
         with self._lock:
             lifetime = self._state["lifetime"]
@@ -536,6 +583,7 @@ class SavingsTracker:
                     "compression_savings_usd": lifetime["compression_savings_usd"],
                     "total_input_tokens": lifetime["total_input_tokens"],
                     "total_input_cost_usd": lifetime["total_input_cost_usd"],
+                    **_raw_breakdown_totals(lifetime),
                 }
             )
             self._trim_history_locked(reference_time=timestamp_dt)
@@ -554,6 +602,7 @@ class SavingsTracker:
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         uncached_input_tokens: int = 0,
+        cache_write_inferred: bool = False,
         total_input_tokens: int | None = None,
         total_input_cost_usd: float | None = None,
         timestamp: datetime | str | None = None,
@@ -571,17 +620,21 @@ class SavingsTracker:
 
         delta_tokens_saved = _coerce_int(tokens_saved)
         delta_input_tokens = _coerce_int(input_tokens)
-        delta_savings_usd = _estimate_compression_savings_usd(
-            model,
-            delta_tokens_saved,
-            pricing_surface=pricing_surface,
-        )
+        if pricing_surface is None:
+            delta_savings_usd = _estimate_compression_savings_usd(model, delta_tokens_saved)
+        else:
+            delta_savings_usd = _estimate_compression_savings_usd(
+                model,
+                delta_tokens_saved,
+                pricing_surface=pricing_surface,
+            )
         delta_input_cost_usd = _estimate_input_cost_usd(
             model,
             delta_input_tokens,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             uncached_input_tokens=uncached_input_tokens,
+            cache_write_inferred=cache_write_inferred,
             pricing_surface=pricing_surface,
         )
 
@@ -624,6 +677,13 @@ class SavingsTracker:
             )
             lifetime["total_input_tokens"] = next_total_input_tokens
             lifetime["total_input_cost_usd"] = next_total_input_cost_usd
+            _merge_raw_breakdown_totals(
+                lifetime,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                uncached_input_tokens=uncached_input_tokens,
+                inferred_cache_write_tokens=cache_write_tokens if cache_write_inferred else 0,
+            )
 
             session = self._state["display_session"]
             last_activity = _parse_timestamp(session.get("last_activity_at"))
@@ -646,6 +706,13 @@ class SavingsTracker:
                 session["total_input_cost_usd"] + session_input_cost_delta,
                 6,
             )
+            _merge_raw_breakdown_totals(
+                session,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                uncached_input_tokens=uncached_input_tokens,
+                inferred_cache_write_tokens=cache_write_tokens if cache_write_inferred else 0,
+            )
             total_before = session["tokens_saved"] + session["total_input_tokens"]
             session["savings_percent"] = round(
                 (session["tokens_saved"] / total_before * 100) if total_before > 0 else 0.0,
@@ -663,20 +730,24 @@ class SavingsTracker:
                 savings_usd_delta=delta_savings_usd,
                 input_tokens_delta=delta_input_tokens,
                 input_cost_usd_delta=delta_input_cost_usd,
+                cache_read_tokens_delta=cache_read_tokens,
+                cache_write_tokens_delta=cache_write_tokens,
+                uncached_input_tokens_delta=uncached_input_tokens,
+                inferred_cache_write_tokens_delta=cache_write_tokens if cache_write_inferred else 0,
             )
 
             if delta_tokens_saved > 0:
-                self._state["history"].append(
-                    {
-                        "timestamp": _to_utc_iso(timestamp_dt),
-                        "provider": _normalize_provider(provider),
-                        "model": _normalize_model(model),
-                        "total_tokens_saved": lifetime["tokens_saved"],
-                        "compression_savings_usd": lifetime["compression_savings_usd"],
-                        "total_input_tokens": lifetime["total_input_tokens"],
-                        "total_input_cost_usd": lifetime["total_input_cost_usd"],
-                    }
-                )
+                history_entry = {
+                    "timestamp": _to_utc_iso(timestamp_dt),
+                    "provider": _normalize_provider(provider),
+                    "model": _normalize_model(model),
+                    "total_tokens_saved": lifetime["tokens_saved"],
+                    "compression_savings_usd": lifetime["compression_savings_usd"],
+                    "total_input_tokens": lifetime["total_input_tokens"],
+                    "total_input_cost_usd": lifetime["total_input_cost_usd"],
+                }
+                history_entry.update(_raw_breakdown_totals(lifetime))
+                self._state["history"].append(history_entry)
                 self._trim_history_locked(reference_time=timestamp_dt)
 
             self._save_locked()
@@ -692,6 +763,10 @@ class SavingsTracker:
         savings_usd_delta: float = 0.0,
         input_tokens_delta: int = 0,
         input_cost_usd_delta: float = 0.0,
+        cache_read_tokens_delta: int = 0,
+        cache_write_tokens_delta: int = 0,
+        uncached_input_tokens_delta: int = 0,
+        inferred_cache_write_tokens_delta: int = 0,
     ) -> None:
         """Accumulate per-project savings. Caller must hold ``self._lock``.
 
@@ -712,6 +787,13 @@ class SavingsTracker:
         entry["total_input_tokens"] += max(input_tokens_delta, 0)
         entry["total_input_cost_usd"] = round(
             entry["total_input_cost_usd"] + max(input_cost_usd_delta, 0.0), 6
+        )
+        _merge_raw_breakdown_totals(
+            entry,
+            cache_read_tokens=cache_read_tokens_delta,
+            cache_write_tokens=cache_write_tokens_delta,
+            uncached_input_tokens=uncached_input_tokens_delta,
+            inferred_cache_write_tokens=inferred_cache_write_tokens_delta,
         )
         entry["last_activity_at"] = _to_utc_iso(timestamp_dt)
         if len(projects) > DEFAULT_MAX_PROJECTS:
@@ -939,6 +1021,9 @@ class SavingsTracker:
             "history": normalized_history,
             "projects": _normalize_projects(raw.get("projects")),
         }
+        state["lifetime"].update(_raw_breakdown_totals(lifetime_raw))
+        if normalized_history:
+            state["lifetime"].update(_raw_breakdown_totals(normalized_history[-1]))
 
         if normalized_history:
             reference_time = _parse_timestamp(normalized_history[-1]["timestamp"]) or _utc_now()

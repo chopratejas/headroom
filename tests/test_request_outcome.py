@@ -262,6 +262,7 @@ async def test_funnel_calls_metrics_with_full_kwargs() -> None:
     assert kwargs["cache_write_5m_tokens"] == 50
     assert kwargs["cache_write_1h_tokens"] == 50
     assert kwargs["uncached_input_tokens"] == 0
+    assert kwargs["cache_inferred"] is False
     assert kwargs["attempted_input_tokens"] == 800
 
 
@@ -293,7 +294,9 @@ async def test_funnel_passes_canonical_record_tokens_shape() -> None:
         "cache_write_5m_tokens": 80,
         "cache_write_1h_tokens": 20,
         "uncached_tokens": 0,
+        "cache_write_inferred": False,
         "output_tokens": 50,
+        "pricing_surface": None,
     }
 
 

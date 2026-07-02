@@ -682,6 +682,7 @@ class CostTracker:
         output_tokens: int,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        cache_write_inferred: bool = False,
     ) -> float | None:
         """Estimate cost in USD using LiteLLM's pricing database.
 
@@ -719,7 +720,7 @@ class CostTracker:
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
                 cache_read_input_tokens=cache_read_tokens,
-                cache_creation_input_tokens=cache_write_tokens,
+                cache_creation_input_tokens=0 if cache_write_inferred else cache_write_tokens,
             )
 
             total_cost = input_cost + output_cost
@@ -760,6 +761,7 @@ class CostTracker:
         cache_write_1h_tokens: int = 0,
         uncached_tokens: int = 0,
         output_tokens: int = 0,
+        cache_write_inferred: bool = False,
         pricing_surface: str | None = None,
     ):
         """Record token counts per model and accumulate request cost for budget enforcement.
@@ -781,8 +783,9 @@ class CostTracker:
         self._api_cache_read_by_model[model] = (
             self._api_cache_read_by_model.get(model, 0) + cache_read_tokens
         )
+        effective_cache_write_tokens = 0 if cache_write_inferred else cache_write_tokens
         self._api_cache_write_by_model[model] = (
-            self._api_cache_write_by_model.get(model, 0) + cache_write_tokens
+            self._api_cache_write_by_model.get(model, 0) + effective_cache_write_tokens
         )
         self._api_cache_write_5m_by_model[model] = (
             self._api_cache_write_5m_by_model.get(model, 0) + cache_write_5m_tokens
@@ -801,14 +804,15 @@ class CostTracker:
         # fields are 0), fall back to tokens_sent so input cost isn't
         # silently dropped from the budget.
         input_tokens = uncached_tokens
-        if not (uncached_tokens or cache_read_tokens or cache_write_tokens):
+        if not (uncached_tokens or cache_read_tokens or effective_cache_write_tokens):
             input_tokens = tokens_sent
         cost = self.estimate_cost(
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
+            cache_write_tokens=effective_cache_write_tokens,
+            cache_write_inferred=cache_write_inferred,
         )
         if cost is not None:
             self._costs.append((datetime.now(), cost))

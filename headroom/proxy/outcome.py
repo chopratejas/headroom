@@ -369,6 +369,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         cache_write_5m_tokens=outcome.cache_write_5m_tokens,
         cache_write_1h_tokens=outcome.cache_write_1h_tokens,
         uncached_input_tokens=outcome.uncached_input_tokens,
+        cache_inferred=outcome.cache_inferred,
         attempted_input_tokens=outcome.attempted_input_tokens,
         project=project,
         client=outcome.client,
@@ -387,6 +388,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
             cache_write_5m_tokens=outcome.cache_write_5m_tokens,
             cache_write_1h_tokens=outcome.cache_write_1h_tokens,
             uncached_tokens=outcome.uncached_input_tokens,
+            cache_write_inferred=outcome.cache_inferred,
             output_tokens=outcome.output_tokens,
             pricing_surface=pricing_surface,
         )
