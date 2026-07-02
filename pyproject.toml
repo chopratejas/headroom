@@ -93,7 +93,7 @@ proxy-prod = [
 # The 0.x line (>=0.10,<1.0) returns standalone tree_sitter objects as expected.
 code = [
     "tree-sitter-language-pack>=0.10.0,<1.0",
-    "tree-sitter>=0.25.2,<0.26",
+    "tree-sitter>=0.25.2,<0.27",
 ]
 # ML-based compression with Kompress (ModernBERT).
 # (The legacy [llmlingua] extra was removed in 0.9.x — no live code path used it.
