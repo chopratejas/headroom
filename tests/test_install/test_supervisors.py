@@ -308,13 +308,13 @@ def test_install_supervisor_darwin_windows_and_unsupported(monkeypatch, tmp_path
     win_task = install_supervisor(_manifest(supervisor=SupervisorKind.TASK.value))
     assert win_service[-1].kind == "windows-service"
     assert win_task[-2].path.endswith("-startup")
-    assert [
-        "sc.exe",
-        "create",
-        "headroom-default",
-        'binPath= cmd.exe /c "C:\\tmp\\default\\run-headroom.cmd"',
-        "start= auto",
-    ] in calls
+    # Regression for #1654: the create command must be a single pre-quoted
+    # string (bypassing list2cmdline) with the inner quotes backslash-escaped
+    # and `start= auto` as a separate trailing token.
+    assert (
+        "sc.exe create headroom-default "
+        'binPath= "cmd.exe /c \\"C:\\tmp\\default\\run-headroom.cmd\\"" start= auto'
+    ) in calls
     assert [
         "schtasks",
         "/Create",

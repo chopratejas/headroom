@@ -261,11 +261,16 @@ def install_supervisor(manifest: DeploymentManifest) -> list[ArtifactRecord]:
         return records
 
     if _is_windows() and manifest.supervisor_kind == SupervisorKind.SERVICE.value:
-        service_bin = f'cmd.exe /c "{windows_run_cmd_path(manifest.profile)}"'
-        subprocess.run(
-            ["sc.exe", "create", manifest.service_name, f"binPath= {service_bin}", "start= auto"],
-            check=True,
+        # sc.exe's binPath= value embeds its own quotes (cmd.exe /c "<path>").
+        # Passing this as an argv list lets subprocess.list2cmdline re-quote the
+        # token and sc.exe mis-tokenizes it (issue #1654), so build the exact
+        # command line ourselves and hand subprocess a string.
+        run_cmd = windows_run_cmd_path(manifest.profile)
+        create_cmd = (
+            f"sc.exe create {manifest.service_name} "
+            f'binPath= "cmd.exe /c \\"{run_cmd}\\"" start= auto'
         )
+        subprocess.run(create_cmd, check=True)
         subprocess.run(
             ["sc.exe", "failure", manifest.service_name, "reset= 0", "actions= restart/5000"],
             check=True,
