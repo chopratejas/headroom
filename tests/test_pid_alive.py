@@ -48,3 +48,69 @@ def test_pid_alive_only_uses_signal_zero(monkeypatch) -> None:
     monkeypatch.setattr("headroom._subprocess.os.kill", lambda pid, sig: sent.append(sig))
     assert pid_alive(4321) is True
     assert sent == [0]
+
+
+def test_pid_alive_win32_no_psutil_never_calls_os_kill(monkeypatch) -> None:
+    """On Windows without psutil, pid_alive must not call os.kill (it routes through TerminateProcess)."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        types.SimpleNamespace(pid_exists=lambda pid: (_ for _ in ()).throw(RuntimeError())),
+    )
+    monkeypatch.setattr("headroom._subprocess.sys.platform", "win32")
+
+    fake_handle = 42
+    opened: list[int] = []
+
+    def fake_open_process(access, inherit, pid):
+        opened.append(pid)
+        return fake_handle
+
+    closed: list[int] = []
+
+    def fake_close_handle(handle):
+        closed.append(handle)
+
+    fake_kernel32 = types.SimpleNamespace(
+        OpenProcess=fake_open_process,
+        CloseHandle=fake_close_handle,
+    )
+    fake_ctypes = types.SimpleNamespace(windll=types.SimpleNamespace(kernel32=fake_kernel32))
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    def boom(pid: int, sig: int) -> None:
+        raise AssertionError("os.kill must not be called on Windows")
+
+    monkeypatch.setattr("headroom._subprocess.os.kill", boom)
+
+    assert pid_alive(4321) is True
+    assert opened == [4321]
+    assert closed == [fake_handle]
+
+
+def test_pid_alive_win32_no_psutil_no_ctypes_returns_conservative(monkeypatch) -> None:
+    """On Windows without psutil AND ctypes failure, return True (assume alive) rather than crash."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        types.SimpleNamespace(pid_exists=lambda pid: (_ for _ in ()).throw(RuntimeError())),
+    )
+    monkeypatch.setattr("headroom._subprocess.sys.platform", "win32")
+    monkeypatch.setitem(
+        sys.modules,
+        "ctypes",
+        types.SimpleNamespace(
+            windll=types.SimpleNamespace(
+                kernel32=types.SimpleNamespace(
+                    OpenProcess=lambda *a: (_ for _ in ()).throw(OSError("no kernel32")),
+                )
+            )
+        ),
+    )
+
+    def boom(pid: int, sig: int) -> None:
+        raise AssertionError("os.kill must not be called on Windows")
+
+    monkeypatch.setattr("headroom._subprocess.os.kill", boom)
+
+    assert pid_alive(4321) is True
