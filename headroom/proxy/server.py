@@ -2169,8 +2169,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "upstream": _component_health(
                 enabled=os.environ.get("HEADROOM_SKIP_UPSTREAM_CHECK", "").strip() != "1",
                 ready=bool(_upstream_check_cache["ok"]),
+                provider=_upstream_check_cache["provider"],
                 url=_upstream_check_cache["url"],
                 error=_upstream_check_cache["error"],
+                scope="configured_provider_target",
+                dynamic_request_base_url_header="x-headroom-base-url",
+                dynamic_request_base_urls_probed=False,
             ),
         }
 
@@ -2279,6 +2283,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "gemini_api_url": config.gemini_api_url,
                 "cloudcode_api_url": config.cloudcode_api_url,
                 "vertex_api_url": config.vertex_api_url,
+                "provider_api_targets": _json_ready(proxy.provider_runtime.api_targets),
                 "savings_profile": config.savings_profile,
                 "target_ratio": effective_target_ratio,
                 "target_savings_percent": (
@@ -2337,15 +2342,24 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         "expires_at": 0.0,
         "ok": True,
         "error": None,
+        "provider": "anthropic",
         "url": None,
     }
     _upstream_check_lock = asyncio.Lock()
 
-    def _upstream_target_url() -> str:
-        """Return the primary upstream base URL to probe."""
+    def _upstream_probe_target() -> tuple[str, str]:
+        """Return the configured provider target used by the static readiness probe.
+
+        OpenAI-compatible integrations such as OpenCode Go/Zen may forward to a
+        per-request upstream from ``x-headroom-base-url``.  That dynamic target
+        is intentionally not probed here because /readyz has no request context;
+        the health payload labels this as a configured-provider probe instead.
+        """
         # Use the resolved API target from the provider runtime so we respect
         # any overrides set by ProxyConfig.anthropic_api_url / env vars.
-        return proxy.provider_runtime.api_targets.anthropic
+        if config.backend == "anthropic":
+            return "anthropic", proxy.provider_runtime.api_targets.anthropic
+        return "openai", proxy.provider_runtime.api_targets.openai
 
     async def _check_upstream() -> None:
         """Probe the upstream API endpoint and update the cached result.
@@ -2370,7 +2384,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             # Re-check inside the lock to handle concurrent waiters.
             if time.monotonic() < _upstream_check_cache["expires_at"]:
                 return
-            url = _upstream_target_url()
+            provider, url = _upstream_probe_target()
+            _upstream_check_cache["provider"] = provider
             _upstream_check_cache["url"] = url
             client = proxy.http_client
             if client is None:
@@ -2616,19 +2631,23 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     _install_extensions(app, config, enabled=getattr(config, "proxy_extensions", None))
 
     # Health & Metrics
+    def _live_payload() -> dict[str, Any]:
+        return {
+            "service": "headroom-proxy",
+            "status": "healthy",
+            "alive": True,
+            "version": __version__,
+            "timestamp": _iso_utc_now(),
+            "uptime_seconds": _uptime_seconds(),
+        }
+
     @app.get("/livez")
     async def livez():
-        return JSONResponse(
-            status_code=200,
-            content={
-                "service": "headroom-proxy",
-                "status": "healthy",
-                "alive": True,
-                "version": __version__,
-                "timestamp": _iso_utc_now(),
-                "uptime_seconds": _uptime_seconds(),
-            },
-        )
+        return JSONResponse(status_code=200, content=_live_payload())
+
+    @app.get("/healthz")
+    async def healthz():
+        return JSONResponse(status_code=200, content=_live_payload())
 
     @app.get("/readyz")
     async def readyz():
