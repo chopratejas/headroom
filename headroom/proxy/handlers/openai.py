@@ -2031,6 +2031,14 @@ class OpenAIHandlerMixin:
                             frozen_message_count=openai_frozen_count,
                             biases=_hook_biases,
                             compression_policy=compression_policy,
+                            # Thread the savings-profile knobs (e.g.
+                            # HEADROOM_SAVINGS_PROFILE=agent-90) onto the live
+                            # chat-completions path, matching handlers/
+                            # anthropic.py and the dedicated OpenAI compress
+                            # endpoint. Without this the profile's
+                            # compress_user_messages/target_ratio/etc. were
+                            # silently dropped here (#1534).
+                            **proxy_pipeline_kwargs(self.config),
                         ),
                         timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
@@ -2055,6 +2063,10 @@ class OpenAIHandlerMixin:
                             frozen_message_count=openai_frozen_count,
                             biases=_hook_biases,
                             compression_policy=compression_policy,
+                            # Same savings-profile threading as the token-mode
+                            # branch above — the non-token chat path must honor
+                            # the configured profile too (#1534).
+                            **proxy_pipeline_kwargs(self.config),
                         ),
                         timeout=COMPRESSION_TIMEOUT_SECONDS,
                     )
